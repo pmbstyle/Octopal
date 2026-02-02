@@ -19,6 +19,7 @@ from typing import Any
 from broodmind.policy.engine import PolicyEngine
 from broodmind.store.base import Store
 from broodmind.store.models import AuditEvent, WorkerRecord, WorkerTemplateRecord
+from broodmind.utils import utc_now
 from broodmind.workers.contracts import TaskRequest, WorkerResult, WorkerSpec
 from broodmind.workers.launcher import WorkerLauncher
 
@@ -90,7 +91,7 @@ class WorkerRuntime:
         spec_path.write_text(json.dumps(spec.model_dump(), indent=2), encoding="utf-8")
 
         # Create worker record
-        now = _utc_now()
+        now = utc_now()
         self.store.create_worker(
             WorkerRecord(
                 id=spec.id,
@@ -262,7 +263,7 @@ class WorkerRuntime:
     ) -> None:
         event = AuditEvent(
             id=str(uuid.uuid4()),
-            ts=_utc_now(),
+            ts=utc_now(),
             correlation_id=correlation_id,
             level=level,
             event_type=event_type,
@@ -282,8 +283,7 @@ class WorkerRuntime:
             logger.warning("WorkerRuntime cleanup failed: %s", exc)
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+
 
 
 def _safe_parse_json(line: bytes) -> dict[str, Any] | None:

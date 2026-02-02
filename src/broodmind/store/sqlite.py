@@ -16,6 +16,7 @@ from broodmind.store.models import (
     WorkerRecord,
     WorkerTemplateRecord,
 )
+from broodmind.utils import utc_now
 
 
 class SQLiteStore(Store):
@@ -76,7 +77,8 @@ class SQLiteStore(Store):
             );
 
             CREATE TABLE IF NOT EXISTS memory_entries (
-                id TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY,
+                uuid TEXT NOT NULL UNIQUE,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 embedding_json TEXT,
@@ -86,22 +88,11 @@ class SQLiteStore(Store):
 
             CREATE TABLE IF NOT EXISTS worker_templates (
                 id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL,
-                system_prompt TEXT NOT NULL,
-                available_tools_json TEXT NOT NULL,
-                required_permissions_json TEXT NOT NULL,
-                max_thinking_steps INTEGER NOT NULL DEFAULT 10,
-                default_timeout_seconds INTEGER NOT NULL DEFAULT 300,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+...
             );
 
-            CREATE TABLE IF NOT EXISTS chat_state (
-                chat_id INTEGER PRIMARY KEY,
-                bootstrapped_at TEXT,
-                bootstrap_hash TEXT
-            );
+            CREATE INDEX IF NOT EXISTS ix_workers_status_updated_at ON workers (status, updated_at);
+            CREATE INDEX IF NOT EXISTS ix_memory_entries_id ON memory_entries (id);
             """
         )
         self._conn.commit()
@@ -118,6 +109,43 @@ class SQLiteStore(Store):
             self._conn.commit()
         except sqlite3.OperationalError:
             pass
+        
+        # Migration for memory_entries table for robust ordering
+        try:
+            cursor = self._conn.execute("PRAGMA table_info(memory_entries)")
+            columns = [row['name'] for row in cursor.fetchall()]
+            is_old_schema = 'uuid' not in columns and 'id' in columns
+            
+            if is_old_schema:
+                self._conn.executescript("""
+                    ALTER TABLE memory_entries RENAME TO _memory_entries_old;
+                    
+                    CREATE TABLE memory_entries (
+                        id INTEGER PRIMARY KEY,
+                        uuid TEXT NOT NULL UNIQUE,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        embedding_json TEXT,
+                        created_at TEXT NOT NULL,
+                        metadata_json TEXT NOT NULL
+                    );
+
+                    INSERT INTO memory_entries (uuid, role, content, embedding_json, created_at, metadata_json)
+                    SELECT id, role, content, embedding_json, created_at, metadata_json FROM _memory_entries_old;
+                    
+                    DROP TABLE _memory_entries_old;
+
+                    DROP INDEX IF EXISTS ix_memory_entries_created_at;
+                """)
+                self._conn.commit()
+                # The new index on id will be created by the main _init_schema script
+        except Exception as e:
+            # This might fail if run in a transaction, but we commit after.
+            # It's a complex operation, so we log if it fails.
+            import logging
+            logging.getLogger(__name__).warning("Memory schema migration failed (this may be ok if table was empty): %s", e)
+
+
         # Add worker result fields
         try:
             self._conn.execute("ALTER TABLE workers ADD COLUMN summary TEXT")
@@ -158,7 +186,7 @@ class SQLiteStore(Store):
     def update_worker_status(self, worker_id: str, status: str) -> None:
         self._conn.execute(
             "UPDATE workers SET status = ?, updated_at = ? WHERE id = ?",
-            (status, _utc_now().isoformat(), worker_id),
+            (status, utc_now().isoformat(), worker_id),
         )
         self._conn.commit()
 
@@ -170,7 +198,7 @@ class SQLiteStore(Store):
         error: str | None = None,
     ) -> None:
         updates = ["updated_at = ?"]
-        params = [_utc_now().isoformat()]
+        params = [utc_now().isoformat()]
 
         if summary is not None:
             updates.append("summary = ?")
@@ -399,11 +427,11 @@ class SQLiteStore(Store):
     def add_memory_entry(self, entry: MemoryEntry) -> None:
         self._conn.execute(
             """
-            INSERT INTO memory_entries (id, role, content, embedding_json, created_at, metadata_json)
+            INSERT INTO memory_entries (uuid, role, content, embedding_json, created_at, metadata_json)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                entry.id,
+                entry.id, # The dataclass id is the UUID
                 entry.role,
                 entry.content,
                 json.dumps(entry.embedding) if entry.embedding is not None else None,
@@ -415,7 +443,7 @@ class SQLiteStore(Store):
 
     def list_memory_entries(self, limit: int = 200) -> list[MemoryEntry]:
         cursor = self._conn.execute(
-            "SELECT * FROM memory_entries ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM memory_entries ORDER BY id DESC LIMIT ?",
             (limit,),
         )
         return [self._row_to_memory(row) for row in cursor.fetchall()]
@@ -423,7 +451,7 @@ class SQLiteStore(Store):
     def list_memory_entries_by_chat(self, chat_id: int, limit: int = 50) -> list[MemoryEntry]:
         needle = f"\"chat_id\": {chat_id}"
         cursor = self._conn.execute(
-            "SELECT * FROM memory_entries WHERE metadata_json LIKE ? ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM memory_entries WHERE metadata_json LIKE ? ORDER BY id DESC LIMIT ?",
             (f"%{needle}%", limit),
         )
         return [self._row_to_memory(row) for row in cursor.fetchall()]
@@ -524,7 +552,7 @@ class SQLiteStore(Store):
         if row["embedding_json"]:
             embedding = json.loads(row["embedding_json"])
         return MemoryEntry(
-            id=row["id"],
+            id=row["uuid"],
             role=row["role"],
             content=row["content"],
             embedding=embedding,
@@ -545,10 +573,6 @@ class SQLiteStore(Store):
             created_at=_parse_dt(row["created_at"]),
             updated_at=_parse_dt(row["updated_at"]),
         )
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _parse_dt(value: Any) -> datetime:

@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import asyncio
 
-from aiogram import Dispatcher
+from aiogram import Bot, Dispatcher
+from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from broodmind.config.settings import Settings
@@ -24,6 +25,7 @@ def register_handlers(
         await _enqueue_send(bot, chat_id, text)
 
     queen.internal_send = _internal_send
+    
     @dp.message()
     async def handle_message(message: Message) -> None:
         if not message.text:
@@ -98,20 +100,34 @@ async def _enqueue_send(bot: Bot, chat_id: int, text: str) -> None:
     if not queue:
         queue = asyncio.Queue()
         _CHAT_QUEUES[chat_id] = queue
+
+    # If the task is missing or has finished, create a new one.
     if chat_id not in _CHAT_SEND_TASKS or _CHAT_SEND_TASKS[chat_id].done():
         _CHAT_SEND_TASKS[chat_id] = asyncio.create_task(_sender_loop(bot, chat_id, queue))
+        
     await queue.put(text)
 
 
 async def _sender_loop(bot: Bot, chat_id: int, queue: asyncio.Queue[str]) -> None:
     while True:
-        text = await queue.get()
+        try:
+            # Wait for a new message, but with a timeout.
+            text = await asyncio.wait_for(queue.get(), timeout=300.0)  # 5-minute timeout
+        except asyncio.TimeoutError:
+            # Queue has been empty for the timeout duration, so this worker can exit.
+            break
+
         try:
             await _send_chunked(bot, chat_id, text)
         except Exception:
             logger.exception("Failed to send queued message")
         finally:
             queue.task_done()
+    
+    # The task is now finished, remove it from the registry so a new one can be created later.
+    _CHAT_SEND_TASKS.pop(chat_id, None)
+    logger.debug("Sender loop for chat_id=%s finished due to inactivity.", chat_id)
+
 
 
 async def _typing_loop(message: Message, stop: asyncio.Event) -> None:

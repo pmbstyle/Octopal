@@ -37,12 +37,18 @@ class LiteLLMProvider:
             except Exception as exc:
                 logger.warning("Failed to parse LITELLM_FALLBACKS JSON: %s", exc)
 
-        # Configure litellm at module level for retries
+        # Configure litellm at module level
+        import litellm
+        
         if settings.litellm_num_retries > 0:
-            import litellm
-
             litellm.num_retries = settings.litellm_num_retries
+            
+        if settings.litellm_drop_params:
             litellm.drop_params = settings.litellm_drop_params
+
+        if settings.litellm_caching:
+            litellm.caching = True
+            logger.info("LiteLLM caching is enabled.")
 
     async def complete(self, messages: list[Message | dict], **kwargs: object) -> str:
         """Complete a chat request without tools."""

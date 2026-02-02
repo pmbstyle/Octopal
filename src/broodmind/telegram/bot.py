@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 
 from aiogram import Bot, Dispatcher
 
@@ -60,6 +61,23 @@ def build_dispatcher(settings: Settings, bot: Bot) -> Dispatcher:
     return dp, queen
 
 
+async def _heartbeat_poker(queen: Queen, interval_seconds: int, chat_id: int):
+    """Periodically triggers the queen's heartbeat logic."""
+    logger.info("Starting application-level heartbeat with interval=%ss", interval_seconds)
+    while True:
+        await asyncio.sleep(interval_seconds)
+        logger.info("Triggering internal heartbeat for chat_id=%s", chat_id)
+        try:
+            heartbeat_prompt = (
+                "This is a heartbeat trigger. Check your scheduled tasks in `workspace/HEARTBEAT.md` "
+                "and execute any tasks whose conditions are met."
+            )
+            # We don't need the reply here, as the queen will use internal_send for any output
+            await queen.handle_message(heartbeat_prompt, chat_id)
+        except Exception:
+            logger.exception("Internal heartbeat failed")
+
+
 async def run_bot(settings: Settings) -> None:
     bot = Bot(token=settings.telegram_bot_token)
     dp, queen = build_dispatcher(settings, bot)
@@ -79,8 +97,30 @@ async def run_bot(settings: Settings) -> None:
     await queen.initialize_system(bot, allowed_chat_ids=allowed_chat_ids)
     logger.info("Queen system initialization complete")
 
+    # Start application-level heartbeat if configured
+    heartbeat_task = None
+    if settings.heartbeat_interval_seconds > 0 and allowed_chat_ids:
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_poker(
+                queen,
+                settings.heartbeat_interval_seconds,
+                allowed_chat_ids[0],  # Use the first allowed chat as the context
+            )
+        )
+
     logger.info("Starting Telegram polling")
     try:
         await dp.start_polling(bot)
     finally:
+        logger.info("Shutting down bot session")
         await bot.session.close()
+        
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                logger.info("Stopped internal heartbeat task.")
+
+        logger.info("Stopping queen background tasks")
+        await queen.stop_background_tasks()

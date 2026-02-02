@@ -20,6 +20,8 @@ from broodmind.tools.registry import ToolSpec, filter_tools
 from broodmind.tools.tools import get_tools
 from pathlib import Path
 
+from broodmind.utils import utc_now
+
 logger = logging.getLogger(__name__)
 _FOLLOWUP_QUEUES: dict[int, asyncio.Queue] = {}
 _FOLLOWUP_TASKS: dict[int, asyncio.Task] = {}
@@ -87,12 +89,41 @@ class Queen:
     approvals: ApprovalManager
     memory: MemoryService
     internal_send: callable | None = None
+    _cleanup_task: asyncio.Task | None = None
+
+    async def _periodic_cleanup(self, interval_seconds: int):
+        """Periodically clean up old worker records."""
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                deleted = self.store.cleanup_old_workers()
+                if deleted > 0:
+                    logger.info("Queen periodic cleanup: removed %d old worker records", deleted)
+            except Exception:
+                logger.exception("Error during periodic worker cleanup")
+
+    def start_background_tasks(self, cleanup_interval_seconds: int = 3600):
+        """Start background tasks like periodic cleanup."""
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(self._periodic_cleanup(cleanup_interval_seconds))
+            logger.info("Started periodic worker cleanup task.")
+
+    async def stop_background_tasks(self):
+        """Stop all running background tasks."""
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                logger.info("Stopped periodic worker cleanup task.")
 
     async def initialize_system(self, bot=None, allowed_chat_ids: list[int] | None = None) -> None:
         """Initialize queen system on startup - read key files and build context."""
         system_chat_id = 0  # Special chat_id for system initialization
 
         logger.info("Queen waking up - system initialization")
+
+        self.start_background_tasks()
 
         wake_up_prompt = """You are waking up.
 
@@ -160,13 +191,6 @@ class Queen:
     ) -> "QueenReply":
         logger.info("Queen received message: chat_id=%s len=%s", chat_id, len(text))
 
-        # Periodic cleanup of old workers (runs roughly every 100 messages)
-        import random
-        if random.randint(1, 100) == 1:
-            deleted = self.store.cleanup_old_workers()
-            if deleted > 0:
-                logger.info("Queen cleanup: removed %d old worker records", deleted)
-
         await self.memory.add_message("user", text, {"chat_id": chat_id})
         bootstrap_context = _get_bootstrap_context(self.store, chat_id)
         if bootstrap_context.files:
@@ -188,7 +212,7 @@ class Queen:
         logger.info("Queen response ready")
         await self.memory.add_message("assistant", reply_text, {"chat_id": chat_id})
         if bootstrap_context.hash:
-            self.store.set_chat_bootstrap_hash(chat_id, bootstrap_context.hash, _utc_now())
+            self.store.set_chat_bootstrap_hash(chat_id, bootstrap_context.hash, utc_now())
         return QueenReply(immediate=_normalize_plain_text(reply_text), followup=None)
 
     async def _run_worker(
@@ -540,8 +564,7 @@ def _read_workspace_file(filename: str, max_chars: int) -> str:
     return data[:max_chars].rstrip() + "\n...[truncated]"
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+
 
 
 def _workers_root() -> Path:
@@ -666,7 +689,7 @@ async def _route_or_reply(
                         staged_dir = _staged_skill_dir_from_path(path_value)
                         if staged_dir and staged_dir not in staged_dirs:
                             staged_dirs[staged_dir] = staged_dir.exists()
-                    tool_result = _handle_queen_tool_call(call, queen_tools, ctx)
+                    tool_result = await _handle_queen_tool_call(call, queen_tools, ctx)
                     tool_result_lower = tool_result.lower()
                     tool_failed = (
                         tool_result.startswith("Queen cannot read")
@@ -924,25 +947,7 @@ def _normalize_required_permissions(worker_files: dict[str, str]) -> dict[str, s
 
 
 
-def _normalize_queen_path(path_value: str) -> str:
-    if not path_value:
-        return ""
-    normalized = path_value.replace("\\", "/").strip()
-    if "/workspace/" in normalized:
-        normalized = normalized.rsplit("/workspace/", 1)[1]
-    elif normalized.startswith("workspace/"):
-        normalized = normalized[len("workspace/") :]
-    return normalized.lstrip("/")
 
-
-def _queen_fs_path_allowed(path_value: str) -> bool:
-    normalized = _normalize_queen_path(path_value)
-    return bool(normalized)
-
-
-def _queen_write_path_allowed(path_value: str) -> bool:
-    normalized = _normalize_queen_path(path_value)
-    return bool(normalized)
 
 
 def _expand_worker_files(worker_files: dict[str, str]) -> dict[str, str]:
@@ -1484,7 +1489,7 @@ def _tool_get_worker_result(args: dict[str, object], ctx: dict[str, object]) -> 
         }, ensure_ascii=False)
 
 
-def _handle_queen_tool_call(
+async def _handle_queen_tool_call(
     call: dict,
     tools: list[ToolSpec],
     ctx: dict[str, object],
@@ -1499,23 +1504,13 @@ def _handle_queen_tool_call(
     except Exception:
         args = {}
     logger.debug("Queen tool call: %s", name)
-    if name in {"fs_write", "fs_move", "fs_delete", "fs_edit"}:
-        path_value = ""
-        if isinstance(args, dict):
-            path_value = str(args.get("path", "")).strip() or str(args.get("destination", "")).strip()
-        if not _queen_write_path_allowed(path_value):
-            logger.warning("Queen blocked tool call: %s path=%s", name, path_value)
-            return "fs_write/fs_move/fs_delete/fs_edit error: path is required."
-    if name in {"fs_read", "fs_list"}:
-        path_value = ""
-        if isinstance(args, dict):
-            path_value = str(args.get("path", "")).strip()
-        if path_value and not _queen_fs_path_allowed(path_value):
-            logger.warning("Queen blocked tool call: %s path=%s", name, path_value)
-            return "fs_read/fs_list error: path is required."
     for spec in tools:
         if spec.name == name:
-            result = spec.handler(args, ctx)
+            if spec.is_async:
+                result = await spec.handler(args, ctx)
+            else:
+                result = spec.handler(args, ctx)
+
             if os.getenv("BROODMIND_DEBUG_PROMPTS", "").lower() in {"1", "true", "yes"}:
                 logger.debug("Queen tool result %s: %s", name, _truncate_for_log(str(result)))
             return result

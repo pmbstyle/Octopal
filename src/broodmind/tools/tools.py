@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from broodmind.tools.download_file import download_file
 from broodmind.tools.exec_run import exec_run
 from broodmind.tools.filesystem import fs_delete, fs_list, fs_move, fs_read, fs_write
+from broodmind.tools.llm_task import run_llm_subtask
 from broodmind.tools.registry import ToolSpec
 from broodmind.tools.web_fetch import web_fetch
 from broodmind.tools.web_search import web_search
@@ -9,6 +11,39 @@ from broodmind.tools.web_search import web_search
 
 def get_tools() -> list[ToolSpec]:
     return [
+        ToolSpec(
+            name="run_llm_subtask",
+            description="Run a generic, JSON-only LLM sub-task. Ideal for tasks requiring structured data generation or analysis based on a prompt.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "The specific instruction or task for the sub-task LLM."},
+                    "input": {"type": "object", "description": "Optional JSON-serializable input data for the task."},
+                    "schema": {"type": "object", "description": "Optional JSON schema to validate the LLM's output."},
+                },
+                "required": ["prompt"],
+                "additionalProperties": False,
+            },
+            permission="llm_subtask", # A new permission to control access to this powerful tool
+            handler=lambda args, ctx: run_llm_subtask(args, ctx["queen"].provider),
+            is_async=True,
+        ),
+        ToolSpec(
+            name="download_file",
+            description="Download a file from a URL and save it to the workspace 'downloads' directory.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL of the file to download."},
+                    "filename": {"type": "string", "description": "Optional: The name to save the file as. If omitted, it will be inferred from the URL."},
+                },
+                "required": ["url"],
+                "additionalProperties": False,
+            },
+            permission="network",
+            handler=lambda args, ctx: download_file(args, ctx),
+            is_async=True,
+        ),
         ToolSpec(
             name="web_search",
             description="Search the web using Brave Search and return a JSON list of results (title, url, snippet).",

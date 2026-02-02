@@ -160,6 +160,15 @@ Workers can ask you questions by including a "questions" field in their result. 
 - If worker_result.output contains an error or failure, state the error and what must be fixed.
 - If the worker has questions for you, address them.
 
+## Heartbeat Instructions
+When you receive a "heartbeat" trigger:
+1.  Get the current UTC time.
+2.  Read the `workspace/HEARTBEAT.md` file.
+3.  Parse the file to understand your scheduled tasks, their conditions (timing, frequency), and the tracking timestamps.
+4.  For each task, compare the current time against the conditions and the last execution timestamp.
+5.  If a task's conditions are met, execute it. This may involve using your tools to spawn workers, read files, or write reports.
+6.  **Crucially**, after executing a task, you MUST update its corresponding timestamp in the "Tracking" section of `HEARTBEAT.md` to the current UTC time. This prevents you from running the same task repeatedly. Use your `fs_read` and `fs_write` tools to do this atomically.
+
 Follow-up replies:
 - Use worker results to answer.
 - If worker returned questions, answer them or ask the human.

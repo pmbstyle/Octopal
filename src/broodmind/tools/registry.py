@@ -10,7 +10,8 @@ class ToolSpec:
     description: str
     parameters: dict[str, Any]
     permission: str
-    handler: Callable[[dict[str, Any], dict[str, Any]], str]
+    handler: Any
+    is_async: bool = False
     scope: str | None = field(default=None, compare=False)  # Deprecated, kept for compatibility
 
     def to_openai_tool(self) -> dict[str, Any]:

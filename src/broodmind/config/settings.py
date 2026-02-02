@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     litellm_timeout: float = Field(120.0, alias="LITELLM_TIMEOUT")
     litellm_fallbacks: str | None = Field(default=None, alias="LITELLM_FALLBACKS")
     litellm_drop_params: bool = Field(True, alias="LITELLM_DROP_PARAMS")
+    litellm_caching: bool = Field(False, alias="LITELLM_CACHING")
 
     # Legacy ZAI Settings (used as defaults for LiteLLM)
     zai_api_key: str | None = Field(default=None, alias="ZAI_API_KEY")
@@ -57,6 +58,8 @@ class Settings(BaseSettings):
     )
 
     debug_prompts: bool = Field(False, alias="BROODMIND_DEBUG_PROMPTS")
+
+    heartbeat_interval_seconds: int = Field(900, alias="BROODMIND_HEARTBEAT_INTERVAL_SECONDS")
 
     # Comma-separated list of Telegram chat IDs allowed to interact with the queen
     # Get your chat ID by messaging @userinfobot on Telegram

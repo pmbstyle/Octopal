@@ -4,10 +4,12 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+import uuid
 
 from broodmind.providers.embeddings import EmbeddingsProvider
 from broodmind.store.base import Store
 from broodmind.store.models import MemoryEntry
+from broodmind.utils import utc_now
 
 
 @dataclass
@@ -34,11 +36,11 @@ class MemoryService:
             vectors = await self.embeddings.embed([trimmed])
             embedding = vectors[0] if vectors else None
         entry = MemoryEntry(
-            id=_new_id(),
+            id=str(uuid.uuid4()),
             role=role,
             content=trimmed,
             embedding=embedding,
-            created_at=_utc_now(),
+            created_at=utc_now(),
             metadata=metadata or {},
         )
         self.store.add_memory_entry(entry)
@@ -80,13 +82,3 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _new_id() -> str:
-    import uuid
-
-    return str(uuid.uuid4())
