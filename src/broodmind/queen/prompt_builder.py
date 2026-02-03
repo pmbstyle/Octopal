@@ -79,7 +79,6 @@ def build_bootstrap_context_prompt(store: "Store", chat_id: int) -> BootstrapCon
     required_files = [
         workspace / "AGENTS.md",
         workspace / "USER.md",
-        workspace / "skills" / "registry.json",
     ]
     optional_files = [workspace / "HEARTBEAT.md", workspace / "MEMORY.md"]
     file_entries: list[tuple[str, str]] = []
