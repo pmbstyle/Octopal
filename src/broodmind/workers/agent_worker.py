@@ -213,7 +213,8 @@ async def _execute_tool(tool_name: str, tool_input: dict, base_dir: Path) -> Any
     try:
         # Tool handlers expect (args, ctx) where ctx is a dict
         # Filesystem tools need base_dir in context, others don't
-        ctx = {"base_dir": str(base_dir)}
+        # worker instance is needed for intent requests
+        ctx = {"base_dir": str(base_dir), "worker": worker}
 
         # Check if handler is async or sync
         import asyncio

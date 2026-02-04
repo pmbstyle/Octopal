@@ -54,6 +54,9 @@ class LiteLLMProvider:
         # Configure litellm at module level
         import litellm
 
+        # Suppress LiteLLM's verbose logging including "Provider List" messages
+        litellm.set_verbose = False
+
         if settings.litellm_num_retries > 0:
             litellm.num_retries = settings.litellm_num_retries
 

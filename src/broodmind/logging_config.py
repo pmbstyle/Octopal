@@ -97,7 +97,13 @@ def configure_logging(log_level: str, log_dir: Path, debug_prompts: bool) -> Non
     # Suppress verbose logging from other libraries by default.
     # They will still be captured and processed by our handlers if their level is WARNING or higher.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # Suppress LiteLLM's verbose INFO logs including "Provider List" messages
     logging.getLogger("litellm").setLevel(logging.WARNING)
+    logging.getLogger("litellm.utils").setLevel(logging.WARNING)
+    # Also suppress any LiteLLM sub-loggers that might be created
+    for name in logging.root.manager.loggerDict:
+        if name.startswith("litellm"):
+            logging.getLogger(name).setLevel(logging.WARNING)
 
     # Special handling for our own debug flags
     if not debug_prompts:

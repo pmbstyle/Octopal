@@ -190,6 +190,15 @@ class WorkerRuntime:
         )
         return True
 
+    async def _write_to_worker(self, process: asyncio.subprocess.Process, payload: dict[str, Any]) -> None:
+        """Write a JSON message to the worker's stdin."""
+        if process.stdin is None:
+            logger.error("Worker process has no stdin")
+            return
+        line = json.dumps(payload) + "\n"
+        process.stdin.write(line.encode("utf-8"))
+        await process.stdin.drain()
+
     async def _read_loop(
         self,
         spec: WorkerSpec,
@@ -218,6 +227,50 @@ class WorkerRuntime:
             if msg_type == "log":
                 logger.debug("Worker %s: %s", spec.id, payload.get("message"))
                 return None
+            if msg_type == "intent_request":
+                from broodmind.intents.types import IntentRequest
+                from broodmind.policy.permits import PermitRecord
+
+                try:
+                    req_data = payload.get("intent")
+                    request = IntentRequest.model_validate(req_data)
+                    
+                    # Check if approval is needed
+                    # Note: For now, we only support auto-approved intents in this runtime loop
+                    approval_req = self.policy.check_intent(request.intent)
+                    
+                    if approval_req.requires_approval:
+                         # TODO: Implement user approval flow via Queen
+                        response = {
+                            "type": "permit_denied",
+                            "reason": f"Intent requires approval (not implemented): {approval_req.reason}",
+                        }
+                    else:
+                        # Auto-approve
+                        permit = self.policy.issue_permit(request.intent, spec.id)
+                        # Save permit to store (for audit/verification)
+                        self.store.create_permit(
+                            PermitRecord(
+                                id=permit.id,
+                                intent_id="auto-approved", # No intent record for now
+                                intent_type=request.type,
+                                worker_id=spec.id,
+                                payload_hash=permit.payload_hash,
+                                expires_at=permit.expires_at,
+                                created_at=utc_now(),
+                            )
+                        )
+                        response = {"type": "permit", "permit": permit.model_dump()}
+
+                    # Send response back to worker
+                    await self._write_to_worker(process, response)
+
+                except Exception as exc:
+                    logger.exception("Failed to process intent request")
+                    error_resp = {"type": "permit_denied", "reason": f"Internal error: {exc}"}
+                    await self._write_to_worker(process, error_resp)
+                return None
+
             if msg_type == "result":
                 result = WorkerResult.model_validate(payload.get("result", {}))
                 await asyncio.to_thread(self.store.update_worker_status, spec.id, "completed")
