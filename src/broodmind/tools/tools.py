@@ -180,14 +180,31 @@ def get_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="exec_run",
-            description="Run a shell command in the workspace and return stdout/stderr.",
+            description="Run a shell command in the workspace. Supports blocking execution (default) or background processes.",
             parameters={
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "Shell command to execute."},
                     "timeout_seconds": {
                         "type": "integer",
-                        "description": "Timeout in seconds.",
+                        "description": "Timeout in seconds for blocking calls.",
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "If true, run in background and return session_id.",
+                    },
+                    "action": {
+                        "type": "string",
+                        "description": "Action: 'start' (default), 'poll', 'kill', 'write', 'read'.",
+                        "enum": ["start", "poll", "kill", "write", "read"],
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "ID of background session (required for poll/kill/write/read).",
+                    },
+                    "input_data": {
+                        "type": "string",
+                        "description": "Input text to write to stdin (for 'write' action).",
                     },
                 },
                 "required": ["command"],
