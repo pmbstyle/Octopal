@@ -17,17 +17,31 @@ _LOG_MAX_CHARS = 400  # Reduced from 2000
 
 
 class LiteLLMProvider:
-    """LiteLLM-based inference provider with automatic retries and fallbacks."""
+    """LiteLLM-based inference provider with automatic retries and fallbacks.
+    Supports both OpenRouter and z.ai (custom OpenAI-compatible endpoints).
+    """
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        # Construct model name for custom OpenAI-compatible endpoint
-        # Format: openai/{model} for custom base URL
-        self._model = f"openai/{settings.zai_model}"
-        # LiteLLM automatically appends /chat/completions for openai/ model format
-        # So we only use the base URL here, not including the chat path
-        self._api_base = settings.zai_base_url.rstrip("/")
-        self._api_key = settings.zai_api_key
+
+        # Auto-detect which provider to use based on settings
+        # Priority: 1) llm_provider setting, 2) API key presence
+        use_openrouter = settings.llm_provider == "openrouter" or (
+            settings.openrouter_api_key and not settings.zai_api_key
+        )
+
+        if use_openrouter:
+            # Use OpenRouter via LiteLLM
+            self._model = f"openrouter/{settings.openrouter_model}"
+            self._api_base = settings.openrouter_base_url.rstrip("/")
+            self._api_key = settings.openrouter_api_key
+            logger.info("LiteLLM configured for OpenRouter: model=%s", self._model)
+        else:
+            # Use z.ai (custom OpenAI-compatible endpoint)
+            self._model = f"openai/{settings.zai_model}"
+            self._api_base = settings.zai_base_url.rstrip("/")
+            self._api_key = settings.zai_api_key
+            logger.info("LiteLLM configured for z.ai: model=%s", self._model)
 
         # Parse fallbacks from JSON string if provided
         self._fallbacks: list[dict[str, Any]] | None = None
@@ -39,10 +53,10 @@ class LiteLLMProvider:
 
         # Configure litellm at module level
         import litellm
-        
+
         if settings.litellm_num_retries > 0:
             litellm.num_retries = settings.litellm_num_retries
-            
+
         if settings.litellm_drop_params:
             litellm.drop_params = settings.litellm_drop_params
 
@@ -53,7 +67,7 @@ class LiteLLMProvider:
     async def complete(self, messages: list[Message | dict], **kwargs: object) -> str:
         """Complete a chat request without tools."""
         if not self._api_key:
-            raise RuntimeError("ZAI_API_KEY is not set")
+            raise RuntimeError("API key is not configured. Set OPENROUTER_API_KEY or ZAI_API_KEY.")
 
         serialized_messages = [_serialize_message(m) for m in messages]
         payload_str = json.dumps({"messages": serialized_messages}, ensure_ascii=False)
@@ -95,7 +109,7 @@ class LiteLLMProvider:
     ) -> dict:
         """Complete a chat request with tool/function calling."""
         if not self._api_key:
-            raise RuntimeError("ZAI_API_KEY is not set")
+            raise RuntimeError("API key is not configured. Set OPENROUTER_API_KEY or ZAI_API_KEY.")
 
         serialized_messages = [_serialize_message(m) for m in messages]
         payload_str = json.dumps(

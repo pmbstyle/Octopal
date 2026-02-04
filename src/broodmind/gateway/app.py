@@ -8,7 +8,6 @@ from broodmind.memory.service import MemoryService
 from broodmind.policy.engine import PolicyEngine
 from broodmind.providers.openai_embeddings import OpenAIEmbeddingsProvider
 from broodmind.providers.litellm_provider import LiteLLMProvider
-from broodmind.providers.openrouter_provider import OpenRouterProvider
 from broodmind.store.sqlite import SQLiteStore
 from broodmind.workers.launcher_factory import build_launcher
 from broodmind.workers.runtime import WorkerRuntime
@@ -31,13 +30,8 @@ def build_app(settings: Settings) -> FastAPI:
         launcher=launcher,
     )
 
-    # Select LLM provider based on settings
-    if settings.llm_provider == "openrouter":
-        if not settings.openrouter_api_key:
-            raise RuntimeError("OPENROUTER_API_KEY is required when using openrouter provider")
-        provider = OpenRouterProvider(settings)
-    else:  # Default to litellm
-        provider = LiteLLMProvider(settings)
+    # Use unified LiteLLM provider (supports both OpenRouter and z.ai)
+    provider = LiteLLMProvider(settings)
 
     embeddings = None
     if settings.openai_api_key:

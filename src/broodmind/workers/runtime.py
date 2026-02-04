@@ -39,7 +39,9 @@ class WorkerRuntime:
     async def run_task(self, task_request: TaskRequest) -> WorkerResult:
         """Run a task with the specified worker template."""
         # Get worker template
-        template = self.store.get_worker_template(task_request.worker_id)
+        template = await asyncio.to_thread(
+            self.store.get_worker_template, task_request.worker_id
+        )
         if not template:
             return WorkerResult(summary=f"Worker template not found: {task_request.worker_id}")
 
@@ -85,15 +87,18 @@ class WorkerRuntime:
 
         # Create worker directory
         worker_dir = self._worker_dir(spec.id)
-        worker_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(worker_dir.mkdir, parents=True, exist_ok=True)
 
         # Write spec file
         spec_path = worker_dir / "spec.json"
-        spec_path.write_text(json.dumps(spec.model_dump(), indent=2), encoding="utf-8")
+        await asyncio.to_thread(
+            spec_path.write_text, json.dumps(spec.model_dump(), indent=2), encoding="utf-8"
+        )
 
         # Create worker record
         now = utc_now()
-        self.store.create_worker(
+        await asyncio.to_thread(
+            self.store.create_worker,
             WorkerRecord(
                 id=spec.id,
                 status="started",
@@ -101,9 +106,9 @@ class WorkerRuntime:
                 granted_caps=spec.granted_capabilities,
                 created_at=now,
                 updated_at=now,
-            )
+            ),
         )
-        self._append_audit(
+        await self._append_audit(
             "worker_spawned",
             correlation_id=spec.id,
             data={"task": spec.task[:200]},
@@ -123,8 +128,8 @@ class WorkerRuntime:
         )
         logger.info("WorkerRuntime process started: id=%s pid=%s", spec.id, process.pid)
         self._running[spec.id] = process
-        self.store.update_worker_status(spec.id, "running")
-        self._append_audit("worker_started", correlation_id=spec.id)
+        await asyncio.to_thread(self.store.update_worker_status, spec.id, "running")
+        await self._append_audit("worker_started", correlation_id=spec.id)
 
         try:
             result = await asyncio.wait_for(
@@ -132,7 +137,7 @@ class WorkerRuntime:
                 timeout=spec.timeout_seconds,
             )
             logger.info("WorkerRuntime result: id=%s summary_len=%s", spec.id, len(result.summary))
-            self._append_audit(
+            await self._append_audit(
                 "worker_result",
                 correlation_id=spec.id,
                 data={"summary": result.summary},
@@ -141,9 +146,9 @@ class WorkerRuntime:
         except asyncio.TimeoutError:
             logger.error("Worker %s timed out", spec.id)
             process.kill()
-            self.store.update_worker_status(spec.id, "failed")
-            self.store.update_worker_result(spec.id, error="Worker timed out")
-            self._append_audit(
+            await asyncio.to_thread(self.store.update_worker_status, spec.id, "failed")
+            await asyncio.to_thread(self.store.update_worker_result, spec.id, error="Worker timed out")
+            await self._append_audit(
                 "worker_failed",
                 level="error",
                 correlation_id=spec.id,
@@ -151,9 +156,11 @@ class WorkerRuntime:
             )
             raise RuntimeError("Worker timed out")
         except Exception as exc:
-            self.store.update_worker_status(spec.id, "failed")
-            self.store.update_worker_result(spec.id, error=f"Worker failed: {exc}")
-            self._append_audit(
+            await asyncio.to_thread(self.store.update_worker_status, spec.id, "failed")
+            await asyncio.to_thread(
+                self.store.update_worker_result, spec.id, error=f"Worker failed: {exc}"
+            )
+            await self._append_audit(
                 "worker_failed",
                 level="error",
                 correlation_id=spec.id,
@@ -163,7 +170,7 @@ class WorkerRuntime:
         finally:
             self._running.pop(spec.id, None)
             if spec.lifecycle == "ephemeral":
-                self._cleanup_worker_dir(worker_dir)
+                await self._cleanup_worker_dir(worker_dir)
 
     def stop_worker(self, worker_id: str) -> bool:
         """Stop a running worker."""
@@ -194,7 +201,7 @@ class WorkerRuntime:
         assert process.stdout is not None
         buffer = b""
 
-        def _handle_line(line: bytes) -> WorkerResult | None:
+        async def _handle_line(line: bytes) -> WorkerResult | None:
             nonlocal invalid_lines
             payload = _safe_parse_json(line)
             if payload is None:
@@ -213,8 +220,9 @@ class WorkerRuntime:
                 return None
             if msg_type == "result":
                 result = WorkerResult.model_validate(payload.get("result", {}))
-                self.store.update_worker_status(spec.id, "completed")
-                self.store.update_worker_result(
+                await asyncio.to_thread(self.store.update_worker_status, spec.id, "completed")
+                await asyncio.to_thread(
+                    self.store.update_worker_result,
                     spec.id,
                     summary=result.summary,
                     output=result.output,
@@ -230,19 +238,21 @@ class WorkerRuntime:
             buffer += chunk
             while b"\n" in buffer:
                 line, buffer = buffer.split(b"\n", 1)
-                result = _handle_line(line)
+                result = await _handle_line(line)
                 if result is not None:
                     return result
                 if invalid_lines >= max_invalid_lines:
                     buffer = b""
                     break
         if buffer.strip():
-            result = _handle_line(buffer)
+            result = await _handle_line(buffer)
             if result is not None:
                 return result
 
-        self.store.update_worker_status(spec.id, "failed")
-        self.store.update_worker_result(spec.id, error="Worker exited without result")
+        await asyncio.to_thread(self.store.update_worker_status, spec.id, "failed")
+        await asyncio.to_thread(
+            self.store.update_worker_result, spec.id, error="Worker exited without result"
+        )
         raise RuntimeError("Worker exited without result")
 
     def _build_capabilities(self, permissions: list[str]) -> list[Any]:
@@ -254,7 +264,7 @@ class WorkerRuntime:
             caps.append(Capability(type=perm, scope="worker"))
         return caps
 
-    def _append_audit(
+    async def _append_audit(
         self,
         event_type: str,
         *,
@@ -270,15 +280,15 @@ class WorkerRuntime:
             event_type=event_type,
             data=data or {},
         )
-        self.store.append_audit(event)
+        await asyncio.to_thread(self.store.append_audit, event)
 
     def _worker_dir(self, worker_id: str) -> Path:
         return self.workspace_dir / "workers" / worker_id
 
-    def _cleanup_worker_dir(self, worker_dir: Path) -> None:
+    async def _cleanup_worker_dir(self, worker_dir: Path) -> None:
         try:
-            if worker_dir.exists():
-                shutil.rmtree(worker_dir)
+            if await asyncio.to_thread(worker_dir.exists):
+                await asyncio.to_thread(shutil.rmtree, worker_dir)
                 logger.info("WorkerRuntime cleaned up worker dir: %s", worker_dir)
         except Exception as exc:
             logger.warning("WorkerRuntime cleanup failed: %s", exc)

@@ -12,12 +12,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
-from litellm import acompletion
-
+from broodmind.config.settings import load_settings
+from broodmind.providers.litellm_provider import LiteLLMProvider
 from broodmind.tools.tools import get_tools
 from broodmind.workers.contracts import WorkerResult, WorkerSpec
 
@@ -56,6 +55,10 @@ async def run_agent_worker(spec_path: str) -> None:
 async def execute_agent_task(worker: Worker, base_dir: Path) -> WorkerResult:
     """Execute the agent's task with tools."""
     spec = worker.spec
+
+    # Initialize LLM provider from settings
+    settings = load_settings()
+    provider = LiteLLMProvider(settings)
 
     # Build system prompt with tool descriptions
     available_tools = get_tools()
@@ -99,7 +102,7 @@ If you need clarification from the Queen, include:
     for _iteration in range(spec.max_thinking_steps):
         thinking_steps += 1
 
-        response = await _call_llm(messages, filtered_tools)
+        response = await _call_llm(provider, messages, filtered_tools)
         await worker.log("debug", f"LLM response: {response}")
 
         # Handle OpenAI-style tool_calls
@@ -168,13 +171,11 @@ If you need clarification from the Queen, include:
 
 
 async def _call_llm(
-    messages: list[dict], tools: list
+    provider: LiteLLMProvider,
+    messages: list[dict],
+    tools: list,
 ) -> dict:
-    """Call LLM with tools."""
-    base_url = os.getenv("ZAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4").rstrip("/")
-    model_name = os.getenv("ZAI_MODEL", "glm-4.7")
-    model = f"openai/{model_name}"
-
+    """Call LLM with tools using the centralized provider."""
     # Build OpenAI-style tools format
     openai_tools = [
         {
@@ -188,19 +189,15 @@ async def _call_llm(
         for t in tools
     ]
 
-    response = await acompletion(
-        model=model,
-        api_base=base_url,
-        api_key=os.getenv("ZAI_API_KEY", ""),
+    # Use provider's complete_with_tools method
+    response = await provider.complete_with_tools(
         messages=messages,
-        tools=openai_tools if openai_tools else None,
-        timeout=120,
+        tools=openai_tools if openai_tools else [],
+        tool_choice="auto",
     )
 
-    # LiteLLM returns ModelResponse with choices[0].message structure
-    # Extract the message dict for easier access
-    dumped = response.model_dump()
-    return dumped.get("choices", [{}])[0].get("message", {})
+    # Return in expected format: {"content": "...", "tool_calls": [...]}
+    return response
 
 
 async def _execute_tool(tool_name: str, tool_input: dict, base_dir: Path) -> Any:

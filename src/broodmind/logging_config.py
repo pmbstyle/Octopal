@@ -103,7 +103,6 @@ def configure_logging(log_level: str, log_dir: Path, debug_prompts: bool) -> Non
     if not debug_prompts:
         # If debug_prompts is off, ensure provider logs are not at DEBUG
         logging.getLogger("broodmind.providers.litellm_provider").setLevel(logging.INFO)
-        logging.getLogger("broodmind.providers.openrouter_provider").setLevel(logging.INFO)
     
     logger = structlog.get_logger("logging_config")
     logger.info(

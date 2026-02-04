@@ -120,7 +120,7 @@ class Queen:
         while True:
             await asyncio.sleep(interval_seconds)
             try:
-                deleted = self.store.cleanup_old_workers()
+                deleted = await asyncio.to_thread(self.store.cleanup_old_workers)
                 if deleted > 0:
                     logger.info("Periodic cleanup complete", deleted_workers=deleted)
             except Exception:
@@ -161,7 +161,7 @@ class Queen:
             logger.warning("No ALLOWED_TELEGRAM_CHAT_IDS configured; queen will not send ready message.")
             self.internal_send = None
         try:
-            bootstrap_context = build_bootstrap_context_prompt(self.store, system_chat_id)
+            bootstrap_context = await build_bootstrap_context_prompt(self.store, system_chat_id)
             result = await _route_or_reply(
                 self, self.provider, self.memory, wake_up_prompt, system_chat_id, bootstrap_context.content
             )
@@ -187,7 +187,7 @@ class Queen:
         logger.info("Handling message", chat_id=chat_id)
         logger.debug("Received message text", text_len=len(text), text=text[:500])
         await self.memory.add_message("user", text, {"chat_id": chat_id})
-        bootstrap_context = build_bootstrap_context_prompt(self.store, chat_id)
+        bootstrap_context = await build_bootstrap_context_prompt(self.store, chat_id)
         if bootstrap_context.files:
             files_summary = ", ".join([f"{name} ({size} chars)" for name, size in bootstrap_context.files])
             logger.debug("Queen bootstrap files", files=files_summary, hash=bootstrap_context.hash)
@@ -197,7 +197,9 @@ class Queen:
         logger.info("Queen response ready")
         await self.memory.add_message("assistant", reply_text, {"chat_id": chat_id})
         if bootstrap_context.hash:
-            self.store.set_chat_bootstrap_hash(chat_id, bootstrap_context.hash, utc_now())
+            await asyncio.to_thread(
+                self.store.set_chat_bootstrap_hash, chat_id, bootstrap_context.hash, utc_now()
+            )
         return QueenReply(immediate=_normalize_plain_text(reply_text), followup=None)
 
     def _start_worker_async(
@@ -320,7 +322,7 @@ async def _handle_queen_tool_call(call: dict, tools: list[ToolSpec], ctx: dict[s
             if spec.is_async:
                 result = await spec.handler(args, ctx)
             else:
-                result = spec.handler(args, ctx)
+                result = await asyncio.to_thread(spec.handler, args, ctx)
             logger.debug("Queen tool result", tool_name=name, result_preview=f"{str(result)[:200]}...")
             return result
     return f"Unknown tool: {name}"

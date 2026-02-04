@@ -16,16 +16,19 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
 
     # LLM Provider Settings
-    llm_provider: str = Field("litellm", alias="BROODMIND_LLM_PROVIDER")  # litellm or openrouter
+    # litellm: Uses LiteLLM which supports both OpenRouter and z.ai
+    # - Set OPENROUTER_API_KEY to use OpenRouter (or set BROODMIND_LLM_PROVIDER=openrouter)
+    # - Set ZAI_API_KEY to use z.ai
+    llm_provider: str = Field("litellm", alias="BROODMIND_LLM_PROVIDER")  # litellm (default, auto-detects) or openrouter
 
-    # LiteLLM Settings
+    # LiteLLM Settings (unified provider for both OpenRouter and z.ai)
     litellm_num_retries: int = Field(3, alias="LITELLM_NUM_RETRIES")
     litellm_timeout: float = Field(120.0, alias="LITELLM_TIMEOUT")
     litellm_fallbacks: str | None = Field(default=None, alias="LITELLM_FALLBACKS")
     litellm_drop_params: bool = Field(True, alias="LITELLM_DROP_PARAMS")
     litellm_caching: bool = Field(False, alias="LITELLM_CACHING")
 
-    # OpenRouter Settings
+    # OpenRouter Settings (used via LiteLLM with openrouter/ model prefix)
     openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
     openrouter_base_url: str = Field("https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL")
     openrouter_model: str = Field("anthropic/claude-sonnet-4", alias="OPENROUTER_MODEL")

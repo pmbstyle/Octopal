@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,7 +44,7 @@ class MemoryService:
             created_at=utc_now(),
             metadata=metadata or {},
         )
-        self.store.add_memory_entry(entry)
+        await asyncio.to_thread(self.store.add_memory_entry, entry)
 
     async def get_context(self, query: str) -> list[str]:
         if self.embeddings is None:
@@ -55,7 +56,7 @@ class MemoryService:
         if not vectors:
             return []
         query_embedding = vectors[0]
-        candidates = self.store.list_memory_entries(limit=200)
+        candidates = await asyncio.to_thread(self.store.list_memory_entries, limit=200)
         scored: list[tuple[float, MemoryEntry]] = []
         for entry in candidates:
             if not entry.embedding:
@@ -67,8 +68,10 @@ class MemoryService:
         top = scored[: self.top_k]
         return [f"{entry.role}: {entry.content}" for _, entry in top]
 
-    def get_recent_history(self, chat_id: int, limit: int = 6) -> list[tuple[str, str]]:
-        entries = self.store.list_memory_entries_by_chat(chat_id, limit=limit)
+    async def get_recent_history(self, chat_id: int, limit: int = 6) -> list[tuple[str, str]]:
+        entries = await asyncio.to_thread(
+            self.store.list_memory_entries_by_chat, chat_id, limit=limit
+        )
         entries.reverse()
         return [(entry.role, entry.content) for entry in entries]
 
