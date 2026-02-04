@@ -62,14 +62,28 @@ def _enqueue_followup(chat_id: int, coro) -> asyncio.Future[str]:
 
 
 async def _internal_worker(queen: "Queen", chat_id: int, queue: asyncio.Queue) -> None:
+    """Process completed worker results.
+
+    Worker results are logged and stored in memory but NOT automatically sent to the user.
+    The queen decides what to communicate based on worker results.
+    """
     while True:
         task_text, result = await queue.get()
         try:
-            response = await _compose_user_reply(queen.provider, queen.memory, task_text, chat_id, result)
-            if queen.internal_send and response.strip():
-                await queen.internal_send(chat_id, response)
-            else:
-                logger.debug("Internal send skipped (no sender or empty response)")
+            # Add worker result to memory for context, but don't auto-send
+            if result.summary:
+                await queen.memory.add_message(
+                    "system",
+                    f"Worker completed: {result.summary}",
+                    {"worker_result": True, "task": task_text}
+                )
+            if result.error:
+                await queen.memory.add_message(
+                    "system",
+                    f"Worker error: {result.error}",
+                    {"worker_result": True, "task": task_text}
+                )
+            logger.debug("Worker result processed (not auto-sent)", summary_len=len(result.summary or ""))
         except Exception:
             logger.exception("Failed to process internal worker result")
         finally:
@@ -96,6 +110,11 @@ class Queen:
     memory: MemoryService
     internal_send: callable | None = None
     _cleanup_task: asyncio.Task | None = None
+    _recent_tasks: set[str] = None  # Track tasks in current conversation to detect duplicates
+
+    def __post_init__(self):
+        if self._recent_tasks is None:
+            self._recent_tasks = set()
 
     async def _periodic_cleanup(self, interval_seconds: int):
         while True:
@@ -163,6 +182,8 @@ class Queen:
         chat_id: int,
         approval_requester=None,
     ) -> "QueenReply":
+        # Clear recent tasks at the start of each new user message
+        self._recent_tasks.clear()
         logger.info("Handling message", chat_id=chat_id)
         logger.debug("Received message text", text_len=len(text), text=text[:500])
         await self.memory.add_message("user", text, {"chat_id": chat_id})
@@ -189,6 +210,15 @@ class Queen:
         timeout_seconds: int | None,
     ) -> str:
         from broodmind.logging_config import correlation_id_var
+
+        # Create a task signature for duplicate detection
+        task_signature = f"{worker_id}:{task[:100]}"  # First 100 chars is enough to detect duplicates
+        if task_signature in self._recent_tasks:
+            logger.warning("Duplicate worker task detected, skipping", worker_id=worker_id, task_prefix=task[:50])
+            # Return a fake run_id but don't actually start the worker
+            return f"skipped-duplicate-{uuid4().hex[:8]}"
+
+        self._recent_tasks.add(task_signature)
         task_request = TaskRequest(
             worker_id=worker_id,
             task=task,
@@ -258,15 +288,6 @@ async def _route_or_reply(queen: Queen, provider: InferenceProvider, memory: Mem
     logger.debug("Queen output", output=response_raw)
     return _normalize_plain_text(response_raw)
 
-async def _compose_user_reply(provider: InferenceProvider, memory: MemoryService, user_text: str, chat_id: int, result: WorkerResult) -> str:
-    # This function would also be refactored to use the prompt_builder
-    # For now, keeping it as is to limit the scope of the change.
-    worker_payload = json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
-    messages = [Message(role="system", content="You are a helpful assistant.")] # Placeholder
-    messages.append(Message(role="system", content=f"<worker_result>\n{worker_payload}\n</worker_result>"))
-    messages.append(Message(role="user", content=user_text))
-    response = await provider.complete(messages)
-    return _normalize_plain_text(response)
 
 
 def _log_system_prompt(messages: list, label: str) -> None:
