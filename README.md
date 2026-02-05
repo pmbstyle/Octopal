@@ -143,6 +143,8 @@ broodmind memory cleanup --dry-run   # Preview what would be deleted
 
 # Start services
 broodmind start                      # Start Telegram bot
+broodmind stop                       # Stop running BroodMind process
+broodmind restart                    # Restart BroodMind Queen
 broodmind gateway                    # Start gateway server
 ```
 

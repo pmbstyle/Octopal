@@ -56,6 +56,8 @@ class LiteLLMProvider:
 
         # Suppress LiteLLM's verbose logging including "Provider List" messages
         litellm.set_verbose = False
+        litellm.suppress_debug_info = True
+        litellm.turn_off_message_logging = True
 
         if settings.litellm_num_retries > 0:
             litellm.num_retries = settings.litellm_num_retries

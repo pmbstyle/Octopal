@@ -69,7 +69,7 @@ def configure_logging(log_level: str, log_dir: Path, debug_prompts: bool) -> Non
     console_formatter = structlog.stdlib.ProcessorFormatter(
         # The foreign_pre_chain is for logs coming from standard logging.
         foreign_pre_chain=shared_processors,
-        processor=structlog.dev.ConsoleRenderer(colors=True),
+        processor=structlog.dev.ConsoleRenderer(colors=True, pad_level=False),
     )
     console_handler.setFormatter(console_formatter)
 
@@ -97,12 +97,23 @@ def configure_logging(log_level: str, log_dir: Path, debug_prompts: bool) -> Non
     # Suppress verbose logging from other libraries by default.
     # They will still be captured and processed by our handlers if their level is WARNING or higher.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    
     # Suppress LiteLLM's verbose INFO logs including "Provider List" messages
-    logging.getLogger("litellm").setLevel(logging.WARNING)
-    logging.getLogger("litellm.utils").setLevel(logging.WARNING)
+    # We target both lowercase and mixed-case names as used internally by LiteLLM
+    for name in ["litellm", "LiteLLM", "LiteLLM Router", "LiteLLM Proxy", "litellm.utils"]:
+        logging.getLogger(name).setLevel(logging.WARNING)
+        
+    try:
+        import litellm
+        litellm.set_verbose = False
+        litellm.suppress_debug_info = True
+        litellm.turn_off_message_logging = True
+    except ImportError:
+        pass
+
     # Also suppress any LiteLLM sub-loggers that might be created
     for name in logging.root.manager.loggerDict:
-        if name.startswith("litellm"):
+        if name.lower().startswith("litellm"):
             logging.getLogger(name).setLevel(logging.WARNING)
 
     # Special handling for our own debug flags

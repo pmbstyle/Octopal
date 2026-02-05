@@ -148,16 +148,6 @@ class SQLiteStore(Store):
             # It's a complex operation, so we log if it fails.
             logging.getLogger(__name__).warning("Memory schema migration failed (this may be ok if table was empty): %s", e)
 
-        # Drop deprecated worker_templates table (now using filesystem)
-        try:
-            self._conn.execute("DROP TABLE IF EXISTS worker_templates")
-            self._conn.commit()
-            logger = logging.getLogger(__name__)
-            logger.info("Dropped deprecated worker_templates table (workers now loaded from filesystem)")
-        except Exception as e:
-            logging.getLogger(__name__).warning("Failed to drop worker_templates table: %s", e)
-
-
         # Add worker result fields
         try:
             self._conn.execute("ALTER TABLE workers ADD COLUMN summary TEXT")

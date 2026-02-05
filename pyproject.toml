@@ -1,7 +1,7 @@
 [project]
 name = "broodmind"
-version = "0.1.0"
-description = "BroodMind Queen + Workers agent platform"
+version = "0.2.0"
+description = "BroodMind agent platform"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
@@ -19,6 +19,7 @@ dependencies = [
   "jsonschema>=4.22.0",
   "structlog>=24.1.0",
   "colorama>=0.4.6",
+  "rich>=13.7.0",
 ]
 
 [project.optional-dependencies]
