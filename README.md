@@ -35,7 +35,19 @@ cd BroodMind
 
 ### 2. Install dependencies
 
-Use `uv` (recommended):
+Use the bootstrap script (recommended):
+
+```bash
+# macOS/Linux
+bash scripts/bootstrap.sh
+```
+
+```powershell
+# Windows PowerShell
+powershell -ExecutionPolicy ByPass -File .\scripts\bootstrap.ps1
+```
+
+Or run `uv` manually:
 
 ```bash
 uv sync
@@ -99,8 +111,8 @@ broodmind start --foreground
 ### 5. Verify status/logs
 
 ```bash
-broodmind status
-broodmind logs --follow
+uv run broodmind status
+uv run broodmind logs --follow
 ```
 
 ## Runtime Model
@@ -131,31 +143,31 @@ Examples:
 
 ```bash
 # Setup
-broodmind configure
+uv run broodmind configure
 
 # Lifecycle
-broodmind start
-broodmind start --foreground
-broodmind stop
-broodmind restart
-broodmind status
+uv run broodmind start
+uv run broodmind start --foreground
+uv run broodmind stop
+uv run broodmind restart
+uv run broodmind status
 
 # Logs / dashboard
-broodmind logs --follow
-broodmind dashboard
-broodmind dashboard --watch
+uv run broodmind logs --follow
+uv run broodmind dashboard
+uv run broodmind dashboard --watch
 
 # Gateway
-broodmind gateway
+uv run broodmind gateway
 
 # Worker templates
-broodmind sync-worker-templates
-broodmind sync-worker-templates --overwrite
+uv run broodmind sync-worker-templates
+uv run broodmind sync-worker-templates --overwrite
 
 # Memory
-broodmind memory stats
-broodmind memory cleanup --dry-run
-broodmind memory cleanup --keep-days 30 --keep-count 1000
+uv run broodmind memory stats
+uv run broodmind memory cleanup --dry-run
+uv run broodmind memory cleanup --keep-days 30 --keep-count 1000
 ```
 
 ## Configuration
@@ -187,7 +199,7 @@ If you want workers to run in Docker containers:
 1. Build worker image:
 
 ```bash
-broodmind build-worker-image --tag broodmind-worker:latest
+uv run broodmind build-worker-image --tag broodmind-worker:latest
 ```
 
 2. Set in config:
