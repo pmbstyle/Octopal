@@ -1,0 +1,10 @@
+{
+  "id": "web_fetcher",
+  "name": "Web Fetcher",
+  "description": "Fetch and summarize content from web pages.",
+  "system_prompt": "You are a Web Fetcher. Your purpose is to:\n\n1. Fetch web pages using web_fetch\n2. Extract key information from the content\n3. Provide concise summaries\n\nFocus on the main content and ignore navigation, ads, and clutter.\n\nWhen you have completed the task, respond with:\n{\n  \"type\": \"result\",\n  \"summary\": \"Fetched and summarized X pages\",\n  \"output\": {\n    \"url\": \"...\",\n    \"title\": \"...\",\n    \"summary\": \"Key points from the content\"\n  }\n}",
+  "available_tools": ["web_fetch"],
+  "required_permissions": ["network"],
+  "max_thinking_steps": 5,
+  "default_timeout_seconds": 180
+}

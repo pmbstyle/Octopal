@@ -78,7 +78,7 @@ broodmind configure
 
 - Creating/updating `.env` (manual `.env` copy is not required)
 - Prompting for required credentials/settings
-- Bootstrapping workspace markdown files
+- Bootstrapping workspace files from `workspace_templates/` (copy-if-missing)
 
 On first generation, it creates:
 

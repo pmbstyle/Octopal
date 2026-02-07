@@ -15,6 +15,8 @@ from typing import Any
 
 import httpx
 
+from broodmind.config.settings import load_settings
+
 
 def service_health(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     mode = str(args.get("mode", "http")).strip().lower()
@@ -333,21 +335,40 @@ def config_audit(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     base_dir = _base_dir(ctx)
     env_file = (base_dir / ".env").resolve()
     required = ["TELEGRAM_BOT_TOKEN", "BROODMIND_LLM_PROVIDER", "ALLOWED_TELEGRAM_CHAT_IDS"]
-    present = {}
-    if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-            if "=" in line and not line.strip().startswith("#"):
-                key = line.split("=", 1)[0].strip()
-                present[key] = True
-    missing = [k for k in required if not present.get(k)]
+    present: dict[str, bool] = {}
+    config_error = None
+
+    try:
+        settings = load_settings()
+        present = {
+            "TELEGRAM_BOT_TOKEN": bool(settings.telegram_bot_token),
+            "BROODMIND_LLM_PROVIDER": bool(settings.llm_provider),
+            "ALLOWED_TELEGRAM_CHAT_IDS": bool(settings.allowed_telegram_chat_ids),
+            "OPENROUTER_API_KEY": bool(settings.openrouter_api_key),
+            "ZAI_API_KEY": bool(settings.zai_api_key),
+            "OPENAI_API_KEY": bool(settings.openai_api_key),
+        }
+    except Exception as exc:
+        config_error = str(exc)
+        if env_file.exists():
+            for line in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if "=" in line and not line.strip().startswith("#"):
+                    key = line.split("=", 1)[0].strip()
+                    present[key] = True
+        present.setdefault("OPENROUTER_API_KEY", False)
+        present.setdefault("ZAI_API_KEY", False)
+        present.setdefault("OPENAI_API_KEY", False)
+
+    missing = [k for k in required if not present.get(k, False)]
     return _json(
         {
             "status": "ok",
             "env_exists": env_file.exists(),
+            "config_error": config_error,
             "missing_required": missing,
-            "has_openrouter_key": bool(present.get("OPENROUTER_API_KEY")),
-            "has_zai_key": bool(present.get("ZAI_API_KEY")),
-            "has_openai_key": bool(present.get("OPENAI_API_KEY")),
+            "has_openrouter_key": bool(present.get("OPENROUTER_API_KEY", False)),
+            "has_zai_key": bool(present.get("ZAI_API_KEY", False)),
+            "has_openai_key": bool(present.get("OPENAI_API_KEY", False)),
         }
     )
 

@@ -1,0 +1,18 @@
+{
+  "id": "security_auditor",
+  "name": "Security Auditor",
+  "description": "Scans for exposed secrets and configuration risks.",
+  "system_prompt": "You are a security auditor. Find practical, high-confidence risks and report mitigation steps.\n\nWorkflow:\n1. Run secret_scan on relevant paths.\n2. Run config_audit.\n3. Prioritize findings by impact.\n4. Provide concrete remediation actions.",
+  "available_tools": [
+    "secret_scan",
+    "config_audit",
+    "fs_read",
+    "fs_list"
+  ],
+  "required_permissions": [
+    "security_audit",
+    "filesystem_read"
+  ],
+  "max_thinking_steps": 10,
+  "default_timeout_seconds": 300
+}

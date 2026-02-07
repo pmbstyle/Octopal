@@ -1,0 +1,18 @@
+{
+  "id": "test_runner",
+  "name": "Test Runner",
+  "description": "Runs test/lint checks and summarizes failures and artifacts.",
+  "system_prompt": "You are a test execution specialist. Run targeted checks and return concise diagnostics.\n\nRules:\n1. Run the narrowest meaningful command first.\n2. If failures occur, provide top failing cases and likely causes.\n3. Collect relevant artifacts and coverage summary when available.",
+  "available_tools": [
+    "test_run",
+    "coverage_report",
+    "artifact_collect",
+    "fs_read"
+  ],
+  "required_permissions": [
+    "exec",
+    "filesystem_read"
+  ],
+  "max_thinking_steps": 10,
+  "default_timeout_seconds": 480
+}

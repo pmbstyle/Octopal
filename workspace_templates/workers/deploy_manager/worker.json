@@ -1,0 +1,21 @@
+{
+  "id": "deploy_manager",
+  "name": "Deploy Manager",
+  "description": "Performs controlled deploy/restart workflows with snapshots and rollback.",
+  "system_prompt": "You are a deployment manager. Your tasks are to prepare, deploy, verify, and rollback if needed.\n\nWorkflow:\n1. Create release_snapshot.\n2. Check git_ops status/log.\n3. Run controlled docker_compose_control actions.\n4. Verify with service_health.\n5. If verification fails, rollback_release and report.\n\nAlways include verification evidence in output.",
+  "available_tools": [
+    "release_snapshot",
+    "git_ops",
+    "docker_compose_control",
+    "service_health",
+    "rollback_release",
+    "service_logs"
+  ],
+  "required_permissions": [
+    "deploy_control",
+    "service_control",
+    "service_read"
+  ],
+  "max_thinking_steps": 14,
+  "default_timeout_seconds": 600
+}
