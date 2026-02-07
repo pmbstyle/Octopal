@@ -1,324 +1,249 @@
 <p align="center"><img alt="logo" src="https://github.com/user-attachments/assets/75aca977-9475-471a-bfec-78822aa9fd98" /></p>
 
-
 # BroodMind
 
-A distributed AI agent orchestration platform built on a **Queen + Workers** architecture. The Queen coordinates multiple specialized workers to accomplish complex tasks through intelligent delegation, while maintaining context and memory across sessions.
+BroodMind is an AI orchestration platform built on a **Queen + Workers** architecture.
+The Queen handles conversation, planning, memory, and delegation. Workers execute specialized tasks with bounded tools.
 
-## Architecture
-
-### Core Components
-
-**Queen (Orchestrator)**
-- Interprets user intent and delegates to appropriate workers
-- Manages conversation context and memory retrieval
-- Handles tool usage: filesystem, worker management, status checking
-- Maintains bootstrap context from workspace files (AGENTS.md, USER.md)
-- Sends ready notifications on system initialization
-
-**Workers (Specialized Agents)**
-- Pre-defined agent templates with specific capabilities
-- Tool access: web search, web fetch, filesystem operations
-- Run in isolated Docker containers or same environment
-- Timeout-based execution with automatic cleanup
-- State tracking: pending, running, completed, failed
-
-**Tool System**
-- `web_search`: Brave Search API integration
-- `web_fetch`: HTTP content retrieval with HTML parsing
-- `fs_read/fs_write/fs_list/fs_move/fs_delete`: Workspace filesystem access
-- `exec_run`: Shell command execution in workspace
-- Permission-based access control (network, filesystem, exec)
-
-**Memory & Context**
-- Vector-based semantic memory with embeddings (OpenAI)
-- Conversation history per chat ID
-- Bootstrap context injection from workspace files
-- Automatic context retrieval for relevant queries
-- CLI commands for memory management and cleanup
-
-**LLM Providers**
-- **LiteLLM** (default): Supports 100+ providers through unified API
-- **OpenRouter**: Access to Claude, GPT-4, and other models via OpenRouter
-- Easy switching via `BROODMIND_LLM_PROVIDER` environment variable
-
-**Communication**
-- Telegram bot integration for user interaction
-- Admin chat notifications for system events
-- Message queuing with chunked responses
-- Typing indicators for better UX
-
-## Key Features
-
-- **Intelligent Delegation**: Queen automatically delegates tasks to workers when beneficial
-- **System Initialization**: Queen wakes up on every container restart, reads workspace files, and notifies ready users
-- **Tool-Based Architecture**: Workers use declarative tools instead of ad-hoc code
-- **Memory System**: Semantic search retrieves relevant context from past conversations
-- **Memory Management**: CLI commands for cleanup and statistics
-- **No Worker Spam**: Only Queen messages appear in Telegram, workers provide context only
-- **Duplicate Prevention**: Automatic detection of duplicate worker tasks
-- **Multi-Provider Support**: LiteLLM and OpenRouter with easy switching
-- **Isolated Execution**: Workers run in Docker containers with workspace mounts
-- **Permission Control**: Granular permissions for network, filesystem, and execution
-- **Multi-User Support**: Configure allowed Telegram chat IDs for access control
-
-## Quick Start
+## Quick Start (Local, Non-Docker)
 
 ### Prerequisites
 
-- Docker and Docker Compose
+- Python 3.12+
 - Telegram bot token (from [@BotFather](https://t.me/botfather))
-- LLM provider API key (LiteLLM-compatible, OpenRouter, or OpenAI)
-- Optional: Brave Search API key for web search
-- Optional: OpenAI API key for embeddings
+- At least one LLM API key:
+  - `ZAI_API_KEY` (default LiteLLM path), or
+  - `OPENROUTER_API_KEY` (if using OpenRouter)
 
-### Setup
+### 1. Clone
 
-1. **Clone and configure**
-   ```bash
-   git clone <repo-url>
-   cd BroodMind
-   cp .env.example .env
-   ```
+```bash
+git clone <repo-url>
+cd BroodMind
+```
 
-2. **Edit `.env` with your credentials**
-   ```bash
-   # Required
-   TELEGRAM_BOT_TOKEN=your_bot_token_here
+### 2. Install dependencies
 
-   # LLM Provider (choose one)
-   BROODMIND_LLM_PROVIDER=litellm  # Options: litellm, openrouter
+Use `uv` (recommended):
 
-   # For LiteLLM provider (default)
-   ZAI_API_KEY=your_provider_api_key
+```bash
+uv sync
+```
 
-   # For OpenRouter provider
-   OPENROUTER_API_KEY=your_openrouter_key
-   OPENROUTER_MODEL=anthropic/claude-sonnet-4  # Optional: custom model
+Alternative with `venv` + `pip`:
 
-   # Optional - for web search
-   BRAVE_API_KEY=your_brave_search_key
+```bash
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+source .venv/bin/activate
+pip install -e .
+```
 
-   # Optional - for semantic memory
-   OPENAI_API_KEY=your_openai_key
+### 3. Run interactive configuration
 
-   # Telegram users allowed to interact (comma-separated)
-   # Get your chat ID from @userinfobot on Telegram
-   ALLOWED_TELEGRAM_CHAT_IDS=123456789,987654321
-   ```
+```bash
+# If using uv
+uv run broodmind configure
 
-3. **Start the system**
-   ```bash
-   docker compose up -d --build
-   ```
+# If using venv/pip
+broodmind configure
+```
 
-4. **Check logs**
-   ```bash
-   docker logs broodmind-broodmind-1 -f
-   ```
+`configure` handles:
 
-The Queen will initialize, read workspace files, and send "Queen ready. All systems operational." to all allowed Telegram users.
+- Creating/updating `.env` (manual `.env` copy is not required)
+- Prompting for required credentials/settings
+- Bootstrapping workspace markdown files
+
+On first generation, it creates:
+
+- `workspace/AGENTS.md` (pre-populated default guidance)
+- `workspace/MEMORY.md` (starter content)
+- `workspace/SOUL.md` (blank)
+- `workspace/USER.md` (blank)
+- `workspace/HEARTBEAT.md` (blank)
+- `workspace/memory/canon/facts.md`
+- `workspace/memory/canon/decisions.md`
+- `workspace/memory/canon/failures.md`
+
+### 4. Start BroodMind
+
+```bash
+# Background mode (default)
+uv run broodmind start
+
+# Foreground mode
+uv run broodmind start --foreground
+```
+
+Equivalent without `uv`:
+
+```bash
+broodmind start
+broodmind start --foreground
+```
+
+### 5. Verify status/logs
+
+```bash
+broodmind status
+broodmind logs --follow
+```
+
+## Runtime Model
+
+### Queen
+
+- Handles Telegram messages
+- Builds prompt context from memory + workspace files
+- Calls tools directly or delegates to workers
+- Synthesizes final user-facing responses
+
+### Workers
+
+- Worker templates are file-based under `workspace/workers/<id>/worker.json`
+- Spawned per task with timeout + lifecycle tracking
+- Report result back to Queen runtime
+
+### Tools
+
+Examples:
+
+- Filesystem: `fs_read`, `fs_write`, `fs_list`, `fs_move`, `fs_delete`
+- Web: `web_search`, `web_fetch`
+- Execution: `exec_run`
+- Worker management: `list_workers`, `start_worker`, `get_worker_status`, `get_worker_result`
 
 ## CLI Commands
 
-BroodMind includes a command-line interface for management tasks:
-
 ```bash
-# Management sub-commands
-broodmind configure                 # Run interactive onboarding wizard
-broodmind status                    # Show system status
-broodmind logs -f                   # Follow logs
-broodmind dashboard                 # Styled runtime dashboard snapshot
-broodmind dashboard --watch         # Live dashboard refresh mode
-broodmind sync-worker-templates     # Copy default worker templates into workspace/workers
-broodmind sync-worker-templates --overwrite  # Overwrite existing worker templates
+# Setup
+broodmind configure
 
-# Start/Stop/Restart services
-broodmind start                      # Start Telegram bot (foreground)
-broodmind start -d                   # Start in background (detached)
-broodmind stop                       # Stop running BroodMind process
-broodmind restart                    # Restart BroodMind Queen
-broodmind gateway                    # Start gateway server
+# Lifecycle
+broodmind start
+broodmind start --foreground
+broodmind stop
+broodmind restart
+broodmind status
+
+# Logs / dashboard
+broodmind logs --follow
+broodmind dashboard
+broodmind dashboard --watch
+
+# Gateway
+broodmind gateway
+
+# Worker templates
+broodmind sync-worker-templates
+broodmind sync-worker-templates --overwrite
+
+# Memory
+broodmind memory stats
+broodmind memory cleanup --dry-run
+broodmind memory cleanup --keep-days 30 --keep-count 1000
 ```
-
-### Memory Cleanup
-
-The RAG memory system can grow over time. Use cleanup commands to manage it:
-
-- `broodmind memory stats` - See total entries, breakdown by role, unique chats
-- `broodmind memory cleanup -d <days> -c <count>` - Delete entries older than N days, but keep N most recent
-- `--dry-run` flag - Preview deletions without executing
-
-### Dashboard
-
-Use the runtime dashboard for a quick operational view:
-
-- `broodmind dashboard` - One-shot snapshot with colored system/queen/worker status
-- `broodmind dashboard --watch` - Live refresh
-- `broodmind dashboard --watch --interval 1.5` - Faster refresh interval
-- `broodmind dashboard --last 20` - Show more recent workers
-- `broodmind dashboard --json` - Machine-readable snapshot
 
 ## Configuration
 
-### Environment Variables
+Primary settings are stored in `.env` and loaded via `pydantic-settings`.
+
+### Common variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
-| `BROODMIND_LLM_PROVIDER` | No | LLM provider: `litellm` (default) or `openrouter` |
-| `ZAI_API_KEY` | No* | LiteLLM-compatible API key (required if using litellm) |
-| `OPENROUTER_API_KEY` | No* | OpenRouter API key (required if using openrouter) |
-| `OPENROUTER_MODEL` | No | OpenRouter model (default: `anthropic/claude-sonnet-4`) |
-| `ALLOWED_TELEGRAM_CHAT_IDS` | No | Comma-separated Telegram chat IDs |
-| `BRAVE_API_KEY` | No | Brave Search API for web_search tool |
-| `OPENAI_API_KEY` | No | OpenAI API for semantic memory |
-| `BROODMIND_WORKSPACE_DIR` | No | Workspace directory (default: ./workspace) |
-| `BROODMIND_STATE_DIR` | No | Database directory (default: ./data) |
-| `BROODMIND_WORKER_LAUNCHER` | No | Worker launcher: `same_env` or `docker` |
+| `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token |
+| `ALLOWED_TELEGRAM_CHAT_IDS` | Yes (recommended) | Comma-separated allowed chat IDs |
+| `BROODMIND_LLM_PROVIDER` | No | `litellm` (default) or `openrouter` |
+| `ZAI_API_KEY` | Conditionally | Required for default LiteLLM/z.ai path |
+| `OPENROUTER_API_KEY` | Conditionally | Required if provider is `openrouter` |
+| `OPENROUTER_MODEL` | No | Defaults to `anthropic/claude-sonnet-4` |
+| `BRAVE_API_KEY` | No | Enables `web_search` |
+| `OPENAI_API_KEY` | No | Enables embedding-based semantic memory |
+| `BROODMIND_WORKSPACE_DIR` | No | Defaults to `workspace` |
+| `BROODMIND_STATE_DIR` | No | Defaults to `data` |
+| `BROODMIND_WORKER_LAUNCHER` | No | `same_env` (default) or `docker` |
 
-*One of `ZAI_API_KEY` or `OPENROUTER_API_KEY` is required depending on your chosen provider.
+## Optional: Docker Worker Launcher
 
-### Workspace Files
+Local non-dockerized runtime is the default and recommended for first setup.
 
-- **`workspace/AGENTS.md`**: Documentation of available workers and their capabilities (injected into Queen's context)
-- **`workspace/USER.md`**: User preferences and instructions (injected into Queen's context)
+If you want workers to run in Docker containers:
 
-### Worker Templates
+1. Build worker image:
 
-Workers are defined in the database and can be listed via the `list_workers` tool:
-
-```
-- web_fetcher: Web content retrieval
-- web_researcher: Web search and analysis
-- data_analyst: Data processing and analysis
-- writer: Content creation
-- coder: Code generation and filesystem operations
+```bash
+broodmind build-worker-image --tag broodmind-worker:latest
 ```
 
-## Usage
+2. Set in config:
 
-### Basic Conversation
-
-Message your Telegram bot:
-```
-You: What's the weather like?
-Queen: I'll check that for you.
-[start_worker call to web_fetcher]
-Queen: Here's the weather information...
+```env
+BROODMIND_WORKER_LAUNCHER=docker
+BROODMIND_WORKER_DOCKER_IMAGE=broodmind-worker:latest
 ```
 
-### Worker Delegation
-
-The Queen automatically decides when to delegate:
-
-```
-You: Read this repo and tell me about it https://github.com/user/repo
-Queen: I'll delegate this to a worker.
-[start_worker(worker_id="web_fetcher", task="...")]
-Queen: Here's what I found...
-```
-
-**Key improvements:**
-- Worker results are stored in memory for context
-- Only the Queen's messages appear in Telegram (no worker spam)
-- Duplicate worker detection prevents redundant tasks
-- Queen synthesizes worker results into coherent responses
-
-### Tool Usage
-
-Workers use tools declaratively:
-```
-Worker: Using tool: web_fetch
-[Tool executes, returns result]
-Worker: Using tool: fs_read
-[Tool executes, returns result]
-Worker: Task completed with summary
-```
-
-## System Lifecycle
-
-### Initialization (Every Container Start)
-
-1. Queen wakes up and reads workspace files (AGENTS.md, USER.md)
-2. Builds internal understanding of available workers
-3. Sends "Queen ready. All systems operational." to allowed Telegram users
-4. Ready to handle incoming messages
-
-### Message Handling
-
-1. User sends message via Telegram
-2. Queen interprets intent with memory and bootstrap context
-3. Queen may:
-   - Reply directly (simple queries)
-   - Delegate to worker async (complex tasks)
-   - Ask for approval (risky operations)
-4. Response sent back to user
-
-### Worker Execution
-
-1. Queen calls `start_worker` with worker_id, task, inputs
-2. WorkerRuntime launches worker in container/same_env
-3. Worker executes with tools, returns `WorkerResult`
-4. Result stored in memory (context for Queen)
-5. Queen synthesizes response based on worker results
-6. Worker directory cleaned up
-
-**Note:** Workers no longer send messages directly to Telegram. All communication goes through the Queen for a unified conversation experience.
+3. Restart BroodMind.
 
 ## Development
 
-### Project Structure
+### Install dev dependencies
 
+```bash
+uv sync --dev
 ```
+
+### Run checks
+
+```bash
+uv run ruff check src tests
+uv run pytest -q
+```
+
+### Project structure
+
+```text
 src/broodmind/
-├── config/         # Settings and configuration
-├── memory/         # Semantic memory service
-├── policy/         # Permission engine
-├── providers/      # LLM providers (LiteLLM)
-├── queen/          # Queen orchestrator logic
-├── store/          # SQLite database layer
-├── telegram/       # Telegram bot integration
-├── tools/          # Tool implementations
-├── workers/        # Worker runtime and templates
-└── worker_sdk/     # Worker SDK for task execution
+├── cli/
+├── config/
+├── gateway/
+├── intents/
+├── memory/
+├── policy/
+├── providers/
+├── queen/
+├── store/
+├── telegram/
+├── tools/
+├── worker_sdk/
+└── workers/
 ```
-
-### Adding a New Tool
-
-1. Implement tool function in `src/broodmind/tools/`
-2. Register in `src/broodmind/tools/tools.py`
-3. Add permission check if needed
-4. Update worker templates to include tool
-
-### Adding a New Worker
-
-1. Create worker spec with:
-   - `worker_id`: Unique identifier
-   - `system_prompt`: Worker's purpose and behavior
-   - `available_tools`: List of tool names
-   - `max_thinking_steps`: Reasoning iterations limit
-2. Register in database via `initialize_templates()`
-3. Document in `workspace/AGENTS.md`
 
 ## Troubleshooting
 
-### Queen doesn't send ready message
-- Check `ALLOWED_TELEGRAM_CHAT_IDS` in `.env`
-- Verify chat IDs (get from @userinfobot)
-- Check logs for "Queen ready message sent successfully"
+### Bot starts but no Telegram replies
 
-### Worker tool errors
-- Check tool permissions in worker spec
-- Verify API keys (BRAVE_API_KEY, etc.)
-- Check logs for specific error messages
-- Ensure tool handler is sync/async compatible
+- Check `TELEGRAM_BOT_TOKEN`
+- Check `ALLOWED_TELEGRAM_CHAT_IDS` includes your chat ID
+- Verify with `broodmind status` and logs
 
-### Memory not working
-- Verify `OPENAI_API_KEY` is set
-- Check `BROODMIND_MEMORY_*` settings
-- Ensure embeddings are enabled
+### LLM errors
+
+- Ensure provider/key pairing is correct:
+  - `BROODMIND_LLM_PROVIDER=litellm` + `ZAI_API_KEY`, or
+  - `BROODMIND_LLM_PROVIDER=openrouter` + `OPENROUTER_API_KEY`
+
+### Web search not working
+
+- Add `BRAVE_API_KEY`
+
+### Semantic memory missing
+
+- Add `OPENAI_API_KEY`
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT License (see repository license file).
