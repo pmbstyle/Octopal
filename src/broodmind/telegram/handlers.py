@@ -238,9 +238,9 @@ async def _send_message_safe(bot: Bot, chat_id: int, text: str) -> None:
     except TelegramBadRequest as exc:
         # Formatting mismatch should not drop the message for the user.
         logger.warning(
-            "Telegram parse failed; retrying without parse_mode",
-            parse_mode=parse_mode,
-            error=str(exc),
+            "Telegram parse failed; retrying without parse_mode (parse_mode=%s, error=%s)",
+            parse_mode,
+            exc,
         )
         await bot.send_message(chat_id, text)
 
@@ -357,7 +357,7 @@ def _normalize_parse_mode(raw: str | None) -> str | None:
         return "HTML"
     if lowered in {"markdown", "markdownv1"}:
         return "Markdown"
-    logger.warning("Unknown BROODMIND_TELEGRAM_PARSE_MODE value; using plain text", value=value)
+    logger.warning("Unknown BROODMIND_TELEGRAM_PARSE_MODE value; using plain text (value=%s)", value)
     return None
 
 
