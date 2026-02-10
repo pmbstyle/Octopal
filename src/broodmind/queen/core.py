@@ -101,15 +101,25 @@ async def _internal_worker(queen: Queen, chat_id: int, queue: asyncio.Queue) -> 
                 await queen.memory.add_message(
                     "system",
                     f"Worker completed: {result.summary}",
-                    {"worker_result": True, "task": task_text}
+                    {"worker_result": True, "task": task_text, "chat_id": chat_id}
                 )
-            if result.error:
+            output_error = ""
+            if isinstance(result.output, dict):
+                raw_error = result.output.get("error")
+                if raw_error is not None:
+                    output_error = str(raw_error).strip()
+            if output_error:
                 await queen.memory.add_message(
                     "system",
-                    f"Worker error: {result.error}",
-                    {"worker_result": True, "task": task_text}
+                    f"Worker error: {output_error}",
+                    {"worker_result": True, "task": task_text, "chat_id": chat_id}
                 )
-            logger.debug("Worker result processed (not auto-sent)", summary_len=len(result.summary or ""))
+            # Deliver worker completion to chat as the final answer.
+            if queen.internal_send:
+                final_text = _format_worker_completion_message(result)
+                if final_text:
+                    await queen.internal_send(chat_id, final_text)
+            logger.debug("Worker result processed", summary_len=len(result.summary or ""))
         except Exception:
             logger.exception("Failed to process internal worker result")
         finally:
@@ -358,6 +368,21 @@ def _normalize_plain_text(text: str) -> str:
 def _looks_like_tool_error(text: str) -> bool:
     lowered = text.lower()
     return " error" in lowered or "failed" in lowered
+
+
+def _format_worker_completion_message(result: WorkerResult) -> str:
+    summary = (result.summary or "").strip()
+    if summary:
+        return summary
+    if result.output:
+        try:
+            payload = json.dumps(result.output, ensure_ascii=False)
+        except Exception:
+            payload = str(result.output)
+        return payload.strip()[:4000]
+    if result.questions:
+        return "\n".join(result.questions).strip()
+    return ""
 
 
 async def _route_or_reply(queen: Queen, provider: InferenceProvider, memory: MemoryService, user_text: str, chat_id: int, bootstrap_context: str) -> str:

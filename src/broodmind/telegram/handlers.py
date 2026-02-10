@@ -51,15 +51,9 @@ def register_handlers(
         text: str,
         meta: dict[str, object],
     ) -> None:
-        await _enqueue_progress(bot, chat_id, state, text, meta)
-        if state == "worker_started":
-            worker_id = str(meta.get("worker_id", "")).strip()
-            if _is_safe_worker_id(worker_id):
-                await bot.send_message(
-                    chat_id,
-                    f"Controls for worker {worker_id}:",
-                    reply_markup=_worker_controls_keyboard(worker_id, can_stop=True),
-                )
+        # Keep worker lifecycle noise out of chat; only surface failure/duplicate events.
+        if state in {"failed", "duplicate"}:
+            await _enqueue_progress(bot, chat_id, state, text, meta)
 
     queen.internal_send = _internal_send
     queen.internal_progress_send = _internal_progress_send

@@ -18,7 +18,13 @@ from broodmind.config.settings import Settings, load_settings
 from broodmind.gateway.app import build_app
 from broodmind.logging_config import configure_logging
 from broodmind.runtime_metrics import read_metrics_snapshot
-from broodmind.state import is_pid_running, read_status, write_start_status
+from broodmind.state import (
+    is_pid_running,
+    list_broodmind_runtime_pids,
+    pid_command_line,
+    read_status,
+    write_start_status,
+)
 from broodmind.store.sqlite import SQLiteStore
 from broodmind.telegram.bot import run_bot
 from broodmind.workers.templates import sync_default_templates
@@ -65,6 +71,13 @@ def start(
             settings = load_settings()
         else:
             raise typer.Exit(code=1) from None
+
+    running_pids = list_broodmind_runtime_pids()
+    if running_pids:
+        console.print("[bold yellow]BroodMind is already running.[/bold yellow]")
+        console.print(f"Active runtime PID(s): {', '.join(str(pid) for pid in running_pids)}")
+        console.print("Use [magenta]broodmind stop[/magenta] first, then start again.")
+        raise typer.Exit(code=1)
 
     if not foreground:
         print_banner()
@@ -154,25 +167,83 @@ def stop() -> None:
     settings = load_settings()
     status_data = read_status(settings)
     pid = status_data.get("pid") if status_data else None
-
-    if not pid or not is_pid_running(pid):
-        console.print("[yellow]BroodMind is not running.[/yellow]")
-        return
-
-    console.print(f"[bold yellow]Stopping BroodMind (PID: {pid})...[/bold yellow]")
     import os
     import platform
 
+    discovered = list_broodmind_runtime_pids()
+    targets: list[int] = []
+    if pid and is_pid_running(pid):
+        targets.append(pid)
+    targets.extend(discovered)
+    targets = sorted(set(targets))
+
+    if not targets:
+        console.print("[yellow]BroodMind is not running.[/yellow]")
+        return
+
+    console.print(
+        f"[bold yellow]Stopping BroodMind ({len(targets)} process(es)): "
+        f"{', '.join(str(p) for p in targets)}[/bold yellow]"
+    )
+
+    failures: list[tuple[int, str]] = []
     try:
         if platform.system() == "Windows":
             import subprocess
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)], check=True, capture_output=True)
+            for target in targets:
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(target)],
+                        check=True,
+                        capture_output=True,
+                    )
+                except Exception as exc:
+                    failures.append((target, str(exc)))
         else:
             import signal
-            os.kill(pid, signal.SIGTERM)
+            deadline = time.time() + 8.0
+            for target in targets:
+                try:
+                    os.kill(target, signal.SIGTERM)
+                except ProcessLookupError:
+                    continue
+                except Exception as exc:
+                    failures.append((target, str(exc)))
+
+            while time.time() < deadline:
+                alive = [p for p in targets if is_pid_running(p)]
+                if not alive:
+                    break
+                time.sleep(0.2)
+
+            alive = [p for p in targets if is_pid_running(p)]
+            for target in alive:
+                try:
+                    os.kill(target, signal.SIGKILL)
+                except ProcessLookupError:
+                    continue
+                except Exception as exc:
+                    failures.append((target, str(exc)))
+
+        still_running = [p for p in targets if is_pid_running(p)]
+        if still_running:
+            for target in still_running:
+                cmdline = pid_command_line(target)
+                details = f" ({cmdline})" if cmdline else ""
+                failures.append((target, f"still running{details}"))
+
+        if failures:
+            console.print("[bold red]Failed to stop all BroodMind processes:[/bold red]")
+            for failed_pid, reason in failures:
+                console.print(f" - PID {failed_pid}: {reason}")
+            raise typer.Exit(code=1)
+
         console.print("[bold green][V] BroodMind stopped.[/bold green]")
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[bold red]Failed to stop BroodMind: {e}[/bold red]")
+        raise typer.Exit(code=1) from e
 
 
 @app.command()

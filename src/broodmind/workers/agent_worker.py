@@ -47,7 +47,10 @@ async def run_agent_worker(spec_path: str) -> None:
     except Exception as exc:
         logger.exception("AgentWorker failed: id=%s", worker.spec.id)
         await worker.complete(
-            WorkerResult(summary=f"Worker failed: {exc}", error=str(exc))
+            WorkerResult(
+                summary=f"Worker failed: {exc}",
+                output={"error": str(exc)},
+            )
         )
 
 
