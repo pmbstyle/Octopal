@@ -142,23 +142,26 @@ If you need clarification from the Queen, include:
                 })
         else:
             # No tool calls, check if this is a completion
-            content = response.get("content", "")
+            content = str(response.get("content", "") or "").strip()
 
-            # Try to parse as JSON for structured result
+            # Try to parse structured JSON result, including fenced JSON blocks.
+            result_block = _extract_result_block(content)
+            if result_block is not None:
+                return WorkerResult(
+                    summary=str(result_block.get("summary", "Task completed")).strip() or "Task completed",
+                    output=result_block.get("output"),
+                    questions=result_block.get("questions", []),
+                    thinking_steps=thinking_steps,
+                    tools_used=tools_used,
+                )
+
+            # If model produced plain text with no tool call, treat it as completion.
             if content:
-                try:
-                    result_block = json.loads(content)
-                    if isinstance(result_block, dict) and result_block.get("type") == "result":
-                        return WorkerResult(
-                            summary=result_block.get("summary", "Task completed"),
-                            output=result_block.get("output"),
-                            questions=result_block.get("questions", []),
-                            thinking_steps=thinking_steps,
-                            tools_used=tools_used,
-                        )
-                except (json.JSONDecodeError, TypeError):
-                    # Not JSON or not structured, treat as text completion
-                    pass
+                return WorkerResult(
+                    summary=content,
+                    thinking_steps=thinking_steps,
+                    tools_used=tools_used,
+                )
 
             # If we get here without tool_calls or structured result, we've hit the thinking limit
             if thinking_steps >= spec.max_thinking_steps:
@@ -176,6 +179,28 @@ If you need clarification from the Queen, include:
         thinking_steps=thinking_steps,
         tools_used=tools_used,
     )
+
+
+def _extract_result_block(content: str) -> dict[str, Any] | None:
+    if not content:
+        return None
+
+    candidates = [content]
+    stripped = content.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            body = "\n".join(lines[1:-1]).strip()
+            candidates.append(body)
+
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, dict) and payload.get("type") == "result":
+            return payload
+    return None
 
 
 async def _call_llm(

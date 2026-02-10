@@ -12,7 +12,7 @@ from broodmind.memory.service import MemoryService
 from broodmind.policy.engine import PolicyEngine
 from broodmind.providers.litellm_provider import LiteLLMProvider
 from broodmind.providers.openai_embeddings import OpenAIEmbeddingsProvider
-from broodmind.queen.core import Queen
+from broodmind.queen.core import Queen, QueenReply
 from broodmind.store.sqlite import SQLiteStore
 from broodmind.telegram.approvals import ApprovalManager
 from broodmind.telegram.handlers import register_handlers
@@ -84,8 +84,18 @@ async def _heartbeat_poker(queen: Queen, interval_seconds: int, chat_id: int):
                 "This is a heartbeat trigger. Check your scheduled tasks in `workspace/HEARTBEAT.md` "
                 "and execute any tasks whose conditions are met."
             )
-            # We don't need the reply here, as the queen will use internal_send for any output
-            await queen.handle_message(heartbeat_prompt, chat_id)
+            reply = await queen.handle_message(heartbeat_prompt, chat_id)
+            # Heartbeat replies are control-plane responses; don't send them to Telegram chat.
+            if isinstance(reply, QueenReply):
+                text = (reply.immediate or "").strip()
+                if text.upper() == "HEARTBEAT_OK":
+                    logger.debug("Heartbeat acknowledged", chat_id=chat_id)
+                elif text:
+                    logger.info(
+                        "Heartbeat produced non-ACK text (suppressed from chat)",
+                        chat_id=chat_id,
+                        preview=text[:200],
+                    )
         except Exception:
             logger.exception("Internal heartbeat failed")
 

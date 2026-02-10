@@ -370,6 +370,44 @@ def _looks_like_tool_error(text: str) -> bool:
     return " error" in lowered or "failed" in lowered
 
 
+def _try_parse_json_object(text: str) -> dict[str, Any] | None:
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _postprocess_queen_text(text: str) -> str:
+    parsed = _try_parse_json_object(text)
+    if not parsed:
+        return text
+    status = str(parsed.get("status", "")).lower()
+    worker_id = str(parsed.get("worker_id", "")).strip()
+    if worker_id and status:
+        if status in {"started", "running"}:
+            return f"Task accepted. Worker {worker_id} is running. I will send the result when it is ready."
+        if status == "completed":
+            summary = str(parsed.get("summary", "")).strip()
+            if summary:
+                return summary
+            return f"Worker {worker_id} completed."
+        if status == "failed":
+            err = str(parsed.get("error", "")).strip()
+            if err:
+                return f"Worker {worker_id} failed: {err}"
+            return f"Worker {worker_id} failed."
+        if status in {"not_found", "stopped"}:
+            msg = str(parsed.get("message", "")).strip()
+            if msg:
+                return msg
+            return f"Worker {worker_id}: {status}."
+    return text
+
+
 def _format_worker_completion_message(result: WorkerResult) -> str:
     summary = (result.summary or "").strip()
     if summary:
@@ -395,12 +433,15 @@ async def _route_or_reply(queen: Queen, provider: InferenceProvider, memory: Mem
     if callable(tool_capable):
         tools = [spec.to_openai_tool() for spec in queen_tools]
         last_error: str | None = None
+        had_tool_calls = False
+        worker_started = False
         max_attempts = 10
         for _ in range(max_attempts):
             result = await provider.complete_with_tools(messages, tools=tools, tool_choice="auto")
             content_raw = result.get("content", "")
             tool_calls = result.get("tool_calls") or []
             if tool_calls:
+                had_tool_calls = True
                 assistant_msg: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls}
                 if content_raw:
                     assistant_msg["content"] = content_raw
@@ -412,17 +453,24 @@ async def _route_or_reply(queen: Queen, provider: InferenceProvider, memory: Mem
                         if isinstance(tool_result, str)
                         else json.dumps(tool_result, ensure_ascii=False)
                     )
+                    parsed_tool_result = _try_parse_json_object(tool_result_text)
+                    if isinstance(parsed_tool_result, dict):
+                        status = str(parsed_tool_result.get("status", "")).lower()
+                        if status in {"started", "running"} and parsed_tool_result.get("worker_id"):
+                            worker_started = True
                     messages.append(
                         {"role": "tool", "tool_call_id": call.get("id"), "content": tool_result_text}
                     )
                     if "error" in tool_result_text.lower() or "failed" in tool_result_text.lower():
                         last_error = tool_result_text
-                if not last_error:
-                    last_error = "No tool call completed. Use a tool to make progress."
                 continue
             if content_raw:
                 logger.debug("Queen output", output=content_raw)
-            return _normalize_plain_text(content_raw)
+            return _normalize_plain_text(_postprocess_queen_text(content_raw))
+        if worker_started:
+            return "Task accepted. Worker started. I will send the result when it is ready."
+        if had_tool_calls:
+            return "Task accepted. I am processing it."
         if last_error and _looks_like_tool_error(last_error):
             return "I couldn't complete that request. The tooling failed and needs correction."
         return last_error or ""
