@@ -119,21 +119,34 @@ async def _internal_worker(queen: Queen, chat_id: int, queue: asyncio.Queue) -> 
                     f"Worker error: {output_error}",
                     {"worker_result": True, "task": task_text, "chat_id": chat_id}
                 )
-            # Deliver a queen-authored follow-up instead of leaking raw worker payloads.
-            if queen.internal_send:
-                try:
-                    final_text = await asyncio.wait_for(
-                        _compose_worker_followup_message(queen, task_text, result),
-                        timeout=25.0,
-                    )
-                except TimeoutError:
-                    logger.warning("Worker follow-up composition timed out; using fallback")
-                    final_text = _format_worker_completion_message(result)
-                if final_text:
+            # Always route worker result back through Queen decision logic.
+            # User delivery is a separate concern from internal decision-making.
+            try:
+                final_text = await asyncio.wait_for(
+                    _route_worker_result_back_to_queen(queen, chat_id, task_text, result),
+                    timeout=45.0,
+                )
+            except TimeoutError:
+                logger.warning("Worker-result routing timed out", chat_id=chat_id)
+                final_text = "NO_USER_RESPONSE"
+
+            if _should_send_worker_followup(final_text):
+                if queen.internal_send:
                     await queen.internal_send(chat_id, final_text)
                     logger.info("Internal worker follow-up sent", chat_id=chat_id, text_len=len(final_text))
+                    await queen.memory.add_message(
+                        "assistant",
+                        final_text,
+                        {"chat_id": chat_id, "worker_followup": True},
+                    )
                 else:
-                    logger.info("Internal worker follow-up skipped (empty message)", chat_id=chat_id)
+                    logger.info(
+                        "Worker follow-up produced but no sender attached",
+                        chat_id=chat_id,
+                        text_len=len(final_text),
+                    )
+            else:
+                logger.info("Internal worker follow-up skipped", chat_id=chat_id, reason="no_user_response")
             logger.debug("Worker result processed", summary_len=len(result.summary or ""))
         except Exception:
             logger.exception("Failed to process internal worker result")
@@ -214,7 +227,11 @@ class Queen:
             async def send_to_allowed_chats(chat_id, text):
                 for target_chat_id in chat_ids:
                     try:
-                        await bot.send_message(chat_id=target_chat_id, text=text)
+                        if callable(original_send):
+                            # Reuse Telegram send pipeline (chunking, parse_mode, escaping).
+                            await original_send(target_chat_id, text)
+                        else:
+                            await bot.send_message(chat_id=target_chat_id, text=text)
                         logger.debug("Sent initialization message", chat_id=target_chat_id)
                     except Exception as e:
                         logger.warning("Failed to send to chat_id", chat_id=target_chat_id, error=e)
@@ -386,163 +403,51 @@ def _looks_like_tool_error(text: str) -> bool:
     return " error" in lowered or "failed" in lowered
 
 
-def _try_parse_json_object(text: str) -> dict[str, Any] | None:
-    text = (text or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _postprocess_queen_text(text: str) -> str:
-    parsed = _try_parse_json_object(text)
-    if not parsed:
-        return text
-    status = str(parsed.get("status", "")).lower()
-    worker_id = str(parsed.get("worker_id", "")).strip()
-    if worker_id and status:
-        if status in {"started", "running"}:
-            return f"Task accepted. Worker {worker_id} is running. I will send the result when it is ready."
-        if status == "completed":
-            summary = str(parsed.get("summary", "")).strip()
-            if summary:
-                return summary
-            return f"Worker {worker_id} completed."
-        if status == "failed":
-            err = str(parsed.get("error", "")).strip()
-            if err:
-                return f"Worker {worker_id} failed: {err}"
-            return f"Worker {worker_id} failed."
-        if status in {"not_found", "stopped"}:
-            msg = str(parsed.get("message", "")).strip()
-            if msg:
-                return msg
-            return f"Worker {worker_id}: {status}."
-    return text
-
-
-def _format_worker_completion_message(result: WorkerResult) -> str:
-    summary = (result.summary or "").strip()
-    if summary:
-        parsed_summary = _try_parse_json_object(summary)
-        if isinstance(parsed_summary, dict) and parsed_summary.get("type") == "result":
-            parsed_text = str(parsed_summary.get("summary", "")).strip()
-            if parsed_text:
-                return parsed_text
-            parsed_output = parsed_summary.get("output")
-            if parsed_output:
-                try:
-                    payload = json.dumps(parsed_output, ensure_ascii=False)
-                except Exception:
-                    payload = str(parsed_output)
-                return payload.strip()[:4000]
-        # Guardrail against dumping raw JSON blobs to chat.
-        if summary.startswith("{") and summary.endswith("}"):
-            return "Worker completed. Result is ready."
-        return summary
-    if result.output:
-        try:
-            payload = json.dumps(result.output, ensure_ascii=False)
-        except Exception:
-            payload = str(result.output)
-        return payload.strip()[:4000]
-    if result.questions:
-        return "\n".join(result.questions).strip()
-    return ""
-
-
-async def _compose_worker_followup_message(queen: Queen, task_text: str, result: WorkerResult) -> str:
-    summary = _normalize_worker_summary(result.summary or "")
-    output_error = ""
-    if isinstance(result.output, dict):
-        raw_error = result.output.get("error")
-        if raw_error is not None:
-            output_error = str(raw_error).strip()
-
-    # Deterministic failure/incomplete handling.
-    if output_error:
-        return f"Worker failed: {output_error}"
-    if _is_worker_incomplete(summary):
-        return "Worker finished without a complete answer. I can retry with a clearer task."
-
-    # Fast-path for clean short summaries.
-    if summary and not _looks_like_json_blob(summary) and len(summary) <= 500 and not result.output:
-        return summary
-
-    # Ask queen model to craft a user-facing response from worker artifacts.
-    output_json = ""
-    if result.output is not None:
-        try:
-            output_json = json.dumps(result.output, ensure_ascii=False)
-        except Exception:
-            output_json = str(result.output)
-    if len(output_json) > 5000:
-        output_json = output_json[:5000] + "...[truncated]"
-
-    messages: list[dict[str, str]] = [
-        {
-            "role": "system",
-            "content": (
-                "You are composing the final user-facing answer after a delegated worker completed. "
-                "Use plain conversational text. Do not output JSON. Do not include internal workflow details."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"Original task:\n{task_text}\n\n"
-                f"Worker summary:\n{summary or '-'}\n\n"
-                f"Worker output JSON:\n{output_json or '-'}\n\n"
-                "Write the final answer for the user."
-            ),
-        },
-    ]
-    try:
-        crafted = await queen.provider.complete(messages, temperature=0.2)
-        final_text = _normalize_plain_text(crafted)
-        if final_text and not _looks_like_json_blob(final_text):
-            return final_text
-    except Exception:
-        logger.exception("Failed to craft worker follow-up text")
-
-    # Last-resort fallback
-    return _format_worker_completion_message(result)
-
-
-def _normalize_worker_summary(summary: str) -> str:
-    value = (summary or "").strip()
+def _should_send_worker_followup(text: str) -> bool:
+    value = (text or "").strip()
     if not value:
-        return ""
-    parsed = _try_parse_json_object(value)
-    if isinstance(parsed, dict) and parsed.get("type") == "result":
-        parsed_summary = str(parsed.get("summary", "")).strip()
-        if parsed_summary:
-            return parsed_summary
-    return value
-
-
-def _is_worker_incomplete(summary: str) -> bool:
-    value = (summary or "").strip().lower()
-    if not value.startswith("task incomplete after ") or not value.endswith(" thinking steps"):
         return False
-    middle = value.removeprefix("task incomplete after ").removesuffix(" thinking steps").strip()
-    return middle.isdigit()
-
-
-def _looks_like_json_blob(text: str) -> bool:
-    stripped = (text or "").strip()
-    if not stripped:
-        return False
-    if not ((stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]"))):
-        return False
-    try:
-        json.loads(stripped)
-    except Exception:
+    if value.upper() in {"NO_USER_RESPONSE", "HEARTBEAT_OK"}:
         return False
     return True
+
+
+async def _route_worker_result_back_to_queen(
+    queen: Queen,
+    chat_id: int,
+    task_text: str,
+    result: WorkerResult,
+) -> str:
+    payload = {
+        "task": task_text,
+        "summary": result.summary,
+        "output": result.output,
+        "questions": result.questions,
+        "thinking_steps": result.thinking_steps,
+        "tools_used": result.tools_used,
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    if len(payload_json) > 12000:
+        payload_json = payload_json[:12000] + "...[truncated]"
+
+    worker_result_prompt = (
+        "Worker completed. Decide and execute next action based on this payload.\n"
+        "<worker_result>\n"
+        f"{payload_json}\n"
+        "</worker_result>\n\n"
+        "If a user-facing response is required now, provide it in plain text.\n"
+        "If no user-facing response is needed, return exactly: NO_USER_RESPONSE"
+    )
+    bootstrap_context = await build_bootstrap_context_prompt(queen.store, chat_id)
+    reply_text = await _route_or_reply(
+        queen,
+        queen.provider,
+        queen.memory,
+        worker_result_prompt,
+        chat_id,
+        bootstrap_context.content,
+    )
+    return _normalize_plain_text(reply_text)
 
 
 async def _route_or_reply(queen: Queen, provider: InferenceProvider, memory: MemoryService, user_text: str, chat_id: int, bootstrap_context: str) -> str:
@@ -556,7 +461,6 @@ async def _route_or_reply(queen: Queen, provider: InferenceProvider, memory: Mem
         tools = [spec.to_openai_tool() for spec in queen_tools]
         last_error: str | None = None
         had_tool_calls = False
-        worker_started = False
         max_attempts = 10
         for _ in range(max_attempts):
             result = await provider.complete_with_tools(messages, tools=tools, tool_choice="auto")
@@ -575,11 +479,6 @@ async def _route_or_reply(queen: Queen, provider: InferenceProvider, memory: Mem
                         if isinstance(tool_result, str)
                         else json.dumps(tool_result, ensure_ascii=False)
                     )
-                    parsed_tool_result = _try_parse_json_object(tool_result_text)
-                    if isinstance(parsed_tool_result, dict):
-                        status = str(parsed_tool_result.get("status", "")).lower()
-                        if status in {"started", "running"} and parsed_tool_result.get("worker_id"):
-                            worker_started = True
                     messages.append(
                         {"role": "tool", "tool_call_id": call.get("id"), "content": tool_result_text}
                     )
@@ -588,9 +487,7 @@ async def _route_or_reply(queen: Queen, provider: InferenceProvider, memory: Mem
                 continue
             if content_raw:
                 logger.debug("Queen output", output=content_raw)
-            return _normalize_plain_text(_postprocess_queen_text(content_raw))
-        if worker_started:
-            return "Task accepted. Worker started. I will send the result when it is ready."
+            return _normalize_plain_text(content_raw)
         if had_tool_calls:
             return "Task accepted. I am processing it."
         if last_error and _looks_like_tool_error(last_error):
