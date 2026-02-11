@@ -151,6 +151,7 @@ If you need clarification from the Queen, include:
                     summary=str(result_block.get("summary", "Task completed")).strip() or "Task completed",
                     output=result_block.get("output"),
                     questions=result_block.get("questions", []),
+                    knowledge_proposals=worker.knowledge_proposals,
                     thinking_steps=thinking_steps,
                     tools_used=tools_used,
                 )
@@ -159,6 +160,7 @@ If you need clarification from the Queen, include:
             if content:
                 return WorkerResult(
                     summary=content,
+                    knowledge_proposals=worker.knowledge_proposals,
                     thinking_steps=thinking_steps,
                     tools_used=tools_used,
                 )
@@ -167,6 +169,7 @@ If you need clarification from the Queen, include:
             if thinking_steps >= spec.max_thinking_steps:
                 return WorkerResult(
                     summary=f"Task incomplete after {thinking_steps} thinking steps",
+                    knowledge_proposals=worker.knowledge_proposals,
                     thinking_steps=thinking_steps,
                     tools_used=tools_used,
                 )
@@ -176,6 +179,7 @@ If you need clarification from the Queen, include:
     # Max iterations reached without completion
     return WorkerResult(
         summary=f"Task incomplete after {thinking_steps} thinking steps",
+        knowledge_proposals=worker.knowledge_proposals,
         thinking_steps=thinking_steps,
         tools_used=tools_used,
     )

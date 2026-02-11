@@ -3,18 +3,19 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from broodmind.intents.registry import canonical_json, normalize_payload
 from broodmind.intents.types import IntentRequest
 from broodmind.policy.permits import Permit
-from broodmind.workers.contracts import WorkerResult, WorkerSpec
+from broodmind.workers.contracts import KnowledgeProposal, WorkerResult, WorkerSpec
 
 
 @dataclass
 class Worker:
     spec: WorkerSpec
+    knowledge_proposals: list[KnowledgeProposal] = field(default_factory=list)
 
     @classmethod
     def from_spec_file(cls, path: str) -> Worker:
@@ -24,6 +25,9 @@ class Worker:
 
     async def log(self, level: str, message: str) -> None:
         await self._write_message({"type": "log", "level": level, "message": message})
+
+    def add_proposal(self, category: str, content: str) -> None:
+        self.knowledge_proposals.append(KnowledgeProposal(category=category, content=content))
 
     async def request_intent(self, request: IntentRequest) -> Permit:
         await self._write_message(

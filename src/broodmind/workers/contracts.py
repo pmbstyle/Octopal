@@ -61,6 +61,14 @@ class WorkerSpec(BaseModel):
     correlation_id: str | None = None
 
 
+class KnowledgeProposal(BaseModel):
+    """Proposal for canonical memory."""
+    model_config = ConfigDict(frozen=True)
+
+    category: str  # "fact", "decision", "failure"
+    content: str
+
+
 class WorkerResult(BaseModel):
     """Worker result with optional questions for Queen."""
     model_config = ConfigDict(frozen=True)
@@ -68,6 +76,7 @@ class WorkerResult(BaseModel):
     summary: str
     output: dict[str, Any] | None = None
     questions: list[str] = Field(default_factory=list)  # Questions for Queen
+    knowledge_proposals: list[KnowledgeProposal] = Field(default_factory=list)
     thinking_steps: int = 0
     tools_used: list[str] = Field(default_factory=list)
 

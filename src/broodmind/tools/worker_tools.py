@@ -148,6 +148,27 @@ def get_worker_tools() -> list[ToolSpec]:
             handler=_tool_get_worker_result,
         ),
         ToolSpec(
+            name="get_worker_output_path",
+            description="Retrieve a specific part of a worker's output using a dotted path (e.g., 'results.items.0'). Useful for large outputs.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "worker_id": {
+                        "type": "string",
+                        "description": "The worker ID to check.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Dotted path to the desired data (e.g., 'data.users.0.name').",
+                    }
+                },
+                "required": ["worker_id", "path"],
+                "additionalProperties": False,
+            },
+            permission="worker_manage",
+            handler=_tool_get_worker_output_path,
+        ),
+        ToolSpec(
             name="create_worker_template",
             description="Create a new worker template by writing a worker.json file to the workspace.",
             parameters={
@@ -570,17 +591,68 @@ def _tool_get_worker_result(args: dict[str, object], ctx: dict[str, object]) -> 
         }, ensure_ascii=False)
 
 
+def _tool_get_worker_output_path(args: dict[str, object], ctx: dict[str, object]) -> str:
+    """Retrieve a specific part of a worker's output using a dotted path."""
+    queen: Queen = ctx["queen"]
+    worker_id = str(args.get("worker_id", "")).strip()
+    path = str(args.get("path", "")).strip()
+
+    if not worker_id:
+        return "get_worker_output_path error: worker_id is required."
+    if not path:
+        return "get_worker_output_path error: path is required."
+
+    worker = queen.store.get_worker(worker_id)
+    if not worker:
+        return json.dumps({"status": "not_found", "worker_id": worker_id}, ensure_ascii=False)
+
+    if worker.status != "completed":
+        return json.dumps({"status": worker.status, "message": "Worker result not available."}, ensure_ascii=False)
+
+    output = worker.output or {}
+    current = output
+    parts = path.split(".")
+
+    for part in parts:
+        if isinstance(current, dict):
+            if part in current:
+                current = current[part]
+            else:
+                return json.dumps({"error": f"Path not found: {path} (missing key '{part}')"}, ensure_ascii=False)
+        elif isinstance(current, list):
+            try:
+                idx = int(part)
+                if 0 <= idx < len(current):
+                    current = current[idx]
+                else:
+                    return json.dumps({"error": f"Path not found: {path} (index '{idx}' out of range)"}, ensure_ascii=False)
+            except ValueError:
+                return json.dumps({"error": f"Path not found: {path} (expected index for list, got '{part}')"}, ensure_ascii=False)
+        else:
+            return json.dumps({"error": f"Path not found: {path} (cannot traverse into non-container type at '{part}')"}, ensure_ascii=False)
+
+    return json.dumps({
+        "worker_id": worker_id,
+        "path": path,
+        "value": current
+    }, ensure_ascii=False)
+
+
 def _tool_propose_knowledge(args: dict[str, object], ctx: dict[str, object]) -> str:
     """Propose a fact or insight for the canonical memory."""
-    category = str(args.get("category", "fact")).upper()
+    category = str(args.get("category", "fact")).lower()
     content = str(args.get("content", ""))
+    worker = ctx.get("worker")
 
     if not content:
         return "Error: Content is required."
 
-    # In this phase, we just acknowledge it. The Queen sees the tool output.
-    # The worker is expected to include this in their final summary or the Queen reviews the tool usage.
-    return f"Proposal logged: [{category}] {content}"
+    if hasattr(worker, "add_proposal"):
+        worker.add_proposal(category, content)
+        return f"Proposal logged: [{category}] {content}"
+
+    # Fallback if not running in a worker context with the new SDK
+    return f"Proposal logged (text-only): [{category}] {content}"
 
 
 def _is_valid_worker_id(worker_id: str) -> bool:

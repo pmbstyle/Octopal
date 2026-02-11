@@ -89,15 +89,17 @@ async def _heartbeat_poker(queen: Queen, interval_seconds: int, chat_id: int):
             if isinstance(reply, QueenReply):
                 text = (reply.immediate or "").strip()
                 if text.upper() == "HEARTBEAT_OK":
-                    logger.debug("Heartbeat acknowledged (chat_id=%s)", chat_id)
-                elif text:
+                    logger.debug("Heartbeat processed successfully (HEARTBEAT_OK acknowledged)")
+                elif not text:
+                    logger.warning("Heartbeat produced empty response (no HEARTBEAT_OK)")
+                else:
                     logger.info(
                         "Heartbeat produced non-ACK text (suppressed from chat, chat_id=%s, preview=%s)",
                         chat_id,
                         text[:200],
                     )
         except Exception:
-            logger.exception("Internal heartbeat failed")
+            logger.exception("Internal heartbeat execution failed")
 
 
 async def run_bot(settings: Settings) -> None:
