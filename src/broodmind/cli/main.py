@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
+from rich.align import Align
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm
@@ -306,54 +307,39 @@ def status() -> None:
     running = is_pid_running(pid)
     last_message = status_data.get("last_message_at") if status_data else None
 
-    status_color = "green" if running else "red"
+    status_color = "bright_green" if running else "bright_red"
     status_text = "RUNNING" if running else "STOPPED"
 
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="bold white")
-    grid.add_column()
+    grid.add_column(style="bold cyan", justify="right")
+    grid.add_column(style="white")
 
-    grid.add_row("System Status:", f"[{status_color}]{status_text}[/{status_color}]")
-    grid.add_row("Process ID:", str(pid) if pid else "[dim]N/A[/dim]")
-    grid.add_row("Last Heartbeat:", str(last_message) if last_message else "[dim]Never[/dim]")
-    grid.add_row("Configuration:", "[green]Valid[/green]" if config_ok else "[red]Invalid[/red]")
+    grid.add_row("System Status", f"[{status_color}]{status_text}[/{status_color}]")
+    grid.add_row("Process ID", f"[bold]{pid}[/bold]" if pid else "[dim]N/A[/dim]")
+    grid.add_row("Last Heartbeat", str(last_message) if last_message else "[dim]Never[/dim]")
+    grid.add_row("Configuration", "[bright_green]Valid[/bright_green]" if config_ok else "[bright_red]Invalid[/bright_red]")
 
     metrics = read_metrics_snapshot(settings.state_dir)
     queen_metrics = metrics.get("queen", {}) if isinstance(metrics, dict) else {}
     telegram_metrics = metrics.get("telegram", {}) if isinstance(metrics, dict) else {}
     exec_metrics = metrics.get("exec_run", {}) if isinstance(metrics, dict) else {}
     if metrics:
-        grid.add_row(
-            "Queen Queues:",
-            (
-                f"followup={queen_metrics.get('followup_queues', 0)} "
-                f"internal={queen_metrics.get('internal_queues', 0)}"
-            ),
-        )
-        grid.add_row(
-            "Telegram Queues:",
-            (
-                f"queues={telegram_metrics.get('chat_queues', 0)} "
-                f"send_tasks={telegram_metrics.get('send_tasks', 0)}"
-            ),
-        )
-        grid.add_row(
-            "Exec Sessions:",
-            (
-                f"running={exec_metrics.get('background_sessions_running', 0)} "
-                f"total={exec_metrics.get('background_sessions_total', 0)}"
-            ),
-        )
+        grid.add_row("")
+        grid.add_row("Queen Queues", f"[dim]followup=[/dim]{queen_metrics.get('followup_queues', 0)} [dim]internal=[/dim]{queen_metrics.get('internal_queues', 0)}")
+        grid.add_row("Telegram Chat", f"[dim]queues=[/dim]{telegram_metrics.get('chat_queues', 0)} [dim]tasks=[/dim]{telegram_metrics.get('send_tasks', 0)}")
+        grid.add_row("Exec Sessions", f"[dim]running=[/dim]{exec_metrics.get('background_sessions_running', 0)} [dim]total=[/dim]{exec_metrics.get('background_sessions_total', 0)}")
     else:
-        grid.add_row("Runtime Metrics:", "[dim]No telemetry snapshot yet[/dim]")
+        grid.add_row("Metrics", "[dim]Not available[/dim]")
 
-    console.print(Panel(
+    console.print("\n")
+    console.print(Align.center(Panel(
         grid,
-        title="[bold cyan]BroodMind System Status[/bold cyan]",
-        border_style="blue",
+        title="[bold white]BroodMind System Status[/bold white]",
+        border_style="bright_blue",
         expand=False,
-        padding=(1, 2)
-    ))
+        padding=(1, 3)
+    )))
+    console.print("\n")
 
 
 @workers_app.command("list")
@@ -365,19 +351,22 @@ def workers_list() -> None:
         console.print("[yellow]No workers found.[/yellow]")
         return
 
-    table = Table(title="Registered Workers", border_style="blue", show_header=True, header_style="bold cyan")
-    table.add_column("Worker ID", style="dim")
-    table.add_column("Status")
-    table.add_column("Current Task")
+    table = Table(title="Registered Workers", border_style="bright_blue", show_header=True, header_style="bold cyan", expand=False)
+    table.add_column("Worker ID", style="dim", width=20)
+    table.add_column("Status", width=12)
+    table.add_column("Current Task", width=50)
 
     for worker in workers:
-        status_style = "green" if worker.status == "idle" else "yellow" if worker.status == "working" else "red"
+        status_style = "bright_green" if worker.status == "completed" else "yellow" if worker.status in ("running", "working") else "bright_red" if worker.status == "failed" else "dim white"
         table.add_row(
             worker.id,
             f"[{status_style}]{worker.status}[/{status_style}]",
-            worker.task or "[dim]-[/dim]"
+            (worker.task[:47] + "...") if worker.task and len(worker.task) > 50 else (worker.task or "[dim]-[/dim]")
         )
-    console.print(table)
+    
+    console.print("\n")
+    console.print(Align.center(table))
+    console.print("\n")
 
 
 @audit_app.command("list")
@@ -389,23 +378,26 @@ def audit_list(limit: int = 50) -> None:
         console.print("[yellow]No audit events found.[/yellow]")
         return
 
-    table = Table(title=f"Audit Log (Last {limit})", border_style="blue", header_style="bold cyan")
+    table = Table(title=f"Audit Log (Last {limit})", border_style="bright_blue", header_style="bold cyan", expand=False)
     table.add_column("ID", style="dim", width=10)
-    table.add_column("Timestamp", style="white")
+    table.add_column("Timestamp", style="white", width=20)
     table.add_column("Level", width=10)
-    table.add_column("Type", style="green")
-    table.add_column("Correlation ID", style="dim")
+    table.add_column("Type", style="bright_green", width=20)
+    table.add_column("Correlation ID", style="dim", width=12)
 
     for event in events:
-        level_style = "red" if event.level in ("ERROR", "CRITICAL") else "yellow" if event.level == "WARNING" else "blue"
+        level_style = "bright_red" if event.level in ("ERROR", "CRITICAL") else "yellow" if event.level == "WARNING" else "bright_blue"
         table.add_row(
-            event.id,
-            event.ts.isoformat(timespec='seconds'),
+            event.id[:10],
+            event.ts.isoformat(timespec='seconds').replace("T", " "),
             f"[{level_style}]{event.level}[/{level_style}]",
             event.event_type,
-            event.correlation_id or ""
+            (event.correlation_id[:12] if event.correlation_id else "")
         )
-    console.print(table)
+    
+    console.print("\n")
+    console.print(Align.center(table))
+    console.print("\n")
 
 
 @audit_app.command("show")
@@ -427,7 +419,8 @@ def audit_show(event_id: str) -> None:
     grid.add_row("Type:", event.event_type)
     grid.add_row("Correlation ID:", event.correlation_id or "-")
 
-    console.print(Panel(grid, title="Audit Event Details", border_style="blue"))
+    console.print("\n")
+    console.print(Align.center(Panel(grid, title="[bold white]Audit Event Details[/bold white]", border_style="bright_blue", expand=False, padding=(1, 4))))
 
     import json
 
@@ -439,11 +432,12 @@ def audit_show(event_id: str) -> None:
         if isinstance(event.data, dict | list):
             data_str = json.dumps(event.data, indent=2)
             syntax = Syntax(data_str, "json", theme="monokai", background_color="default")
-            console.print(Panel(syntax, title="Data Payload", border_style="white"))
+            console.print(Align.center(Panel(syntax, title="[bold white]Data Payload[/bold white]", border_style="white", expand=False, padding=(1, 2))))
         else:
-             console.print(Panel(data_str, title="Data Payload", border_style="white"))
+             console.print(Align.center(Panel(data_str, title="[bold white]Data Payload[/bold white]", border_style="white", expand=False, padding=(1, 2))))
     except Exception:
-        console.print(Panel(str(event.data), title="Data Payload", border_style="white"))
+        console.print(Align.center(Panel(str(event.data), title="[bold white]Data Payload[/bold white]", border_style="white", expand=False, padding=(1, 2))))
+    console.print("\n")
 
 
 @memory_app.command("stats")
@@ -472,17 +466,19 @@ def memory_stats() -> None:
         if chat_id:
             by_chat[chat_id] = by_chat.get(chat_id, 0) + 1
 
-    console.print(f"\n[bold]Total Memory Entries:[/bold] [cyan]{total}[/cyan]")
+    console.print("\n")
+    console.print(Align.center(f"[bold white]Total Memory Entries:[/bold white] [bright_cyan]{total}[/bright_cyan] [dim]|[/dim] [bold white]Unique Chats:[/bold white] [bright_cyan]{len(by_chat)}[/bright_cyan]"))
 
-    role_table = Table(title="Entries by Role", border_style="blue", show_header=True)
-    role_table.add_column("Role", style="magenta")
-    role_table.add_column("Count", style="green", justify="right")
+    role_table = Table(title="Entries by Role", border_style="bright_blue", show_header=True, expand=False)
+    role_table.add_column("Role", style="magenta", width=20)
+    role_table.add_column("Count", style="bright_green", justify="right", width=10)
 
     for role, count in sorted(by_role.items()):
         role_table.add_row(role, str(count))
 
-    console.print(role_table)
-    console.print(f"[bold]Unique Chats:[/bold] [cyan]{len(by_chat)}[/cyan]\n")
+    console.print("\n")
+    console.print(Align.center(role_table))
+    console.print("\n")
 
 
 @memory_app.command("cleanup")
@@ -532,9 +528,9 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
     """Show current configuration settings."""
     settings = load_settings()
 
-    table = Table(title="BroodMind Configuration", border_style="blue", show_header=True)
-    table.add_column("Setting", style="cyan")
-    table.add_column("Value")
+    table = Table(title="BroodMind Configuration", border_style="bright_blue", show_header=True, expand=False)
+    table.add_column("Setting", style="bright_cyan", width=35)
+    table.add_column("Value", width=45)
 
     secret_keywords = ("token", "key", "secret", "api_key")
 
@@ -545,7 +541,7 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
         is_secret = any(k in field_name.lower() or (field.alias and k in field.alias.lower()) for k in secret_keywords)
 
         if is_secret and not reveal_secrets and value:
-            display_value = "[dim]********[/dim]"
+            display_value = "[dim]●●●●●●●●[/dim]"
         elif value is None:
             display_value = "[dim]None[/dim]"
         else:
@@ -553,7 +549,9 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
 
         table.add_row(field.alias or field_name, display_value)
 
-    console.print(table)
+    console.print("\n")
+    console.print(Align.center(table))
+    console.print("\n")
 
 
 @app.command()
@@ -761,76 +759,85 @@ def _print_dashboard(snapshot: dict) -> None:
     workers = snapshot["workers"]
     control = snapshot["control"]
 
-    title = "[bold cyan]BROODMIND LIVE DASHBOARD[/bold cyan]"
-    console.print(Panel(title, border_style="cyan", expand=True))
+    console.print("\n")
+    title = "[bold bright_blue]BROODMIND LIVE DASHBOARD[/bold bright_blue]"
+    console.print(Align.center(Panel(title, border_style="bright_blue", expand=False, padding=(0, 10))))
 
-    sys_state = "[green]RUNNING[/green]" if system["running"] else "[red]STOPPED[/red]"
+    sys_state = "[bright_green]RUNNING[/bright_green]" if system["running"] else "[bright_red]STOPPED[/bright_red]"
     queen_color = (
-        "green"
+        "bright_green"
         if queen["state"] == "idle"
         else "yellow" if queen["state"] == "thinking" else "cyan"
     )
-    top = Table.grid(padding=(0, 2))
-    top.add_column(style="bold white")
+    
+    top = Table.grid(padding=(0, 4))
+    top.add_column(style="bold cyan", justify="right")
     top.add_column()
-    top.add_row("[SYS] System:", f"{sys_state}  PID={system['pid'] or 'N/A'}  Uptime={system['uptime']}")
-    top.add_row("[QN ] Queen:", f"[{queen_color}]{queen['state']}[/{queen_color}]  Last heartbeat={system['last_heartbeat'] or 'Never'}")
-    console.print(Panel(top, border_style="blue", title="System"))
+    top.add_row("System", f"{sys_state} [dim]|[/dim] PID {system['pid'] or 'N/A'} [dim]|[/dim] Uptime {system['uptime']}")
+    top.add_row("Queen", f"[{queen_color}]{queen['state'].upper()}[/{queen_color}] [dim]|[/dim] Heartbeat {system['last_heartbeat'] or 'Never'}")
+    
+    console.print(Align.center(Panel(top, border_style="blue", title="[bold white]Runtime[/bold white]", expand=False, padding=(1, 4))))
 
-    qgrid = Table.grid(padding=(0, 2))
-    qgrid.add_column(style="bold white")
-    qgrid.add_column()
-    qgrid.add_row("[Q ] Queen queues:", f"followup={queen['followup_queues']} internal={queen['internal_queues']}")
-    qgrid.add_row("[TG] Telegram queues:", f"queues={queues['telegram_queues']} send_tasks={queues['telegram_send_tasks']}")
-    qgrid.add_row("[EX] Exec sessions:", f"running={queues['exec_sessions_running']} total={queues['exec_sessions_total']}")
-    console.print(Panel(qgrid, border_style="blue", title="Queues"))
+    q_table = Table.grid(padding=(0, 4))
+    q_table.add_column(style="bold cyan", justify="right")
+    q_table.add_column()
+    q_table.add_row("Queen", f"[dim]followup=[/dim]{queen['followup_queues']} [dim]internal=[/dim]{queen['internal_queues']}")
+    q_table.add_row("Telegram", f"[dim]queues=[/dim]{queues['telegram_queues']} [dim]tasks=[/dim]{queues['telegram_send_tasks']}")
+    q_table.add_row("Execution", f"[dim]running=[/dim]{queues['exec_sessions_running']} [dim]total=[/dim]{queues['exec_sessions_total']}")
+    
+    w_table = Table.grid(padding=(0, 4))
+    w_table.add_column(style="bold cyan", justify="right")
+    w_table.add_column()
+    w_table.add_row("24h Activity", f"{workers['spawned_24h']} workers spawned")
+    w_table.add_row("Active", f"[bright_green]{workers['running']}[/bright_green] running [dim]|[/dim] [bright_green]{workers['completed']}[/bright_green] ok")
+    w_table.add_row("Issues", f"[bright_red]{workers['failed']}[/bright_red] failed [dim]|[/dim] [yellow]{workers['stopped']}[/yellow] stopped")
 
-    wgrid = Table.grid(padding=(0, 2))
-    wgrid.add_column(style="bold white")
-    wgrid.add_column()
-    wgrid.add_row(
-        "[WK] Worker summary:",
-        (
-            f"spawned_24h={workers['spawned_24h']}  "
-            f"running={workers['running']}  completed={workers['completed']}  "
-            f"failed={workers['failed']}  stopped={workers['stopped']}"
-        ),
+    detail_grid = Table.grid(padding=(0, 2))
+    detail_grid.add_column()
+    detail_grid.add_column()
+    detail_grid.add_row(
+        Panel(q_table, border_style="blue", title="[bold white]Queues[/bold white]", padding=(1, 2)),
+        Panel(w_table, border_style="blue", title="[bold white]Workers[/bold white]", padding=(1, 2))
     )
-    console.print(Panel(wgrid, border_style="blue", title="Workers"))
+    console.print(Align.center(detail_grid))
 
-    recent = Table(title="Recent Workers", border_style="blue", show_header=True, header_style="bold cyan")
-    recent.add_column("ID", style="dim", width=12)
+    recent = Table(border_style="blue", show_header=True, header_style="bold cyan", expand=False)
+    recent.add_column("Worker ID", style="dim", width=12)
     recent.add_column("Status", width=10)
     recent.add_column("Task")
     recent.add_column("Updated", style="dim", width=20)
+    
     for row in workers["recent"]:
         status = row["status"]
-        color = "green" if status == "completed" else "red" if status == "failed" else "yellow"
+        color = "bright_green" if status == "completed" else "bright_red" if status == "failed" else "yellow"
         recent.add_row(
             str(row["id"])[:12],
             f"[{color}]{status}[/{color}]",
-            str(row["task"])[:80],
+            str(row["task"])[:60],
             str(row["updated_at"])[:19].replace("T", " "),
         )
-    console.print(recent)
+    
+    console.print(Align.center(Panel(recent, title="[bold white]Recent Activity[/bold white]", border_style="blue", expand=False)))
 
-    cgrid = Table.grid(padding=(0, 2))
-    cgrid.add_column(style="bold white")
+    cgrid = Table.grid(padding=(0, 4))
+    cgrid.add_column(style="bold cyan", justify="right")
     cgrid.add_column()
-    cgrid.add_row("[CTL] Pending requests:", str(control["pending_requests"]))
+    cgrid.add_row("Pending", str(control["pending_requests"]))
     last_ack = control.get("last_ack")
     if isinstance(last_ack, dict):
         cgrid.add_row(
-            "[CTL] Last ack:",
+            "Last Ack",
             (
-                f"{last_ack.get('action', '?')} "
-                f"{last_ack.get('status', '?')} "
+                f"{last_ack.get('action', '?')} [dim]→[/dim] "
+                f"[{'bright_green' if last_ack.get('status') == 'ok' else 'yellow'}]{last_ack.get('status', '?')}[/] [dim]at[/] "
                 f"{str(last_ack.get('acked_at', ''))[:19].replace('T', ' ')}"
             ),
         )
     else:
-        cgrid.add_row("[CTL] Last ack:", "none")
-    console.print(Panel(cgrid, border_style="blue", title="Control Channel"))
+        cgrid.add_row("Last Ack", "[dim]none[/dim]")
+    
+    console.print(Align.center(Panel(cgrid, border_style="blue", title="[bold white]Control Channel[/bold white]", expand=False, padding=(1, 4))))
+    console.print("\n")
 
 
 def _read_jsonl(path: Path) -> list[dict]:

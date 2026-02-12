@@ -16,16 +16,19 @@ def print_banner() -> None:
     ╚═════╝ ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚═════╝
     """).strip()
 
-    tagline = Text("Friendly and safe AI agents", style="bold white")
+    tagline = Text("Friendly and safe AI agents", style="italic white")
 
     # Create the content stack
-    content = Text(banner_text, style="bold white", justify="center") + Text("\n\n") + tagline
+    content = Text(banner_text, style="cyan", justify="center") + Text("\n\n") + tagline
 
     panel = Panel(
         Align.center(content),
-        border_style="cyan",
-        subtitle="v0.2.0",
-        padding=(2, 2),
-        expand=True
+        border_style="bright_blue",
+        subtitle="[bold white]v0.2.0[/bold white]",
+        padding=(1, 2),
+        expand=False,
+        width=100
     )
-    print(panel)
+    print("\n")
+    print(Align.center(panel))
+    print("\n")
