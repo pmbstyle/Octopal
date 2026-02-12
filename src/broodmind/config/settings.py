@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     zai_timeout_seconds: float = Field(45.0, alias="ZAI_TIMEOUT_SECONDS")
     zai_connect_timeout_seconds: float = Field(15.0, alias="ZAI_CONNECT_TIMEOUT_SECONDS")
     zai_accept_language: str = Field("en-US,en", alias="ZAI_ACCEPT_LANGUAGE")
-    zai_model: str = Field("glm-4.7", alias="ZAI_MODEL")
+    zai_model: str = Field("glm-5", alias="ZAI_MODEL")
 
     brave_api_key: str | None = Field(default=None, alias="BRAVE_API_KEY")
     firecrawl_api_key: str | None = Field(default=None, alias="FIRECRAWL_API_KEY")

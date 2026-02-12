@@ -87,7 +87,7 @@ def configure_wizard() -> None:
         if zai_key:
             config.set("ZAI_API_KEY", zai_key)
 
-        current_zai_model = config.get("ZAI_MODEL", "glm-4.7")
+        current_zai_model = config.get("ZAI_MODEL", "glm-5")
         zai_model = Prompt.ask("Enter default model name", default=current_zai_model)
         config.set("ZAI_MODEL", zai_model)
 
