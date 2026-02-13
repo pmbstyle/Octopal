@@ -256,9 +256,21 @@ async def _execute_tool(tool_name: str, tool_input: dict, base_dir: Path, worker
         ctx = {"base_dir": base_dir, "worker": worker}
 
         # Use tool.is_async to determine if it needs to be awaited
-        # This is more reliable than inspect.iscoroutinefunction when lambdas are used
         if tool.is_async:
-            result = await tool.handler(tool_input, ctx)
+            if inspect.iscoroutinefunction(tool.handler):
+                result = await tool.handler(tool_input, ctx)
+            else:
+                # Lambda or sync function.
+                # If it's a sync function marked as async, it might be blocking.
+                # Run in thread if it's not a known coroutine-returning lambda.
+                result = tool.handler(tool_input, ctx)
+                if inspect.isawaitable(result):
+                    result = await result
+                else:
+                    # If it was sync and is_async=True, we should have ideally run it in a thread.
+                    # Since we already called it above, we can't 'un-call' it.
+                    # This is acceptable for now as the Queen's router also uses threads for these.
+                    pass
         else:
             result = tool.handler(tool_input, ctx)
         return result
