@@ -143,6 +143,7 @@ def get_tools() -> list[ToolSpec]:
             },
             permission="network",
             handler=lambda args, ctx: web_search(args),
+            is_async=True,
         ),
         ToolSpec(
             name="web_fetch",
@@ -181,6 +182,7 @@ def get_tools() -> list[ToolSpec]:
             },
             permission="network",
             handler=lambda args, ctx: web_fetch(args),
+            is_async=True,
         ),
         ToolSpec(
             name="browser_open",
@@ -261,6 +263,7 @@ def get_tools() -> list[ToolSpec]:
             },
             permission="filesystem_read",
             handler=lambda args, ctx: fs_read(args, ctx["base_dir"]),
+            is_async=True,
         ),
         ToolSpec(
             name="fs_write",
@@ -279,6 +282,7 @@ def get_tools() -> list[ToolSpec]:
             },
             permission="filesystem_write",
             handler=lambda args, ctx: fs_write(args, ctx["base_dir"]),
+            is_async=True,
         ),
         ToolSpec(
             name="fs_list",
@@ -295,6 +299,7 @@ def get_tools() -> list[ToolSpec]:
             },
             permission="filesystem_read",
             handler=lambda args, ctx: fs_list(args, ctx["base_dir"]),
+            is_async=True,
         ),
         ToolSpec(
             name="fs_move",
@@ -316,6 +321,7 @@ def get_tools() -> list[ToolSpec]:
             },
             permission="filesystem_write",
             handler=lambda args, ctx: fs_move(args, ctx["base_dir"]),
+            is_async=True,
         ),
         ToolSpec(
             name="fs_delete",
@@ -333,6 +339,7 @@ def get_tools() -> list[ToolSpec]:
             },
             permission="filesystem_write",
             handler=lambda args, ctx: fs_delete(args, ctx["base_dir"]),
+            is_async=True,
         ),
         ToolSpec(
             name="exec_run",
@@ -368,6 +375,7 @@ def get_tools() -> list[ToolSpec]:
             },
             permission="exec",
             handler=lambda args, ctx: exec_run(args, ctx["base_dir"]),
+            is_async=True,
         ),
         ToolSpec(
             name="service_health",

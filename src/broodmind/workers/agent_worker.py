@@ -255,8 +255,9 @@ async def _execute_tool(tool_name: str, tool_input: dict, base_dir: Path, worker
         # worker instance is needed for intent requests
         ctx = {"base_dir": base_dir, "worker": worker}
 
-        # Check if handler is async or sync
-        if inspect.iscoroutinefunction(tool.handler):
+        # Use tool.is_async to determine if it needs to be awaited
+        # This is more reliable than inspect.iscoroutinefunction when lambdas are used
+        if tool.is_async:
             result = await tool.handler(tool_input, ctx)
         else:
             result = tool.handler(tool_input, ctx)

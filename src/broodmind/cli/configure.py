@@ -87,6 +87,10 @@ def configure_wizard() -> None:
         if zai_key:
             config.set("ZAI_API_KEY", zai_key)
 
+        current_zai_base = config.get("ZAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4")
+        zai_base = Prompt.ask("Enter Z.ai Base URL", default=current_zai_base)
+        config.set("ZAI_BASE_URL", zai_base)
+
         current_zai_model = config.get("ZAI_MODEL", "glm-5")
         zai_model = Prompt.ask("Enter default model name", default=current_zai_model)
         config.set("ZAI_MODEL", zai_model)
@@ -118,6 +122,15 @@ def configure_wizard() -> None:
         openai_key = Prompt.ask("Enter OpenAI API Key", default=current_openai)
         if openai_key:
             config.set("OPENAI_API_KEY", openai_key)
+            
+            # Ensure defaults or current values for base URL and embed model are saved
+            current_base_url = config.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            openai_base_url = Prompt.ask("Enter OpenAI Base URL", default=current_base_url)
+            config.set("OPENAI_BASE_URL", openai_base_url)
+            
+            current_embed_model = config.get("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+            openai_embed_model = Prompt.ask("Enter OpenAI Embedding Model", default=current_embed_model)
+            config.set("OPENAI_EMBED_MODEL", openai_embed_model)
 
     console.print()
     if workspace_result["created_files"]:
