@@ -32,7 +32,7 @@ async def route_or_reply(
     internal_followup: bool = False,
     show_typing: bool = True,
 ) -> str:
-    \"\"\"Core routing logic: decide whether to use tools or reply to user.\"\"\"
+    """Core routing logic: decide whether to use tools or reply to user."""
     # Internal chat_id (<= 0) should not trigger typing indicators.
     if chat_id > 0 and show_typing:
         await queen.set_typing(chat_id, True)

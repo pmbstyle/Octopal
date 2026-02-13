@@ -260,7 +260,7 @@ def _normalize_parse_mode(raw: str | None) -> str | None:
 
 
 def _prepare_markdown_v2(text: str) -> str:
-    \"\"\"Robust MarkdownV2 sanitizer that preserves common markdown entities while escaping correctly.\"\"\"
+    """Robust MarkdownV2 sanitizer that preserves common markdown entities while escaping correctly."""
     source = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     
     # Characters that must be escaped outside entities
