@@ -7,6 +7,7 @@ import structlog
 from aiogram import Bot, Dispatcher
 
 from broodmind.config.settings import Settings
+from broodmind.mcp.manager import MCPManager
 from broodmind.memory.canon import CanonService
 from broodmind.memory.service import MemoryService
 from broodmind.policy.engine import PolicyEngine
@@ -37,11 +38,13 @@ def build_dispatcher(settings: Settings, bot: Bot) -> Dispatcher:
 
     policy = PolicyEngine()
     launcher = build_launcher(settings)
+    mcp_manager = MCPManager(workspace_dir=settings.workspace_dir)
     runtime = WorkerRuntime(
         store=store,
         policy=policy,
         workspace_dir=settings.workspace_dir,
         launcher=launcher,
+        mcp_manager=mcp_manager,
     )
     approvals = ApprovalManager(bot=bot)
     embeddings = None
@@ -59,6 +62,7 @@ def build_dispatcher(settings: Settings, bot: Bot) -> Dispatcher:
         store=store,
         embeddings=embeddings
     )
+    mcp_manager = MCPManager(workspace_dir=settings.workspace_dir)
     queen = Queen(
         provider=provider,
         store=store,
@@ -67,6 +71,7 @@ def build_dispatcher(settings: Settings, bot: Bot) -> Dispatcher:
         approvals=approvals,
         memory=memory,
         canon=canon,
+        mcp_manager=mcp_manager,
     )
 
     dp = Dispatcher()

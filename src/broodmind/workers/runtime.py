@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from broodmind.intents.types import ActionIntent
+from broodmind.mcp.manager import MCPManager
 from broodmind.policy.engine import PolicyEngine
 from broodmind.store.base import Store
 from broodmind.store.models import AuditEvent, WorkerRecord
@@ -35,6 +36,7 @@ class WorkerRuntime:
     policy: PolicyEngine
     workspace_dir: Path
     launcher: WorkerLauncher
+    mcp_manager: MCPManager | None = None
     _running: dict[str, asyncio.subprocess.Process] = field(default_factory=dict)
 
     async def run_task(
@@ -59,6 +61,28 @@ class WorkerRuntime:
         if not granted:
             return WorkerResult(summary="Permission denied for worker task")
 
+        # Get all tools to find MCP tool definitions
+        from broodmind.tools.tools import get_tools
+        all_tools = get_tools(mcp_manager=self.mcp_manager)
+        requested_tool_names = task_request.tools or template.available_tools
+        
+        mcp_tools_data = []
+        for tool_name in requested_tool_names:
+            if tool_name.startswith("mcp_"):
+                # Find the tool spec
+                spec_found = next((t for t in all_tools if t.name == tool_name), None)
+                if spec_found:
+                    # We need to serialize the ToolSpec. 
+                    # ToolSpec is a dataclass, we can convert it to dict.
+                    # But the 'handler' is not serializable. That's fine, the worker will use its own proxy handler.
+                    mcp_tools_data.append({
+                        "name": spec_found.name,
+                        "description": spec_found.description,
+                        "parameters": spec_found.parameters,
+                        "permission": spec_found.permission,
+                        "is_async": spec_found.is_async
+                    })
+
         # Create worker spec
         worker_id = task_request.run_id or str(uuid.uuid4())
         spec = WorkerSpec(
@@ -66,7 +90,8 @@ class WorkerRuntime:
             task=task_request.task,
             inputs=task_request.inputs,
             system_prompt=template.system_prompt,
-            available_tools=task_request.tools or template.available_tools,
+            available_tools=requested_tool_names,
+            mcp_tools=mcp_tools_data,
             model=task_request.model or template.model,
             granted_capabilities=[c.model_dump() for c in granted],
             timeout_seconds=task_request.timeout_seconds or template.default_timeout_seconds,
@@ -235,6 +260,30 @@ class WorkerRuntime:
             msg_type = payload.get("type")
             if msg_type == "log":
                 logger.debug("Worker %s: %s", spec.id, payload.get("message"))
+                return None
+            if msg_type == "mcp_call":
+                server_id = payload.get("server_id")
+                tool_name = payload.get("tool_name")
+                args = payload.get("arguments", {})
+                
+                if not self.mcp_manager:
+                    await self._write_to_worker(process, {"type": "error", "message": "MCP Manager not available in runtime."})
+                    return None
+                
+                session = self.mcp_manager.sessions.get(server_id)
+                if not session:
+                    await self._write_to_worker(process, {"type": "error", "message": f"MCP session {server_id} not active."})
+                    return None
+                
+                try:
+                    logger.info("Executing MCP call for worker", worker_id=spec.id, server_id=server_id, tool=tool_name)
+                    result = await session.call_tool(tool_name, arguments=args)
+                    # Convert MCP content objects to something serializable
+                    content = [c.model_dump() if hasattr(c, "model_dump") else str(c) for c in result.content]
+                    await self._write_to_worker(process, {"type": "mcp_result", "result": content})
+                except Exception as e:
+                    logger.exception("Worker MCP call failed")
+                    await self._write_to_worker(process, {"type": "error", "message": str(e)})
                 return None
             if msg_type == "intent_request":
                 from broodmind.intents.registry import IntentValidationError, validate_intent

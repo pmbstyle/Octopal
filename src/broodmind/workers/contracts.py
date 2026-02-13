@@ -52,6 +52,7 @@ class WorkerSpec(BaseModel):
     inputs: dict[str, Any]
     system_prompt: str
     available_tools: list[str]
+    mcp_tools: list[dict[str, Any]] = Field(default_factory=list)
     model: str | None = None
     granted_capabilities: list[dict[str, Any]]  # From policy engine
     timeout_seconds: int

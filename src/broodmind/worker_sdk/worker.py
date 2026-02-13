@@ -75,6 +75,18 @@ class Worker:
     async def complete(self, result: WorkerResult) -> None:
         await self._write_message({"type": "result", "result": result.model_dump()})
 
+    async def call_mcp_tool(self, server_id: str, tool_name: str, arguments: dict[str, Any]) -> Any:
+        await self._write_message({
+            "type": "mcp_call",
+            "server_id": server_id,
+            "tool_name": tool_name,
+            "arguments": arguments
+        })
+        response = await self._read_message()
+        if response.get("type") == "error":
+            raise RuntimeError(response.get("message", "Unknown MCP error"))
+        return response.get("result")
+
     async def _write_message(self, payload: dict[str, Any]) -> None:
         line = json.dumps(payload)
         sys.stdout.write(line + "\n")

@@ -69,6 +69,32 @@ async def execute_agent_task(worker: Worker, base_dir: Path) -> WorkerResult:
     # Filter tools by name from worker spec
     filtered_tools = [t for t in available_tools if t.name in spec.available_tools]
 
+    # Add MCP tools from spec
+    from broodmind.tools.registry import ToolSpec
+    for mcp_tool_data in spec.mcp_tools:
+        # Generate a proxy handler for this MCP tool
+        server_id = mcp_tool_data["name"].split("_")[1] # Assumes mcp_SERVERID_TOOLNAME
+        # Actually it's better to just parse it from the name
+        # mcp_id_name -> id is the second part
+        parts = mcp_tool_data["name"].split("_")
+        if len(parts) >= 3:
+            s_id = parts[1]
+            t_name = "_".join(parts[2:])
+            
+            async def mcp_proxy_handler(args: dict, ctx: dict, s_id=s_id, t_name=t_name):
+                w = ctx.get("worker")
+                return await w.call_mcp_tool(s_id, t_name, args)
+
+            mcp_spec = ToolSpec(
+                name=mcp_tool_data["name"],
+                description=mcp_tool_data["description"],
+                parameters=mcp_tool_data["parameters"],
+                permission=mcp_tool_data["permission"],
+                handler=mcp_proxy_handler,
+                is_async=True
+            )
+            filtered_tools.append(mcp_spec)
+
     tool_descriptions = "\n".join(
         f"- {t.name}: {t.description}" for t in filtered_tools
     )
@@ -128,7 +154,7 @@ If you need clarification from the Queen, include:
                 await worker.log("info", f"Using tool: {tool_name}")
 
                 # Execute tool
-                tool_result = await _execute_tool(tool_name, tool_input, base_dir, worker)
+                tool_result = await _execute_tool(tool_name, tool_input, base_dir, worker, filtered_tools)
                 tools_used.append(tool_name)
 
                 # Add tool result message
@@ -239,9 +265,16 @@ async def _call_llm(
     return response
 
 
-async def _execute_tool(tool_name: str, tool_input: dict, base_dir: Path, worker: Worker) -> Any:
+async def _execute_tool(
+    tool_name: str, 
+    tool_input: dict, 
+    base_dir: Path, 
+    worker: Worker,
+    available_tools: list | None = None
+) -> Any:
     """Execute a tool by name."""
-    available_tools = get_tools()
+    if available_tools is None:
+        available_tools = get_tools()
     tool_map = {t.name: t for t in available_tools}
 
     if tool_name not in tool_map:

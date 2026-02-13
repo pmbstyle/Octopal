@@ -12,6 +12,8 @@ DEFAULT_CAPABILITY_WHITELIST: dict[str, list[str]] = {
     "db_admin": ["worker"],
     "security_audit": ["worker"],
     "self_control": ["worker"],
+    "mcp_exec": ["*"],
+    "mcp_manage": ["worker"],
     "email": ["*"],
     "payment": [],
 }

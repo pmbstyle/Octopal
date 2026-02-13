@@ -14,6 +14,7 @@ import structlog
 from broodmind.intents.types import ActionIntent
 from broodmind.memory.canon import CanonService
 from broodmind.memory.service import MemoryService
+from broodmind.mcp.manager import MCPManager
 from broodmind.policy.engine import PolicyEngine
 from broodmind.providers.base import InferenceProvider
 from broodmind.browser.manager import get_browser_manager
@@ -188,6 +189,7 @@ class Queen:
     approvals: ApprovalManager
     memory: MemoryService
     canon: CanonService
+    mcp_manager: MCPManager | None = None
     internal_send: callable | None = None
     internal_progress_send: callable | None = None
     internal_typing_control: callable | None = None
@@ -232,6 +234,10 @@ class Queen:
             except asyncio.CancelledError:
                 logger.info("Stopped periodic worker cleanup task")
         
+        # Shutdown MCP sessions
+        if self.mcp_manager:
+            await self.mcp_manager.shutdown()
+        
         # Shutdown browser sessions
         await get_browser_manager().shutdown()
 
@@ -239,6 +245,11 @@ class Queen:
         system_chat_id = 0
         logger.info("Queen waking up")
         self.start_background_tasks()
+        
+        # Load and connect MCP servers
+        if self.mcp_manager:
+            await self.mcp_manager.load_and_connect_all()
+        
         wake_up_prompt = "You are waking up. Your first task is to read AGENTS.md and then list available workers."
         original_send = self.internal_send
         chat_ids = allowed_chat_ids or []

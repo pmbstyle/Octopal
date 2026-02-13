@@ -40,6 +40,19 @@ INTENT_REGISTRY: dict[str, IntentSpec] = {
             },
         },
     ),
+    "mcp_call": IntentSpec(
+        risk="medium",
+        requires_approval=False,
+        payload_schema={
+            "required": ["server_id", "tool_name", "arguments"],
+            "optional": [],
+            "types": {
+                "server_id": "str",
+                "tool_name": "str",
+                "arguments": "dict",
+            },
+        },
+    ),
     "file.read": IntentSpec(
         risk="low",
         requires_approval=False,

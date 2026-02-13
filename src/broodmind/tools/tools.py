@@ -35,9 +35,10 @@ from broodmind.tools.registry import ToolSpec
 from broodmind.tools.web_fetch import web_fetch
 from broodmind.tools.web_search import web_search
 from broodmind.tools.worker_tools import get_worker_tools
+from broodmind.tools.mcp_tools import get_mcp_mgmt_tools
 
 
-def get_tools() -> list[ToolSpec]:
+def get_tools(mcp_manager=None) -> list[ToolSpec]:
     tools = [
         ToolSpec(
             name="manage_canon",
@@ -604,4 +605,7 @@ def get_tools() -> list[ToolSpec]:
         ),
     ]
     tools.extend(get_worker_tools())
+    tools.extend(get_mcp_mgmt_tools())
+    if mcp_manager:
+        tools.extend(mcp_manager.get_all_tools())
     return tools
