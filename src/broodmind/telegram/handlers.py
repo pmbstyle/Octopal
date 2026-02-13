@@ -326,6 +326,15 @@ def _prepare_markdown_v2(text: str) -> str:
         elif fragment.startswith("~") and fragment.endswith("~"):
             inner = fragment[2:-2]
             fragment = f"~{_escape_markdown_v2_plain(inner)}~"
+        elif fragment.startswith("*") and fragment.endswith("*"):
+            inner = fragment[1:-1]
+            fragment = f"*{_escape_markdown_v2_plain(inner)}*"
+        elif fragment.startswith("_") and fragment.endswith("_"):
+            inner = fragment[1:-1]
+            fragment = f"_{_escape_markdown_v2_plain(inner)}_"
+        else:
+            # Fallback for any other stashed entities to ensure they are escaped
+            fragment = _escape_markdown_v2_plain(fragment)
         
         escaped = escaped.replace(placeholder, fragment)
         
