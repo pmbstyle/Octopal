@@ -10,6 +10,7 @@ from pathlib import Path
 import typer
 from rich.align import Align
 from rich.console import Console
+from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
 from rich.prompt import Confirm
@@ -38,6 +39,7 @@ memory_app = typer.Typer(add_completion=False)
 config_app = typer.Typer(add_completion=False)
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 @app.command()
@@ -615,6 +617,7 @@ def dashboard(
     watch: bool = typer.Option(True, "--watch/--once", "-w/-o", help="Continuously refresh dashboard (default) or show once"),
     interval: float = typer.Option(2.0, "--interval", "-i", help="Refresh interval in seconds for live mode"),
     last: int = typer.Option(8, "--last", help="Number of recent workers to show"),
+    compact: bool = typer.Option(False, "--compact", help="Use compact view optimized for narrow terminals"),
     json_output: bool = typer.Option(False, "--json", help="Print JSON snapshot instead of dashboard view"),
 ) -> None:
     """Show a live runtime dashboard (system, queen, workers, control channel)."""
@@ -634,13 +637,13 @@ def dashboard(
         if json_output:
             console.print(json.dumps(snapshot, ensure_ascii=False, indent=2))
         else:
-            _print_dashboard(snapshot)
+            _print_dashboard(snapshot, compact=compact)
         return
 
     # Live watch mode
     try:
         with Live(
-            _build_dashboard_renderable(_build_dashboard_snapshot(settings, last, store=store)),
+            _build_dashboard_renderable(_build_dashboard_snapshot(settings, last, store=store), compact=compact),
             console=console,
             refresh_per_second=1/refresh_interval,
             screen=True
@@ -649,7 +652,7 @@ def dashboard(
                 time.sleep(refresh_interval)
                 try:
                     snapshot = _build_dashboard_snapshot(settings, last, store=store)
-                    live.update(_build_dashboard_renderable(snapshot))
+                    live.update(_build_dashboard_renderable(snapshot, compact=compact))
                 except Exception as e:
                     # Log error internally but keep the dashboard alive
                     logger.debug(f"Dashboard refresh error: {e}")
@@ -766,99 +769,106 @@ def _build_dashboard_snapshot(settings: Settings, last: int, store: SQLiteStore 
     }
 
 
-def _build_dashboard_renderable(snapshot: dict) -> Align:
+def _build_dashboard_renderable(snapshot: dict, compact: bool = False) -> Align:
     system = snapshot["system"]
     queen = snapshot["queen"]
     queues = snapshot["queues"]
     workers = snapshot["workers"]
     control = snapshot["control"]
 
-    layout = Table.grid(padding=(1, 0))
-    layout.add_column()
+    if console.size.width < 120:
+        compact = True
 
-    title = "[bold bright_blue]BROODMIND LIVE DASHBOARD[/bold bright_blue]"
-    layout.add_row(Align.center(Panel(title, border_style="bright_blue", expand=False, padding=(0, 10))))
-
-    sys_state = "[bright_green]RUNNING[/bright_green]" if system["running"] else "[bright_red]STOPPED[/bright_red]"
-    queen_color = (
-        "bright_green"
-        if queen["state"] == "idle"
-        else "yellow" if queen["state"] == "thinking" else "cyan"
+    sys_badge = _status_badge("running" if system["running"] else "stopped")
+    queen_badge = _status_badge(queen["state"])
+    header_text = (
+        f"[bold bright_cyan]BROODMIND DASHBOARD[/bold bright_cyan]   "
+        f"{sys_badge}   {queen_badge}   "
+        f"[dim]PID[/dim] {system['pid'] or 'N/A'}   "
+        f"[dim]Uptime[/dim] {system['uptime']}"
     )
-    
-    top = Table.grid(padding=(0, 4))
-    top.add_column(style="bold cyan", justify="right")
-    top.add_column()
-    top.add_row("System", f"{sys_state} [dim]|[/dim] PID {system['pid'] or 'N/A'} [dim]|[/dim] Uptime {system['uptime']}")
-    top.add_row("Queen", f"[{queen_color}]{queen['state'].upper()}[/{queen_color}] [dim]|[/dim] Heartbeat {system['last_heartbeat'] or 'Never'}")
-    
-    layout.add_row(Align.center(Panel(top, border_style="blue", title="[bold white]Runtime[/bold white]", expand=False, padding=(1, 4))))
+    header = Panel(header_text, border_style="bright_blue", padding=(0, 1))
 
-    q_table = Table.grid(padding=(0, 4))
-    q_table.add_column(style="bold cyan", justify="right")
-    q_table.add_column()
-    q_table.add_row("Queen", f"[dim]followup=[/dim]{queen['followup_queues']} [dim]internal=[/dim]{queen['internal_queues']}")
-    q_table.add_row("Telegram", f"[dim]queues=[/dim]{queues['telegram_queues']} [dim]tasks=[/dim]{queues['telegram_send_tasks']}")
-    q_table.add_row("Execution", f"[dim]running=[/dim]{queues['exec_sessions_running']} [dim]total=[/dim]{queues['exec_sessions_total']}")
-    
-    w_table = Table.grid(padding=(0, 4))
-    w_table.add_column(style="bold cyan", justify="right")
-    w_table.add_column()
-    w_table.add_row("24h Activity", f"{workers['spawned_24h']} workers spawned")
-    w_table.add_row("Active", f"[bright_green]{workers['running']}[/bright_green] running [dim]|[/dim] [bright_green]{workers['completed']}[/bright_green] ok")
-    w_table.add_row("Issues", f"[bright_red]{workers['failed']}[/bright_red] failed [dim]|[/dim] [yellow]{workers['stopped']}[/yellow] stopped")
-
-    detail_grid = Table.grid(padding=(0, 2))
-    detail_grid.add_column()
-    detail_grid.add_column()
-    detail_grid.add_row(
-        Panel(q_table, border_style="blue", title="[bold white]Queues[/bold white]", padding=(1, 2)),
-        Panel(w_table, border_style="blue", title="[bold white]Workers[/bold white]", padding=(1, 2))
+    health = Table.grid(padding=(0, 2))
+    health.add_column(style="bold cyan", justify="right")
+    health.add_column(style="white")
+    health.add_row("Heartbeat", str(system["last_heartbeat"] or "Never"))
+    health.add_row(
+        "Queues",
+        (
+            f"followup={queen['followup_queues']} internal={queen['internal_queues']} "
+            f"telegram={queues['telegram_queues']} send_tasks={queues['telegram_send_tasks']}"
+        ),
     )
-    layout.add_row(Align.center(detail_grid))
+    health.add_row(
+        "Workers",
+        (
+            f"running={workers['running']} completed={workers['completed']} "
+            f"failed={workers['failed']} stopped={workers['stopped']} spawned_24h={workers['spawned_24h']}"
+        ),
+    )
+    health_panel = Panel(health, title="[bold white]Runtime Health[/bold white]", border_style="blue")
 
-    recent = Table(border_style="blue", show_header=True, header_style="bold cyan", expand=False)
-    recent.add_column("Worker ID", style="dim", width=12)
-    recent.add_column("Status", width=10)
-    recent.add_column("Task")
-    recent.add_column("Updated", style="dim", width=20)
-    
+    recent = Table(show_header=True, header_style="bold cyan", expand=True)
+    recent.add_column("ID", style="dim", width=12, no_wrap=True)
+    recent.add_column("Status", width=12, no_wrap=True)
+    recent.add_column("Age", width=8, justify="right", no_wrap=True)
+    recent.add_column("Task", overflow="ellipsis")
+    if not compact:
+        recent.add_column("Updated (UTC)", style="dim", width=19, no_wrap=True)
+
     for row in workers["recent"]:
-        status = row["status"]
-        color = "bright_green" if status == "completed" else "bright_red" if status == "failed" else "yellow"
+        updated_at = str(row["updated_at"])
         recent.add_row(
             str(row["id"])[:12],
-            f"[{color}]{status}[/{color}]",
-            str(row["task"])[:60],
-            str(row["updated_at"])[:19].replace("T", " "),
+            _status_badge(str(row["status"])),
+            _age_human(updated_at),
+            _truncate(str(row["task"]), 72 if compact else 96),
+            *([updated_at[:19].replace("T", " ")] if not compact else []),
         )
-    
-    layout.add_row(Align.center(Panel(recent, title="[bold white]Recent Activity[/bold white]", border_style="blue", expand=False)))
+    workers_panel = Panel(recent, title=f"[bold white]Recent Workers ({len(workers['recent'])})[/bold white]", border_style="blue")
 
-    cgrid = Table.grid(padding=(0, 4))
-    cgrid.add_column(style="bold cyan", justify="right")
-    cgrid.add_column()
-    cgrid.add_row("Pending", str(control["pending_requests"]))
-    last_ack = control.get("last_ack")
-    if isinstance(last_ack, dict):
-        cgrid.add_row(
-            "Last Ack",
-            (
-                f"{last_ack.get('action', '?')} [dim]→[/dim] "
-                f"[{'bright_green' if last_ack.get('status') == 'ok' else 'yellow'}]{last_ack.get('status', '?')}[/] [dim]at[/] "
-                f"{str(last_ack.get('acked_at', ''))[:19].replace('T', ' ')}"
-            ),
+    alerts = _build_alert_lines(snapshot)
+    alerts_table = Table.grid(padding=(0, 1))
+    alerts_table.add_column()
+    for line in alerts:
+        alerts_table.add_row(line)
+    alerts_panel = Panel(alerts_table, title="[bold white]Attention[/bold white]", border_style="yellow")
+
+    footer = Panel(
+        "[bold cyan]Hints:[/bold cyan] broodmind dashboard -w | broodmind logs -f | broodmind workers list",
+        border_style="bright_black",
+        padding=(0, 1),
+    )
+
+    root = Layout(name="root")
+    root.split_column(
+        Layout(header, size=3, name="header"),
+        Layout(name="body"),
+        Layout(footer, size=3, name="footer"),
+    )
+
+    if compact:
+        root["body"].split_column(
+            Layout(health_panel, size=8),
+            Layout(alerts_panel, size=7),
+            Layout(workers_panel),
         )
     else:
-        cgrid.add_row("Last Ack", "[dim]none[/dim]")
-    
-    layout.add_row(Align.center(Panel(cgrid, border_style="blue", title="[bold white]Control Channel[/bold white]", expand=False, padding=(1, 4))))
-    
-    return Align.center(layout)
+        root["body"].split_row(
+            Layout(workers_panel, ratio=3),
+            Layout(name="side", ratio=2),
+        )
+        root["body"]["side"].split_column(
+            Layout(health_panel, ratio=2),
+            Layout(alerts_panel, ratio=1),
+        )
+
+    return Align.center(root)
 
 
-def _print_dashboard(snapshot: dict) -> None:
-    console.print(_build_dashboard_renderable(snapshot))
+def _print_dashboard(snapshot: dict, compact: bool = False) -> None:
+    console.print(_build_dashboard_renderable(snapshot, compact=compact))
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -897,6 +907,65 @@ def _uptime_human(started_at: str | None) -> str:
         return f"{hours:02}:{minutes:02}:{seconds:02}"
     except Exception:
         return "N/A"
+
+
+def _status_badge(status: str) -> str:
+    s = (status or "").strip().lower()
+    if s in {"running", "completed", "ok", "idle"}:
+        color = "bright_green"
+    elif s in {"thinking", "tooling", "started", "stopped"}:
+        color = "yellow"
+    else:
+        color = "bright_red"
+    return f"[{color}][ {s.upper() or 'UNKNOWN'} ][/{color}]"
+
+
+def _age_human(ts: str | None) -> str:
+    if not ts:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        delta = _now_utc() - dt
+        total = int(max(0, delta.total_seconds()))
+        if total < 60:
+            return f"{total}s"
+        if total < 3600:
+            return f"{total // 60}m"
+        return f"{total // 3600}h"
+    except Exception:
+        return "-"
+
+
+def _truncate(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
+
+
+def _build_alert_lines(snapshot: dict) -> list[str]:
+    workers = snapshot["workers"]
+    control = snapshot["control"]
+    system = snapshot["system"]
+
+    lines: list[str] = []
+    if not system["running"]:
+        lines.append("[bright_red]System is stopped.[/bright_red]")
+    if workers["failed"] > 0:
+        lines.append(f"[bright_red]{workers['failed']} failed worker(s).[/bright_red]")
+    if control["pending_requests"] > 0:
+        lines.append(f"[yellow]{control['pending_requests']} pending control request(s).[/yellow]")
+
+    for row in workers["recent"]:
+        if str(row.get("status", "")).lower() == "failed":
+            wid = str(row.get("id", ""))[:12]
+            err = _truncate(str(row.get("error") or row.get("summary") or "failure"), 60)
+            lines.append(f"[yellow]{wid}[/yellow]: {err}")
+            if len(lines) >= 4:
+                break
+
+    if not lines:
+        lines.append("[bright_green]No active alerts.[/bright_green]")
+    return lines[:6]
 
 
 if __name__ == "__main__":
