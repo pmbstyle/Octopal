@@ -222,6 +222,7 @@ def _get_queen_tools(queen: Any, chat_id: int) -> tuple[list[ToolSpec], dict[str
         "db_admin": True,
         "security_audit": True,
         "self_control": True,
+        "mcp_exec": True,
     }
     ctx = {
         "base_dir": Path(os.getenv("BROODMIND_WORKSPACE_DIR", "workspace")).resolve(),
