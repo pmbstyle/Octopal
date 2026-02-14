@@ -63,6 +63,7 @@ class MCPManager:
 
     async def connect_server(self, config: MCPServerConfig) -> List[ToolSpec]:
         if config.id in self.sessions:
+            logger.info("MCP server already connected", server_id=config.id)
             return self._tools.get(config.id, [])
 
         from contextlib import AsyncExitStack
@@ -72,9 +73,16 @@ class MCPManager:
         try:
             if config.url:
                 logger.info("Connecting to MCP SSE server", server_id=config.id, url=config.url)
-                read_stream, write_stream = await exit_stack.enter_async_context(
-                    sse_client(url=config.url, headers=config.headers)
-                )
+                # Ensure headers are a dict
+                headers = config.headers if isinstance(config.headers, dict) else {}
+                
+                try:
+                    read_stream, write_stream = await exit_stack.enter_async_context(
+                        sse_client(url=config.url, headers=headers)
+                    )
+                except Exception as e:
+                    logger.error("Failed to establish SSE transport", server_id=config.id, error=str(e))
+                    raise
             elif config.command:
                 logger.info("Connecting to MCP stdio server", server_id=config.id, command=config.command)
                 params = StdioServerParameters(
@@ -82,16 +90,28 @@ class MCPManager:
                     args=config.args,
                     env={**config.env, "PATH": os.environ.get("PATH", "")} if config.env else None
                 )
-                read_stream, write_stream = await exit_stack.enter_async_context(stdio_client(params))
+                try:
+                    read_stream, write_stream = await exit_stack.enter_async_context(stdio_client(params))
+                except Exception as e:
+                    logger.error("Failed to establish stdio transport", server_id=config.id, error=str(e))
+                    raise
             else:
                 raise ValueError(f"MCP server {config.id} must have 'url' or 'command'.")
 
+            logger.info("Initializing MCP session", server_id=config.id)
             session = await exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
             
-            await session.initialize()
+            # Use a timeout for initialization to avoid hanging
+            try:
+                await asyncio.wait_for(session.initialize(), timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.error("MCP session initialization timed out", server_id=config.id)
+                raise
+            
             self.sessions[config.id] = session
             
             # Fetch tools
+            logger.info("Fetching MCP tools", server_id=config.id)
             mcp_tools = await session.list_tools()
             
             specs = []
@@ -111,10 +131,19 @@ class MCPManager:
             return specs
             
         except Exception as e:
-            logger.exception("Failed to connect to MCP server", server_id=config.id)
+            # If any step fails, we must close the exit stack to release resources/streams
+            error_msg = str(e)
+            
+            # Handle ExceptionGroup (Python 3.11+) which is common with TaskGroups/anyio
+            if hasattr(e, "exceptions") and isinstance(e, BaseExceptionGroup):
+                error_msg = f"ExceptionGroup: {', '.join(str(ex) for ex in e.exceptions)}"
+                logger.error("MCP connection failed with multiple errors", server_id=config.id, errors=[str(ex) for ex in e.exceptions])
+
+            logger.exception("Failed to connect to MCP server", server_id=config.id, error_type=type(e).__name__, message=error_msg)
+            
             await exit_stack.aclose()
             self._exit_stacks.pop(config.id, None)
-            raise
+            raise RuntimeError(f"MCP Connection Error ({config.id}): {error_msg}") from e
 
     def _generate_handler(self, server_id: str, tool_name: str):
         async def handler(args: Dict[str, Any], ctx: Dict[str, Any]) -> Any:

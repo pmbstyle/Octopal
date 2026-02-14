@@ -35,6 +35,8 @@ def configure_logging(log_level: str, log_dir: Path, debug_prompts: bool) -> Non
         # Add log level and logger name
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
+        # Format exceptions automatically
+        structlog.processors.format_exc_info,
         # Add a timestamp
         structlog.processors.TimeStamper(fmt="iso"),
         # Apply standard string formatting to the message

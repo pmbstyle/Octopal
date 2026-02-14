@@ -46,7 +46,8 @@ async def mcp_connect(args: Dict[str, Any], ctx: Dict[str, Any]) -> str:
             "tools_added": tool_names
         }, indent=2)
     except Exception as e:
-        return f"Error connecting to MCP server {server_id}: {e}"
+        logger.error("Dynamic MCP connection failed", server_id=server_id, error=str(e))
+        return f"Failed to connect to MCP server '{server_id}': {e}"
 
 async def mcp_disconnect(args: Dict[str, Any], ctx: Dict[str, Any]) -> str:
     """Disconnect from an MCP server."""
