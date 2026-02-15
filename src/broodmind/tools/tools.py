@@ -38,6 +38,10 @@ from broodmind.tools.worker_tools import get_worker_tools
 from broodmind.tools.mcp_tools import get_mcp_mgmt_tools
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 def get_tools(mcp_manager=None) -> list[ToolSpec]:
     tools = [
         ToolSpec(
@@ -607,5 +611,8 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
     tools.extend(get_worker_tools())
     tools.extend(get_mcp_mgmt_tools())
     if mcp_manager:
-        tools.extend(mcp_manager.get_all_tools())
+        mcp_tools = mcp_manager.get_all_tools()
+        if mcp_tools:
+            logger.info("Injecting MCP tools into registry", count=len(mcp_tools), names=[t.name for t in mcp_tools])
+            tools.extend(mcp_tools)
     return tools

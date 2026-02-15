@@ -47,6 +47,7 @@ async def mcp_connect(args: Dict[str, Any], ctx: Dict[str, Any]) -> str:
 
     try:
         tools = await queen.mcp_manager.connect_server(config)
+        # Use the actual names from the ToolSpec objects
         tool_names = [t.name for t in tools]
         return json.dumps({
             "status": "connected",
@@ -86,7 +87,7 @@ def mcp_list(args: Dict[str, Any], ctx: Dict[str, Any]) -> str:
         servers.append({
             "id": server_id,
             "tool_count": len(tools),
-            "tools": [t.name for t in tools]
+            "tools": [t.name for t in tools] # Full names like mcp_server_tool
         })
 
     return json.dumps({"connected_servers": servers}, indent=2)

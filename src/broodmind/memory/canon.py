@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import structlog
+from broodmind.utils import utc_now
 
 if TYPE_CHECKING:
     from broodmind.providers.embeddings import EmbeddingsProvider
@@ -25,16 +27,27 @@ class CanonService:
     def __post_init__(self) -> None:
         self.canon_dir = self.workspace_dir / "memory" / "canon"
         self.canon_dir.mkdir(parents=True, exist_ok=True)
+        self.events_file = self.canon_dir / "events.jsonl"
         # Ensure default files exist
         for filename in ["facts.md", "decisions.md", "failures.md"]:
             path = self.canon_dir / filename
             if not path.exists():
                 path.write_text(f"# {filename.replace('.md', '').title()}\n\n", encoding="utf-8")
+        self._ensure_event_log_bootstrap()
+
+    def _normalize_filename(self, filename: str) -> str:
+        candidate = filename.strip()
+        if not candidate:
+            raise ValueError("filename is required")
+        if not candidate.endswith(".md"):
+            candidate += ".md"
+        if "/" in candidate or "\\" in candidate or ".." in candidate:
+            raise ValueError("invalid filename")
+        return candidate
 
     def read_canon(self, filename: str) -> str:
         """Reads a canonical memory file."""
-        if not filename.endswith(".md"):
-            filename += ".md"
+        filename = self._normalize_filename(filename)
         path = self.canon_dir / filename
         if not path.exists():
             return ""
@@ -42,26 +55,10 @@ class CanonService:
 
     async def write_canon(self, filename: str, content: str, mode: Literal["append", "overwrite"] = "append") -> str:
         """Writes to a canonical memory file and triggers re-indexing."""
-        if not filename.endswith(".md"):
-            filename += ".md"
-        path = self.canon_dir / filename
-
-        def _write():
-            current_content = ""
-            if path.exists() and mode == "append":
-                current_content = path.read_text(encoding="utf-8")
-
-            final_content = content
-            if mode == "append":
-                # Add newline if needed
-                if current_content and not current_content.endswith("\n"):
-                    current_content += "\n"
-                final_content = current_content + content
-
-            path.write_text(final_content, encoding="utf-8")
-            return final_content
-
-        new_content = await asyncio.to_thread(_write)
+        filename = self._normalize_filename(filename)
+        await asyncio.to_thread(self._append_event, filename, content, mode)
+        rebuilt = await asyncio.to_thread(self._compact_from_events)
+        new_content = rebuilt.get(filename, "")
 
         # Trigger async re-indexing
         if self.embeddings:
@@ -158,7 +155,85 @@ class CanonService:
         return "\n\n".join(context_parts)
 
     def list_files(self) -> list[str]:
-        return [p.name for p in self.canon_dir.glob("*.md")]
+        return sorted(p.name for p in self.canon_dir.glob("*.md"))
+
+    def _ensure_event_log_bootstrap(self) -> None:
+        if self.events_file.exists():
+            return
+
+        entries: list[dict[str, str]] = []
+        for path in sorted(self.canon_dir.glob("*.md")):
+            content = path.read_text(encoding="utf-8")
+            if not content.strip():
+                continue
+            entries.append(
+                {
+                    "ts": utc_now().isoformat(),
+                    "filename": path.name,
+                    "mode": "overwrite",
+                    "content": content,
+                }
+            )
+
+        if not entries:
+            self.events_file.write_text("", encoding="utf-8")
+            return
+
+        with self.events_file.open("w", encoding="utf-8") as f:
+            for entry in entries:
+                f.write(json.dumps(entry, ensure_ascii=True))
+                f.write("\n")
+
+    def _append_event(self, filename: str, content: str, mode: Literal["append", "overwrite"]) -> None:
+        event = {
+            "ts": utc_now().isoformat(),
+            "filename": filename,
+            "mode": mode,
+            "content": content,
+        }
+        with self.events_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=True))
+            f.write("\n")
+
+    def _compact_from_events(self) -> dict[str, str]:
+        if not self.events_file.exists():
+            return {}
+
+        state: dict[str, str] = {}
+        for raw in self.events_file.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            filename = str(entry.get("filename", "")).strip()
+            if (
+                not filename
+                or not filename.endswith(".md")
+                or "/" in filename
+                or "\\" in filename
+                or ".." in filename
+            ):
+                continue
+            mode = str(entry.get("mode", "append"))
+            content = str(entry.get("content", ""))
+
+            if mode == "overwrite":
+                state[filename] = content
+                continue
+
+            current = state.get(filename, "")
+            if current and not current.endswith("\n"):
+                current += "\n"
+            state[filename] = current + content
+
+        for filename, content in state.items():
+            path = self.canon_dir / filename
+            path.write_text(content, encoding="utf-8")
+        return state
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if len(a) != len(b) or not a:

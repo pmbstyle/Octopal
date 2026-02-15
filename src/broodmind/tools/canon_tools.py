@@ -20,14 +20,20 @@ async def manage_canon(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     if action == "read":
         if not filename:
              return "Error: filename required for read action."
-        return canon.read_canon(filename)
+        try:
+            return canon.read_canon(filename)
+        except ValueError as exc:
+            return f"Error: {exc}"
 
     if action == "write":
         if not filename:
              return "Error: filename required for write action."
         if not content:
             return "Error: Content required for write action."
-        return await canon.write_canon(filename, content, mode)
+        try:
+            return await canon.write_canon(filename, content, mode)
+        except ValueError as exc:
+            return f"Error: {exc}"
 
     return f"Unknown action: {action}"
 

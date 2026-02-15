@@ -94,7 +94,15 @@ def test_queen_passes_approval_requester_to_runtime(monkeypatch) -> None:
 
         return BootstrapContext(content="", hash="", files=[])
 
-    async def fake_route_or_reply(queen, provider, memory, user_text: str, chat_id: int, bootstrap_context: str):
+    async def fake_route_or_reply(
+        queen,
+        provider,
+        memory,
+        user_text: str,
+        chat_id: int,
+        bootstrap_context: str,
+        show_typing: bool = True,
+    ):
         return "ok"
 
     import broodmind.queen.core as queen_core

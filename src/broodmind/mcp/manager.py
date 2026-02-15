@@ -146,9 +146,14 @@ class MCPManager:
             
             specs = []
             for tool in mcp_tools_list.tools:
+                # Normalize tool name: replace dashes with underscores for better LLM compatibility
+                safe_id = config.id.replace("-", "_")
+                safe_tool_name = tool.name.replace("-", "_")
+                mcp_tool_name = f"mcp_{safe_id}_{safe_tool_name}"
+                
                 spec = ToolSpec(
-                    name=f"mcp_{config.id}_{tool.name}",
-                    description=f"[MCP Tool: {tool.name} from {config.name}] {tool.description}. Call this tool directly by using the name '{f'mcp_{config.id}_{tool.name}'}' in your tool call block.",
+                    name=mcp_tool_name,
+                    description=f"[MCP Tool from {config.name}] {tool.description}. Call this tool directly by using the name '{mcp_tool_name}' in your tool call block.",
                     parameters=tool.inputSchema,
                     permission="mcp_exec",
                     handler=self._generate_handler(config.id, tool.name),

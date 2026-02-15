@@ -57,8 +57,10 @@ class Settings(BaseSettings):
     workspace_dir: Path = Field(Path("workspace"), alias="BROODMIND_WORKSPACE_DIR")
 
     memory_top_k: int = Field(5, alias="BROODMIND_MEMORY_TOP_K")
+    memory_prefilter_k: int = Field(80, alias="BROODMIND_MEMORY_PREFILTER_K")
     memory_min_score: float = Field(0.25, alias="BROODMIND_MEMORY_MIN_SCORE")
     memory_max_chars: int = Field(2000, alias="BROODMIND_MEMORY_MAX_CHARS")
+    memory_owner_id: str = Field("default", alias="BROODMIND_MEMORY_OWNER_ID")
 
     gateway_host: str = Field("0.0.0.0", alias="BROODMIND_GATEWAY_HOST")
     gateway_port: int = Field(8000, alias="BROODMIND_GATEWAY_PORT")

@@ -16,7 +16,9 @@ from broodmind.utils import utc_now
 class MemoryService:
     store: Store
     embeddings: EmbeddingsProvider | None
+    owner_id: str = "default"
     top_k: int = 5
+    prefilter_k: int = 80
     min_score: float = 0.25
     max_chars: int = 2000
 
@@ -33,15 +35,21 @@ class MemoryService:
             trimmed = trimmed[: self.max_chars]
         embedding = None
         if self.embeddings is not None:
-            vectors = await self.embeddings.embed([trimmed])
-            embedding = vectors[0] if vectors else None
+            try:
+                vectors = await self.embeddings.embed([trimmed])
+                embedding = vectors[0] if vectors else None
+            except Exception:
+                embedding = None
+
+        merged_metadata = dict(metadata or {})
+        merged_metadata.setdefault("owner_id", self.owner_id)
         entry = MemoryEntry(
             id=str(uuid.uuid4()),
             role=role,
             content=trimmed,
             embedding=embedding,
             created_at=utc_now(),
-            metadata=metadata or {},
+            metadata=merged_metadata,
         )
         await asyncio.to_thread(self.store.add_memory_entry, entry)
 
@@ -51,11 +59,26 @@ class MemoryService:
         trimmed = query.strip()
         if not trimmed:
             return []
-        vectors = await self.embeddings.embed([trimmed])
+        try:
+            vectors = await self.embeddings.embed([trimmed])
+        except Exception:
+            return []
         if not vectors:
             return []
         query_embedding = vectors[0]
-        candidates = await asyncio.to_thread(self.store.list_memory_entries, limit=200)
+        candidates = await asyncio.to_thread(
+            self.store.search_memory_entries_lexical,
+            self.owner_id,
+            trimmed,
+            self.prefilter_k,
+            exclude_chat_id,
+        )
+        if not candidates:
+            candidates = await asyncio.to_thread(
+                self.store.list_memory_entries_for_owner,
+                self.owner_id,
+                max(self.prefilter_k, 200),
+            )
         scored: list[tuple[float, MemoryEntry]] = []
         for entry in candidates:
             if not entry.embedding:

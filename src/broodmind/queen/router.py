@@ -49,6 +49,7 @@ async def route_or_reply(
         _log_system_prompt(messages, "route")
         
         queen_tools, ctx = _get_queen_tools(queen, chat_id)
+        logger.info("Queen tools fetched", count=len(queen_tools), mcp_tools=[t.name for t in queen_tools if t.name.startswith("mcp_")])
         tool_capable = getattr(provider, "complete_with_tools", None)
         
         if callable(tool_capable):
@@ -229,7 +230,8 @@ def _get_queen_tools(queen: Any, chat_id: int) -> tuple[list[ToolSpec], dict[str
         "queen": queen,
         "chat_id": chat_id
     }
-    tool_specs = filter_tools(get_tools(mcp_manager=queen.mcp_manager), permissions=perms)
+    mcp_manager = getattr(queen, "mcp_manager", None)
+    tool_specs = filter_tools(get_tools(mcp_manager=mcp_manager), permissions=perms)
     # Remove web_fetch from Queen; only workers are allowed to fetch raw web content.
     tool_specs = [spec for spec in tool_specs if spec.name != "web_fetch"]
     return tool_specs, ctx

@@ -184,6 +184,8 @@ Primary settings are stored in `.env` and loaded via `pydantic-settings`.
 | `OPENROUTER_MODEL` | No | Defaults to `anthropic/claude-sonnet-4` |
 | `BRAVE_API_KEY` | No | Enables `web_search` |
 | `OPENAI_API_KEY` | No | Enables embedding-based semantic memory |
+| `BROODMIND_MEMORY_OWNER_ID` | No | Memory namespace key (default: `default`) |
+| `BROODMIND_MEMORY_PREFILTER_K` | No | Lexical prefilter candidate count before vector rerank (default: `80`) |
 | `BROODMIND_WORKSPACE_DIR` | No | Defaults to `workspace` |
 | `BROODMIND_STATE_DIR` | No | Defaults to `data` |
 | `BROODMIND_WORKER_LAUNCHER` | No | `same_env` (default) or `docker` |

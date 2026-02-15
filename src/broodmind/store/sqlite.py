@@ -150,7 +150,9 @@ class SQLiteStore(Store):
                 content TEXT NOT NULL,
                 embedding_json TEXT,
                 created_at TEXT NOT NULL,
-                metadata_json TEXT NOT NULL
+                metadata_json TEXT NOT NULL,
+                owner_id TEXT,
+                chat_id INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS memory_embeddings (
@@ -181,6 +183,8 @@ class SQLiteStore(Store):
 
             CREATE INDEX IF NOT EXISTS ix_workers_status_updated_at ON workers (status, updated_at);
             CREATE INDEX IF NOT EXISTS ix_memory_entries_id ON memory_entries (id);
+            CREATE INDEX IF NOT EXISTS ix_memory_entries_owner_id_id ON memory_entries (owner_id, id DESC);
+            CREATE INDEX IF NOT EXISTS ix_memory_entries_owner_chat_id_id ON memory_entries (owner_id, chat_id, id DESC);
             """
         )
         self._conn.commit()
@@ -218,12 +222,46 @@ class SQLiteStore(Store):
             pass
 
         try:
+            self._conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_entries_fts USING fts5(
+                    content,
+                    owner_id UNINDEXED,
+                    chat_id UNINDEXED,
+                    entry_uuid UNINDEXED
+                )
+                """
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        try:
             self._conn.execute("ALTER TABLE permits ADD COLUMN intent_type TEXT NOT NULL DEFAULT ''")
             self._conn.commit()
         except sqlite3.OperationalError:
             pass
         try:
             self._conn.execute("ALTER TABLE chat_state ADD COLUMN bootstrap_hash TEXT")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            self._conn.execute("ALTER TABLE memory_entries ADD COLUMN owner_id TEXT")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute("ALTER TABLE memory_entries ADD COLUMN chat_id INTEGER")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute("CREATE INDEX IF NOT EXISTS ix_memory_entries_owner_id_id ON memory_entries (owner_id, id DESC)")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_memory_entries_owner_chat_id_id ON memory_entries (owner_id, chat_id, id DESC)"
+            )
             self._conn.commit()
         except sqlite3.OperationalError:
             pass
@@ -261,6 +299,9 @@ class SQLiteStore(Store):
             # This might fail if run in a transaction, but we commit after.
             # It's a complex operation, so we log if it fails.
             logging.getLogger(__name__).warning("Memory schema migration failed (this may be ok if table was empty): %s", e)
+
+        self._backfill_memory_scope_columns()
+        self._rebuild_memory_fts()
 
         # Add worker result fields
         try:
@@ -524,10 +565,18 @@ class SQLiteStore(Store):
         )
 
     def add_memory_entry(self, entry: MemoryEntry) -> None:
+        owner_id = str((entry.metadata or {}).get("owner_id", "default"))
+        chat_id = (entry.metadata or {}).get("chat_id")
+        if chat_id is not None:
+            try:
+                chat_id = int(chat_id)
+            except (TypeError, ValueError):
+                chat_id = None
+
         self._conn.execute(
             """
-            INSERT INTO memory_entries (uuid, role, content, embedding_json, created_at, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO memory_entries (uuid, role, content, embedding_json, created_at, metadata_json, owner_id, chat_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.id, # The dataclass id is the UUID
@@ -536,6 +585,8 @@ class SQLiteStore(Store):
                 json.dumps(entry.embedding) if entry.embedding is not None else None,
                 entry.created_at.isoformat(),
                 json.dumps(entry.metadata),
+                owner_id,
+                chat_id,
             ),
         )
 
@@ -553,6 +604,17 @@ class SQLiteStore(Store):
                     entry.created_at.isoformat(),
                 ),
             )
+
+        try:
+            self._conn.execute(
+                """
+                INSERT INTO memory_entries_fts (content, owner_id, chat_id, entry_uuid)
+                VALUES (?, ?, ?, ?)
+                """,
+                (entry.content, owner_id, chat_id, entry.id),
+            )
+        except sqlite3.OperationalError:
+            pass
 
         self._conn.commit()
 
@@ -573,12 +635,58 @@ class SQLiteStore(Store):
         )
         return [self._row_to_memory(row) for row in cursor.fetchall()]
 
-    def list_memory_entries_by_chat(self, chat_id: int, limit: int = 50) -> list[MemoryEntry]:
-        needle = f"\"chat_id\": {chat_id}"
+    def list_memory_entries_for_owner(self, owner_id: str, limit: int = 200) -> list[MemoryEntry]:
         cursor = self._conn.execute(
-            "SELECT * FROM memory_entries WHERE metadata_json LIKE ? ORDER BY id DESC LIMIT ?",
-            (f"%{needle}%", limit),
+            """
+            SELECT m.*, e.vector_json as new_embedding_json
+            FROM memory_entries m
+            LEFT JOIN memory_embeddings e ON m.uuid = e.entry_uuid
+            WHERE m.owner_id = ?
+            ORDER BY m.id DESC LIMIT ?
+            """,
+            (owner_id, limit),
         )
+        return [self._row_to_memory(row) for row in cursor.fetchall()]
+
+    def list_memory_entries_by_chat(self, chat_id: int, limit: int = 50) -> list[MemoryEntry]:
+        cursor = self._conn.execute(
+            "SELECT * FROM memory_entries WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            (chat_id, limit),
+        )
+        return [self._row_to_memory(row) for row in cursor.fetchall()]
+
+    def search_memory_entries_lexical(
+        self,
+        owner_id: str,
+        query: str,
+        limit: int = 80,
+        exclude_chat_id: int | None = None,
+    ) -> list[MemoryEntry]:
+        trimmed = query.strip()
+        if not trimmed:
+            return []
+
+        query_sql = (
+            """
+            SELECT m.*, e.vector_json as new_embedding_json
+            FROM memory_entries_fts f
+            JOIN memory_entries m ON m.uuid = f.entry_uuid
+            LEFT JOIN memory_embeddings e ON m.uuid = e.entry_uuid
+            WHERE f.content MATCH ?
+              AND m.owner_id = ?
+            """
+        )
+        params: list[Any] = [trimmed, owner_id]
+        if exclude_chat_id is not None:
+            query_sql += " AND (m.chat_id IS NULL OR m.chat_id != ?)"
+            params.append(exclude_chat_id)
+        query_sql += " ORDER BY bm25(memory_entries_fts), m.id DESC LIMIT ?"
+        params.append(limit)
+
+        try:
+            cursor = self._conn.execute(query_sql, tuple(params))
+        except sqlite3.OperationalError:
+            return []
         return [self._row_to_memory(row) for row in cursor.fetchall()]
 
     def add_canon_embedding(self, filename: str, chunk_index: int, content: str, model: str, vector: list[float]) -> None:
@@ -638,6 +746,15 @@ class SQLiteStore(Store):
             (cutoff.isoformat(), safe_keep_count),
         )
         deleted_count = cursor.rowcount
+        try:
+            self._conn.execute(
+                """
+                DELETE FROM memory_entries_fts
+                WHERE entry_uuid NOT IN (SELECT uuid FROM memory_entries)
+                """
+            )
+        except sqlite3.OperationalError:
+            pass
         self._conn.commit()
         return deleted_count
 
@@ -735,6 +852,47 @@ class SQLiteStore(Store):
             created_at=_parse_dt(row["created_at"]),
             metadata=_loads_json(row["metadata_json"]),
         )
+
+    def _backfill_memory_scope_columns(self) -> None:
+        cursor = self._conn.execute(
+            """
+            SELECT id, metadata_json
+            FROM memory_entries
+            WHERE owner_id IS NULL OR owner_id = '' OR chat_id IS NULL
+            """
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return
+
+        for row in rows:
+            metadata = _loads_json(row["metadata_json"])
+            owner_id = str(metadata.get("owner_id", "default"))
+            chat_id = metadata.get("chat_id")
+            if chat_id is not None:
+                try:
+                    chat_id = int(chat_id)
+                except (TypeError, ValueError):
+                    chat_id = None
+            self._conn.execute(
+                "UPDATE memory_entries SET owner_id = ?, chat_id = ? WHERE id = ?",
+                (owner_id, chat_id, row["id"]),
+            )
+        self._conn.commit()
+
+    def _rebuild_memory_fts(self) -> None:
+        try:
+            self._conn.execute("DELETE FROM memory_entries_fts")
+            self._conn.execute(
+                """
+                INSERT INTO memory_entries_fts (content, owner_id, chat_id, entry_uuid)
+                SELECT content, COALESCE(owner_id, 'default'), chat_id, uuid
+                FROM memory_entries
+                """
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
 
 def _parse_dt(value: Any) -> datetime:

@@ -62,7 +62,17 @@ class Store(Protocol):
 
     def list_memory_entries(self, limit: int = 200) -> list[MemoryEntry]: ...
 
+    def list_memory_entries_for_owner(self, owner_id: str, limit: int = 200) -> list[MemoryEntry]: ...
+
     def list_memory_entries_by_chat(self, chat_id: int, limit: int = 50) -> list[MemoryEntry]: ...
+
+    def search_memory_entries_lexical(
+        self,
+        owner_id: str,
+        query: str,
+        limit: int = 80,
+        exclude_chat_id: int | None = None,
+    ) -> list[MemoryEntry]: ...
 
     def cleanup_old_memory(self, keep_days: int = 30, keep_count: int = 1000) -> int: ...
 

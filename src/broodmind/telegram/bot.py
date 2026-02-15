@@ -53,7 +53,9 @@ def build_dispatcher(settings: Settings, bot: Bot) -> Dispatcher:
     memory = MemoryService(
         store=store,
         embeddings=embeddings,
+        owner_id=settings.memory_owner_id,
         top_k=settings.memory_top_k,
+        prefilter_k=settings.memory_prefilter_k,
         min_score=settings.memory_min_score,
         max_chars=settings.memory_max_chars,
     )
