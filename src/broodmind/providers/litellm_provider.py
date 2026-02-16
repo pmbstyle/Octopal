@@ -44,10 +44,11 @@ class LiteLLMProvider:
         else:
             # Use z.ai (custom OpenAI-compatible endpoint)
             model_name = model or settings.zai_model
-            # If the provided model already has the provider prefix, use it as is
-            if model_name.startswith("openai/"):
+            # If the provided model already has a prefix, use it as is
+            if "/" in model_name:
                 self._model = model_name
             else:
+                # Default to openai/ prefix for compatibility with LiteLLM's custom endpoints
                 self._model = f"openai/{model_name}"
             self._api_base = settings.zai_base_url.rstrip("/")
             self._api_key = settings.zai_api_key

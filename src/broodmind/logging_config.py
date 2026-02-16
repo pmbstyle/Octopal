@@ -56,7 +56,7 @@ def configure_logging(log_level: str, log_dir: Path, debug_prompts: bool) -> Non
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
+        cache_logger_on_first_use=False,
     )
 
     # --- Handlers ---

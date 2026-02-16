@@ -667,6 +667,6 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
     if mcp_manager:
         mcp_tools = mcp_manager.get_all_tools()
         if mcp_tools:
-            logger.info("Injecting MCP tools into registry", count=len(mcp_tools), names=[t.name for t in mcp_tools])
+            logger.info("Injecting %d MCP tools into registry", len(mcp_tools))
             tools.extend(mcp_tools)
     return tools

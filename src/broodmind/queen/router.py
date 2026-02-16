@@ -49,7 +49,7 @@ async def route_or_reply(
         _log_system_prompt(messages, "route")
         
         queen_tools, ctx = _get_queen_tools(queen, chat_id)
-        logger.info("Queen tools fetched", count=len(queen_tools), mcp_tools=[t.name for t in queen_tools if t.name.startswith("mcp_")])
+        logger.info("Queen tools fetched: count=%d", len(queen_tools))
         tool_capable = getattr(provider, "complete_with_tools", None)
         
         if callable(tool_capable):
