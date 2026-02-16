@@ -23,6 +23,7 @@ dependencies = [
   "rich>=13.7.0",
   "python-dotenv>=1.0.1",
   "mcp>=1.0.0",
+  "telegramify-markdown>=0.5.4",
 ]
 
 [project.optional-dependencies]

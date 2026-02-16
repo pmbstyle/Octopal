@@ -6,6 +6,7 @@ import structlog
 import uuid
 from typing import Any, NamedTuple
 
+import telegramify_markdown
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Message
@@ -35,7 +36,6 @@ _TYPING_REFS: dict[int, int] = {}
 _TYPING_LOCK: asyncio.Lock | None = None
 _SEND_IDLE_TIMEOUT_SECONDS = 300.0
 _TELEGRAM_PARSE_MODE: str | None = None
-_MDV2_SPECIAL_CHARS = set("_*[]()~`>#+-=|{}.!\\")
 
 
 def _publish_runtime_metrics() -> None:
@@ -260,95 +260,8 @@ def _normalize_parse_mode(raw: str | None) -> str | None:
 
 
 def _prepare_markdown_v2(text: str) -> str:
-    """Robust MarkdownV2 sanitizer that preserves common markdown entities while escaping correctly."""
-    source = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-    
-    # Characters that must be escaped outside entities
-    # _ * [ ] ( ) ~ ` > # + - = | { } . !
-    # We use a strategy of:
-    # 1. Stash entities we want to keep (code blocks, inline code, bold, italic, links)
-    # 2. Escape everything else
-    # 3. Restore stashed entities
-    
-    protected: list[str] = []
-
-    def _stash(match: re.Match[str]) -> str:
-        full = match.group(0)
-        protected.append(full)
-        return f"\u0000BMMD{len(protected)-1}\u0000"
-
-    # Sequence of patterns to stash - careful with order
-    patterns = [
-        r"```[\s\S]*?```",               # fenced code blocks
-        r"`[^`\n]+`",                    # inline code
-        r"\[[^\]]+\]\([^\)]+\)",         # links
-        r"\*\*[\s\S]+?\*\*",             # bold (standard)
-        r"__[\s\S]+?__",                 # underline (standard)
-        r"\*[\s\S]+?\*",                 # italic/bold (telegram)
-        r"_[\s\S]+?_",                   # italic (telegram)
-        r"\|\|[\s\S]+?\|\|",             # spoilers
-        r"~[\s\S]+?~",                   # strikethrough
-    ]
-    
-    for pattern in patterns:
-        source = re.sub(pattern, _stash, source)
-
-    # Escape all remaining special characters in the 'plain' parts
-    escaped = _escape_markdown_v2_plain(source)
-    
-    # Restore protected fragments and convert standard MD to Telegram MD if needed
-    # We iterate in reverse to handle nested entities correctly
-    for idx in range(len(protected) - 1, -1, -1):
-        fragment = protected[idx]
-        placeholder = f"\u0000BMMD{idx}\u0000"
-        
-        # Convert **bold** to *bold* for Telegram MarkdownV2
-        if fragment.startswith("**") and fragment.endswith("**"):
-            inner = fragment[2:-2]
-            # Must still escape reserved chars inside the bold entity if they are not other entities
-            # But for simplicity, we'll just escape everything inside
-            fragment = f"*{_escape_markdown_v2_plain(inner)}*"
-        elif fragment.startswith("__") and fragment.endswith("__"):
-            inner = fragment[2:-2]
-            fragment = f"___{_escape_markdown_v2_plain(inner)}___"
-        elif fragment.startswith("`") or fragment.startswith("```"):
-            # Inside code entities, only ` and \ must be escaped
-            fragment = fragment.replace("\\", "\\\\").replace("`", "\\`").replace("\u0000", "")
-        elif fragment.startswith("["):
-            # Link [text](url)
-            m = re.match(r"\[([\s\S]+)\]\(([\s\S]+)\)", fragment)
-            if m:
-                link_text, link_url = m.groups()
-                # URL needs ), (, and \ escaped in MarkdownV2
-                link_url = link_url.replace("\\", "\\\\").replace(")", "\\)").replace("(", "\\(")
-                fragment = f"[{_escape_markdown_v2_plain(link_text)}]({link_url})"
-        elif fragment.startswith("||") and fragment.endswith("||"):
-            inner = fragment[2:-2]
-            fragment = f"||{_escape_markdown_v2_plain(inner)}||"
-        elif fragment.startswith("~") and fragment.endswith("~"):
-            inner = fragment[2:-2]
-            fragment = f"~{_escape_markdown_v2_plain(inner)}~"
-        elif fragment.startswith("*") and fragment.endswith("*"):
-            inner = fragment[1:-1]
-            fragment = f"*{_escape_markdown_v2_plain(inner)}*"
-        elif fragment.startswith("_") and fragment.endswith("_"):
-            inner = fragment[1:-1]
-            fragment = f"_{_escape_markdown_v2_plain(inner)}_"
-        else:
-            # Fallback for any other stashed entities to ensure they are escaped
-            fragment = _escape_markdown_v2_plain(fragment)
-        
-        escaped = escaped.replace(placeholder, fragment)
-        
-    return escaped
-
-
-def _escape_markdown_v2_plain(text: str) -> str:
-    parts: list[str] = []
-    for ch in text:
-        if ch in _MDV2_SPECIAL_CHARS:
-            parts.append(f"\\{ch}")
-        else:
-            parts.append(ch)
-    return "".join(parts)
+    """Robust MarkdownV2 sanitizer using telegramify-markdown."""
+    if not text:
+        return ""
+    return telegramify_markdown.markdownify(text)
 
