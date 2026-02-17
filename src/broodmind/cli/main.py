@@ -339,6 +339,7 @@ def status() -> None:
     grid.add_column(style="white")
 
     grid.add_row("System Status", f"[{status_color}]{status_text}[/{status_color}]")
+    grid.add_row("Active Channel", f"[bold]{status_data.get('active_channel', 'Telegram')}[/bold]")
     grid.add_row("Process ID", f"[bold]{pid}[/bold]" if pid else "[dim]N/A[/dim]")
     grid.add_row("Last Heartbeat", str(last_message) if last_message else "[dim]Never[/dim]")
     grid.add_row("Configuration", "[bright_green]Valid[/bright_green]" if config_ok else "[bright_red]Invalid[/bright_red]")
@@ -776,6 +777,7 @@ def _build_dashboard_snapshot(settings: Settings, last: int, store: SQLiteStore 
         "system": {
             "running": running,
             "pid": pid,
+            "active_channel": status_data.get("active_channel", "Telegram"),
             "started_at": status_data.get("started_at"),
             "last_heartbeat": status_data.get("last_message_at"),
             "uptime": _uptime_human(status_data.get("started_at")),
@@ -841,12 +843,15 @@ def _build_dashboard_renderable(snapshot: dict, compact: bool = False) -> Align:
 
     sys_status = "running" if system["running"] else "stopped"
     worker_status = "running" if workers["running"] > 0 else "idle"
+    active_channel = system.get("active_channel", "Telegram")
+    channel_color = "bright_magenta" if active_channel == "WebSocket" else "bright_blue"
     
     header_text = (
         f"[bold bright_cyan]BROODMIND DASHBOARD[/bold bright_cyan]   "
         f"{_fmt_status('Sys', sys_status)}   "
         f"{_fmt_status('Queen', queen['state'])}   "
         f"{_fmt_status('Workers', worker_status)}   "
+        f"[dim]Channel[/dim] [{channel_color}]{active_channel}[/{channel_color}]   "
         f"[dim]PID[/dim] {system['pid'] or 'N/A'}   "
         f"[dim]Uptime[/dim] {system['uptime']}"
     )

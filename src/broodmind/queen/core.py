@@ -239,6 +239,18 @@ class Queen:
             self.internal_progress_send = self._tg_progress
             self.internal_typing_control = self._tg_typing
             logger.info("Queen switched to Telegram output channel")
+        
+        # Update system status file if possible
+        try:
+            from broodmind.config.settings import load_settings
+            from broodmind.state import read_status, _status_path
+            import json
+            settings = load_settings()
+            status_data = read_status(settings) or {}
+            status_data["active_channel"] = "WebSocket" if is_ws else "Telegram"
+            _status_path(settings).write_text(json.dumps(status_data, indent=2), encoding="utf-8")
+        except Exception:
+            logger.debug("Failed to update status file with active channel", exc_info=True)
 
     async def set_thinking(self, active: bool) -> None:
         """Toggle global thinking indicator."""
