@@ -67,7 +67,12 @@ def register_ws_routes(app: FastAPI) -> None:
         await socket.accept()
         logger.info("WebSocket connection established", host=client_host)
 
-        queen: Queen = app.state.queen
+        queen: Queen | None = getattr(app.state, "queen", None)
+        if not queen:
+            logger.error("Queen not initialized in app state")
+            await socket.send_json({"type": "error", "message": "Queen not initialized"})
+            await socket.close(code=status.WS_1011_INTERNAL_ERROR)
+            return
         
         # Define WS-specific output channel
         async def _ws_send(chat_id: int, text: str) -> None:

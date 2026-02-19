@@ -6,7 +6,7 @@ from broodmind.config.settings import Settings
 from broodmind.gateway.ws import register_ws_routes
 from broodmind.queen.core import Queen
 
-def build_app(settings: Settings, queen: Queen) -> FastAPI:
+def build_app(settings: Settings, queen: Queen | None = None) -> FastAPI:
     """Build the FastAPI app for the BroodMind Gateway.
     
     It reuses the shared Queen instance for WebSocket communication.
@@ -18,12 +18,13 @@ def build_app(settings: Settings, queen: Queen) -> FastAPI:
     app.state.queen = queen
     
     # Expose necessary components if any route needs them
-    app.state.store = queen.store
-    app.state.policy = queen.policy
-    app.state.runtime = queen.runtime
-    app.state.provider = queen.provider
-    app.state.memory = queen.memory
-    app.state.canon = queen.canon
+    if queen:
+        app.state.store = queen.store
+        app.state.policy = queen.policy
+        app.state.runtime = queen.runtime
+        app.state.provider = queen.provider
+        app.state.memory = queen.memory
+        app.state.canon = queen.canon
     
     register_ws_routes(app)
     return app
