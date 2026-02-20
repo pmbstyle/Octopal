@@ -140,7 +140,7 @@ def register_handlers(
         if active_workers:
             status_text += "\n**Running Workers:**\n"
             for w in active_workers:
-                status_text += f"- {w.worker_id} (RunID: {w.run_id})\n"
+                status_text += f"- RunID: {w.id}\n  Task: {w.task[:50]}...\n"
         await message.answer(status_text, parse_mode="Markdown")
 
     @dp.message(Command("workers"))
