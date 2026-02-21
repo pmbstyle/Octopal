@@ -87,6 +87,71 @@ Convenience sync options:
 - Script: `python scripts/sync_worker_templates.py`
 - Script with overwrite: `python scripts/sync_worker_templates.py --overwrite`
 
+## Worker Child Spawning (V1)
+
+Workers can delegate to other workers using a strict opt-in policy.
+
+### Template fields
+
+Add these fields in `worker.json`:
+
+- `can_spawn_children` (boolean, default `false`)
+- `allowed_child_templates` (array of template IDs, default `[]`)
+
+Example coordinator template:
+
+```json
+{
+  "id": "rss_coordinator",
+  "name": "RSS Coordinator",
+  "description": "Coordinates feed-specific child workers and synthesizes a final digest.",
+  "system_prompt": "Spawn child workers for each feed and return one compressed final summary.",
+  "available_tools": ["start_child_worker", "start_workers_parallel", "synthesize_worker_results"],
+  "required_permissions": ["worker_manage", "network"],
+  "max_thinking_steps": 10,
+  "default_timeout_seconds": 300,
+  "can_spawn_children": true,
+  "allowed_child_templates": ["rss_fetcher"]
+}
+```
+
+Example child template:
+
+```json
+{
+  "id": "rss_fetcher",
+  "name": "RSS Fetcher",
+  "description": "Fetches and summarizes one RSS source.",
+  "system_prompt": "Read one source and return a concise structured summary.",
+  "available_tools": ["web_fetch"],
+  "required_permissions": ["network"],
+  "max_thinking_steps": 6,
+  "default_timeout_seconds": 180,
+  "can_spawn_children": false,
+  "allowed_child_templates": []
+}
+```
+
+### Runtime enforcement
+
+- Parent template must have `can_spawn_children=true`.
+- Child template must be in parent `allowed_child_templates`.
+- Child permissions must be a subset of the parent's effective permissions.
+- Queen enforces global lineage limits:
+  - `BROODMIND_WORKER_MAX_SPAWN_DEPTH` (default `2`)
+  - `BROODMIND_WORKER_MAX_CHILDREN_TOTAL` (default `20`)
+  - `BROODMIND_WORKER_MAX_CHILDREN_CONCURRENT` (default `10`)
+
+### Tooling and metadata
+
+- Worker context delegation tool: `start_child_worker`
+- Run metadata returned in status/result/list APIs:
+  - `lineage_id`
+  - `parent_worker_id`
+  - `root_task_id`
+  - `spawn_depth`
+- Orphan cleanup: if a parent worker fails, runtime stops active child workers from that parent chain.
+
 ## New Permission Types
 
 The following permissions are now recognized by policy and tool filtering:

@@ -130,6 +130,12 @@ uv run broodmind logs --follow
 - Spawned per task with timeout + lifecycle tracking
 - Includes automatic recovery retries for transient stuck/failure states
 - Report result back to Queen runtime
+- Worker templates can opt in to child spawning with strict policy controls:
+  - `can_spawn_children` (default `false`)
+  - `allowed_child_templates` (explicit whitelist)
+- Child-worker runs include lineage metadata:
+  - `lineage_id`, `parent_worker_id`, `root_task_id`, `spawn_depth`
+- On parent worker failure, orphan child workers are automatically stopped
 
 ### Tools
 
@@ -138,12 +144,19 @@ Examples:
 - Filesystem: `fs_read`, `fs_write`, `fs_list`, `fs_move`, `fs_delete`
 - Web: `web_search`, `web_fetch`
 - Execution: `exec_run`
-- Worker management: `list_workers`, `start_worker`, `start_workers_parallel`, `synthesize_worker_results`, `get_worker_status`, `get_worker_result`
+- Worker management: `list_workers`, `start_worker`, `start_child_worker`, `start_workers_parallel`, `synthesize_worker_results`, `get_worker_status`, `get_worker_result`
 
 `start_worker` supports worker specialization routing:
 
 - pass `worker_id="auto"` (or omit `worker_id`) to let the router pick the best template
 - optionally constrain routing with `required_tools` and `required_permissions`
+
+`start_child_worker` is for worker-context delegation with policy enforcement:
+
+- parent template must set `can_spawn_children=true`
+- child template must be included in parent `allowed_child_templates`
+- child permissions must be a subset of parent permissions
+- queen-level spawn limits are enforced globally per lineage
 
 ## CLI Commands
 
@@ -197,6 +210,9 @@ Primary settings are stored in `.env` and loaded via `pydantic-settings`.
 | `BROODMIND_WORKSPACE_DIR` | No | Defaults to `workspace` |
 | `BROODMIND_STATE_DIR` | No | Defaults to `data` |
 | `BROODMIND_WORKER_LAUNCHER` | No | `same_env` (default) or `docker` |
+| `BROODMIND_WORKER_MAX_SPAWN_DEPTH` | No | Max child spawn depth (default: `2`) |
+| `BROODMIND_WORKER_MAX_CHILDREN_TOTAL` | No | Max children per lineage lifetime (default: `20`) |
+| `BROODMIND_WORKER_MAX_CHILDREN_CONCURRENT` | No | Max concurrent children per lineage (default: `10`) |
 
 ## Optional: Docker Worker Launcher
 
