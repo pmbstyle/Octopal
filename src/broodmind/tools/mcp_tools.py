@@ -11,7 +11,12 @@ logger = structlog.get_logger(__name__)
 
 async def mcp_connect(args: Dict[str, Any], ctx: Dict[str, Any]) -> str:
     """Connect to a new MCP server."""
-    logger.info("mcp_connect tool called", arguments=args)
+    safe_args = dict(args)
+    if isinstance(safe_args.get("headers"), dict):
+        safe_args["headers"] = {k: ("***" if "authorization" in str(k).lower() else v) for k, v in safe_args["headers"].items()}
+    if isinstance(safe_args.get("env"), dict):
+        safe_args["env"] = {k: ("***" if "key" in str(k).lower() or "token" in str(k).lower() or "secret" in str(k).lower() else v) for k, v in safe_args["env"].items()}
+    logger.info("mcp_connect tool called", arguments=safe_args)
     queen = ctx.get("queen")
     if not queen or not queen.mcp_manager:
         return "Error: MCP Manager not initialized."
@@ -23,6 +28,7 @@ async def mcp_connect(args: Dict[str, Any], ctx: Dict[str, Any]) -> str:
     env = args.get("env", {})
     url = args.get("url")
     headers = args.get("headers", {})
+    transport = args.get("transport") or args.get("type")
 
     if not server_id or (not command and not url):
         return "Error: 'id' and either 'command' or 'url' are required."
@@ -42,7 +48,8 @@ async def mcp_connect(args: Dict[str, Any], ctx: Dict[str, Any]) -> str:
         args=server_args,
         env=env,
         url=url,
-        headers=headers
+        headers=headers,
+        transport=transport,
     )
 
     try:
@@ -53,6 +60,7 @@ async def mcp_connect(args: Dict[str, Any], ctx: Dict[str, Any]) -> str:
             "status": "connected",
             "server_id": server_id,
             "message": f"Successfully connected to MCP server '{server_id}'. {len(tools)} tools have been added to your toolset and are ready to be used. You can call them directly just like any other tool (e.g. by using their name in a tool call block).",
+            "transport": config.transport or "auto",
             "tools_added": tool_names
         }, indent=2)
     except Exception as e:
@@ -122,7 +130,7 @@ def get_mcp_mgmt_tools() -> list[ToolSpec]:
     return [
         ToolSpec(
             name="mcp_connect",
-            description="Connect to an external MCP server. Use 'url' for HTTP/SSE servers. Use 'command' for local stdio servers. IMPORTANT: For most community servers, use 'command': 'npx' and 'args': ['-y', '@modelcontextprotocol/server-everything', '--opt', 'val'].",
+            description="Connect to an external MCP server. Use 'command' for local stdio servers. For URL-based servers, set 'transport' explicitly when known: 'sse' or 'streamable-http'.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -131,8 +139,10 @@ def get_mcp_mgmt_tools() -> list[ToolSpec]:
                     "command": {"type": "string", "description": "Command to run for stdio servers (e.g. 'npx', 'python', 'node')."},
                     "args": {"type": "array", "items": {"type": "string"}, "description": "Arguments for the command (e.g. ['-y', '@modelcontextprotocol/server-everything'])."},
                     "env": {"type": "object", "description": "Environment variables for stdio (e.g. API keys)."},
-                    "url": {"type": "string", "description": "URL for SSE (HTTP) servers (e.g. 'https://api.z.ai/api/mcp/web_search_prime/mcp')."},
-                    "headers": {"type": "object", "description": "HTTP headers for SSE servers (e.g. {'Authorization': 'Bearer ...'})."},
+                    "url": {"type": "string", "description": "URL for HTTP MCP servers."},
+                    "headers": {"type": "object", "description": "HTTP headers (e.g. {'Authorization': 'Bearer ...'})."},
+                    "transport": {"type": "string", "enum": ["auto", "sse", "streamable-http", "stdio"], "description": "Connection transport. Default is 'auto'."},
+                    "type": {"type": "string", "description": "Alias for transport (legacy compatibility)."},
                 },
                 "required": ["id"],
             },

@@ -5,8 +5,9 @@ import json
 import os
 import structlog
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional
 
 @dataclass
 class MCPServerConfig:
@@ -17,11 +18,13 @@ class MCPServerConfig:
     env: Dict[str, str] = field(default_factory=dict)
     url: Optional[str] = None
     headers: Dict[str, str] = field(default_factory=dict)
+    transport: Optional[Literal["auto", "sse", "streamable-http", "stdio"]] = None
     last_error: Optional[str] = None
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamablehttp_client
 
 from broodmind.tools.registry import ToolSpec
 
@@ -52,12 +55,9 @@ class MCPManager:
                     args=cfg.get("args", []),
                     env=cfg.get("env", {}),
                     url=cfg.get("url"),
-                    headers=cfg.get("headers", {})
+                    headers=cfg.get("headers", {}),
+                    transport=_normalize_transport(cfg.get("transport") or cfg.get("type")),
                 )
-                # Support common SSE synonyms
-                if cfg.get("type") in ("streamable-http", "sse", "http") and not mcp_cfg.url:
-                    # Logic to infer URL if type is set but url is in another field
-                    pass
 
                 try:
                     await self.connect_server(mcp_cfg)
@@ -128,12 +128,23 @@ class MCPManager:
         exit_stack = AsyncExitStack()
         
         try:
-            if config.url:
+            selected_transport = _resolve_transport(config)
+            if selected_transport == "sse":
                 logger.info("Establishing MCP SSE transport", server_id=config.id, url=config.url)
                 read_stream, write_stream = await exit_stack.enter_async_context(
-                    sse_client(url=config.url, headers=config.headers)
+                    sse_client(url=config.url or "", headers=config.headers)
                 )
-            elif config.command:
+            elif selected_transport == "streamable-http":
+                logger.info("Establishing MCP streamable-http transport", server_id=config.id, url=config.url)
+                read_stream, write_stream, _get_session_id = await exit_stack.enter_async_context(
+                    streamablehttp_client(
+                        url=config.url or "",
+                        headers=config.headers or None,
+                        timeout=timedelta(seconds=30),
+                        sse_read_timeout=timedelta(seconds=300),
+                    )
+                )
+            elif selected_transport == "stdio":
                 logger.info("Establishing MCP stdio transport", server_id=config.id, command=config.command)
                 params = StdioServerParameters(
                     command=config.command,
@@ -142,7 +153,7 @@ class MCPManager:
                 )
                 read_stream, write_stream = await exit_stack.enter_async_context(stdio_client(params))
             else:
-                raise ValueError(f"MCP server {config.id} must have 'url' or 'command'.")
+                raise ValueError(f"Unsupported MCP transport '{selected_transport}' for server {config.id}.")
 
             logger.info("Initializing MCP session", server_id=config.id)
             session = await exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
@@ -182,7 +193,8 @@ class MCPManager:
             logger.info("Shutting down MCP server session (signaled)", server_id=config.id)
             
         except Exception as e:
-            logger.exception("MCP server lifecycle error", server_id=config.id)
+            hint = _connection_hint(e)
+            logger.exception("MCP server lifecycle error", server_id=config.id, transport=config.transport or "auto", hint=hint)
             if not ready_event.is_set():
                 # Task failed before becoming ready - signal the waiter with an error if possible
                 # But here we just let the waiter catch the fact that ready_event was never set.
@@ -259,6 +271,49 @@ class MCPManager:
                 "name": config.name,
                 "status": "connected" if is_connected else ("error" if config.last_error else "disconnected"),
                 "tool_count": len(tools),
-                "error": config.last_error
+                "error": config.last_error,
+                "transport": config.transport or "auto",
             }
         return statuses
+
+
+def _normalize_transport(raw: Any) -> Literal["auto", "sse", "streamable-http", "stdio"] | None:
+    if raw is None:
+        return None
+    value = str(raw).strip().lower()
+    if value in {"auto", ""}:
+        return "auto"
+    if value in {"sse", "http-sse"}:
+        return "sse"
+    if value in {"streamable-http", "streamable_http", "streamablehttp", "http"}:
+        return "streamable-http"
+    if value in {"stdio", "local"}:
+        return "stdio"
+    return None
+
+
+def _resolve_transport(config: MCPServerConfig) -> Literal["sse", "streamable-http", "stdio"]:
+    normalized = _normalize_transport(config.transport) or "auto"
+    if normalized != "auto":
+        return normalized
+    if config.command:
+        return "stdio"
+    if config.url:
+        url = config.url.lower()
+        if "streamable" in url:
+            return "streamable-http"
+        return "sse"
+    raise ValueError(f"MCP server {config.id} must have either 'command' or 'url'.")
+
+
+def _connection_hint(error: Exception) -> str:
+    text = str(error).lower()
+    if "text/event-stream" in text and "application/json" in text:
+        return "Transport mismatch: server returned JSON, but client expected SSE. Try transport='streamable-http'."
+    if "404" in text or "not found" in text:
+        return "Endpoint not found: verify MCP URL/path and provider docs."
+    if "timed out" in text:
+        return "Connection timed out: check network egress, DNS, firewall, or provider availability."
+    if "connection closed" in text:
+        return "Remote side closed connection early: verify auth and protocol compatibility."
+    return "Unknown MCP connection issue. Verify URL/transport/auth."
