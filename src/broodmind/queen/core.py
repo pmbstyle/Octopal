@@ -31,7 +31,7 @@ from broodmind.queen.router import (
 from broodmind.runtime_metrics import update_component_gauges
 from broodmind.store.base import Store
 from broodmind.telegram.approvals import ApprovalManager
-from broodmind.utils import utc_now
+from broodmind.utils import is_control_response, utc_now
 from broodmind.workers.contracts import TaskRequest, WorkerResult
 from broodmind.workers.runtime import WorkerRuntime
 
@@ -405,7 +405,10 @@ class Queen:
         if self.mcp_manager:
             await self.mcp_manager.load_and_connect_all()
         
-        wake_up_prompt = "You are waking up. Your first task is to read AGENTS.md and then list available workers."
+        wake_up_prompt = (
+            "You are waking up. Read AGENTS.md and list available workers internally, "
+            "then produce a short friendly startup status message for the user."
+        )
         original_send = self.internal_send
         chat_ids = allowed_chat_ids or []
         if chat_ids and bot:
@@ -435,8 +438,11 @@ class Queen:
                 wake_up_prompt,
                 system_chat_id,
                 bootstrap_context.content,
-                internal_followup=True,
             )
+            if not result or is_control_response(result):
+                result = (
+                    "Queen is online. Initialization is complete and I am ready for your tasks."
+                )
             logger.info("Queen wake up complete", result_preview=f"{result[:60]}..." if result else "empty")
             
             # Send the Queen's own response to allowed chats if configured.
