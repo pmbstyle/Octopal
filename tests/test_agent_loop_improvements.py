@@ -14,7 +14,7 @@ from broodmind.workers.agent_worker import (
     _parse_tool_arguments,
 )
 from broodmind.workers.contracts import WorkerSpec
-from broodmind.workers.runtime import _extract_mcp_tool_identity
+from broodmind.workers.runtime import _call_mcp_with_name_fallback, _extract_mcp_tool_identity
 
 
 def _dummy_worker() -> Worker:
@@ -59,7 +59,30 @@ def test_extract_mcp_tool_identity_uses_longest_server_prefix() -> None:
         ["demo", "demo-server"],
     )
     assert server_id == "demo-server"
-    assert remote_name == "query-docs"
+    assert remote_name == "query_docs"
+
+
+def test_call_mcp_with_name_fallback_retries_not_found_variant() -> None:
+    class FakeSession:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def call_tool(self, tool_name: str, arguments: dict) -> dict:
+            self.calls.append(tool_name)
+            if tool_name == "list_threads":
+                raise RuntimeError("Tool list_threads not found")
+            if tool_name == "list-threads":
+                return {"ok": True}
+            raise RuntimeError("unexpected")
+
+    async def scenario() -> tuple[dict, list[str]]:
+        session = FakeSession()
+        result = await _call_mcp_with_name_fallback(session, "list_threads", {})
+        return result, session.calls
+
+    result, calls = asyncio.run(scenario())
+    assert result["ok"] is True
+    assert calls == ["list_threads", "list-threads"]
 
 
 def test_execute_tool_sync_handler_does_not_block_event_loop() -> None:

@@ -178,7 +178,9 @@ class MCPManager:
                     parameters=tool.inputSchema,
                     permission="mcp_exec",
                     handler=self._generate_handler(config.id, tool.name),
-                    is_async=True
+                    is_async=True,
+                    server_id=config.id,
+                    remote_tool_name=tool.name,
                 )
                 specs.append(spec)
             

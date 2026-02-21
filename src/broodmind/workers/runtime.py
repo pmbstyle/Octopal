@@ -80,9 +80,12 @@ class WorkerRuntime:
                 # Find the tool spec
                 spec_found = next((t for t in all_tools if t.name == tool_name), None)
                 if spec_found:
-                    server_id, remote_tool_name = _extract_mcp_tool_identity(
-                        spec_found.name, known_server_ids
-                    )
+                    server_id = getattr(spec_found, "server_id", None)
+                    remote_tool_name = getattr(spec_found, "remote_tool_name", None)
+                    if not server_id or not remote_tool_name:
+                        server_id, remote_tool_name = _extract_mcp_tool_identity(
+                            spec_found.name, known_server_ids
+                        )
                     mcp_tools_data.append(
                         {
                             "name": spec_found.name,
@@ -420,7 +423,7 @@ class WorkerRuntime:
                 
                 try:
                     logger.info("Executing MCP call for worker", worker_id=spec.id, server_id=server_id, tool=tool_name)
-                    result = await session.call_tool(tool_name, arguments=args)
+                    result = await _call_mcp_with_name_fallback(session, str(tool_name), args)
                     # Convert MCP content objects to something serializable
                     content = [c.model_dump() if hasattr(c, "model_dump") else str(c) for c in result.content]
                     await self._write_to_worker(process, {"type": "mcp_result", "result": content})
@@ -721,14 +724,36 @@ def _extract_mcp_tool_identity(tool_name: str, server_ids: list[str]) -> tuple[s
         prefix = f"mcp_{safe_id}_"
         if tool_name.startswith(prefix):
             remote_safe_name = tool_name[len(prefix):]
-            remote_tool_name = remote_safe_name.replace("_", "-")
-            return original_id, remote_tool_name
+            return original_id, remote_safe_name
 
     # Legacy fallback if server list is unavailable.
     parts = tool_name.split("_")
     if len(parts) < 3:
         return None, None
     return parts[1], "_".join(parts[2:])
+
+
+async def _call_mcp_with_name_fallback(session: Any, tool_name: str, args: dict[str, Any]) -> Any:
+    """Call MCP tool and retry once with underscore/hyphen variant if tool is not found."""
+    try:
+        return await session.call_tool(tool_name, arguments=args)
+    except Exception as exc:
+        error_text = str(exc).lower()
+        if "not found" not in error_text and "unknown tool" not in error_text:
+            raise
+        alt_name: str | None = None
+        if "_" in tool_name:
+            alt_name = tool_name.replace("_", "-")
+        elif "-" in tool_name:
+            alt_name = tool_name.replace("-", "_")
+        if not alt_name or alt_name == tool_name:
+            raise
+        logger.warning(
+            "Retrying MCP call with alternate tool name",
+            original_tool=tool_name,
+            alternate_tool=alt_name,
+        )
+        return await session.call_tool(alt_name, arguments=args)
 
 
 def _classify_recoverable_error(exc: Exception) -> tuple[bool, str]:

@@ -14,6 +14,8 @@ class ToolSpec:
     handler: Any
     is_async: bool = False
     scope: str | None = field(default=None, compare=False)  # Deprecated, kept for compatibility
+    server_id: str | None = field(default=None, compare=False)
+    remote_tool_name: str | None = field(default=None, compare=False)
 
     def to_openai_tool(self) -> dict[str, Any]:
         return {
