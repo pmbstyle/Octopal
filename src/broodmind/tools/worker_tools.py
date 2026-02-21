@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -12,6 +14,7 @@ if TYPE_CHECKING:
 
 _WORKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
+_MAX_PARALLEL_BATCH = 10
 
 
 def get_worker_tools() -> list[ToolSpec]:
@@ -98,6 +101,61 @@ def get_worker_tools() -> list[ToolSpec]:
             permission="worker_manage",
             handler=_tool_start_worker,
             is_async=True,
+        ),
+        ToolSpec(
+            name="start_workers_parallel",
+            description="Launch multiple worker tasks in parallel and return run IDs plus routing decisions.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "List of tasks to launch. Each item may include worker_id, task, inputs, tools, model, timeout_seconds, required_tools, required_permissions.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "worker_id": {"type": "string"},
+                                "task": {"type": "string"},
+                                "inputs": {"type": "object", "additionalProperties": True},
+                                "tools": {"type": "array", "items": {"type": "string"}},
+                                "model": {"type": "string"},
+                                "timeout_seconds": {"type": "number"},
+                                "required_tools": {"type": "array", "items": {"type": "string"}},
+                                "required_permissions": {"type": "array", "items": {"type": "string"}},
+                            },
+                            "required": ["task"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "max_parallel": {
+                        "type": "number",
+                        "description": "Maximum concurrent launches (default 3, max 10).",
+                    },
+                },
+                "required": ["tasks"],
+                "additionalProperties": False,
+            },
+            permission="worker_manage",
+            handler=_tool_start_workers_parallel,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="synthesize_worker_results",
+            description="Synthesize results from multiple workers into one combined summary, including failures and pending runs.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "worker_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Worker run IDs to synthesize.",
+                    }
+                },
+                "required": ["worker_ids"],
+                "additionalProperties": False,
+            },
+            permission="worker_manage",
+            handler=_tool_synthesize_worker_results,
         ),
         ToolSpec(
             name="stop_worker",
@@ -482,30 +540,20 @@ async def _tool_start_worker(args: dict[str, object], ctx: dict[str, object]) ->
     if not task:
         return "start_worker error: task is required."
 
-    router_used = False
-    route_reason = ""
-    route_score: float | None = None
-    template = None
-    if not worker_id or worker_id.lower() in {"auto", "best", "router"}:
-        router_used = True
-        templates = queen.store.list_worker_templates()
-        selection = _select_worker_template(
-            templates=templates,
-            task=task,
-            required_tools=required_tools,
-            required_permissions=required_permissions,
-        )
-        if selection is None:
-            return "start_worker error: no worker templates are available for routing. Use create_worker_template or provide worker_id."
-        template = selection["template"]
-        worker_id = template.id
-        route_reason = selection["reason"]
-        route_score = selection["score"]
-    else:
-        # Verify worker template exists
-        template = queen.store.get_worker_template(worker_id)
-        if not template:
-            return f"start_worker error: worker '{worker_id}' not found. Use list_workers to see available workers."
+    resolution = _resolve_worker_for_start(
+        queen=queen,
+        worker_id=worker_id,
+        task=task,
+        required_tools=required_tools,
+        required_permissions=required_permissions,
+    )
+    if isinstance(resolution, str):
+        return resolution
+    template = resolution["template"]
+    worker_id = str(resolution["worker_id"])
+    router_used = bool(resolution["router_used"])
+    route_reason = str(resolution["router_reason"])
+    route_score = float(resolution["router_score"]) if resolution["router_score"] is not None else None
 
     launch = await queen._start_worker_async(
         worker_id=worker_id,
@@ -544,6 +592,154 @@ async def _tool_start_worker(args: dict[str, object], ctx: dict[str, object]) ->
         "router_score": route_score,
         "message": message,
     }, ensure_ascii=False)
+
+
+async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, object]) -> str:
+    queen: Queen = ctx["queen"]
+    chat_id = int(ctx.get("chat_id") or 0)
+    tasks = args.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return "start_workers_parallel error: tasks must be a non-empty array."
+    if len(tasks) > _MAX_PARALLEL_BATCH:
+        return f"start_workers_parallel error: max {_MAX_PARALLEL_BATCH} tasks per batch."
+
+    max_parallel = int(args.get("max_parallel") or 3)
+    max_parallel = max(1, min(_MAX_PARALLEL_BATCH, max_parallel))
+    sem = asyncio.Semaphore(max_parallel)
+
+    async def _launch(item: object, index: int) -> dict[str, object]:
+        if not isinstance(item, dict):
+            return {"index": index, "status": "error", "error": "task item must be an object"}
+        task_text = str(item.get("task", "")).strip()
+        if not task_text:
+            return {"index": index, "status": "error", "error": "task is required"}
+
+        worker_id = str(item.get("worker_id", "")).strip()
+        inputs = item.get("inputs") if isinstance(item.get("inputs"), dict) else {}
+        tools = item.get("tools") if isinstance(item.get("tools"), list) else None
+        model = str(item.get("model", "")).strip() or None
+        timeout_seconds = int(item.get("timeout_seconds")) if item.get("timeout_seconds") else None
+        required_tools = _normalize_str_list(item.get("required_tools"))
+        required_permissions = _normalize_str_list(item.get("required_permissions"))
+
+        resolution = _resolve_worker_for_start(
+            queen=queen,
+            worker_id=worker_id,
+            task=task_text,
+            required_tools=required_tools,
+            required_permissions=required_permissions,
+        )
+        if isinstance(resolution, str):
+            return {"index": index, "status": "error", "error": resolution}
+
+        selected_worker_id = str(resolution["worker_id"])
+        template = resolution["template"]
+        async with sem:
+            launch = await queen._start_worker_async(
+                worker_id=selected_worker_id,
+                task=task_text,
+                chat_id=chat_id,
+                inputs=inputs,
+                tools=tools,
+                model=model,
+                timeout_seconds=timeout_seconds,
+                scheduled_task_id=None,
+            )
+
+        return {
+            "index": index,
+            "status": launch.get("status", "started"),
+            "worker_id": launch.get("worker_id"),
+            "run_id": launch.get("run_id"),
+            "worker_template_id": selected_worker_id,
+            "worker_template_name": getattr(template, "name", selected_worker_id),
+            "router_used": bool(resolution["router_used"]),
+            "router_reason": str(resolution["router_reason"]),
+            "router_score": resolution["router_score"],
+        }
+
+    launches = await asyncio.gather(*[_launch(item, idx) for idx, item in enumerate(tasks)])
+    started = sum(1 for item in launches if str(item.get("status")) in {"started", "skipped_duplicate"})
+    failed = len(launches) - started
+    return json.dumps(
+        {
+            "status": "ok" if failed == 0 else "partial",
+            "started_count": started,
+            "failed_count": failed,
+            "max_parallel": max_parallel,
+            "launches": launches,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _tool_synthesize_worker_results(args: dict[str, object], ctx: dict[str, object]) -> str:
+    queen: Queen = ctx["queen"]
+    worker_ids = _normalize_str_list(args.get("worker_ids"))
+    if not worker_ids:
+        return "synthesize_worker_results error: worker_ids is required."
+
+    completed: list[dict[str, object]] = []
+    failed: list[dict[str, object]] = []
+    pending: list[dict[str, object]] = []
+    missing: list[str] = []
+    summary_hashes: set[str] = set()
+
+    for wid in worker_ids:
+        worker = queen.store.get_worker(wid)
+        if not worker:
+            missing.append(wid)
+            continue
+        status = str(worker.status)
+        if status == "completed":
+            summary = str(worker.summary or "").strip()
+            completed.append({"worker_id": wid, "summary": summary, "output": worker.output})
+            if summary:
+                summary_hashes.add(hashlib.sha256(summary.encode("utf-8")).hexdigest())
+        elif status == "failed":
+            failed.append({"worker_id": wid, "error": str(worker.error or "Unknown error")})
+        else:
+            pending.append({"worker_id": wid, "status": status})
+
+    synthesis_lines: list[str] = []
+    if completed:
+        synthesis_lines.append("Completed worker findings:")
+        for item in completed:
+            synthesis_lines.append(f"- {item['worker_id']}: {item['summary'] or 'No summary'}")
+    if failed:
+        synthesis_lines.append("Failed workers:")
+        for item in failed:
+            synthesis_lines.append(f"- {item['worker_id']}: {item['error']}")
+    if pending:
+        synthesis_lines.append("Pending workers:")
+        for item in pending:
+            synthesis_lines.append(f"- {item['worker_id']}: {item['status']}")
+    if missing:
+        synthesis_lines.append("Unknown worker IDs:")
+        for wid in missing:
+            synthesis_lines.append(f"- {wid}")
+
+    conflicting = len(summary_hashes) > 1
+    if conflicting:
+        synthesis_lines.append("Potential conflict detected: completed workers reported different summaries.")
+
+    return json.dumps(
+        {
+            "status": "ok",
+            "worker_ids": worker_ids,
+            "completed_count": len(completed),
+            "failed_count": len(failed),
+            "pending_count": len(pending),
+            "missing_count": len(missing),
+            "conflicting_summaries": conflicting,
+            "synthesis": "\n".join(synthesis_lines),
+            "completed": completed,
+            "failed": failed,
+            "pending": pending,
+            "missing": missing,
+        },
+        ensure_ascii=False,
+    )
 
 
 async def _tool_stop_worker(args: dict[str, object], ctx: dict[str, object]) -> str:
@@ -715,6 +911,45 @@ def _resolve_worker_dir(base_dir: Path, worker_id: str) -> Path | None:
     except ValueError:
         return None
     return candidate
+
+
+def _resolve_worker_for_start(
+    *,
+    queen: Queen,
+    worker_id: str,
+    task: str,
+    required_tools: list[str] | None = None,
+    required_permissions: list[str] | None = None,
+) -> dict[str, object] | str:
+    if not worker_id or worker_id.lower() in {"auto", "best", "router"}:
+        templates = queen.store.list_worker_templates()
+        selection = _select_worker_template(
+            templates=templates,
+            task=task,
+            required_tools=required_tools,
+            required_permissions=required_permissions,
+        )
+        if selection is None:
+            return "start_worker error: no worker templates are available for routing. Use create_worker_template or provide worker_id."
+        template = selection["template"]
+        return {
+            "template": template,
+            "worker_id": template.id,
+            "router_used": True,
+            "router_reason": selection["reason"],
+            "router_score": selection["score"],
+        }
+
+    template = queen.store.get_worker_template(worker_id)
+    if not template:
+        return f"start_worker error: worker '{worker_id}' not found. Use list_workers to see available workers."
+    return {
+        "template": template,
+        "worker_id": worker_id,
+        "router_used": False,
+        "router_reason": "",
+        "router_score": None,
+    }
 
 
 def _normalize_str_list(value: object) -> list[str]:
