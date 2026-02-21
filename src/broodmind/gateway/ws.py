@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -11,6 +12,20 @@ from broodmind.queen.core import Queen, QueenReply
 from broodmind.utils import get_tailscale_ips
 
 logger = structlog.get_logger(__name__)
+
+
+def _resolve_ws_chat_id(settings: Any) -> int:
+    if settings.allowed_telegram_chat_ids:
+        first = settings.allowed_telegram_chat_ids.split(",")[0].strip()
+        if first:
+            try:
+                value = int(first)
+                if value > 0:
+                    return value
+            except ValueError:
+                pass
+    # Keep WS-only sessions on a positive ID so worker follow-ups are not suppressed.
+    return 1_000_000_000 + (uuid.uuid4().int % 100_000_000)
 
 @dataclass
 class WsApprovalManager:
@@ -66,6 +81,8 @@ def register_ws_routes(app: FastAPI) -> None:
 
         await socket.accept()
         logger.info("WebSocket connection established", host=client_host)
+        connection_id = f"ws-{uuid.uuid4().hex}"
+        session_chat_id = _resolve_ws_chat_id(settings)
 
         queen: Queen | None = getattr(app.state, "queen", None)
         if not queen:
@@ -85,7 +102,17 @@ def register_ws_routes(app: FastAPI) -> None:
             await socket.send_json({"type": "typing", "active": active})
 
         # Switch Queen to use WebSocket for output
-        queen.set_output_channel(True, send=_ws_send, progress=_ws_progress, typing=_ws_typing)
+        claimed = queen.set_output_channel(
+            True,
+            send=_ws_send,
+            progress=_ws_progress,
+            typing=_ws_typing,
+            owner_id=connection_id,
+        )
+        if not claimed:
+            await socket.send_json({"type": "error", "message": "Another WebSocket session is currently active."})
+            await socket.close(code=status.WS_1013_TRY_AGAIN_LATER)
+            return
         
         approvals = WsApprovalManager(send=lambda payload: socket.send_json(payload))
         tasks: set[asyncio.Task] = set()
@@ -96,15 +123,13 @@ def register_ws_routes(app: FastAPI) -> None:
                 msg_type = message.get("type")
                 
                 if msg_type == "message":
-                    # No chat_id needed for WS, use a dummy one (0 or from settings)
-                    dummy_chat_id = 0
-                    if settings.allowed_telegram_chat_ids:
-                         try:
-                            dummy_chat_id = int(settings.allowed_telegram_chat_ids.split(",")[0].strip())
-                         except (ValueError, IndexError):
-                            pass
+                    # Use a positive chat_id so internal worker follow-ups are delivered.
+                    chat_id = session_chat_id
+                    payload_chat_id = message.get("chat_id")
+                    if isinstance(payload_chat_id, int) and payload_chat_id > 0:
+                        chat_id = payload_chat_id
 
-                    task = asyncio.create_task(_handle_message(socket, queen, approvals, message, dummy_chat_id))
+                    task = asyncio.create_task(_handle_message(socket, queen, approvals, message, chat_id))
                     tasks.add(task)
                     task.add_done_callback(lambda t: tasks.discard(t))
                     continue
@@ -122,7 +147,7 @@ def register_ws_routes(app: FastAPI) -> None:
             logger.info("WebSocket disconnected", host=client_host)
         finally:
             # Switch back to Telegram when WS closes
-            queen.set_output_channel(False)
+            queen.set_output_channel(False, owner_id=connection_id)
             for task in tasks:
                 task.cancel()
 

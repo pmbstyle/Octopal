@@ -79,14 +79,20 @@ async def _followup_worker(chat_id: int, queue: asyncio.Queue) -> None:
 
 
 def _enqueue_followup(chat_id: int, coro) -> asyncio.Future[str]:
+    loop = asyncio.get_running_loop()
     queue = _FOLLOWUP_QUEUES.get(chat_id)
+    if queue is not None and getattr(queue, "_loop", None) not in (None, loop):
+        _FOLLOWUP_QUEUES.pop(chat_id, None)
+        prior_task = _FOLLOWUP_TASKS.pop(chat_id, None)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        queue = None
     if not queue:
         queue = asyncio.Queue()
         _FOLLOWUP_QUEUES[chat_id] = queue
     if chat_id not in _FOLLOWUP_TASKS or _FOLLOWUP_TASKS[chat_id].done():
         _FOLLOWUP_TASKS[chat_id] = asyncio.create_task(_followup_worker(chat_id, queue))
     _publish_runtime_metrics()
-    loop = asyncio.get_running_loop()
     future: asyncio.Future[str] = loop.create_future()
     queue.put_nowait((future, coro))
     return future
@@ -171,7 +177,14 @@ async def _internal_worker(queen: Queen, chat_id: int, queue: asyncio.Queue) -> 
 
 
 def _enqueue_internal_result(queen: Queen, chat_id: int, task_text: str, result: WorkerResult) -> None:
+    loop = asyncio.get_running_loop()
     queue = _INTERNAL_QUEUES.get(chat_id)
+    if queue is not None and getattr(queue, "_loop", None) not in (None, loop):
+        _INTERNAL_QUEUES.pop(chat_id, None)
+        prior_task = _INTERNAL_TASKS.pop(chat_id, None)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        queue = None
     if not queue:
         queue = asyncio.Queue()
         _INTERNAL_QUEUES[chat_id] = queue
@@ -202,6 +215,7 @@ class Queen:
     _approval_requesters: dict[int, Callable[[Any], Awaitable[bool]]] | None = None
     _thinking_count: int = 0
     _ws_active: bool = False
+    _ws_owner: str | None = None
     _tg_send: callable | None = None
     _tg_progress: callable | None = None
     _tg_typing: callable | None = None
@@ -226,18 +240,38 @@ class Queen:
         send: callable | None = None,
         progress: callable | None = None,
         typing: callable | None = None,
-    ) -> None:
+        owner_id: str | None = None,
+    ) -> bool:
         """Switch between Telegram and WebSocket output channels."""
+        if is_ws:
+            if self._ws_active and self._ws_owner and owner_id and self._ws_owner != owner_id:
+                logger.warning(
+                    "Rejected WebSocket channel switch due to existing owner",
+                    current_owner=self._ws_owner,
+                    attempted_owner=owner_id,
+                )
+                return False
+        else:
+            if self._ws_owner and owner_id and self._ws_owner != owner_id:
+                logger.warning(
+                    "Rejected output channel reset from non-owner",
+                    current_owner=self._ws_owner,
+                    attempted_owner=owner_id,
+                )
+                return False
+
         self._ws_active = is_ws
         if is_ws:
             self.internal_send = send
             self.internal_progress_send = progress
             self.internal_typing_control = typing
+            self._ws_owner = owner_id or "ws-default"
             logger.info("Queen switched to WebSocket output channel")
         else:
             self.internal_send = self._tg_send
             self.internal_progress_send = self._tg_progress
             self.internal_typing_control = self._tg_typing
+            self._ws_owner = None
             logger.info("Queen switched to Telegram output channel")
         
         # Update system status file if possible
@@ -251,6 +285,7 @@ class Queen:
             _status_path(settings).write_text(json.dumps(status_data, indent=2), encoding="utf-8")
         except Exception:
             logger.debug("Failed to update status file with active channel", exc_info=True)
+        return True
 
     async def set_thinking(self, active: bool) -> None:
         """Toggle global thinking indicator."""
@@ -402,9 +437,24 @@ class Queen:
         if bootstrap_context.files:
             files_summary = ", ".join([f"{name} ({size} chars)" for name, size in bootstrap_context.files])
             logger.debug("Queen bootstrap files", files=files_summary, hash=bootstrap_context.hash)
-        reply_text = await route_or_reply(
-            self, self.provider, self.memory, text, chat_id, bootstrap_context.content, show_typing=show_typing, images=images
-        )
+        try:
+            reply_text = await route_or_reply(
+                self,
+                self.provider,
+                self.memory,
+                text,
+                chat_id,
+                bootstrap_context.content,
+                show_typing=show_typing,
+                images=images,
+            )
+        except TypeError as exc:
+            # Backward-compatible fallback for monkeypatched tests/extensions using the old signature.
+            if "unexpected keyword argument 'images'" not in str(exc):
+                raise
+            reply_text = await route_or_reply(
+                self, self.provider, self.memory, text, chat_id, bootstrap_context.content, show_typing=show_typing
+            )
         logger.info("Queen response ready")
         await self.memory.add_message("assistant", reply_text, {"chat_id": chat_id})
         if bootstrap_context.hash:

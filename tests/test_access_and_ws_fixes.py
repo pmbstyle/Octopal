@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+import sys
+import types
+
+from broodmind.config.settings import Settings
+from broodmind.queen.core import Queen
+from broodmind.telegram.access import is_allowed_chat, parse_allowed_chat_ids
+from broodmind.gateway.ws import _resolve_ws_chat_id
+from broodmind.tools.registry import ToolSpec
+from broodmind.workers.contracts import Capability, TaskRequest, WorkerResult
+from broodmind.workers.runtime import WorkerRuntime
+from broodmind.store.models import WorkerTemplateRecord
+
+
+def test_parse_allowed_chat_ids_ignores_invalid_values() -> None:
+    parsed = parse_allowed_chat_ids("123, abc, , 456")
+    assert parsed == {123, 456}
+
+
+def test_is_allowed_chat_defaults_to_allow_when_empty() -> None:
+    assert is_allowed_chat(999, set())
+    assert is_allowed_chat(123, {123})
+    assert not is_allowed_chat(999, {123})
+
+
+def test_resolve_ws_chat_id_returns_positive_when_no_allowlist() -> None:
+    settings = SimpleNamespace(allowed_telegram_chat_ids="")
+    assert _resolve_ws_chat_id(settings) > 0
+
+
+def test_resolve_ws_chat_id_uses_first_allowed_id_when_valid() -> None:
+    settings = SimpleNamespace(allowed_telegram_chat_ids="42,100")
+    assert _resolve_ws_chat_id(settings) == 42
+
+
+def test_queen_output_channel_uses_owner_lease() -> None:
+    class _Memory:
+        async def add_message(self, role: str, content: str, metadata: dict):
+            return None
+
+    queen = Queen(
+        provider=object(),
+        store=object(),
+        policy=object(),
+        runtime=object(),
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+
+    assert queen.set_output_channel(True, owner_id="ws-a")
+    assert not queen.set_output_channel(True, owner_id="ws-b")
+    assert not queen.set_output_channel(False, owner_id="ws-b")
+    assert queen.set_output_channel(False, owner_id="ws-a")
+
+
+def test_runtime_does_not_auto_inject_global_mcp_tools(tmp_path: Path) -> None:
+    template = WorkerTemplateRecord(
+        id="worker",
+        name="Worker",
+        description="Test worker",
+        system_prompt="Do work",
+        available_tools=["fs_read"],
+        required_permissions=["network"],
+        model=None,
+        max_thinking_steps=3,
+        default_timeout_seconds=30,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    class _Store:
+        def get_worker_template(self, worker_id: str):
+            return template
+
+    class _Policy:
+        def grant_capabilities(self, capabilities):
+            return [Capability(type="network", scope="worker")]
+
+    class _MCP:
+        sessions = {"demo": object()}
+
+        def get_all_tools(self):
+            return [
+                ToolSpec(
+                    name="mcp_demo_read_data",
+                    description="demo",
+                    parameters={"type": "object"},
+                    permission="mcp_exec",
+                    handler=lambda _args, _ctx: "ok",
+                    is_async=True,
+                )
+            ]
+
+    runtime = WorkerRuntime(
+        store=_Store(),
+        policy=_Policy(),
+        workspace_dir=tmp_path,
+        launcher=object(),  # Not used in this test; run() is monkeypatched below.
+        mcp_manager=_MCP(),
+    )
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run(spec, approval_requester=None):
+        captured["spec"] = spec
+        return WorkerResult(summary="ok")
+
+    runtime.run = _fake_run  # type: ignore[method-assign]
+
+    request = TaskRequest(worker_id="worker", task="hello")
+    import asyncio
+    asyncio.run(runtime.run_task(request))
+
+    spec = captured["spec"]
+    assert "mcp_demo_read_data" not in spec.available_tools
+    assert spec.mcp_tools == []
+
+
+def test_dispatcher_uses_single_shared_mcp_manager(tmp_path: Path) -> None:
+    if "telegramify_markdown" not in sys.modules:
+        sys.modules["telegramify_markdown"] = types.SimpleNamespace(markdownify=lambda text: text)
+
+    from broodmind.telegram.bot import build_dispatcher
+
+    settings = Settings(
+        TELEGRAM_BOT_TOKEN="123:abc",
+        BROODMIND_STATE_DIR=tmp_path / "state",
+        BROODMIND_WORKSPACE_DIR=tmp_path / "workspace",
+    )
+    _dp, queen = build_dispatcher(settings, bot=object())
+    assert queen.runtime.mcp_manager is queen.mcp_manager

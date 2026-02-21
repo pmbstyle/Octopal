@@ -19,6 +19,7 @@ from broodmind.logging_config import correlation_id_var
 from broodmind.queen.core import Queen, QueenReply
 from broodmind.runtime_metrics import update_component_gauges
 from broodmind.state import update_last_message
+from broodmind.telegram.access import is_allowed_chat, parse_allowed_chat_ids
 from broodmind.telegram.approvals import ApprovalManager
 from broodmind.utils import is_heartbeat_ok, utc_now
 
@@ -76,6 +77,11 @@ def register_handlers(
     _TELEGRAM_PARSE_MODE = _normalize_parse_mode(settings.telegram_parse_mode)
     if _TYPING_LOCK is None:
         _TYPING_LOCK = asyncio.Lock()
+    allowed_chat_ids = parse_allowed_chat_ids(settings.allowed_telegram_chat_ids)
+
+    async def _reject_unauthorized_message(message: Message) -> None:
+        logger.warning("Rejected Telegram message from unauthorized chat", chat_id=message.chat.id)
+        await message.answer("This chat is not authorized to use BroodMind.")
 
     async def _internal_send(chat_id: int, text: str) -> None:
         await _enqueue_send(bot, chat_id, text)
@@ -126,6 +132,9 @@ def register_handlers(
 
     @dp.message(Command("help"))
     async def cmd_help(message: Message) -> None:
+        if not is_allowed_chat(message.chat.id, allowed_chat_ids):
+            await _reject_unauthorized_message(message)
+            return
         help_text = (
             "Available commands:\n"
             "/help - Show this help message\n"
@@ -138,6 +147,9 @@ def register_handlers(
 
     @dp.message(Command("version"))
     async def cmd_version(message: Message) -> None:
+        if not is_allowed_chat(message.chat.id, allowed_chat_ids):
+            await _reject_unauthorized_message(message)
+            return
         try:
             version = importlib.metadata.version("broodmind")
         except importlib.metadata.PackageNotFoundError:
@@ -146,6 +158,9 @@ def register_handlers(
 
     @dp.message(Command("status"))
     async def cmd_status(message: Message) -> None:
+        if not is_allowed_chat(message.chat.id, allowed_chat_ids):
+            await _reject_unauthorized_message(message)
+            return
         active_workers = await asyncio.to_thread(queen.store.get_active_workers)
         status_text = (
             f"**System Status**\n"
@@ -161,6 +176,9 @@ def register_handlers(
 
     @dp.message(Command("workers"))
     async def cmd_workers(message: Message) -> None:
+        if not is_allowed_chat(message.chat.id, allowed_chat_ids):
+            await _reject_unauthorized_message(message)
+            return
         templates = await asyncio.to_thread(queen.store.list_worker_templates)
         if not templates:
             await message.answer("No worker templates found.")
@@ -173,6 +191,9 @@ def register_handlers(
 
     @dp.message(Command("memory"))
     async def cmd_memory(message: Message, command: CommandObject) -> None:
+        if not is_allowed_chat(message.chat.id, allowed_chat_ids):
+            await _reject_unauthorized_message(message)
+            return
         limit = 300
         if command.args and command.args.isdigit():
             limit = int(command.args)
@@ -199,6 +220,9 @@ def register_handlers(
 
     @dp.message()
     async def handle_message(message: Message) -> None:
+        if not is_allowed_chat(message.chat.id, allowed_chat_ids):
+            await _reject_unauthorized_message(message)
+            return
         # Generate a unique ID for this request chain
         correlation_id = f"msg-{uuid.uuid4()}"
         correlation_id_var.set(correlation_id)
@@ -287,6 +311,11 @@ def register_handlers(
 
     @dp.callback_query()
     async def handle_callback(query: CallbackQuery) -> None:
+        query_chat_id = query.message.chat.id if query.message and query.message.chat else None
+        if query_chat_id is None or not is_allowed_chat(query_chat_id, allowed_chat_ids):
+            logger.warning("Rejected Telegram callback from unauthorized chat", chat_id=query_chat_id)
+            await query.answer("Unauthorized", show_alert=True)
+            return
         data = query.data or ""
         if data.startswith("approve:"):
             intent_id = data.split(":", 1)[1]
@@ -420,4 +449,3 @@ def _prepare_markdown_v2(text: str) -> str:
     if not text:
         return ""
     return telegramify_markdown.markdownify(text)
-

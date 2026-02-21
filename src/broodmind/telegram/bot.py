@@ -66,7 +66,6 @@ def build_dispatcher(settings: Settings, bot: Bot) -> Dispatcher:
         embeddings=embeddings
     )
     scheduler = SchedulerService(store=store, workspace_dir=settings.workspace_dir)
-    mcp_manager = MCPManager(workspace_dir=settings.workspace_dir)
     queen = Queen(
         provider=provider,
         store=store,
