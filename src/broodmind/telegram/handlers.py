@@ -53,6 +53,22 @@ def _publish_runtime_metrics() -> None:
     )
 
 
+_REACTION_MAPPING = {
+    "✅": "👍",
+    "✔️": "👍",
+    "❌": "👎",
+    "✖️": "👎",
+    "🚀": "⚡",
+    "⚠️": "🤨",
+    "ℹ️": "🤔",
+}
+
+
+def _normalize_reaction(emoji: str) -> str:
+    # Handle both raw emoji and potential mapping
+    return _REACTION_MAPPING.get(emoji.strip(), emoji.strip())
+
+
 def register_handlers(
     dp: Dispatcher, queen: Queen, approvals: ApprovalManager, settings: Settings, bot: Bot
 ) -> None:
@@ -228,8 +244,8 @@ def register_handlers(
                     # We don't store images deep in memory yet, but we acknowledge receipt.
                     try:
                         await message.react([ReactionTypeEmoji(emoji="✍\ufe0f")])
-                    except Exception:
-                        logger.debug("Failed to react to silent message")
+                    except Exception as exc:
+                        logger.debug("Failed to react to silent message", error=str(exc))
                 return
 
             # 3. Normal Queen Processing
@@ -253,10 +269,11 @@ def register_handlers(
                     # Remove the tag from the text
                     final_text = final_text.replace(react_match.group(0), "").strip()
                     if emoji:
+                        mapped_emoji = _normalize_reaction(emoji)
                         try:
-                            await message.react([ReactionTypeEmoji(emoji=emoji)])
-                        except Exception:
-                            logger.warning("Failed to apply reaction", emoji=emoji)
+                            await message.react([ReactionTypeEmoji(emoji=mapped_emoji)])
+                        except Exception as exc:
+                            logger.warning("Failed to apply reaction", emoji=emoji, mapped=mapped_emoji, error=str(exc))
 
                 if final_text and not is_heartbeat_ok(final_text):
                     # Reply with quote/reply to the current message
