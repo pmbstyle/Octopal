@@ -22,6 +22,7 @@ from broodmind.workers.contracts import WorkerResult
 
 logger = structlog.get_logger(__name__)
 _MAX_PLAN_STEPS = 8
+_MAX_VERIFY_CONTEXT_CHARS = 12000
 
 
 async def route_or_reply(
@@ -67,7 +68,12 @@ async def route_or_reply(
                 steps=len(plan.get("steps", [])),
             )
             if plan["mode"] == "reply":
-                return normalize_plain_text(str(plan.get("response", "")))
+                return await _finalize_response(
+                    provider=provider,
+                    messages=messages,
+                    response_text=str(plan.get("response", "")),
+                    internal_followup=internal_followup,
+                )
             plan_steps = plan.get("steps", [])
             if plan_steps:
                 plan_block = "\n".join([f"{idx + 1}. {step}" for idx, step in enumerate(plan_steps)])
@@ -171,7 +177,12 @@ async def route_or_reply(
                 
                 if content_raw:
                     logger.debug("Queen output", output=content_raw)
-                return normalize_plain_text(content_raw)
+                return await _finalize_response(
+                    provider=provider,
+                    messages=messages,
+                    response_text=content_raw,
+                    internal_followup=internal_followup,
+                )
                 
             if had_tool_calls:
                 if internal_followup:
@@ -184,7 +195,12 @@ async def route_or_reply(
                     )
                 )
                 final_resp = await provider.complete(messages)
-                return normalize_plain_text(final_resp)
+                return await _finalize_response(
+                    provider=provider,
+                    messages=messages,
+                    response_text=final_resp,
+                    internal_followup=internal_followup,
+                )
                 
             if last_error and _looks_like_tool_error(last_error):
                 if internal_followup:
@@ -196,13 +212,23 @@ async def route_or_reply(
                     )
                 )
                 final_resp = await provider.complete(messages)
-                return normalize_plain_text(final_resp)
+                return await _finalize_response(
+                    provider=provider,
+                    messages=messages,
+                    response_text=final_resp,
+                    internal_followup=internal_followup,
+                )
                 
             return ""
             
         response_raw = await provider.complete(messages)
         logger.debug("Queen output", output=response_raw)
-        return normalize_plain_text(response_raw)
+        return await _finalize_response(
+            provider=provider,
+            messages=messages,
+            response_text=response_raw,
+            internal_followup=internal_followup,
+        )
     except Exception:
         logger.exception("Error in route_or_reply")
         raise
@@ -438,3 +464,126 @@ def _normalize_plan_payload(payload: dict[str, Any], has_tools: bool) -> dict[st
     if not steps:
         return None
     return {"mode": "execute", "steps": steps[:_MAX_PLAN_STEPS], "response": response}
+
+
+async def _finalize_response(
+    provider: InferenceProvider,
+    messages: list[Message | dict[str, Any]],
+    response_text: str,
+    *,
+    internal_followup: bool,
+) -> str:
+    cleaned = normalize_plain_text(response_text or "")
+    if not cleaned:
+        return cleaned
+    if internal_followup or is_control_response(cleaned):
+        return cleaned
+
+    verified = await _verify_final_response(provider, messages, cleaned)
+    return normalize_plain_text(verified or cleaned)
+
+
+async def _verify_final_response(
+    provider: InferenceProvider,
+    messages: list[Message | dict[str, Any]],
+    candidate: str,
+) -> str:
+    context = _messages_to_text(messages)
+    prompt = (
+        "You are a strict response verifier. Compare the assistant draft response against the evidence context.\n"
+        "Return JSON only with keys:\n"
+        '{"verdict":"approved|revised|insufficient_evidence","response":"...","missing_evidence":["..."],"confidence":0.0}\n'
+        "Rules:\n"
+        "- approved: draft is well-supported.\n"
+        "- revised: rewrite conservatively to match evidence.\n"
+        "- insufficient_evidence: if claims are not backed; provide a short user-facing follow-up request.\n"
+        "- Do not invent new facts."
+        "\n\n<EVIDENCE>\n"
+        f"{context}\n"
+        "</EVIDENCE>\n\n"
+        "<DRAFT_RESPONSE>\n"
+        f"{candidate}\n"
+        "</DRAFT_RESPONSE>"
+    )
+    try:
+        raw = await provider.complete([Message(role="system", content=prompt)])
+    except Exception:
+        logger.debug("Verifier step skipped due to provider error", exc_info=True)
+        return candidate
+
+    payload = _extract_json_object(raw)
+    normalized = _normalize_verification_payload(payload)
+    if not normalized:
+        return candidate
+
+    verdict = normalized["verdict"]
+    confidence = normalized["confidence"]
+    if verdict == "approved" and confidence >= 0.45:
+        return candidate
+    if verdict == "revised" and normalized["response"]:
+        return normalized["response"]
+    if verdict == "insufficient_evidence":
+        return _build_insufficient_evidence_response(normalized, candidate)
+    return candidate
+
+
+def _messages_to_text(messages: list[Message | dict[str, Any]], max_chars: int = _MAX_VERIFY_CONTEXT_CHARS) -> str:
+    lines: list[str] = []
+    for msg in messages[-14:]:
+        if isinstance(msg, Message):
+            role = msg.role
+            content = msg.content
+        else:
+            role = str(msg.get("role", "unknown"))
+            content = msg.get("content", "")
+        if isinstance(content, list):
+            safe_content = json.dumps(content, ensure_ascii=False)
+        else:
+            safe_content = str(content)
+        if safe_content:
+            lines.append(f"{role}: {safe_content}")
+    merged = "\n".join(lines)
+    if len(merged) > max_chars:
+        return merged[-max_chars:]
+    return merged
+
+
+def _normalize_verification_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    verdict = str(payload.get("verdict", "")).strip().lower()
+    if verdict not in {"approved", "revised", "insufficient_evidence"}:
+        return None
+    response = str(payload.get("response", "")).strip()
+    missing = payload.get("missing_evidence") or []
+    if not isinstance(missing, list):
+        missing = []
+    missing = [str(item).strip() for item in missing if str(item).strip()]
+    confidence_raw = payload.get("confidence", 0.0)
+    try:
+        confidence = float(confidence_raw)
+    except Exception:
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))
+    return {
+        "verdict": verdict,
+        "response": response,
+        "missing_evidence": missing,
+        "confidence": confidence,
+    }
+
+
+def _build_insufficient_evidence_response(payload: dict[str, Any], candidate: str) -> str:
+    response = payload.get("response", "").strip()
+    if response:
+        return response
+    missing = payload.get("missing_evidence") or []
+    if missing:
+        return (
+            "I may be missing enough evidence to confirm this fully. "
+            f"Could you share or confirm: {missing[0]}?"
+        )
+    return (
+        "I may be missing enough evidence to give a confident answer yet. "
+        "If you want, I can run an additional targeted check."
+    )
