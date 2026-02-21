@@ -77,6 +77,7 @@ def build_dispatcher(settings: Settings, bot: Bot) -> Dispatcher:
         scheduler=scheduler,
         mcp_manager=mcp_manager,
     )
+    runtime.queen = queen
 
     dp = Dispatcher()
     register_handlers(dp, queen, approvals, settings, bot)

@@ -87,6 +87,21 @@ class Worker:
             raise RuntimeError(response.get("message", "Unknown MCP error"))
         return response.get("result")
 
+    async def call_queen_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+        await self._write_message(
+            {
+                "type": "queen_tool_call",
+                "tool_name": tool_name,
+                "arguments": arguments,
+            }
+        )
+        response = await self._read_message()
+        if response.get("type") != "queen_tool_result":
+            raise RuntimeError("Unexpected response from Queen tool bridge")
+        if not bool(response.get("ok", False)):
+            raise RuntimeError(str(response.get("error") or "Queen tool call failed"))
+        return response.get("result")
+
     async def _write_message(self, payload: dict[str, Any]) -> None:
         line = json.dumps(payload)
         sys.stdout.write(line + "\n")

@@ -11,9 +11,11 @@ import os
 import shutil
 import structlog
 import uuid
+import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from broodmind.intents.types import ActionIntent
@@ -39,6 +41,7 @@ class WorkerRuntime:
     workspace_dir: Path
     launcher: WorkerLauncher
     mcp_manager: MCPManager | None = None
+    queen: Any | None = None
     _running: dict[str, asyncio.subprocess.Process] = field(default_factory=dict)
 
     async def run_task(
@@ -328,12 +331,13 @@ class WorkerRuntime:
         invalid_lines = 0
         consecutive_invalid_lines = 0
         max_invalid_lines = 50
+        invalid_limit_reached = False
         max_buffer_bytes = 256 * 1024
         assert process.stdout is not None
         buffer = b""
 
         async def _handle_line(line: bytes) -> WorkerResult | None:
-            nonlocal invalid_lines, consecutive_invalid_lines
+            nonlocal invalid_lines, consecutive_invalid_lines, invalid_limit_reached
             payload = _safe_parse_json(line)
             if payload is None:
                 text_line = line.decode("utf-8", errors="replace").strip()
@@ -342,7 +346,9 @@ class WorkerRuntime:
                 invalid_lines += 1
                 consecutive_invalid_lines += 1
                 if consecutive_invalid_lines >= max_invalid_lines:
-                    logger.error("Worker emitted too many invalid lines")
+                    if not invalid_limit_reached:
+                        logger.error("Worker emitted too many invalid lines")
+                        invalid_limit_reached = True
                     process.kill()
                 return None
             consecutive_invalid_lines = 0
@@ -350,6 +356,53 @@ class WorkerRuntime:
             msg_type = payload.get("type")
             if msg_type == "log":
                 logger.debug("Worker %s: %s", spec.id, payload.get("message"))
+                return None
+            if msg_type == "queen_tool_call":
+                if not self.queen:
+                    await self._write_to_worker(
+                        process,
+                        {"type": "queen_tool_result", "ok": False, "error": "Queen runtime bridge unavailable."},
+                    )
+                    return None
+
+                tool_name = str(payload.get("tool_name", "")).strip()
+                arguments = payload.get("arguments", {})
+                if not isinstance(arguments, dict):
+                    arguments = {}
+
+                try:
+                    from broodmind.tools.worker_tools import get_worker_tools
+
+                    specs = {t.name: t for t in get_worker_tools()}
+                    spec_tool = specs.get(tool_name)
+                    if spec_tool is None:
+                        await self._write_to_worker(
+                            process,
+                            {"type": "queen_tool_result", "ok": False, "error": f"Unknown queen tool: {tool_name}"},
+                        )
+                        return None
+
+                    tool_ctx: dict[str, Any] = {
+                        "queen": self.queen,
+                        "chat_id": 0,
+                        "base_dir": self.workspace_dir,
+                        "worker": SimpleNamespace(spec=spec),
+                    }
+                    if spec_tool.is_async:
+                        result = spec_tool.handler(arguments, tool_ctx)
+                        if inspect.isawaitable(result):
+                            result = await result
+                    else:
+                        result = await asyncio.to_thread(spec_tool.handler, arguments, tool_ctx)
+                    await self._write_to_worker(
+                        process,
+                        {"type": "queen_tool_result", "ok": True, "result": result},
+                    )
+                except Exception as exc:
+                    await self._write_to_worker(
+                        process,
+                        {"type": "queen_tool_result", "ok": False, "error": str(exc)},
+                    )
                 return None
             if msg_type == "mcp_call":
                 server_id = payload.get("server_id")
@@ -561,6 +614,8 @@ class WorkerRuntime:
                 if consecutive_invalid_lines >= max_invalid_lines:
                     buffer = b""
                     break
+            if invalid_limit_reached:
+                break
         if buffer.strip():
             result = await _handle_line(buffer)
             if result is not None:

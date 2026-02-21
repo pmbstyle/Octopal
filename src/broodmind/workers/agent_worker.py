@@ -63,6 +63,21 @@ _RESULT_SCHEMA = {
     "additionalProperties": True,
 }
 logger = structlog.get_logger(__name__)
+_QUEEN_PROXY_TOOLS = {
+    "list_workers",
+    "start_worker",
+    "start_child_worker",
+    "start_workers_parallel",
+    "synthesize_worker_results",
+    "stop_worker",
+    "get_worker_status",
+    "list_active_workers",
+    "get_worker_result",
+    "get_worker_output_path",
+    "create_worker_template",
+    "update_worker_template",
+    "delete_worker_template",
+}
 
 
 async def run_agent_worker(spec_path: str) -> None:
@@ -106,6 +121,7 @@ async def execute_agent_task(worker: Worker, base_dir: Path) -> WorkerResult:
     available_tools = get_tools()
     # Filter tools by name from worker spec
     filtered_tools = [t for t in available_tools if t.name in spec.available_tools]
+    filtered_tools = _with_queen_tool_proxies(filtered_tools, worker)
 
     # Add MCP tools from spec
     from broodmind.tools.registry import ToolSpec
@@ -435,7 +451,7 @@ async def _execute_tool(
                     "error_type": "transient",
                 }
             except Exception as exc:
-                logger.exception("Tool execution failed: %s", tool_name)
+                await worker.log("error", f"Tool execution failed: {tool_name}: {exc}")
                 error_text = str(exc)
                 error_type = _classify_tool_error(error_text)
                 if attempt < max_attempts - 1 and error_type == "transient":
@@ -470,13 +486,39 @@ async def _execute_tool(
                 "error_type": "none",
             }
     except Exception as exc:
-        logger.exception("Tool execution failed: %s", tool_name)
+        await worker.log("error", f"Tool execution failed: {tool_name}: {exc}")
         return {"error": str(exc)}, {
             "retries": 0,
             "timed_out": False,
             "had_error": True,
             "error_type": "unknown",
         }
+
+
+def _with_queen_tool_proxies(tools: list[Any], worker: Worker) -> list[Any]:
+    proxied: list[Any] = []
+    for tool in tools:
+        if getattr(tool, "name", "") not in _QUEEN_PROXY_TOOLS:
+            proxied.append(tool)
+            continue
+        proxied.append(_make_queen_proxy_tool(tool, worker))
+    return proxied
+
+
+def _make_queen_proxy_tool(tool: Any, worker: Worker) -> Any:
+    from broodmind.tools.registry import ToolSpec
+
+    async def _proxy_handler(args: dict[str, Any], ctx: dict[str, Any]) -> Any:
+        return await worker.call_queen_tool(tool.name, args)
+
+    return ToolSpec(
+        name=tool.name,
+        description=tool.description,
+        parameters=tool.parameters,
+        permission=tool.permission,
+        handler=_proxy_handler,
+        is_async=True,
+    )
 
 
 def _extract_mcp_identity(mcp_tool_data: dict[str, Any]) -> tuple[str, str] | None:
