@@ -476,11 +476,7 @@ async def _finalize_response(
     cleaned = normalize_plain_text(response_text or "")
     if not cleaned:
         return cleaned
-    if internal_followup or is_control_response(cleaned):
-        return cleaned
-
-    verified = await _verify_final_response(provider, messages, cleaned)
-    return normalize_plain_text(verified or cleaned)
+    return cleaned
 
 
 async def _verify_final_response(
