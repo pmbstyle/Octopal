@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import random
+import re
 from typing import Any
 
 from litellm import acompletion
@@ -20,6 +23,8 @@ class LiteLLMProvider:
     """LiteLLM-based inference provider with automatic retries and fallbacks.
     Supports both OpenRouter and z.ai (custom OpenAI-compatible endpoints).
     """
+
+    _semaphores_by_limit: dict[int, asyncio.Semaphore] = {}
 
     def __init__(self, settings: Settings, model: str | None = None) -> None:
         self._settings = settings
@@ -80,6 +85,12 @@ class LiteLLMProvider:
             litellm.caching = True
             logger.info("LiteLLM caching is enabled.")
 
+        max_concurrency = max(1, int(settings.litellm_max_concurrency))
+        self._semaphore = self._semaphores_by_limit.setdefault(max_concurrency, asyncio.Semaphore(max_concurrency))
+        self._rate_limit_max_retries = max(0, int(settings.litellm_rate_limit_max_retries))
+        self._rate_limit_base_delay = max(0.1, float(settings.litellm_rate_limit_base_delay_seconds))
+        self._rate_limit_max_delay = max(self._rate_limit_base_delay, float(settings.litellm_rate_limit_max_delay_seconds))
+
     async def complete(self, messages: list[Message | dict], **kwargs: object) -> str:
         """Complete a chat request without tools."""
         if not self._api_key:
@@ -105,11 +116,8 @@ class LiteLLMProvider:
             fallbacks=self._fallbacks,
         )
         try:
-            response = await acompletion(
-                model=self._model,
+            response = await self._acompletion_with_resilience(
                 messages=serialized_messages,
-                api_base=self._api_base,
-                api_key=self._api_key,
                 **request_kwargs,
             )
             content = _extract_content(response)
@@ -122,11 +130,8 @@ class LiteLLMProvider:
                     "Retrying LiteLLM completion with strict message normalization after provider rejected messages payload",
                 )
                 try:
-                    response = await acompletion(
-                        model=self._model,
+                    response = await self._acompletion_with_resilience(
                         messages=retry_messages,
-                        api_base=self._api_base,
-                        api_key=self._api_key,
                         **request_kwargs,
                     )
                     content = _extract_content(response)
@@ -190,13 +195,10 @@ class LiteLLMProvider:
                 timeout=self._settings.litellm_timeout,
                 fallbacks=self._fallbacks,
             )
-            response = await acompletion(
-                model=self._model,
+            response = await self._acompletion_with_resilience(
                 messages=serialized_messages,
                 tools=tools,
                 tool_choice=tool_choice,
-                api_base=self._api_base,
-                api_key=self._api_key,
                 **request_kwargs,
             )
 
@@ -233,6 +235,38 @@ class LiteLLMProvider:
             
             logger.exception("LiteLLM completion with tools failed")
             raise RuntimeError(f"LiteLLM completion with tools failed: {exc}") from exc
+
+    async def _acompletion_with_resilience(self, **kwargs: object) -> Any:
+        attempt = 0
+        while True:
+            try:
+                return await self._acompletion_guarded(**kwargs)
+            except Exception as exc:
+                if not _is_rate_limit_error(exc) or attempt >= self._rate_limit_max_retries:
+                    raise
+                delay = _compute_rate_limit_delay(
+                    exc=exc,
+                    attempt=attempt,
+                    base_delay=self._rate_limit_base_delay,
+                    max_delay=self._rate_limit_max_delay,
+                )
+                logger.warning(
+                    "LiteLLM rate limited (attempt %s/%s). Retrying in %.2fs",
+                    attempt + 1,
+                    self._rate_limit_max_retries,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
+
+    async def _acompletion_guarded(self, **kwargs: object) -> Any:
+        async with self._semaphore:
+            return await acompletion(
+                model=self._model,
+                api_base=self._api_base,
+                api_key=self._api_key,
+                **kwargs,
+            )
 
 
 def _serialize_message(message: Message | dict) -> dict:
@@ -312,6 +346,44 @@ def _coerce_content_text(content: Any) -> str:
 def _looks_like_illegal_messages_error(exc: Exception) -> bool:
     err = str(exc).lower()
     return "messages parameter is illegal" in err or "'code': '1214'" in err or '"code": "1214"' in err
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    name = type(exc).__name__.lower()
+    err = str(exc).lower()
+    return "ratelimit" in name or "rate limit" in err or "error code: 429" in err or "status code 429" in err
+
+
+def _extract_retry_after_seconds(exc: Exception) -> float | None:
+    err = str(exc).lower()
+    patterns = (
+        r"retry[-_ ]after['\":= ]+([0-9]+(?:\.[0-9]+)?)",
+        r"try again in ([0-9]+(?:\.[0-9]+)?)s",
+        r"wait ([0-9]+(?:\.[0-9]+)?)s",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, err)
+        if match:
+            try:
+                return float(match.group(1))
+            except Exception:
+                return None
+    return None
+
+
+def _compute_rate_limit_delay(
+    *,
+    exc: Exception,
+    attempt: int,
+    base_delay: float,
+    max_delay: float,
+) -> float:
+    hinted_delay = _extract_retry_after_seconds(exc)
+    if hinted_delay is not None:
+        return max(0.1, min(max_delay, hinted_delay))
+    exponential = base_delay * (2**attempt)
+    jitter = random.uniform(0.0, base_delay * 0.35)
+    return max(0.1, min(max_delay, exponential + jitter))
 
 
 def _extract_content(response: Any) -> str:

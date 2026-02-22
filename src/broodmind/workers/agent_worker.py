@@ -15,6 +15,7 @@ import json
 import random
 import structlog
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -117,11 +118,15 @@ async def run_agent_worker(spec_path: str) -> None:
         result = await execute_agent_task(worker, base_dir)
         await worker.complete(result)
     except Exception as exc:
-        logger.exception("AgentWorker failed: id=%s", worker.spec.id)
+        error_text = str(exc)
+        await worker.log("error", f"AgentWorker failed: id={worker.spec.id} error={error_text}")
         await worker.complete(
             WorkerResult(
-                summary=f"Worker failed: {exc}",
-                output={"error": str(exc)},
+                summary=f"Worker failed: {error_text}",
+                output={
+                    "error": error_text,
+                    "traceback": _truncate_text(traceback.format_exc(), 4000),
+                },
             )
         )
 

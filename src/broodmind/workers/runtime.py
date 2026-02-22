@@ -381,7 +381,7 @@ class WorkerRuntime:
         """Read worker output."""
         invalid_lines = 0
         consecutive_invalid_lines = 0
-        max_invalid_lines = 50
+        max_invalid_lines = 200
         invalid_limit_reached = False
         max_buffer_bytes = 256 * 1024
         assert process.stdout is not None
@@ -398,9 +398,12 @@ class WorkerRuntime:
                 consecutive_invalid_lines += 1
                 if consecutive_invalid_lines >= max_invalid_lines:
                     if not invalid_limit_reached:
-                        logger.error("Worker emitted too many invalid lines")
+                        logger.warning(
+                            "Worker emitted too many non-JSON lines; continuing to wait for structured result",
+                            worker_id=spec.id,
+                            invalid_lines=invalid_lines,
+                        )
                         invalid_limit_reached = True
-                    process.kill()
                 return None
             consecutive_invalid_lines = 0
 
@@ -669,9 +672,6 @@ class WorkerRuntime:
                     return result
                 if consecutive_invalid_lines >= max_invalid_lines:
                     buffer = b""
-                    break
-            if invalid_limit_reached:
-                break
         if buffer.strip():
             result = await _handle_line(buffer)
             if result is not None:

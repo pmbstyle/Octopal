@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     litellm_fallbacks: str | None = Field(default=None, alias="LITELLM_FALLBACKS")
     litellm_drop_params: bool = Field(True, alias="LITELLM_DROP_PARAMS")
     litellm_caching: bool = Field(False, alias="LITELLM_CACHING")
+    litellm_max_concurrency: int = Field(2, alias="LITELLM_MAX_CONCURRENCY")
+    litellm_rate_limit_max_retries: int = Field(6, alias="LITELLM_RATE_LIMIT_MAX_RETRIES")
+    litellm_rate_limit_base_delay_seconds: float = Field(1.0, alias="LITELLM_RATE_LIMIT_BASE_DELAY_SECONDS")
+    litellm_rate_limit_max_delay_seconds: float = Field(30.0, alias="LITELLM_RATE_LIMIT_MAX_DELAY_SECONDS")
 
     # OpenRouter Settings (used via LiteLLM with openrouter/ model prefix)
     openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
