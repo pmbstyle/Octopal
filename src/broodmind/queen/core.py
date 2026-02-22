@@ -5,6 +5,7 @@ import json
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -396,6 +397,7 @@ class Queen:
         while True:
             await asyncio.sleep(interval_seconds)
             try:
+                await asyncio.to_thread(self._reconcile_stale_worker_records)
                 mcp_status = {}
                 if self.mcp_manager:
                     mcp_status = self.mcp_manager.get_server_statuses()
@@ -408,6 +410,32 @@ class Queen:
                 )
             except Exception:
                 logger.debug("Failed to publish periodic metrics", exc_info=True)
+
+    def _reconcile_stale_worker_records(self) -> None:
+        """Normalize stale DB worker states that no longer exist in runtime."""
+        runtime = self.runtime
+        if not runtime or not hasattr(runtime, "is_worker_running"):
+            return
+        workers = self.store.get_active_workers(older_than_minutes=120)
+        if not workers:
+            return
+        grace_cutoff = utc_now() - timedelta(minutes=2)
+        reconciled = 0
+        for worker in workers:
+            if worker.status not in {"started", "running"}:
+                continue
+            if worker.updated_at >= grace_cutoff:
+                continue
+            if runtime.is_worker_running(worker.id):
+                continue
+            self.store.update_worker_status(worker.id, "stopped")
+            self.store.update_worker_result(
+                worker.id,
+                error="Worker process not found in runtime; stale running state reconciled.",
+            )
+            reconciled += 1
+        if reconciled > 0:
+            logger.info("Reconciled stale worker records", reconciled_workers=reconciled)
 
     def start_background_tasks(self, cleanup_interval_seconds: int = 3600):
         if self._cleanup_task is None or self._cleanup_task.done():
