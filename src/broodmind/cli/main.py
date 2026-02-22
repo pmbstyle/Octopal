@@ -69,31 +69,62 @@ def _maybe_enable_tailscale_serve(settings: Settings) -> None:
 
     target_host = "127.0.0.1"
     target = f"http://{target_host}:{settings.gateway_port}"
-    attempts = [
-        ["tailscale", "serve", "--bg", target],
-        ["tailscale", "serve", "--bg", str(settings.gateway_port)],
-    ]
+    expected_proxy = f"proxy http://{target_host}:{settings.gateway_port}"
 
-    ok = False
-    last_err = ""
-    for cmd in attempts:
+    def _run(cmd: list[str], timeout: int = 8) -> subprocess.CompletedProcess[str] | None:
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except FileNotFoundError:
-            return
+            return None
         except Exception as exc:
-            last_err = str(exc)
-            continue
+            logger.debug("Tailscale command failed: cmd=%s error=%s", cmd, exc)
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr=str(exc))
 
-        if proc.returncode == 0:
-            ok = True
-            break
-        last_err = (proc.stderr or proc.stdout or "").strip()
-
-    if not ok:
-        if last_err:
-            logger.debug("Tailscale serve auto-config skipped", error=last_err)
+    status_proc = _run(["tailscale", "serve", "status"])
+    if status_proc is None:
         return
+    current_status = (status_proc.stdout or "").strip() if status_proc.returncode == 0 else ""
+    if expected_proxy in current_status:
+        logger.debug("Tailscale serve already mapped to expected target: %s", target)
+    else:
+        attempts = [
+            ["tailscale", "serve", "--bg", target],
+            ["tailscale", "serve", "--bg", str(settings.gateway_port)],
+        ]
+        ok = False
+        last_err = ""
+        for cmd in attempts:
+            proc = _run(cmd)
+            if proc is None:
+                return
+            if proc.returncode == 0:
+                ok = True
+                break
+            last_err = (proc.stderr or proc.stdout or "").strip()
+
+        # Self-heal stale serve mappings that point to old ports/processes.
+        if not ok:
+            reset_proc = _run(["tailscale", "serve", "reset"])
+            repair_proc = _run(["tailscale", "serve", "--bg", target])
+            if repair_proc is not None and repair_proc.returncode == 0:
+                ok = True
+            else:
+                if reset_proc is not None:
+                    last_err = (reset_proc.stderr or reset_proc.stdout or "").strip() or last_err
+                if repair_proc is not None:
+                    last_err = (repair_proc.stderr or repair_proc.stdout or "").strip() or last_err
+
+        verify_proc = _run(["tailscale", "serve", "status"])
+        verified_status = (verify_proc.stdout or "").strip() if (verify_proc and verify_proc.returncode == 0) else ""
+        if expected_proxy not in verified_status:
+            ok = False
+            if verify_proc is not None:
+                last_err = (verify_proc.stderr or verify_proc.stdout or "").strip() or last_err
+
+        if not ok:
+            if last_err:
+                logger.debug("Tailscale serve auto-config skipped: %s", last_err)
+            return
 
     public_hint = ""
     try:

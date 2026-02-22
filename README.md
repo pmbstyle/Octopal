@@ -239,7 +239,15 @@ BROODMIND_WORKER_DOCKER_IMAGE=broodmind-worker:latest
 
 ## Private Web Dashboard (Tailscale)
 
-Run gateway:
+For Dashboard + WebSocket clients together, run full BroodMind runtime:
+
+```bash
+uv run broodmind start
+```
+
+Use `uv run broodmind gateway` only for HTTP gateway-only scenarios (without Telegram/Queen runtime).
+
+Run gateway-only:
 
 ```bash
 uv run broodmind gateway
@@ -258,7 +266,7 @@ Recommended private setup:
    `BROODMIND_DASHBOARD_TOKEN=<strong-random-token>`
 3. Publish only to tailnet via `tailscale serve` (no Funnel).
 
-By default, BroodMind now attempts to auto-configure `tailscale serve` at startup (best effort, skipped if unavailable). Disable with:
+By default, BroodMind attempts to auto-configure `tailscale serve` at startup and repair stale proxy mappings to the configured gateway port (best effort, skipped if unavailable). Disable with:
 
 `BROODMIND_TAILSCALE_AUTO_SERVE=0`
 
