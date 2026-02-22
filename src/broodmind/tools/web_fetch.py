@@ -10,6 +10,7 @@ import httpx
 
 DEFAULT_MAX_CHARS = 20000
 ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+MARKDOWN_NEW_ENDPOINT = "https://markdown.new/"
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -121,6 +122,120 @@ def web_fetch(args: dict[str, Any]) -> str:
         return f"web_fetch error: {exc}"
 
 
+def markdown_new_fetch(args: dict[str, Any]) -> str:
+    """Fetch URL content as markdown via markdown.new with graceful fallback to web_fetch."""
+    url = str(args.get("url", "")).strip()
+    if not url:
+        return "markdown_new_fetch error: url is required."
+    if not _is_safe_url(url):
+        return "markdown_new_fetch error: url not allowed."
+
+    method = str(args.get("method", "auto")).strip().lower()
+    if method not in {"auto", "ai", "browser"}:
+        return "markdown_new_fetch error: unsupported method. Allowed: auto, ai, browser."
+
+    retain_images = bool(args.get("retain_images", False))
+    fallback_to_web_fetch = bool(args.get("fallback_to_web_fetch", True))
+
+    max_chars_raw = args.get("max_chars", DEFAULT_MAX_CHARS)
+    try:
+        max_chars = int(max_chars_raw)
+    except Exception:
+        max_chars = DEFAULT_MAX_CHARS
+    max_chars = max(200, min(200000, max_chars))
+
+    timeout_raw = args.get("timeout_seconds", 60)
+    try:
+        timeout_seconds = float(timeout_raw)
+    except Exception:
+        timeout_seconds = 60.0
+    timeout_seconds = max(5.0, min(300.0, timeout_seconds))
+
+    endpoint = str(args.get("endpoint", MARKDOWN_NEW_ENDPOINT)).strip() or MARKDOWN_NEW_ENDPOINT
+
+    payload = {
+        "url": url,
+        "method": method,
+        "retain_images": retain_images,
+    }
+
+    try:
+        with httpx.Client(timeout=timeout_seconds) as client:
+            resp = client.post(
+                endpoint,
+                json=payload,
+                headers={
+                    "Accept": "text/markdown",
+                    "Content-Type": "application/json",
+                    "User-Agent": "BroodMind/1.0",
+                },
+            )
+    except Exception as exc:
+        return _markdown_new_with_fallback(
+            url=url,
+            max_chars=max_chars,
+            fallback_to_web_fetch=fallback_to_web_fetch,
+            reason=f"request_failed: {exc}",
+        )
+
+    rate_limit_remaining = resp.headers.get("x-rate-limit-remaining")
+    markdown_tokens = resp.headers.get("x-markdown-tokens")
+
+    if resp.status_code == 200:
+        snippet = resp.text[:max_chars]
+        result = {
+            "ok": True,
+            "degraded": False,
+            "fallback_used": False,
+            "rate_limited": False,
+            "source": "markdown.new",
+            "url": url,
+            "status_code": resp.status_code,
+            "content_type": resp.headers.get("content-type"),
+            "snippet": snippet,
+            "method": method,
+            "retain_images": retain_images,
+            "rate_limit_remaining": rate_limit_remaining,
+            "markdown_tokens": _safe_int(markdown_tokens),
+        }
+        return _to_json(result)
+
+    if resp.status_code == 429:
+        return _markdown_new_with_fallback(
+            url=url,
+            max_chars=max_chars,
+            fallback_to_web_fetch=fallback_to_web_fetch,
+            reason="rate_limited",
+            upstream_status=429,
+            rate_limit_remaining=rate_limit_remaining,
+        )
+
+    if resp.status_code >= 500:
+        return _markdown_new_with_fallback(
+            url=url,
+            max_chars=max_chars,
+            fallback_to_web_fetch=fallback_to_web_fetch,
+            reason=f"upstream_{resp.status_code}",
+            upstream_status=resp.status_code,
+            rate_limit_remaining=rate_limit_remaining,
+        )
+
+    return _to_json(
+        {
+            "ok": False,
+            "degraded": True,
+            "fallback_used": False,
+            "rate_limited": resp.status_code == 429,
+            "source": "markdown.new",
+            "url": url,
+            "status_code": resp.status_code,
+            "error": f"markdown.new request failed with status {resp.status_code}",
+            "body_snippet": resp.text[:500],
+            "rate_limit_remaining": rate_limit_remaining,
+        }
+    )
+
+
 def _fetch_firecrawl(url: str, api_key: str, max_chars: int, target_headers: dict[str, Any] | None = None) -> str:
     """Fetch content using Firecrawl API."""
     endpoint = "https://api.firecrawl.dev/v1/scrape"
@@ -173,3 +288,78 @@ def _to_json(payload: dict[str, Any]) -> str:
     import json
 
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _markdown_new_with_fallback(
+    *,
+    url: str,
+    max_chars: int,
+    fallback_to_web_fetch: bool,
+    reason: str,
+    upstream_status: int | None = None,
+    rate_limit_remaining: str | None = None,
+) -> str:
+    if fallback_to_web_fetch:
+        fallback_raw = web_fetch({"url": url, "method": "GET", "max_chars": max_chars})
+        fallback_json: dict[str, Any] | None = None
+        try:
+            parsed = pyjson.loads(fallback_raw)
+            if isinstance(parsed, dict):
+                fallback_json = parsed
+        except Exception:
+            fallback_json = None
+
+        if fallback_json is not None:
+            fallback_json.update(
+                {
+                    "ok": True,
+                    "degraded": True,
+                    "fallback_used": True,
+                    "rate_limited": reason == "rate_limited",
+                    "source": fallback_json.get("source") or "web_fetch_fallback",
+                    "fallback_reason": reason,
+                    "upstream_status": upstream_status,
+                    "rate_limit_remaining": rate_limit_remaining,
+                }
+            )
+            return _to_json(fallback_json)
+
+        return _to_json(
+            {
+                "ok": False,
+                "degraded": True,
+                "fallback_used": True,
+                "rate_limited": reason == "rate_limited",
+                "source": "web_fetch_fallback",
+                "url": url,
+                "error": "markdown.new failed and fallback failed",
+                "fallback_reason": reason,
+                "fallback_error": fallback_raw[:500],
+                "upstream_status": upstream_status,
+                "rate_limit_remaining": rate_limit_remaining,
+            }
+        )
+
+    return _to_json(
+        {
+            "ok": False,
+            "degraded": True,
+            "fallback_used": False,
+            "rate_limited": reason == "rate_limited",
+            "source": "markdown.new",
+            "url": url,
+            "error": "markdown.new failed and fallback disabled",
+            "failure_reason": reason,
+            "upstream_status": upstream_status,
+            "rate_limit_remaining": rate_limit_remaining,
+        }
+    )
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(str(value).strip())
+    except Exception:
+        return None

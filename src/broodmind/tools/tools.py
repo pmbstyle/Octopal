@@ -34,7 +34,7 @@ from broodmind.tools.ops_tools import (
     test_run,
 )
 from broodmind.tools.registry import ToolSpec
-from broodmind.tools.web_fetch import web_fetch
+from broodmind.tools.web_fetch import markdown_new_fetch, web_fetch
 from broodmind.tools.web_search import web_search
 from broodmind.tools.worker_tools import get_worker_tools
 from broodmind.tools.mcp_tools import get_mcp_mgmt_tools
@@ -240,6 +240,42 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             },
             permission="network",
             handler=lambda args, ctx: web_fetch(args),
+            is_async=True,
+        ),
+        ToolSpec(
+            name="markdown_new_fetch",
+            description="Fetch URL content as markdown via markdown.new. Returns structured JSON with ok/degraded/fallback flags.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to fetch (http/https only)."},
+                    "method": {
+                        "type": "string",
+                        "description": "Conversion mode used by markdown.new.",
+                        "enum": ["auto", "ai", "browser"],
+                    },
+                    "retain_images": {
+                        "type": "boolean",
+                        "description": "Whether markdown.new should keep image URLs in markdown output.",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Max characters of markdown snippet to return (200-200000).",
+                    },
+                    "timeout_seconds": {
+                        "type": "number",
+                        "description": "HTTP timeout budget in seconds (5-300).",
+                    },
+                    "fallback_to_web_fetch": {
+                        "type": "boolean",
+                        "description": "If true (default), fall back to web_fetch when markdown.new fails or is rate-limited.",
+                    },
+                },
+                "required": ["url"],
+                "additionalProperties": False,
+            },
+            permission="network",
+            handler=lambda args, ctx: markdown_new_fetch(args),
             is_async=True,
         ),
         ToolSpec(
