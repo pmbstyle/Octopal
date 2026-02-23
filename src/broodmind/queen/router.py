@@ -21,8 +21,8 @@ from broodmind.utils import is_heartbeat_ok, is_control_response
 from broodmind.workers.contracts import WorkerResult
 
 logger = structlog.get_logger(__name__)
-_MAX_PLAN_STEPS = 8
-_MAX_VERIFY_CONTEXT_CHARS = 12000
+_MAX_PLAN_STEPS = 10
+_MAX_VERIFY_CONTEXT_CHARS = 20000
 
 
 async def route_or_reply(
