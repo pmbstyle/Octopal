@@ -202,15 +202,20 @@ Primary settings are stored in `.env` and loaded via `pydantic-settings`.
 | `BROODMIND_LLM_PROVIDER` | No | `litellm` (default) or `openrouter` |
 | `ZAI_API_KEY` | Conditionally | Required for default LiteLLM/z.ai path |
 | `OPENROUTER_API_KEY` | Conditionally | Required if provider is `openrouter` |
+| `OPENROUTER_BASE_URL` | No | OpenRouter endpoint (default: `https://openrouter.ai/api/v1`) |
 | `OPENROUTER_MODEL` | No | Defaults to `anthropic/claude-sonnet-4` |
 | `BRAVE_API_KEY` | No | Enables `web_search` |
+| `FIRECRAWL_API_KEY` | No | Enables Firecrawl-backed HTML fetch in `web_fetch` |
 | `OPENAI_API_KEY` | No | Enables embedding-based semantic memory |
 | `BROODMIND_MEMORY_OWNER_ID` | No | Memory namespace key (default: `default`) |
 | `BROODMIND_MEMORY_PREFILTER_K` | No | Lexical prefilter candidate count before vector rerank (default: `80`) |
 | `BROODMIND_WORKSPACE_DIR` | No | Defaults to `workspace` |
 | `BROODMIND_STATE_DIR` | No | Defaults to `data` |
 | `BROODMIND_DASHBOARD_TOKEN` | No (recommended) | Token required by `/api/dashboard/*` when set |
+| `BROODMIND_TAILSCALE_IPS` | No | Optional comma-separated Tailscale IP allowlist for gateway hints |
 | `BROODMIND_TAILSCALE_AUTO_SERVE` | No | `1` (default): auto-run `tailscale serve` on startup when available |
+| `BROODMIND_HEARTBEAT_INTERVAL_SECONDS` | No | Bot heartbeat interval (default: `900`) |
+| `BROODMIND_TELEGRAM_PARSE_MODE` | No | `MarkdownV2` (default), `HTML`, `Markdown`, or empty for plain text |
 | `BROODMIND_WORKER_LAUNCHER` | No | `same_env` (default) or `docker` |
 | `BROODMIND_WORKER_MAX_SPAWN_DEPTH` | No | Max child spawn depth (default: `2`) |
 | `BROODMIND_WORKER_MAX_CHILDREN_TOTAL` | No | Max children per lineage lifetime (default: `20`) |

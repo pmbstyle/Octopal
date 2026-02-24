@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
+from rich import box
 from rich.align import Align
 from rich.console import Console
 from rich.layout import Layout
@@ -648,31 +649,132 @@ def _calculate_cutoff_date(days: int):
 def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", help="Show API keys and tokens")) -> None:
     """Show current configuration settings."""
     settings = load_settings()
-
-    table = Table(title="BroodMind Configuration", border_style="bright_blue", show_header=True, expand=False)
-    table.add_column("Setting", style="bright_cyan", width=35)
-    table.add_column("Value", width=45)
+    accent = "bright_cyan"
+    surface = "cyan"
 
     secret_keywords = ("token", "key", "secret", "api_key")
+    groups: list[tuple[str, set[str]]] = [
+        ("Telegram", {"TELEGRAM_BOT_TOKEN", "ALLOWED_TELEGRAM_CHAT_IDS", "BROODMIND_TELEGRAM_PARSE_MODE"}),
+        (
+            "Provider",
+            {
+                "BROODMIND_LLM_PROVIDER",
+                "OPENROUTER_API_KEY",
+                "OPENROUTER_BASE_URL",
+                "OPENROUTER_MODEL",
+                "OPENROUTER_TIMEOUT",
+                "ZAI_API_KEY",
+                "ZAI_BASE_URL",
+                "ZAI_MODEL",
+                "LITELLM_NUM_RETRIES",
+                "LITELLM_TIMEOUT",
+                "LITELLM_MAX_CONCURRENCY",
+            },
+        ),
+        ("Tools", {"BRAVE_API_KEY", "FIRECRAWL_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_EMBED_MODEL"}),
+        (
+            "Runtime",
+            {
+                "BROODMIND_STATE_DIR",
+                "BROODMIND_WORKSPACE_DIR",
+                "BROODMIND_LOG_LEVEL",
+                "BROODMIND_HEARTBEAT_INTERVAL_SECONDS",
+                "BROODMIND_GATEWAY_HOST",
+                "BROODMIND_GATEWAY_PORT",
+                "BROODMIND_DASHBOARD_TOKEN",
+                "BROODMIND_TAILSCALE_IPS",
+                "BROODMIND_TAILSCALE_AUTO_SERVE",
+            },
+        ),
+        (
+            "Workers",
+            {
+                "BROODMIND_WORKER_LAUNCHER",
+                "BROODMIND_WORKER_DOCKER_IMAGE",
+                "BROODMIND_WORKER_DOCKER_WORKSPACE",
+                "BROODMIND_WORKER_MAX_SPAWN_DEPTH",
+                "BROODMIND_WORKER_MAX_CHILDREN_TOTAL",
+                "BROODMIND_WORKER_MAX_CHILDREN_CONCURRENT",
+            },
+        ),
+    ]
 
-    # Get values from settings, using aliases if possible
+    alias_to_row: dict[str, tuple[str, object, bool]] = {}
     for field_name, field in settings.model_fields.items():
+        alias = field.alias or field_name
         value = getattr(settings, field_name)
-
         is_secret = any(k in field_name.lower() or (field.alias and k in field.alias.lower()) for k in secret_keywords)
+        alias_to_row[alias] = (field_name, value, is_secret)
 
+    def _fmt_value(value: object, is_secret: bool) -> str:
         if is_secret and not reveal_secrets and value:
-            display_value = "[dim]●●●●●●●●[/dim]"
-        elif value is None:
-            display_value = "[dim]None[/dim]"
-        else:
-            display_value = str(value)
+            return "[dim]●●●●●●●●[/dim]"
+        if value is None:
+            return "[dim]None[/dim]"
+        raw = str(value)
+        return raw if raw.strip() else "[dim](empty)[/dim]"
 
-        table.add_row(field.alias or field_name, display_value)
+    header = Table.grid(padding=(0, 2))
+    header.add_column(style="bold white")
+    header.add_column()
+    provider = str(getattr(settings, "llm_provider", "litellm"))
+    profile_status = "[bright_green]READY[/bright_green]" if settings.telegram_bot_token.strip() else "[bright_red]SETUP NEEDED[/bright_red]"
+    header.add_row("Profile", profile_status)
+    header.add_row("Provider", f"[bright_cyan]{provider}[/bright_cyan]")
+    header.add_row("Secrets", "Visible" if reveal_secrets else "Masked")
 
-    console.print("\n")
-    console.print(Align.center(table))
-    console.print("\n")
+    panels: list[Panel] = [
+        Panel(header, title="[bold white]Configuration Overview[/bold white]", border_style=surface, padding=(1, 2))
+    ]
+
+    covered: set[str] = set()
+    for group_name, aliases in groups:
+        table = Table(box=box.SIMPLE, show_header=True, header_style=f"bold {accent}", expand=False)
+        table.add_column("Setting", style="white", width=38)
+        table.add_column("Value", style="dim", width=46)
+        rows = 0
+        for alias in sorted(aliases):
+            row = alias_to_row.get(alias)
+            if not row:
+                continue
+            _, value, is_secret = row
+            table.add_row(alias, _fmt_value(value, is_secret))
+            covered.add(alias)
+            rows += 1
+        if rows:
+            panels.append(Panel(table, title=f"[bold white]{group_name}[/bold white]", border_style=surface, padding=(0, 1)))
+
+    extras = sorted(a for a in alias_to_row.keys() if a not in covered)
+    if extras:
+        table = Table(box=box.SIMPLE, show_header=True, header_style=f"bold {accent}", expand=False)
+        table.add_column("Setting", style="white", width=38)
+        table.add_column("Value", style="dim", width=46)
+        for alias in extras:
+            _, value, is_secret = alias_to_row[alias]
+            table.add_row(alias, _fmt_value(value, is_secret))
+        panels.append(Panel(table, title="[bold white]Additional[/bold white]", border_style=surface, padding=(0, 1)))
+
+    checks: list[str] = []
+    if not settings.telegram_bot_token.strip():
+        checks.append("[bright_red]Missing TELEGRAM_BOT_TOKEN[/bright_red]")
+    if not settings.allowed_telegram_chat_ids.strip():
+        checks.append("[yellow]ALLOWED_TELEGRAM_CHAT_IDS is not set[/yellow]")
+    if settings.llm_provider == "openrouter" and not (settings.openrouter_api_key or "").strip():
+        checks.append("[bright_red]OPENROUTER_API_KEY required for openrouter mode[/bright_red]")
+    if settings.llm_provider != "openrouter" and not ((settings.zai_api_key or "").strip() or (settings.openrouter_api_key or "").strip()):
+        checks.append("[bright_red]Set ZAI_API_KEY or OPENROUTER_API_KEY for LLM access[/bright_red]")
+    if not checks:
+        checks.append("[bright_green]Core configuration checks passed[/bright_green]")
+    checks_table = Table.grid(padding=(0, 1))
+    checks_table.add_column()
+    for line in checks:
+        checks_table.add_row(f"• {line}")
+    panels.append(Panel(checks_table, title="[bold white]Readiness Checks[/bold white]", border_style=surface, padding=(0, 1)))
+
+    console.print()
+    for panel in panels:
+        console.print(Align.center(panel))
+    console.print()
 
 
 @app.command()
