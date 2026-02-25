@@ -139,9 +139,14 @@ uv run broodmind logs --follow
   - `hard` requires `confirm=true`
   - low handoff confidence (`<0.7`) requires `confirm=true`
   - repeated resets without progress trigger confirmation (`N=2`)
+- Decision thresholds (for proactive reset):
+  - `WATCH` if any one rises: `context_size_estimate >= 30000`, `repetition_score >= 0.55`, `error_streak >= 3`, `no_progress_turns >= 4`
+  - `RESET_SOON` if any one is severe: `context_size_estimate >= 50000`, `repetition_score >= 0.70`, `error_streak >= 5`, `no_progress_turns >= 6`
+  - also `RESET_SOON` when 2+ WATCH signals persist across heartbeats
 - After reset, the next turn gets a wake-up directive to choose mode: `continue / clarify / replan`
 - Heartbeat now includes context-health metrics:
   - `context_size_estimate`, `repetition_score`, `error_streak`, `no_progress_turns`, `resets_since_progress`, `overload_score`
+  - available directly as `context_health` in `check_schedule` JSON
 
 ### Workers
 
@@ -164,7 +169,7 @@ Examples:
 - Web: `web_search`, `web_fetch`
 - Execution: `exec_run`
 - Worker management: `list_workers`, `start_worker`, `start_child_worker`, `start_workers_parallel`, `synthesize_worker_results`, `get_worker_status`, `get_worker_result`
-- Self-management: `queen_context_reset`, `self_control`
+- Self-management: `queen_context_health`, `queen_context_reset`, `self_control`
 
 `start_worker` supports worker specialization routing:
 

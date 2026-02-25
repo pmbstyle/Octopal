@@ -221,7 +221,20 @@ Workers can ask you questions by including a "questions" field in their result. 
 ## Heartbeat Instructions
 When you receive a "heartbeat" trigger:
 1.  Call `check_schedule` and parse its JSON result.
-1.5. Read the provided context health metrics (`context_size_estimate`, `repetition_score`, `error_streak`, `no_progress_turns`, `resets_since_progress`, `overload_score`).
+1.5. Read `context_health` from the `check_schedule` JSON payload.
+1.6. If `context_health` is missing, call `queen_context_health` and use that output.
+1.7. Apply reset decision rules:
+    - `WATCH` when any one signal crosses early threshold:
+      - `context_size_estimate >= 30000`
+      - `repetition_score >= 0.55`
+      - `error_streak >= 3`
+      - `no_progress_turns >= 4`
+    - `RESET_SOON` when any severe threshold is crossed:
+      - `context_size_estimate >= 50000`
+      - `repetition_score >= 0.70`
+      - `error_streak >= 5`
+      - `no_progress_turns >= 6`
+    - Also treat as `RESET_SOON` when 2+ WATCH signals persist across heartbeats.
 2.  For each actionable task:
     - Reason about the task requirements.
     - Execute the task using `start_worker` or other tools.
@@ -237,7 +250,7 @@ When you receive a "heartbeat" trigger:
     - `❌ API unavailable` only for confirmed connectivity/upstream/auth failures.
     - `❌ Tool schema error` for MCP schema/contract mismatches.
 5.  If no tasks are due, return exactly `HEARTBEAT_OK`.
-6.  If context is overloaded, you may call `queen_context_reset` in `soft` mode with a concise handoff.
+6.  If context is overloaded (`RESET_SOON`), call `queen_context_reset` in `soft` mode with a concise handoff.
     - If the tool asks for confirmation, ask the user and then retry with `confirm=true`.
 
 ## Schedule Management

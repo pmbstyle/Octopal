@@ -99,6 +99,18 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             is_async=True,
         ),
         ToolSpec(
+            name="queen_context_health",
+            description="Return current context-health metrics and reset decision state for the active chat.",
+            parameters={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            permission="self_control",
+            handler=_tool_queen_context_health,
+            is_async=True,
+        ),
+        ToolSpec(
             name="list_schedule",
             description="List all scheduled tasks and their status. Only the Queen can use this.",
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
@@ -781,12 +793,21 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
     return tools
 
 
-def _tool_check_schedule(args, ctx) -> str:
+async def _tool_check_schedule(args, ctx) -> str:
     scheduler = ctx["queen"].scheduler
     due_tasks = scheduler.get_actionable_tasks()
+    queen = ctx.get("queen")
+    chat_id = int(ctx.get("chat_id", 0) or 0)
+    context_health = None
+    if queen is not None and hasattr(queen, "get_context_health_snapshot"):
+        try:
+            context_health = await queen.get_context_health_snapshot(chat_id)
+        except Exception:
+            context_health = None
     payload = {
         "current_utc": utc_now().isoformat(),
         "due_count": len(due_tasks),
+        "context_health": context_health,
         "due_tasks": [
             {
                 "task_id": t.get("id"),
@@ -835,3 +856,36 @@ async def _tool_queen_context_reset(args, ctx) -> str:
         return json.dumps({"status": "error", "message": "queen context reset is unavailable"}, ensure_ascii=False)
     result = await queen.request_context_reset(chat_id, args or {})
     return json.dumps(result, ensure_ascii=False)
+
+
+async def _tool_queen_context_health(args, ctx) -> str:
+    queen = ctx.get("queen")
+    chat_id = int(ctx.get("chat_id", 0) or 0)
+    if queen is None or not hasattr(queen, "get_context_health_snapshot"):
+        return json.dumps({"status": "error", "message": "queen context health is unavailable"}, ensure_ascii=False)
+    snapshot = await queen.get_context_health_snapshot(chat_id)
+    thresholds = (
+        queen.get_context_thresholds()
+        if hasattr(queen, "get_context_thresholds")
+        else {
+            "watch": {
+                "context_size_estimate": 30000,
+                "repetition_score": 0.55,
+                "error_streak": 3,
+                "no_progress_turns": 4,
+            },
+            "reset_soon": {
+                "context_size_estimate": 50000,
+                "repetition_score": 0.70,
+                "error_streak": 5,
+                "no_progress_turns": 6,
+            },
+        }
+    )
+    payload = {
+        "status": "ok",
+        "chat_id": chat_id,
+        "context_health": snapshot,
+        "thresholds": thresholds,
+    }
+    return json.dumps(payload, ensure_ascii=False)

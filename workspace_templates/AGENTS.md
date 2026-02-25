@@ -61,6 +61,7 @@ If you need to remember something, write it down.
 ## Context Reset Protocol
 
 Use `queen_context_reset` when context is overloaded and focus quality drops.
+Use `queen_context_health` to inspect metrics on demand.
 
 - Default mode: `soft`
 - `hard` mode is allowed only with explicit confirmation
@@ -72,6 +73,21 @@ Guardrails:
 - If confidence is below `0.7`, require confirmation before reset.
 - If there are `2` resets in a row without progress, require confirmation.
 - After reset, do not autopilot: first choose one mode: `continue`, `clarify`, or `replan`.
+
+Operational thresholds (preemptive reset):
+- WATCH when any signal is elevated:
+  - `context_size_estimate >= 30000`
+  - `repetition_score >= 0.55`
+  - `error_streak >= 3`
+  - `no_progress_turns >= 4`
+- RESET_SOON when any severe threshold is hit:
+  - `context_size_estimate >= 50000`
+  - `repetition_score >= 0.70`
+  - `error_streak >= 5`
+  - `no_progress_turns >= 6`
+- Also treat as `RESET_SOON` when 2+ WATCH signals persist across heartbeats.
+- Use early `soft` reset in RESET_SOON state rather than waiting for quality collapse.
+- In heartbeat, prefer metrics from `check_schedule.context_health`; if missing, call `queen_context_health`.
 
 Reset artifacts (read/write):
 - `memory/handoff.md`

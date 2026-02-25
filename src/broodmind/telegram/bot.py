@@ -99,7 +99,14 @@ async def _heartbeat_poker(queen: Queen, interval_seconds: int, chat_id: int):
                 "This is a heartbeat trigger. Use `check_schedule` to identify and execute any due tasks.\n\n"
                 f"{context_hint}"
             )
-            reply = await queen.handle_message(heartbeat_prompt, chat_id, show_typing=False)
+            reply = await queen.handle_message(
+                heartbeat_prompt,
+                chat_id,
+                show_typing=False,
+                persist_to_memory=False,
+                track_progress=False,
+                include_wakeup=False,
+            )
             # Heartbeat replies are control-plane responses; don't send them to Telegram chat.
             if isinstance(reply, QueenReply):
                 text = (reply.immediate or "").strip()

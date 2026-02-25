@@ -36,6 +36,7 @@ async def route_or_reply(
     internal_followup: bool = False,
     show_typing: bool = True,
     images: list[str] | None = None,
+    include_wakeup: bool = True,
 ) -> str:
     """Core routing logic: decide whether to use tools or reply to user."""
     # Internal chat_id (<= 0) should not trigger typing indicators.
@@ -46,8 +47,8 @@ async def route_or_reply(
     try:
         is_ws = getattr(queen, "is_ws_active", False)
         wake_notice = ""
-        if hasattr(queen, "consume_context_wakeup"):
-            wake_notice = str(queen.consume_context_wakeup(chat_id) or "")
+        if include_wakeup and hasattr(queen, "peek_context_wakeup"):
+            wake_notice = str(queen.peek_context_wakeup(chat_id) or "")
         messages = await build_queen_prompt(
             store=queen.store, 
             memory=memory, 

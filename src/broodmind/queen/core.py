@@ -47,6 +47,18 @@ _INTERNAL_TASKS: dict[int, asyncio.Task] = {}
 _QUEUE_IDLE_TIMEOUT_SECONDS = 300.0
 _RESET_CONFIRM_THRESHOLD = 2
 _RESET_CONFIDENCE_MIN = 0.7
+_WATCH_THRESHOLDS = {
+    "context_size_estimate": 30000,
+    "repetition_score": 0.55,
+    "error_streak": 3,
+    "no_progress_turns": 4,
+}
+_RESET_SOON_THRESHOLDS = {
+    "context_size_estimate": 50000,
+    "repetition_score": 0.70,
+    "error_streak": 5,
+    "no_progress_turns": 6,
+}
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
@@ -249,6 +261,7 @@ class Queen:
     _progress_revision_by_chat: dict[int, int] | None = None
     _reset_streak_without_progress_by_chat: dict[int, int] | None = None
     _last_reset_progress_revision_by_chat: dict[int, int] | None = None
+    _watch_escalation_streak_by_chat: dict[int, int] | None = None
 
     def __post_init__(self):
         if self._recent_tasks is None:
@@ -279,6 +292,8 @@ class Queen:
             self._reset_streak_without_progress_by_chat = {}
         if self._last_reset_progress_revision_by_chat is None:
             self._last_reset_progress_revision_by_chat = {}
+        if self._watch_escalation_streak_by_chat is None:
+            self._watch_escalation_streak_by_chat = {}
         if self._spawn_limits is None:
             max_depth = _env_int("BROODMIND_WORKER_MAX_SPAWN_DEPTH", 2, minimum=0)
             max_total = _env_int("BROODMIND_WORKER_MAX_CHILDREN_TOTAL", 20, minimum=1)
@@ -553,12 +568,27 @@ class Queen:
         finally:
             self.internal_send = original_send
 
-    def consume_context_wakeup(self, chat_id: int) -> str:
+    def peek_context_wakeup(self, chat_id: int) -> str:
         pending = self._pending_wakeup_by_chat or {}
-        return str(pending.pop(chat_id, "") or "")
+        return str(pending.get(chat_id, "") or "")
+
+    def clear_context_wakeup(self, chat_id: int) -> None:
+        pending = self._pending_wakeup_by_chat or {}
+        pending.pop(chat_id, None)
+
+    def get_context_thresholds(self) -> dict[str, dict[str, float | int]]:
+        return {
+            "watch": dict(_WATCH_THRESHOLDS),
+            "reset_soon": dict(_RESET_SOON_THRESHOLDS),
+        }
 
     async def get_context_health_snapshot(self, chat_id: int) -> dict[str, Any]:
-        recent_entries = await asyncio.to_thread(self.store.list_memory_entries_by_chat, chat_id, 120)
+        recent_entries_all = await asyncio.to_thread(self.store.list_memory_entries_by_chat, chat_id, 120)
+        recent_entries = [
+            entry
+            for entry in recent_entries_all
+            if not bool((entry.metadata or {}).get("heartbeat"))
+        ]
         entry_count = len(recent_entries)
         context_size_estimate = sum(len(e.content or "") for e in recent_entries)
         repetition_score = _estimate_repetition_score(recent_entries)
@@ -572,6 +602,26 @@ class Queen:
             + (min(6, error_streak) / 10.0)
             + (min(8, no_progress_turns) / 12.0),
         )
+        watch_conditions = _watch_conditions(
+            context_size_estimate=context_size_estimate,
+            repetition_score=repetition_score,
+            error_streak=error_streak,
+            no_progress_turns=no_progress_turns,
+        )
+        watch_signal_count = sum(1 for cond in watch_conditions if cond)
+        watch_escalation_streak = int((self._watch_escalation_streak_by_chat or {}).get(chat_id, 0))
+        if watch_signal_count >= 2:
+            watch_escalation_streak += 1
+        else:
+            watch_escalation_streak = 0
+        self._watch_escalation_streak_by_chat[chat_id] = watch_escalation_streak
+        severe = _is_reset_soon_severe(
+            context_size_estimate=context_size_estimate,
+            repetition_score=repetition_score,
+            error_streak=error_streak,
+            no_progress_turns=no_progress_turns,
+        )
+        context_health = "RESET_SOON" if (severe or watch_escalation_streak >= 2) else ("WATCH" if watch_signal_count > 0 else "OK")
         snapshot = {
             "chat_id": chat_id,
             "entry_count": entry_count,
@@ -581,6 +631,9 @@ class Queen:
             "no_progress_turns": no_progress_turns,
             "resets_since_progress": resets_since_progress,
             "overload_score": round(overload_score, 3),
+            "watch_signal_count": watch_signal_count,
+            "watch_escalation_streak": watch_escalation_streak,
+            "context_health": context_health,
             "updated_at": utc_now().isoformat(),
         }
         self._context_health_by_chat[chat_id] = snapshot
@@ -596,7 +649,16 @@ class Queen:
             f"- no_progress_turns={snap['no_progress_turns']}\n"
             f"- resets_since_progress={snap['resets_since_progress']}\n"
             f"- overload_score={snap['overload_score']}\n"
-            "If overloaded, you may call `queen_context_reset` with mode='soft' and a concise handoff."
+            f"- watch_signal_count={snap['watch_signal_count']}\n"
+            f"- watch_escalation_streak={snap['watch_escalation_streak']}\n"
+            f"- context_health={snap['context_health']}\n"
+            "Decision thresholds:\n"
+            f"- WATCH if any: size>={_WATCH_THRESHOLDS['context_size_estimate']}, repetition>={_WATCH_THRESHOLDS['repetition_score']:.2f}, "
+            f"error_streak>={_WATCH_THRESHOLDS['error_streak']}, no_progress>={_WATCH_THRESHOLDS['no_progress_turns']}.\n"
+            f"- RESET_SOON if any: size>={_RESET_SOON_THRESHOLDS['context_size_estimate']}, repetition>={_RESET_SOON_THRESHOLDS['repetition_score']:.2f}, "
+            f"error_streak>={_RESET_SOON_THRESHOLDS['error_streak']}, no_progress>={_RESET_SOON_THRESHOLDS['no_progress_turns']}.\n"
+            "- Also RESET_SOON if 2+ WATCH signals persist for 2+ heartbeats.\n"
+            "If context_health is RESET_SOON, call `queen_context_reset` with mode='soft' and a concise handoff."
         )
 
     def _register_progress(self, chat_id: int, reason: str) -> None:
@@ -719,6 +781,9 @@ class Queen:
         show_typing: bool = True,
         is_ws: bool = False,
         images: list[str] | None = None,
+        persist_to_memory: bool = True,
+        track_progress: bool = True,
+        include_wakeup: bool = True,
     ) -> QueenReply:
         if not is_ws and self._ws_active:
             logger.info("Ignoring Telegram message while WebSocket is active", chat_id=chat_id)
@@ -733,7 +798,12 @@ class Queen:
             self._approval_requesters[chat_id] = approval_requester
         logger.info("Handling message", chat_id=chat_id, is_ws=is_ws, has_images=bool(images))
         logger.debug("Received message text", text_len=len(text), text=text[:500])
-        await self.memory.add_message("user", text, {"chat_id": chat_id, "has_images": bool(images)})
+        if persist_to_memory:
+            await self.memory.add_message(
+                "user",
+                text,
+                {"chat_id": chat_id, "has_images": bool(images), "heartbeat": not track_progress},
+            )
         bootstrap_context = await build_bootstrap_context_prompt(self.store, chat_id)
         if bootstrap_context.files:
             files_summary = ", ".join([f"{name} ({size} chars)" for name, size in bootstrap_context.files])
@@ -748,24 +818,36 @@ class Queen:
                 bootstrap_context.content,
                 show_typing=show_typing,
                 images=images,
+                include_wakeup=include_wakeup,
             )
         except TypeError as exc:
             # Backward-compatible fallback for monkeypatched tests/extensions using the old signature.
             if "unexpected keyword argument 'images'" not in str(exc):
                 raise
             reply_text = await route_or_reply(
-                self, self.provider, self.memory, text, chat_id, bootstrap_context.content, show_typing=show_typing
+                self,
+                self.provider,
+                self.memory,
+                text,
+                chat_id,
+                bootstrap_context.content,
+                show_typing=show_typing,
+                include_wakeup=include_wakeup,
             )
         logger.info("Queen response ready")
-        await self.memory.add_message("assistant", reply_text, {"chat_id": chat_id})
-        reply_norm = _normalize_compact(reply_text)
-        prior_reply = self._last_reply_norm_by_chat.get(chat_id, "")
-        if _is_progress_reply(reply_norm, prior_reply):
-            self._register_progress(chat_id, "assistant_response")
-        else:
-            self._no_progress_turns_by_chat[chat_id] = int(self._no_progress_turns_by_chat.get(chat_id, 0)) + 1
-        self._last_reply_norm_by_chat[chat_id] = reply_norm
+        if persist_to_memory:
+            await self.memory.add_message("assistant", reply_text, {"chat_id": chat_id, "heartbeat": not track_progress})
+        if track_progress:
+            reply_norm = _normalize_compact(reply_text)
+            prior_reply = self._last_reply_norm_by_chat.get(chat_id, "")
+            if _is_progress_reply(reply_norm, prior_reply):
+                self._register_progress(chat_id, "assistant_response")
+            else:
+                self._no_progress_turns_by_chat[chat_id] = int(self._no_progress_turns_by_chat.get(chat_id, 0)) + 1
+            self._last_reply_norm_by_chat[chat_id] = reply_norm
         await self.get_context_health_snapshot(chat_id)
+        if include_wakeup:
+            self.clear_context_wakeup(chat_id)
         if bootstrap_context.hash:
             await asyncio.to_thread(
                 self.store.set_chat_bootstrap_hash, chat_id, bootstrap_context.hash, utc_now()
@@ -1046,6 +1128,36 @@ def _coerce_float(value: Any, default: float) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def _watch_conditions(
+    *,
+    context_size_estimate: int,
+    repetition_score: float,
+    error_streak: int,
+    no_progress_turns: int,
+) -> list[bool]:
+    return [
+        context_size_estimate >= int(_WATCH_THRESHOLDS["context_size_estimate"]),
+        repetition_score >= float(_WATCH_THRESHOLDS["repetition_score"]),
+        error_streak >= int(_WATCH_THRESHOLDS["error_streak"]),
+        no_progress_turns >= int(_WATCH_THRESHOLDS["no_progress_turns"]),
+    ]
+
+
+def _is_reset_soon_severe(
+    *,
+    context_size_estimate: int,
+    repetition_score: float,
+    error_streak: int,
+    no_progress_turns: int,
+) -> bool:
+    return (
+        context_size_estimate >= int(_RESET_SOON_THRESHOLDS["context_size_estimate"])
+        or repetition_score >= float(_RESET_SOON_THRESHOLDS["repetition_score"])
+        or error_streak >= int(_RESET_SOON_THRESHOLDS["error_streak"])
+        or no_progress_turns >= int(_RESET_SOON_THRESHOLDS["no_progress_turns"])
+    )
 
 
 def _normalize_compact(value: str) -> str:
