@@ -225,15 +225,15 @@ When you receive a "heartbeat" trigger:
 1.6. If `context_health` is missing, call `queen_context_health` and use that output.
 1.7. Apply reset decision rules:
     - `WATCH` when any one signal crosses early threshold:
-      - `context_size_estimate >= 30000`
-      - `repetition_score >= 0.55`
-      - `error_streak >= 3`
-      - `no_progress_turns >= 4`
-    - `RESET_SOON` when any severe threshold is crossed:
-      - `context_size_estimate >= 50000`
+      - `context_size_estimate >= 90000`
       - `repetition_score >= 0.70`
-      - `error_streak >= 5`
+      - `error_streak >= 4`
       - `no_progress_turns >= 6`
+    - `RESET_SOON` when any severe threshold is crossed:
+      - `context_size_estimate >= 150000`
+      - `repetition_score >= 0.82`
+      - `error_streak >= 7`
+      - `no_progress_turns >= 10`
     - Also treat as `RESET_SOON` when 2+ WATCH signals persist across heartbeats.
 2.  For each actionable task:
     - Reason about the task requirements.

@@ -869,16 +869,16 @@ async def _tool_queen_context_health(args, ctx) -> str:
         if hasattr(queen, "get_context_thresholds")
         else {
             "watch": {
-                "context_size_estimate": 30000,
-                "repetition_score": 0.55,
-                "error_streak": 3,
-                "no_progress_turns": 4,
+                "context_size_estimate": 90000,
+                "repetition_score": 0.70,
+                "error_streak": 4,
+                "no_progress_turns": 6,
             },
             "reset_soon": {
-                "context_size_estimate": 50000,
-                "repetition_score": 0.70,
-                "error_streak": 5,
-                "no_progress_turns": 6,
+                "context_size_estimate": 150000,
+                "repetition_score": 0.82,
+                "error_streak": 7,
+                "no_progress_turns": 10,
             },
         }
     )

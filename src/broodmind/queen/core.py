@@ -48,16 +48,16 @@ _QUEUE_IDLE_TIMEOUT_SECONDS = 300.0
 _RESET_CONFIRM_THRESHOLD = 2
 _RESET_CONFIDENCE_MIN = 0.7
 _WATCH_THRESHOLDS = {
-    "context_size_estimate": 30000,
-    "repetition_score": 0.55,
-    "error_streak": 3,
-    "no_progress_turns": 4,
+    "context_size_estimate": 90000,
+    "repetition_score": 0.70,
+    "error_streak": 4,
+    "no_progress_turns": 6,
 }
 _RESET_SOON_THRESHOLDS = {
-    "context_size_estimate": 50000,
-    "repetition_score": 0.70,
-    "error_streak": 5,
-    "no_progress_turns": 6,
+    "context_size_estimate": 150000,
+    "repetition_score": 0.82,
+    "error_streak": 7,
+    "no_progress_turns": 10,
 }
 
 
@@ -597,10 +597,10 @@ class Queen:
         resets_since_progress = int((self._reset_streak_without_progress_by_chat or {}).get(chat_id, 0))
         overload_score = min(
             1.0,
-            (context_size_estimate / 30000.0)
+            (context_size_estimate / float(_WATCH_THRESHOLDS["context_size_estimate"]))
             + (repetition_score * 0.9)
-            + (min(6, error_streak) / 10.0)
-            + (min(8, no_progress_turns) / 12.0),
+            + (min(8, error_streak) / 10.0)
+            + (min(12, no_progress_turns) / 12.0),
         )
         watch_conditions = _watch_conditions(
             context_size_estimate=context_size_estimate,

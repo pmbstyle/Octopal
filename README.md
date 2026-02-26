@@ -140,8 +140,8 @@ uv run broodmind logs --follow
   - low handoff confidence (`<0.7`) requires `confirm=true`
   - repeated resets without progress trigger confirmation (`N=2`)
 - Decision thresholds (for proactive reset):
-  - `WATCH` if any one rises: `context_size_estimate >= 30000`, `repetition_score >= 0.55`, `error_streak >= 3`, `no_progress_turns >= 4`
-  - `RESET_SOON` if any one is severe: `context_size_estimate >= 50000`, `repetition_score >= 0.70`, `error_streak >= 5`, `no_progress_turns >= 6`
+  - `WATCH` if any one rises: `context_size_estimate >= 90000`, `repetition_score >= 0.70`, `error_streak >= 4`, `no_progress_turns >= 6`
+  - `RESET_SOON` if any one is severe: `context_size_estimate >= 150000`, `repetition_score >= 0.82`, `error_streak >= 7`, `no_progress_turns >= 10`
   - also `RESET_SOON` when 2+ WATCH signals persist across heartbeats
 - After reset, the next turn gets a wake-up directive to choose mode: `continue / clarify / replan`
 - Heartbeat now includes context-health metrics:
