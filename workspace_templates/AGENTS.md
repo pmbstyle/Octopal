@@ -89,6 +89,11 @@ Operational thresholds (preemptive reset):
 - Use early `soft` reset in RESET_SOON state rather than waiting for quality collapse.
 - In heartbeat, prefer metrics from `check_schedule.context_health`; if missing, call `queen_context_health`.
 
+Proactive mode (Opportunity Engine + Self Queue):
+- Generate opportunities with `queen_opportunity_scan` (impact/effort/confidence/next_action).
+- Keep initiative backlog via `queen_self_queue_add`, `queen_self_queue_list`, `queen_self_queue_take`, `queen_self_queue_update`.
+- If no scheduled tasks are due, execute one high-confidence initiative before returning HEARTBEAT_OK.
+
 Memory integrity (MemChain):
 - Use tamper-evident chain snapshots for critical memory/config files.
 - Chain files:

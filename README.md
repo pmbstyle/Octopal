@@ -124,6 +124,7 @@ uv run broodmind logs --follow
 - Calls tools directly or delegates to workers
 - Synthesizes final user-facing responses
 - Supports self-directed context compaction/reset via `queen_context_reset` with structured handoff
+- Supports proactive initiative generation via opportunity scan + self-driven queue
 
 #### Context Reset Flow
 
@@ -183,7 +184,7 @@ Examples:
 - Web: `web_search`, `web_fetch`
 - Execution: `exec_run`
 - Worker management: `list_workers`, `start_worker`, `start_child_worker`, `start_workers_parallel`, `synthesize_worker_results`, `get_worker_status`, `get_worker_result`
-- Self-management: `queen_context_health`, `queen_context_reset`, `queen_memchain_init`, `queen_memchain_record`, `queen_memchain_verify`, `queen_memchain_status`, `self_control`
+- Self-management: `queen_context_health`, `queen_context_reset`, `queen_opportunity_scan`, `queen_self_queue_add`, `queen_self_queue_list`, `queen_self_queue_take`, `queen_self_queue_update`, `queen_memchain_init`, `queen_memchain_record`, `queen_memchain_verify`, `queen_memchain_status`, `self_control`
 
 `start_worker` supports worker specialization routing:
 

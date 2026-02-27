@@ -224,7 +224,10 @@ When you receive a "heartbeat" trigger:
 1.5. Read `context_health` from the `check_schedule` JSON payload.
 1.6. If `context_health` is missing, call `queen_context_health` and use that output.
 1.7. If memory/config integrity is in doubt, call `queen_memchain_status` or `queen_memchain_verify`.
-1.8. Apply reset decision rules:
+1.8. Read `opportunities` and `self_queue` from `check_schedule` payload.
+1.9. If `opportunities` is missing, call `queen_opportunity_scan`.
+1.10. If `self_queue` is missing, call `queen_self_queue_list`.
+1.11. Apply reset decision rules:
     - `WATCH` when any one signal crosses early threshold:
       - `context_size_estimate >= 90000`
       - `repetition_score >= 0.70`
@@ -236,11 +239,16 @@ When you receive a "heartbeat" trigger:
       - `error_streak >= 7`
       - `no_progress_turns >= 10`
     - Also treat as `RESET_SOON` when 2+ WATCH signals persist across heartbeats.
-2.  For each actionable task:
+2.  For each actionable scheduled task:
     - Reason about the task requirements.
     - Execute the task using `start_worker` or other tools.
     - When calling `start_worker` for a scheduled task, pass `scheduled_task_id` with the task ID from `check_schedule`.
     - Reuse `task_text`, `worker_id`, and `inputs` from the `check_schedule` payload when available.
+2.5. Proactive mode when no scheduled tasks are due:
+    - Review top `opportunities`.
+    - If confidence is strong (`>=0.75`) and effort is low/medium, add one initiative via `queen_self_queue_add`.
+    - Claim the next initiative via `queen_self_queue_take` and execute it.
+    - When done, set status using `queen_self_queue_update` (`done` or `cancelled` with notes).
 3.  Classify task health carefully:
     - If a worker/tool output is truncated (for example includes `...[truncated ...]` or indicates output truncation), treat this as **partial data**, not API downtime.
     - Mark API/service as unavailable only when there is explicit transport/upstream evidence (timeouts, connection errors, 5xx/429, auth failure, or explicit `upstream_unavailable`/HTTP status failure).
@@ -250,7 +258,7 @@ When you receive a "heartbeat" trigger:
     - `⚠️ Partial (truncated/parsing)` for truncation or incomplete parsing with successful upstream response.
     - `❌ API unavailable` only for confirmed connectivity/upstream/auth failures.
     - `❌ Tool schema error` for MCP schema/contract mismatches.
-5.  If no tasks are due, return exactly `HEARTBEAT_OK`.
+5.  If no tasks are due and no viable proactive initiative exists, return exactly `HEARTBEAT_OK`.
 6.  If context is overloaded (`RESET_SOON`), call `queen_context_reset` in `soft` mode with a concise handoff.
 7.  After major memory/config updates, call `queen_memchain_record` with a short reason.
     - If the tool asks for confirmation, ask the user and then retry with `confirm=true`.

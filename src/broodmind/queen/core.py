@@ -263,6 +263,8 @@ class Queen:
     _reset_streak_without_progress_by_chat: dict[int, int] | None = None
     _last_reset_progress_revision_by_chat: dict[int, int] | None = None
     _watch_escalation_streak_by_chat: dict[int, int] | None = None
+    _self_queue_by_chat: dict[int, list[dict[str, Any]]] | None = None
+    _last_opportunities_by_chat: dict[int, list[dict[str, Any]]] | None = None
 
     def __post_init__(self):
         if self._recent_tasks is None:
@@ -295,6 +297,10 @@ class Queen:
             self._last_reset_progress_revision_by_chat = {}
         if self._watch_escalation_streak_by_chat is None:
             self._watch_escalation_streak_by_chat = {}
+        if self._self_queue_by_chat is None:
+            self._self_queue_by_chat = {}
+        if self._last_opportunities_by_chat is None:
+            self._last_opportunities_by_chat = {}
         if self._spawn_limits is None:
             max_depth = _env_int("BROODMIND_WORKER_MAX_SPAWN_DEPTH", 2, minimum=0)
             max_total = _env_int("BROODMIND_WORKER_MAX_CHILDREN_TOTAL", 20, minimum=1)
@@ -581,6 +587,143 @@ class Queen:
         return {
             "watch": dict(_WATCH_THRESHOLDS),
             "reset_soon": dict(_RESET_SOON_THRESHOLDS),
+        }
+
+    async def get_self_queue(self, chat_id: int) -> list[dict[str, Any]]:
+        await self._ensure_self_queue_loaded(chat_id)
+        queue = list((self._self_queue_by_chat or {}).get(chat_id, []))
+        return [dict(item) for item in queue]
+
+    async def _ensure_self_queue_loaded(self, chat_id: int) -> None:
+        if chat_id in self._self_queue_by_chat:
+            return
+        loaded = await asyncio.to_thread(_load_self_queue, _workspace_dir(), chat_id)
+        self._self_queue_by_chat[chat_id] = loaded
+
+    async def add_self_queue_item(self, chat_id: int, args: dict[str, Any]) -> dict[str, Any]:
+        await self._ensure_self_queue_loaded(chat_id)
+        title = str((args or {}).get("title", "") or "").strip()
+        task = str((args or {}).get("task", "") or "").strip()
+        if not title or not task:
+            return {"status": "error", "message": "title and task are required"}
+        priority = max(1, min(5, int((args or {}).get("priority", 3) or 3)))
+        source = str((args or {}).get("source", "queen") or "queen").strip()[:64]
+        queue = self._self_queue_by_chat.setdefault(chat_id, [])
+        item = {
+            "task_id": str(uuid4()),
+            "title": title,
+            "task": task,
+            "priority": priority,
+            "source": source,
+            "status": "pending",
+            "created_at": utc_now().isoformat(),
+            "updated_at": utc_now().isoformat(),
+            "notes": str((args or {}).get("notes", "") or "").strip(),
+        }
+        queue.append(item)
+        queue.sort(key=lambda i: (-int(i.get("priority", 3)), str(i.get("created_at", ""))))
+        await asyncio.to_thread(_persist_self_queue, _workspace_dir(), chat_id, queue)
+        return {"status": "ok", "item": item, "queue_size": len(queue)}
+
+    async def take_next_self_queue_item(self, chat_id: int) -> dict[str, Any]:
+        await self._ensure_self_queue_loaded(chat_id)
+        queue = self._self_queue_by_chat.setdefault(chat_id, [])
+        for item in queue:
+            if str(item.get("status", "pending")) == "pending":
+                item["status"] = "claimed"
+                item["updated_at"] = utc_now().isoformat()
+                await asyncio.to_thread(_persist_self_queue, _workspace_dir(), chat_id, queue)
+                return {"status": "ok", "item": dict(item)}
+        return {"status": "empty", "message": "no pending self-queue items"}
+
+    async def update_self_queue_item(self, chat_id: int, args: dict[str, Any]) -> dict[str, Any]:
+        await self._ensure_self_queue_loaded(chat_id)
+        task_id = str((args or {}).get("task_id", "") or "").strip()
+        new_status = str((args or {}).get("status", "") or "").strip().lower()
+        if not task_id or new_status not in {"pending", "claimed", "done", "cancelled"}:
+            return {"status": "error", "message": "task_id and valid status are required"}
+        queue = self._self_queue_by_chat.setdefault(chat_id, [])
+        for item in queue:
+            if str(item.get("task_id", "")) == task_id:
+                item["status"] = new_status
+                if "notes" in (args or {}):
+                    item["notes"] = str((args or {}).get("notes", "") or "").strip()
+                item["updated_at"] = utc_now().isoformat()
+                await asyncio.to_thread(_persist_self_queue, _workspace_dir(), chat_id, queue)
+                return {"status": "ok", "item": dict(item)}
+        return {"status": "not_found", "task_id": task_id}
+
+    async def scan_opportunities(self, chat_id: int, limit: int = 3) -> dict[str, Any]:
+        health = await self.get_context_health_snapshot(chat_id)
+        await self._ensure_self_queue_loaded(chat_id)
+        queue = self._self_queue_by_chat.setdefault(chat_id, [])
+        opportunities: list[dict[str, Any]] = []
+
+        context_size = int(health.get("context_size_estimate", 0) or 0)
+        repetition = float(health.get("repetition_score", 0.0) or 0.0)
+        no_progress = int(health.get("no_progress_turns", 0) or 0)
+        resets_since_progress = int(health.get("resets_since_progress", 0) or 0)
+        context_health = str(health.get("context_health", "OK") or "OK")
+
+        if context_health == "RESET_SOON":
+            opportunities.append(
+                _build_opportunity_card(
+                    kind="stability",
+                    title="Context compaction before quality drops",
+                    why_now=f"context_health={context_health}, size={context_size}",
+                    impact="high",
+                    effort="low",
+                    confidence=0.93,
+                    next_action="Call queen_context_reset(mode='soft') with concise handoff.",
+                )
+            )
+        if no_progress >= 3 or repetition >= 0.70:
+            opportunities.append(
+                _build_opportunity_card(
+                    kind="momentum",
+                    title="Break stagnation with a replan cycle",
+                    why_now=f"no_progress_turns={no_progress}, repetition_score={round(repetition, 3)}",
+                    impact="high",
+                    effort="medium",
+                    confidence=0.82,
+                    next_action="Create 1 focused task in self-queue and execute immediately.",
+                )
+            )
+        if resets_since_progress >= 1:
+            opportunities.append(
+                _build_opportunity_card(
+                    kind="recovery",
+                    title="Post-reset recovery check",
+                    why_now=f"resets_since_progress={resets_since_progress}",
+                    impact="medium",
+                    effort="low",
+                    confidence=0.78,
+                    next_action="Audit open threads and lock one measurable next step.",
+                )
+            )
+        if not opportunities:
+            opportunities.append(
+                _build_opportunity_card(
+                    kind="improvement",
+                    title="Proactive improvement pass",
+                    why_now="system is stable; use spare cycle for compounding gains",
+                    impact="medium",
+                    effort="medium",
+                    confidence=0.74,
+                    next_action="Pick one automation or cleanup task and add it to self-queue.",
+                )
+            )
+
+        opportunities = opportunities[: max(1, min(limit, 5))]
+        self._last_opportunities_by_chat[chat_id] = [dict(item) for item in opportunities]
+        await asyncio.to_thread(_persist_last_opportunities, _workspace_dir(), chat_id, opportunities)
+        pending_count = sum(1 for item in queue if str(item.get("status", "pending")) == "pending")
+        return {
+            "status": "ok",
+            "chat_id": chat_id,
+            "opportunities": opportunities,
+            "queue_pending": pending_count,
+            "generated_at": utc_now().isoformat(),
         }
 
     async def get_context_health_snapshot(self, chat_id: int) -> dict[str, Any]:
@@ -1197,6 +1340,67 @@ def _is_progress_reply(current_norm: str, prior_norm: str) -> bool:
     if any(marker in current_norm for marker in stalled_markers):
         return False
     return True
+
+
+def _workspace_dir() -> Path:
+    return Path(os.getenv("BROODMIND_WORKSPACE_DIR", "workspace")).resolve()
+
+
+def _build_opportunity_card(
+    *,
+    kind: str,
+    title: str,
+    why_now: str,
+    impact: str,
+    effort: str,
+    confidence: float,
+    next_action: str,
+) -> dict[str, Any]:
+    return {
+        "opportunity_id": str(uuid4()),
+        "kind": kind,
+        "title": title,
+        "why_now": why_now,
+        "impact": impact,
+        "effort": effort,
+        "confidence": round(max(0.0, min(confidence, 1.0)), 2),
+        "next_action": next_action,
+        "created_at": utc_now().isoformat(),
+    }
+
+
+def _persist_self_queue(workspace_dir: Path, chat_id: int, queue: list[dict[str, Any]]) -> str:
+    memory_dir = workspace_dir / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    path = memory_dir / f"self-queue-{chat_id}.json"
+    path.write_text(json.dumps(queue, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(path)
+
+
+def _load_self_queue(workspace_dir: Path, chat_id: int) -> list[dict[str, Any]]:
+    path = (workspace_dir / "memory" / f"self-queue-{chat_id}.json").resolve()
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(payload, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in payload:
+        if isinstance(item, dict) and str(item.get("task_id", "")).strip():
+            items.append(dict(item))
+    items.sort(key=lambda i: (-int(i.get("priority", 3) or 3), str(i.get("created_at", ""))))
+    return items
+
+
+def _persist_last_opportunities(workspace_dir: Path, chat_id: int, opportunities: list[dict[str, Any]]) -> str:
+    memory_dir = workspace_dir / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    path = memory_dir / f"opportunities-{chat_id}.json"
+    path.write_text(json.dumps(opportunities, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(path)
 
 
 def _estimate_repetition_score(entries: list[Any]) -> float:

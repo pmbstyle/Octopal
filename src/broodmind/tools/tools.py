@@ -115,6 +115,72 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             is_async=True,
         ),
         ToolSpec(
+            name="queen_opportunity_scan",
+            description="Generate proactive opportunity cards (impact/effort/confidence/next_action) for the active chat.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 5},
+                },
+                "additionalProperties": False,
+            },
+            permission="self_control",
+            handler=_tool_queen_opportunity_scan,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="queen_self_queue_add",
+            description="Add a Queen-initiated task into self-driven queue.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "task": {"type": "string"},
+                    "priority": {"type": "integer", "minimum": 1, "maximum": 5},
+                    "source": {"type": "string"},
+                    "notes": {"type": "string"},
+                },
+                "required": ["title", "task"],
+                "additionalProperties": False,
+            },
+            permission="self_control",
+            handler=_tool_queen_self_queue_add,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="queen_self_queue_list",
+            description="List current Queen self-driven queue items.",
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+            permission="self_control",
+            handler=_tool_queen_self_queue_list,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="queen_self_queue_take",
+            description="Claim next pending task from Queen self-driven queue.",
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+            permission="self_control",
+            handler=_tool_queen_self_queue_take,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="queen_self_queue_update",
+            description="Update status of a Queen self-queue item.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "status": {"type": "string", "enum": ["pending", "claimed", "done", "cancelled"]},
+                    "notes": {"type": "string"},
+                },
+                "required": ["task_id", "status"],
+                "additionalProperties": False,
+            },
+            permission="self_control",
+            handler=_tool_queen_self_queue_update,
+            is_async=True,
+        ),
+        ToolSpec(
             name="queen_memchain_status",
             description="Show current memchain integrity status for tracked workspace memory/config files.",
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
@@ -847,15 +913,29 @@ async def _tool_check_schedule(args, ctx) -> str:
     queen = ctx.get("queen")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     context_health = None
+    opportunity_snapshot = None
+    self_queue = None
     if queen is not None and hasattr(queen, "get_context_health_snapshot"):
         try:
             context_health = await queen.get_context_health_snapshot(chat_id)
         except Exception:
             context_health = None
+    if queen is not None and hasattr(queen, "scan_opportunities"):
+        try:
+            opportunity_snapshot = await queen.scan_opportunities(chat_id, limit=3)
+        except Exception:
+            opportunity_snapshot = None
+    if queen is not None and hasattr(queen, "get_self_queue"):
+        try:
+            self_queue = await queen.get_self_queue(chat_id)
+        except Exception:
+            self_queue = None
     payload = {
         "current_utc": utc_now().isoformat(),
         "due_count": len(due_tasks),
         "context_health": context_health,
+        "opportunities": opportunity_snapshot,
+        "self_queue": self_queue,
         "due_tasks": [
             {
                 "task_id": t.get("id"),
@@ -975,4 +1055,50 @@ async def _tool_queen_memchain_record(args, ctx) -> str:
 async def _tool_queen_memchain_init(args, ctx) -> str:
     force = bool((args or {}).get("force", False))
     payload = await asyncio.to_thread(memchain_init, _workspace_dir(), force=force)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def _tool_queen_opportunity_scan(args, ctx) -> str:
+    queen = ctx.get("queen")
+    chat_id = int(ctx.get("chat_id", 0) or 0)
+    if queen is None or not hasattr(queen, "scan_opportunities"):
+        return json.dumps({"status": "error", "message": "queen opportunity scan is unavailable"}, ensure_ascii=False)
+    limit = int((args or {}).get("limit", 3) or 3)
+    payload = await queen.scan_opportunities(chat_id, limit=limit)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def _tool_queen_self_queue_add(args, ctx) -> str:
+    queen = ctx.get("queen")
+    chat_id = int(ctx.get("chat_id", 0) or 0)
+    if queen is None or not hasattr(queen, "add_self_queue_item"):
+        return json.dumps({"status": "error", "message": "queen self queue is unavailable"}, ensure_ascii=False)
+    payload = await queen.add_self_queue_item(chat_id, args or {})
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def _tool_queen_self_queue_list(args, ctx) -> str:
+    queen = ctx.get("queen")
+    chat_id = int(ctx.get("chat_id", 0) or 0)
+    if queen is None or not hasattr(queen, "get_self_queue"):
+        return json.dumps({"status": "error", "message": "queen self queue is unavailable"}, ensure_ascii=False)
+    items = await queen.get_self_queue(chat_id)
+    return json.dumps({"status": "ok", "chat_id": chat_id, "items": items, "count": len(items)}, ensure_ascii=False)
+
+
+async def _tool_queen_self_queue_take(args, ctx) -> str:
+    queen = ctx.get("queen")
+    chat_id = int(ctx.get("chat_id", 0) or 0)
+    if queen is None or not hasattr(queen, "take_next_self_queue_item"):
+        return json.dumps({"status": "error", "message": "queen self queue is unavailable"}, ensure_ascii=False)
+    payload = await queen.take_next_self_queue_item(chat_id)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def _tool_queen_self_queue_update(args, ctx) -> str:
+    queen = ctx.get("queen")
+    chat_id = int(ctx.get("chat_id", 0) or 0)
+    if queen is None or not hasattr(queen, "update_self_queue_item"):
+        return json.dumps({"status": "error", "message": "queen self queue is unavailable"}, ensure_ascii=False)
+    payload = await queen.update_self_queue_item(chat_id, args or {})
     return json.dumps(payload, ensure_ascii=False)
