@@ -596,6 +596,24 @@ def _dashboard_html() -> str:
     const historySize = 30;
     const history = [];
     let chart = null;
+    const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+    const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+      timeZone: browserTimeZone
+    });
+    const timeFormatter = new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+      timeZone: browserTimeZone
+    });
 
     saveBtn.addEventListener("click", () => {
       localStorage.setItem(tokenKey, tokenInput.value || "");
@@ -630,18 +648,18 @@ def _dashboard_html() -> str:
     }
 
     function formatTimestampLocal(value) {
-      const raw = String(value || "").trim();
-      if (!raw) return "never";
-      const d = new Date(raw);
+      if (value === null || value === undefined || value === "") return "never";
+      const raw = String(value).trim();
+      const d = value instanceof Date ? value : new Date(raw);
       if (Number.isNaN(d.getTime())) return raw;
-      const pad2 = (n) => String(n).padStart(2, "0");
-      const yyyy = d.getFullYear();
-      const mm = pad2(d.getMonth() + 1);
-      const dd = pad2(d.getDate());
-      const hh = pad2(d.getHours());
-      const mi = pad2(d.getMinutes());
-      const ss = pad2(d.getSeconds());
-      return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+      return dateTimeFormatter.format(d);
+    }
+
+    function formatTimeLocal(value) {
+      if (value === null || value === undefined || value === "") return "never";
+      const d = value instanceof Date ? value : new Date(String(value).trim());
+      if (Number.isNaN(d.getTime())) return String(value);
+      return timeFormatter.format(d);
     }
 
     function ensureChart() {
@@ -691,7 +709,7 @@ def _dashboard_html() -> str:
     function updateChartPoint(data) {
       const queuePressure = Number(data.queen.followup_queues || 0) + Number(data.queen.internal_queues || 0);
       history.push({
-        t: new Date().toLocaleTimeString(),
+        t: formatTimeLocal(new Date()),
         workers: Number(data.workers.running || 0),
         queues: queuePressure
       });
@@ -825,8 +843,9 @@ def _dashboard_html() -> str:
         updateChartPoint(data);
 
         document.getElementById("meta").textContent =
-          "Last refresh " + new Date().toLocaleString() +
+          "Last refresh " + formatTimestampLocal(new Date()) +
           " | heartbeat " + formatTimestampLocal(data.system.last_heartbeat) +
+          " | tz " + (browserTimeZone || "local") +
           " | pid " + (data.system.pid || "N/A");
       } catch (err) {
         errorEl.textContent = "Dashboard request failed: " + err;

@@ -648,6 +648,7 @@ def _calculate_cutoff_date(days: int):
 @config_app.command("show")
 def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", help="Show API keys and tokens")) -> None:
     """Show current configuration settings."""
+    print_banner()
     settings = load_settings()
     accent = "bright_cyan"
     surface = "cyan"
@@ -708,7 +709,7 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
 
     def _fmt_value(value: object, is_secret: bool) -> str:
         if is_secret and not reveal_secrets and value:
-            return "[dim]●●●●●●●●[/dim]"
+            return "[dim]********[/dim]"
         if value is None:
             return "[dim]None[/dim]"
         raw = str(value)
@@ -768,7 +769,7 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
     checks_table = Table.grid(padding=(0, 1))
     checks_table.add_column()
     for line in checks:
-        checks_table.add_row(f"• {line}")
+        checks_table.add_row(f"- {line}")
     panels.append(Panel(checks_table, title="[bold white]Readiness Checks[/bold white]", border_style=surface, padding=(0, 1)))
 
     console.print()
