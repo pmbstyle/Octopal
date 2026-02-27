@@ -432,6 +432,8 @@ def _dashboard_html() -> str:
     th { color: var(--muted); font-weight: 600; }
     td strong { font-size: 12px; }
     .mono { font-family: "JetBrains Mono", monospace; }
+    .task-prefix { color: var(--amber); font-weight: 700; }
+    .task-prefix-sched { color: var(--mint); font-weight: 700; }
     .workers { max-height: 310px; overflow: auto; }
     .logs { max-height: 270px; overflow: auto; }
     .log-line { border-bottom: 1px dashed rgba(37, 50, 77, 0.75); padding: 8px 2px; font-size: 13px; line-height: 1.35; }
@@ -637,6 +639,19 @@ def _dashboard_html() -> str:
       return "bad";
     }
 
+    function highlightTaskPrefixes(text) {
+      const source = String(text || "");
+      const parts = source.split(/(\[[^\]]+\])/g);
+      return parts.map((part) => {
+        if (!part) return "";
+        if (part.startsWith("[") && part.endsWith("]")) {
+          const cls = part.toLowerCase().includes("schedul") ? "task-prefix-sched" : "task-prefix";
+          return "<span class='" + cls + "'>" + esc(part) + "</span>";
+        }
+        return esc(part);
+      }).join("");
+    }
+
     function setKpi(id, text, cls) {
       const el = document.getElementById(id);
       el.textContent = text;
@@ -740,7 +755,7 @@ def _dashboard_html() -> str:
         return "<tr>" +
           "<td class='mono' title='" + esc(fullId) + "'>" + esc(workerDisplay) + "</td>" +
           "<td class='" + statusClass(w.status) + "'><strong>" + esc(w.status) + "</strong></td>" +
-          "<td title='" + esc(taskRaw) + "'>" + esc(taskShort) + "</td>" +
+          "<td title='" + esc(taskRaw) + "'>" + highlightTaskPrefixes(taskShort) + "</td>" +
           "<td class='mono'>" + esc(lastTool) + "</td>" +
           "<td class='mono'>" + esc(formatTimestampLocal(w.updated_at)) + "</td>" +
           "</tr>";
@@ -806,7 +821,7 @@ def _dashboard_html() -> str:
           "<span class='topo-id' title='" + esc(wid) + "'>" + esc(workerLabel) + "</span>" +
           "<span class='topo-badge'><span class='pulse'></span>" + esc(parent) + "</span>" +
           "</div>" +
-          "<div class='topo-task'>" + esc(w.task || "") + "</div>" +
+          "<div class='topo-task'>" + highlightTaskPrefixes(w.task || "") + "</div>" +
           "</div>";
       });
       document.getElementById("worker-topology").innerHTML = html.join("");
