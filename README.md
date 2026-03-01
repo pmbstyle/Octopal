@@ -270,6 +270,9 @@ Primary settings are stored in `.env` and loaded via `pydantic-settings`.
 | `BROODMIND_WORKER_MAX_SPAWN_DEPTH` | No | Max child spawn depth (default: `2`) |
 | `BROODMIND_WORKER_MAX_CHILDREN_TOTAL` | No | Max children per lineage lifetime (default: `20`) |
 | `BROODMIND_WORKER_MAX_CHILDREN_CONCURRENT` | No | Max concurrent children per lineage (default: `10`) |
+| `BROODMIND_TOOL_LOOP_WARNING_THRESHOLD` | No | Worker tool-loop warning threshold for repeated no-progress calls (default: `8`) |
+| `BROODMIND_TOOL_LOOP_CRITICAL_THRESHOLD` | No | Worker tool-loop critical threshold that triggers loop breaker (default: `12`) |
+| `BROODMIND_TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD` | No | Hard cap on total worker tool calls per run before breaker (default: `30`) |
 
 ## Optional: Docker Worker Launcher
 
