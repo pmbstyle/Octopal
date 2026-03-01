@@ -14,6 +14,7 @@ import inspect
 import json
 import random
 import hashlib
+import os
 import structlog
 import time
 import traceback
@@ -32,9 +33,9 @@ _MAX_TOOL_ITERS = 10
 _MAX_TOOL_RESULT_CHARS = 12_000
 _DEFAULT_TOOL_TIMEOUT_SECONDS = 60
 _DEFAULT_MAX_STEP_CAP = 30
-_TOOL_LOOP_WARNING_THRESHOLD = 8
-_TOOL_LOOP_CRITICAL_THRESHOLD = 12
-_TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD = 30
+_DEFAULT_TOOL_LOOP_WARNING_THRESHOLD = 8
+_DEFAULT_TOOL_LOOP_CRITICAL_THRESHOLD = 12
+_DEFAULT_TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD = 30
 _TRANSIENT_ERROR_HINTS = (
     "timeout",
     "timed out",
@@ -153,8 +154,11 @@ def _detect_tool_loop(
     *,
     tool_name: str,
     args_hash: str,
+    warning_threshold: int = _DEFAULT_TOOL_LOOP_WARNING_THRESHOLD,
+    critical_threshold: int = _DEFAULT_TOOL_LOOP_CRITICAL_THRESHOLD,
+    global_breaker_threshold: int = _DEFAULT_TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD,
 ) -> dict[str, Any] | None:
-    if len(history) >= _TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD:
+    if len(history) >= global_breaker_threshold:
         return {
             "detector": "global_circuit_breaker",
             "level": "critical",
@@ -165,14 +169,14 @@ def _detect_tool_loop(
     streak, result_hash = _tool_no_progress_streak(history, tool_name=tool_name, args_hash=args_hash)
     if result_hash is None:
         return None
-    if streak >= _TOOL_LOOP_CRITICAL_THRESHOLD:
+    if streak >= critical_threshold:
         return {
             "detector": "known_poll_no_progress",
             "level": "critical",
             "count": streak,
             "message": f"Repeated '{tool_name}' calls with no progress.",
         }
-    if streak >= _TOOL_LOOP_WARNING_THRESHOLD:
+    if streak >= warning_threshold:
         return {
             "detector": "known_poll_no_progress",
             "level": "warning",
@@ -180,6 +184,41 @@ def _detect_tool_loop(
             "message": f"Potential tool loop detected for '{tool_name}'.",
         }
     return None
+
+
+def _resolve_tool_loop_thresholds() -> dict[str, int]:
+    warning = _parse_positive_int_env(
+        "BROODMIND_TOOL_LOOP_WARNING_THRESHOLD",
+        _DEFAULT_TOOL_LOOP_WARNING_THRESHOLD,
+    )
+    critical = _parse_positive_int_env(
+        "BROODMIND_TOOL_LOOP_CRITICAL_THRESHOLD",
+        _DEFAULT_TOOL_LOOP_CRITICAL_THRESHOLD,
+    )
+    global_breaker = _parse_positive_int_env(
+        "BROODMIND_TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD",
+        _DEFAULT_TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD,
+    )
+    if critical <= warning:
+        critical = warning + 1
+    if global_breaker <= critical:
+        global_breaker = critical + 1
+    return {
+        "warning": warning,
+        "critical": critical,
+        "global_breaker": global_breaker,
+    }
+
+
+def _parse_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
 
 
 async def run_agent_worker(spec_path: str) -> None:
@@ -316,6 +355,7 @@ If you need clarification from the Queen, include:
     upstream_failures: dict[str, int] = {}
     successful_tool_calls = 0
     tool_call_history: list[dict[str, str]] = []
+    tool_loop_thresholds = _resolve_tool_loop_thresholds()
 
     for _iteration in range(effective_max_steps):
         thinking_steps += 1
@@ -386,6 +426,9 @@ If you need clarification from the Queen, include:
                     tool_call_history,
                     tool_name=str(tool_name or ""),
                     args_hash=args_hash,
+                    warning_threshold=tool_loop_thresholds["warning"],
+                    critical_threshold=tool_loop_thresholds["critical"],
+                    global_breaker_threshold=tool_loop_thresholds["global_breaker"],
                 )
                 if loop_state is not None:
                     if loop_state["level"] == "warning":

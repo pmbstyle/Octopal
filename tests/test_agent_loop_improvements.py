@@ -15,6 +15,7 @@ from broodmind.workers.agent_worker import (
     _hash_tool_call,
     _hash_tool_outcome,
     _parse_tool_arguments,
+    _resolve_tool_loop_thresholds,
     _tool_no_progress_streak,
 )
 from broodmind.workers.contracts import WorkerSpec
@@ -229,3 +230,31 @@ def test_tool_outcome_hash_changes_on_error_state() -> None:
     ok_hash = _hash_tool_outcome({"status": "ok"}, {"had_error": False, "timed_out": False})
     err_hash = _hash_tool_outcome({"status": "ok"}, {"had_error": True, "timed_out": False})
     assert ok_hash != err_hash
+
+
+def test_resolve_tool_loop_thresholds_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("BROODMIND_TOOL_LOOP_WARNING_THRESHOLD", "5")
+    monkeypatch.setenv("BROODMIND_TOOL_LOOP_CRITICAL_THRESHOLD", "9")
+    monkeypatch.setenv("BROODMIND_TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD", "20")
+    thresholds = _resolve_tool_loop_thresholds()
+    assert thresholds == {"warning": 5, "critical": 9, "global_breaker": 20}
+
+
+def test_resolve_tool_loop_thresholds_normalizes_invalid_order(monkeypatch) -> None:
+    monkeypatch.setenv("BROODMIND_TOOL_LOOP_WARNING_THRESHOLD", "10")
+    monkeypatch.setenv("BROODMIND_TOOL_LOOP_CRITICAL_THRESHOLD", "10")
+    monkeypatch.setenv("BROODMIND_TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD", "1")
+    thresholds = _resolve_tool_loop_thresholds()
+    assert thresholds["warning"] == 10
+    assert thresholds["critical"] == 11
+    assert thresholds["global_breaker"] == 12
+
+
+def test_resolve_tool_loop_thresholds_ignores_bad_values(monkeypatch) -> None:
+    monkeypatch.setenv("BROODMIND_TOOL_LOOP_WARNING_THRESHOLD", "oops")
+    monkeypatch.setenv("BROODMIND_TOOL_LOOP_CRITICAL_THRESHOLD", "0")
+    monkeypatch.setenv("BROODMIND_TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD", "-3")
+    thresholds = _resolve_tool_loop_thresholds()
+    assert thresholds["warning"] >= 1
+    assert thresholds["critical"] > thresholds["warning"]
+    assert thresholds["global_breaker"] > thresholds["critical"]
