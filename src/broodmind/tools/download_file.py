@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from broodmind.tools.path_safety import WorkspacePathError, resolve_workspace_path
+
 
 async def download_file(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     """
@@ -25,6 +27,11 @@ async def download_file(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                 return json.dumps({"error": "download_file error: could not determine filename from URL. Please specify one."})
         except Exception:
             return json.dumps({"error": "download_file error: could not determine filename from URL. Please specify one."})
+    filename = filename.strip()
+    if not filename:
+        return json.dumps({"error": "download_file error: filename is empty."})
+    if Path(filename).name != filename:
+        return json.dumps({"error": "download_file error: filename must not contain directory components."})
 
     # Determine the base directory from the context
     # The 'base_dir' in the context is the root workspace for the Queen.
@@ -34,18 +41,16 @@ async def download_file(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     if not base_dir:
         return json.dumps({"error": "download_file error: base_dir not found in context."})
 
-    download_dir = base_dir / "downloads"
-
     try:
+        download_dir = resolve_workspace_path(base_dir, "downloads")
         download_dir.mkdir(parents=True, exist_ok=True)
+        download_dir = resolve_workspace_path(base_dir, "downloads", must_exist=True)
     except Exception as e:
         return json.dumps({"error": f"download_file error: could not create download directory: {e}"})
-
-    save_path = download_dir / filename
-
-    # Basic security check to ensure the filename doesn't try to escape the directory
-    if str(save_path.resolve().parent) != str(download_dir.resolve()):
-        return json.dumps({"error": "download_file error: invalid filename, path traversal detected."})
+    try:
+        save_path = resolve_workspace_path(base_dir, f"downloads/{filename}")
+    except WorkspacePathError as e:
+        return json.dumps({"error": f"download_file error: {e}."})
 
     try:
         async with httpx.AsyncClient() as client, client.stream("GET", url, follow_redirects=True, timeout=30.0) as response:
@@ -67,4 +72,3 @@ async def download_file(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         return json.dumps({"error": f"download_file error: HTTP error {e.response.status_code} for URL {url}"})
     except Exception as e:
         return json.dumps({"error": f"download_file error: An unexpected error occurred: {e}"})
-
