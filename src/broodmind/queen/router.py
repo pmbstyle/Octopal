@@ -15,7 +15,7 @@ from broodmind.providers.base import InferenceProvider, Message
 from broodmind.memory.service import MemoryService
 from broodmind.memory.canon import CanonService
 from broodmind.queen.prompt_builder import build_queen_prompt, build_bootstrap_context_prompt
-from broodmind.tools.registry import ToolSpec, filter_tools
+from broodmind.tools.registry import ToolPolicy, ToolPolicyPipelineStep, ToolSpec, filter_tools
 from broodmind.tools.tools import get_tools
 from broodmind.utils import is_heartbeat_ok, is_control_response
 from broodmind.workers.contracts import WorkerResult
@@ -350,9 +350,17 @@ def _get_queen_tools(queen: Any, chat_id: int) -> tuple[list[ToolSpec], dict[str
         "chat_id": chat_id
     }
     mcp_manager = getattr(queen, "mcp_manager", None)
-    tool_specs = filter_tools(get_tools(mcp_manager=mcp_manager), permissions=perms)
-    # Remove raw fetch tools from Queen; only workers are allowed to fetch raw web content.
-    tool_specs = [spec for spec in tool_specs if spec.name not in {"web_fetch", "markdown_new_fetch", "fetch_plan_tool"}]
+    policy_steps = [
+        ToolPolicyPipelineStep(
+            label="queen.raw_fetch_denylist",
+            policy=ToolPolicy(deny=["web_fetch", "markdown_new_fetch", "fetch_plan_tool"]),
+        )
+    ]
+    tool_specs = filter_tools(
+        get_tools(mcp_manager=mcp_manager),
+        permissions=perms,
+        policy_pipeline_steps=policy_steps,
+    )
     return tool_specs, ctx
 
 

@@ -21,6 +21,7 @@ from typing import Any
 
 from broodmind.config.settings import load_settings
 from broodmind.providers.litellm_provider import LiteLLMProvider
+from broodmind.tools.registry import ToolPolicy, ToolPolicyPipelineStep, apply_tool_policy_pipeline
 from broodmind.tools.tools import get_tools
 from broodmind.worker_sdk.worker import Worker
 from broodmind.workers.contracts import WorkerResult
@@ -142,7 +143,15 @@ async def execute_agent_task(worker: Worker, base_dir: Path) -> WorkerResult:
     # Build system prompt with tool descriptions
     available_tools = get_tools()
     # Filter tools by name from worker spec
-    filtered_tools = [t for t in available_tools if t.name in spec.available_tools]
+    filtered_tools = apply_tool_policy_pipeline(
+        available_tools,
+        [
+            ToolPolicyPipelineStep(
+                label="worker.available_tools",
+                policy=ToolPolicy(allow=list(spec.available_tools or [])),
+            )
+        ],
+    )
     filtered_tools = _with_queen_tool_proxies(filtered_tools, worker)
 
     # Add MCP tools from spec

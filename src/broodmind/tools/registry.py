@@ -28,10 +28,85 @@ class ToolSpec:
         }
 
 
+@dataclass(frozen=True)
+class ToolPolicy:
+    """Name-based tool policy."""
+
+    allow: list[str] | None = None
+    deny: list[str] | None = None
+
+
+@dataclass(frozen=True)
+class ToolPolicyPipelineStep:
+    """Single tool-policy pipeline step."""
+
+    label: str
+    policy: ToolPolicy | None
+
+
+def parse_tool_list(value: str | Iterable[str] | None) -> list[str]:
+    """
+    Parse a tool list from CSV text or an iterable.
+
+    Returns a normalized list (trimmed, lower-cased, de-duplicated), preserving order.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = value.split(",")
+    else:
+        raw_items = [str(item) for item in value]
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        name = _normalize_tool_name(raw)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def apply_tool_policy(tools: Iterable[ToolSpec], policy: ToolPolicy | None) -> list[ToolSpec]:
+    """Apply a single allow/deny policy to tools."""
+    tool_list = list(tools)
+    if policy is None:
+        return tool_list
+
+    allow = parse_tool_list(policy.allow)
+    deny = parse_tool_list(policy.deny)
+    deny_set = set(deny)
+
+    if allow and "*" not in allow:
+        allow_set = set(allow)
+        tool_list = [tool for tool in tool_list if _normalize_tool_name(tool.name) in allow_set]
+
+    if deny:
+        if "*" in deny_set:
+            return []
+        tool_list = [tool for tool in tool_list if _normalize_tool_name(tool.name) not in deny_set]
+
+    return tool_list
+
+
+def apply_tool_policy_pipeline(
+    tools: Iterable[ToolSpec],
+    steps: Iterable[ToolPolicyPipelineStep] | None,
+) -> list[ToolSpec]:
+    """Apply policy steps sequentially."""
+    filtered = list(tools)
+    if not steps:
+        return filtered
+    for step in steps:
+        filtered = apply_tool_policy(filtered, step.policy)
+    return filtered
+
+
 def filter_tools(
     tools: Iterable[ToolSpec],
     *,
     permissions: dict[str, bool],
+    policy_pipeline_steps: Iterable[ToolPolicyPipelineStep] | None = None,
 ) -> list[ToolSpec]:
     """Filter tools by permissions only. Scope filtering has been removed."""
     available: list[ToolSpec] = []
@@ -39,4 +114,8 @@ def filter_tools(
         if not permissions.get(tool.permission, False):
             continue
         available.append(tool)
-    return available
+    return apply_tool_policy_pipeline(available, policy_pipeline_steps)
+
+
+def _normalize_tool_name(name: str) -> str:
+    return str(name).strip().lower()
