@@ -31,6 +31,14 @@ type SnapshotBundle = {
   queen: QueenPayload;
 };
 
+type WorkerTooltip = {
+  title: string;
+  lines: string[];
+  x: number;
+  y: number;
+  wide?: boolean;
+};
+
 const GRAPH_TOP_PAD = 28;
 const GRAPH_BOTTOM_PAD = 16;
 
@@ -251,6 +259,7 @@ export function ControlCenterPage({ filters }: { filters: DashboardFilters }) {
   const [history, setHistory] = useState<MetricPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [workerTooltip, setWorkerTooltip] = useState<WorkerTooltip | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -346,6 +355,26 @@ export function ControlCenterPage({ filters }: { filters: DashboardFilters }) {
     );
   }
 
+  const showWorkerTooltip = (
+    element: HTMLElement,
+    payload: { title: string; lines: string[]; wide?: boolean },
+  ) => {
+    const rect = element.getBoundingClientRect();
+    const tooltipWidth = payload.wide ? 520 : 320;
+    const viewportWidth = window.innerWidth;
+    const left = Math.max(12, Math.min(rect.left, viewportWidth - tooltipWidth - 12));
+    const top = Math.min(window.innerHeight - 120, rect.bottom + 8);
+    setWorkerTooltip({
+      title: payload.title,
+      lines: payload.lines,
+      x: left,
+      y: top,
+      wide: payload.wide,
+    });
+  };
+
+  const hideWorkerTooltip = () => setWorkerTooltip(null);
+
   return (
     <div className="grid gap-5">
       <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 shadow-xl shadow-slate-950/60">
@@ -402,7 +431,7 @@ export function ControlCenterPage({ filters }: { filters: DashboardFilters }) {
         </section>
       </div>
 
-      <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+      <section className="relative rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-300">Workers</h3>
           <p className="text-xs text-slate-500">Top 12 by recency, timestamps in local browser time</p>
@@ -431,17 +460,38 @@ export function ControlCenterPage({ filters }: { filters: DashboardFilters }) {
                   const status = statusMeta(worker.status);
                   return (
                   <tr key={`${worker.id}-${worker.updated_at}`} className="rounded-lg bg-slate-950/70">
-                    <td className="group relative rounded-l-lg px-3 py-3 font-mono text-xs text-cyan-300">
+                    <td className="rounded-l-lg px-3 py-3 font-mono text-xs text-cyan-300">
                       <span className="cursor-help underline decoration-dotted underline-offset-4">
-                        {shortWorkerId(worker.id)}
+                        <button
+                          type="button"
+                          className="font-mono text-xs text-cyan-300"
+                          onMouseEnter={(event) =>
+                            showWorkerTooltip(event.currentTarget, {
+                              title: "Worker details",
+                              lines: [
+                                `ID: ${worker.id ?? "n/a"}`,
+                                `Template: ${worker.template_name ?? "n/a"}`,
+                                `Status: ${String(worker.status ?? "unknown")}`,
+                                `Updated: ${prettyTime(worker.updated_at)} (local)`,
+                              ],
+                            })
+                          }
+                          onMouseLeave={hideWorkerTooltip}
+                          onClick={(event) =>
+                            showWorkerTooltip(event.currentTarget, {
+                              title: "Worker details",
+                              lines: [
+                                `ID: ${worker.id ?? "n/a"}`,
+                                `Template: ${worker.template_name ?? "n/a"}`,
+                                `Status: ${String(worker.status ?? "unknown")}`,
+                                `Updated: ${prettyTime(worker.updated_at)} (local)`,
+                              ],
+                            })
+                          }
+                        >
+                          {shortWorkerId(worker.id)}
+                        </button>
                       </span>
-                      <div className="pointer-events-none absolute left-3 top-full z-20 mt-2 hidden w-72 rounded-lg border border-slate-700 bg-slate-950/95 p-3 text-xs text-slate-200 shadow-xl group-hover:block">
-                        <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Worker details</p>
-                        <p><span className="text-slate-400">ID:</span> {worker.id ?? "n/a"}</p>
-                        <p><span className="text-slate-400">Template:</span> {worker.template_name ?? "n/a"}</p>
-                        <p><span className="text-slate-400">Status:</span> {String(worker.status ?? "unknown")}</p>
-                        <p><span className="text-slate-400">Updated:</span> {prettyTime(worker.updated_at)} (local)</p>
-                      </div>
                     </td>
                     <td className="px-3 py-3 text-xs text-slate-300">
                       <div
@@ -460,18 +510,38 @@ export function ControlCenterPage({ filters }: { filters: DashboardFilters }) {
                         {status.icon}
                       </span>
                     </td>
-                    <td className="group relative max-w-[520px] truncate px-3 py-3 text-slate-300">
-                      <span className="cursor-help underline decoration-dotted underline-offset-4">
+                    <td className="max-w-[520px] truncate px-3 py-3 text-slate-300">
+                      <button
+                        type="button"
+                        className="max-w-[520px] cursor-help truncate text-left underline decoration-dotted underline-offset-4"
+                        onMouseEnter={(event) =>
+                          showWorkerTooltip(event.currentTarget, {
+                            title: "Task prompt",
+                            lines: [
+                              worker.task ?? "n/a",
+                              "",
+                              `ID: ${worker.id ?? "n/a"}`,
+                              `Template: ${worker.template_name ?? "n/a"}`,
+                            ],
+                            wide: true,
+                          })
+                        }
+                        onMouseLeave={hideWorkerTooltip}
+                        onClick={(event) =>
+                          showWorkerTooltip(event.currentTarget, {
+                            title: "Task prompt",
+                            lines: [
+                              worker.task ?? "n/a",
+                              "",
+                              `ID: ${worker.id ?? "n/a"}`,
+                              `Template: ${worker.template_name ?? "n/a"}`,
+                            ],
+                            wide: true,
+                          })
+                        }
+                      >
                         {worker.task ?? "n/a"}
-                      </span>
-                      <div className="pointer-events-none absolute left-3 top-full z-20 mt-2 hidden w-[32rem] max-w-[80vw] rounded-lg border border-slate-700 bg-slate-950/95 p-3 text-xs text-slate-200 shadow-xl group-hover:block">
-                        <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Task prompt</p>
-                        <p className="whitespace-pre-wrap break-words">{worker.task ?? "n/a"}</p>
-                        <div className="mt-2 border-t border-slate-800 pt-2 text-[11px] text-slate-400">
-                          <p>ID: {worker.id ?? "n/a"}</p>
-                          <p>Template: {worker.template_name ?? "n/a"}</p>
-                        </div>
-                      </div>
+                      </button>
                     </td>
                     <td className="rounded-r-lg px-3 py-3 text-slate-400">{prettyTime(worker.updated_at)}</td>
                   </tr>
@@ -480,6 +550,25 @@ export function ControlCenterPage({ filters }: { filters: DashboardFilters }) {
             </tbody>
           </table>
         </div>
+        {workerTooltip ? (
+          <div
+            className={`pointer-events-none fixed z-[100] rounded-lg border border-slate-700 bg-slate-950/95 p-3 text-xs text-slate-200 shadow-xl ${
+              workerTooltip.wide ? "w-[32rem] max-w-[84vw]" : "w-80 max-w-[84vw]"
+            }`}
+            style={{ left: workerTooltip.x, top: workerTooltip.y }}
+          >
+            <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">{workerTooltip.title}</p>
+            {workerTooltip.lines.map((line, index) =>
+              line ? (
+                <p key={`${line}-${index}`} className={index === 0 && workerTooltip.wide ? "whitespace-pre-wrap break-words" : ""}>
+                  {line}
+                </p>
+              ) : (
+                <div key={`spacer-${index}`} className="h-2" />
+              ),
+            )}
+          </div>
+        ) : null}
       </section>
     </div>
   );
