@@ -218,9 +218,14 @@ def _run_webapp_command(cmd: list[str], *, cwd: Path) -> None:
 
 def _has_webapp_build_toolchain(webapp_dir: Path) -> bool:
     node_modules_dir = webapp_dir / "node_modules"
-    return (node_modules_dir / "typescript" / "package.json").is_file() and (
-        node_modules_dir / "vite" / "package.json"
-    ).is_file()
+    required_packages = (
+        "typescript",
+        "vite",
+        "tailwindcss",
+        "postcss",
+        "autoprefixer",
+    )
+    return all((node_modules_dir / package / "package.json").is_file() for package in required_packages)
 
 
 def _ensure_webapp_built(settings: Settings) -> None:
