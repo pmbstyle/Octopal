@@ -90,12 +90,26 @@ function statusMeta(status?: string): { icon: string; color: string; title: stri
     return { icon: "✓", color: "text-emerald-300", title: "completed" };
   }
   if (v === "running" || v === "started" || v === "ok" || v === "thinking") {
-    return { icon: "●", color: "text-cyan-300", title: v || "active" };
+    return { icon: "▶", color: "text-cyan-300", title: v || "active" };
   }
   if (v === "warning" || v === "stopped") {
     return { icon: "!", color: "text-amber-300", title: v || "warning" };
   }
   return { icon: "×", color: "text-rose-300", title: v || "failed" };
+}
+
+function workerRowTone(status?: string): string {
+  const v = String(status ?? "").toLowerCase();
+  if (v === "completed") {
+    return "bg-emerald-500/[0.06]";
+  }
+  if (v === "running" || v === "started" || v === "ok" || v === "thinking") {
+    return "bg-cyan-500/[0.06]";
+  }
+  if (v === "warning" || v === "stopped") {
+    return "bg-amber-500/[0.06]";
+  }
+  return "bg-rose-500/[0.08]";
 }
 
 function prettyTime(value?: string): string {
@@ -459,7 +473,10 @@ export function ControlCenterPage({ filters }: { filters: DashboardFilters }) {
                   const hierarchy = hierarchyLabel(worker);
                   const status = statusMeta(worker.status);
                   return (
-                  <tr key={`${worker.id}-${worker.updated_at}`} className="rounded-lg bg-slate-950/70">
+                  <tr
+                    key={`${worker.id}-${worker.updated_at}`}
+                    className={`rounded-lg bg-slate-950/70 ${workerRowTone(worker.status)}`}
+                  >
                     <td className="rounded-l-lg px-3 py-3 font-mono text-xs text-cyan-300">
                       <span className="cursor-help underline decoration-dotted underline-offset-4">
                         <button
