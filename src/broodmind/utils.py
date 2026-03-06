@@ -66,7 +66,8 @@ def has_no_user_response_suffix(text: str) -> bool:
     value = (text or "").strip()
     if not value:
         return False
-    trimmed = re.sub(r"[.!?,:;\"'`\]\)\}>]+$", "", value).strip()
+    # Trim trailing formatting/punctuation wrappers (e.g., **NO_USER_RESPONSE**).
+    trimmed = re.sub(r"[^\w]+$", "", value).strip()
     normalized = re.sub(r"[\s_-]+", "", trimmed).upper()
     return normalized.endswith("NOUSERRESPONSE")
 
@@ -76,8 +77,9 @@ def has_heartbeat_ok_edge(text: str) -> bool:
     value = (text or "").strip()
     if not value:
         return False
-    trimmed = re.sub(r"^[.!?,:;\"'`\[\(\{<]+", "", value)
-    trimmed = re.sub(r"[.!?,:;\"'`\]\)\}>]+$", "", trimmed).strip()
+    # Trim leading/trailing wrappers so formatted control tokens are still recognized.
+    trimmed = re.sub(r"^[^\w]+", "", value)
+    trimmed = re.sub(r"[^\w]+$", "", trimmed).strip()
     if not trimmed:
         return False
     normalized = re.sub(r"[\s_-]+", "", trimmed).upper()

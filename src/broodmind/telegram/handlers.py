@@ -403,14 +403,17 @@ async def _send_message_safe(bot: Bot, chat_id: int, text: str, reply_to_message
 
 
 async def _enqueue_send(bot: Bot, chat_id: int, text: str, reply_to_message_id: int | None = None) -> None:
-    if not should_suppress_user_delivery(text):
-        promoted = await _promote_progress_preview_to_final(
-            bot,
-            chat_id,
-            text,
-        )
-        if promoted:
-            return
+    if should_suppress_user_delivery(text):
+        logger.debug("Suppressed control response before queueing", chat_id=chat_id)
+        return
+
+    promoted = await _promote_progress_preview_to_final(
+        bot,
+        chat_id,
+        text,
+    )
+    if promoted:
+        return
 
     queue = _CHAT_QUEUES.get(chat_id)
     if not queue:
