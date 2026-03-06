@@ -70,8 +70,8 @@ function buildLine(points: number[], width: number, height: number, max: number)
   if (points.length === 0) {
     return "";
   }
-  const topPad = 14;
-  const bottomPad = 10;
+  const topPad = 28;
+  const bottomPad = 16;
   const plotHeight = Math.max(1, height - topPad - bottomPad);
   if (points.length === 1) {
     const y = topPad + plotHeight - (points[0] / max) * plotHeight;
@@ -94,10 +94,11 @@ function RealtimeGraph({ points }: { points: MetricPoint[] }) {
   const workers = points.map((point) => point.activeWorkers);
   const queueDepth = points.map((point) => point.queueDepth);
   const queenQueue = points.map((point) => point.queenQueue);
-  const maxValue = Math.max(1, ...workers, ...queueDepth, ...queenQueue);
-  const workerLine = buildLine(workers, width, height, maxValue);
-  const queueLine = buildLine(queueDepth, width, height, maxValue);
-  const queenLine = buildLine(queenQueue, width, height, maxValue);
+  const rawMaxValue = Math.max(1, ...workers, ...queueDepth, ...queenQueue);
+  const yAxisMax = Number((rawMaxValue + Math.max(0.5, rawMaxValue * 0.2)).toFixed(1));
+  const workerLine = buildLine(workers, width, height, yAxisMax);
+  const queueLine = buildLine(queueDepth, width, height, yAxisMax);
+  const queenLine = buildLine(queenQueue, width, height, yAxisMax);
   const firstPoint = points[0];
   const lastPoint = points[points.length - 1];
   const startLabel = firstPoint
@@ -118,6 +119,9 @@ function RealtimeGraph({ points }: { points: MetricPoint[] }) {
         <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-300">Realtime Signal</h3>
         <span className="text-xs text-slate-400">Last {points.length} samples</span>
       </div>
+      <p className="mb-2 text-xs text-slate-500">
+        Y-axis = shared metric count scale (0 to {yAxisMax}). X-axis = local browser time.
+      </p>
       <svg
         viewBox={`0 0 ${width} ${height}`}
         className="h-52 w-full rounded-lg bg-slate-950/80"
@@ -145,6 +149,21 @@ function RealtimeGraph({ points }: { points: MetricPoint[] }) {
             strokeWidth={1}
           />
         ))}
+        {[0.25, 0.5, 0.75].map((fraction) => (
+          <text
+            key={`label-${fraction}`}
+            x={width - 8}
+            y={height * fraction - 4}
+            fill="#64748b"
+            fontSize="10"
+            textAnchor="end"
+          >
+            {(yAxisMax * (1 - fraction)).toFixed(1)}
+          </text>
+        ))}
+        <text x={width - 8} y={height - 4} fill="#64748b" fontSize="10" textAnchor="end">
+          0
+        </text>
         <path d={workerLine} fill="none" stroke="#06b6d4" strokeWidth={3} strokeLinecap="round" />
         <path d={queueLine} fill="none" stroke="#f59e0b" strokeWidth={2.5} strokeLinecap="round" />
         <path d={queenLine} fill="none" stroke="#22c55e" strokeWidth={2.5} strokeLinecap="round" />
