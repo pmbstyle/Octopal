@@ -39,18 +39,16 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-### 2. Install
+### 2. One-shot bootstrap
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/pmbstyle/BroodMind.git
 cd BroodMind
-uv sync
 ```
-
-One-shot bootstrap entrypoint:
 
 ```bash
 # macOS/Linux
+chmod +x ./scripts/bootstrap.sh
 ./scripts/bootstrap.sh
 ```
 
@@ -59,7 +57,39 @@ One-shot bootstrap entrypoint:
 ./scripts/bootstrap.ps1
 ```
 
-These scripts install dependencies, install Playwright Chromium, and then launch `broodmind configure`.
+This is the main starting path. The bootstrap script installs dependencies, installs Playwright Chromium, and then launches `broodmind configure`.
+
+### 3. Open the web dashboard
+
+After bootstrap, start BroodMind and then open the dashboard in your browser:
+
+```bash
+uv run broodmind start
+```
+
+Open [http://127.0.0.1:8000/dashboard](http://127.0.0.1:8000/dashboard).
+
+If you enabled dashboard protection during `broodmind configure`, use the value of `BROODMIND_DASHBOARD_TOKEN` from `.env` when the dashboard or dashboard API asks for it.
+
+If the page says the dashboard is unavailable, build and enable the web app first:
+
+```bash
+cd webapp
+npm run build
+```
+
+Then set `BROODMIND_WEBAPP_ENABLED=true` in `.env` and start BroodMind again.
+
+### 4. Manual setup
+
+If you do not want the bootstrap script, use the manual path below.
+
+```bash
+git clone https://github.com/pmbstyle/BroodMind.git
+cd BroodMind
+uv sync
+uv run broodmind configure
+```
 
 Alternative without `uv`:
 
@@ -72,15 +102,15 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-### 3. Configure
+Then run:
 
 ```bash
-uv run broodmind configure
+broodmind configure
 ```
 
 `configure` creates/updates `.env` and bootstraps workspace files if missing.
 
-### 4. Start
+### 5. Start
 
 ```bash
 # background mode
@@ -90,7 +120,7 @@ uv run broodmind start
 uv run broodmind start --foreground
 ```
 
-### 5. Check Health
+### 6. Check Health
 
 ```bash
 uv run broodmind status
@@ -121,70 +151,6 @@ uv run broodmind memory stats
 uv run broodmind memory cleanup --dry-run
 ```
 
-## Configuration (Most Important)
-
-Main config is loaded from `.env`.
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token |
-| `ALLOWED_TELEGRAM_CHAT_IDS` | Recommended | Allowed chat IDs list |
-| `BROODMIND_LLM_PROVIDER` | No | Runtime adapter selection (`litellm` by default) |
-| `BROODMIND_LITELLM_PROVIDER_ID` | Conditional | Active LiteLLM provider profile (`zai`, `openrouter`, `openai`, etc.) |
-| `BROODMIND_LITELLM_API_KEY` | Conditional | API key for the active LiteLLM provider |
-| `BROODMIND_LITELLM_MODEL` | Conditional | Default model for the active LiteLLM provider |
-| `BROODMIND_LITELLM_API_BASE` | No | Override base URL for the active LiteLLM provider |
-| `BROODMIND_WORKSPACE_DIR` | No | Workspace root (default `workspace`) |
-| `BROODMIND_STATE_DIR` | No | Runtime state dir (default `data`) |
-| `BROODMIND_DASHBOARD_TOKEN` | Recommended | Protect `/api/dashboard/*` |
-| `BROODMIND_WEBAPP_ENABLED` | No | Serve new dashboard from built web app assets |
-| `BROODMIND_WEBAPP_DIST_DIR` | No | Override web app dist path (default `webapp/dist`) |
-
-Useful optional keys:
-
-- `BRAVE_API_KEY` for `web_search`
-- `FIRECRAWL_API_KEY` for richer `web_fetch`
-- `OPENAI_API_KEY` for embedding-based semantic memory
-
-Dashboard note:
-
-- Legacy inline `/dashboard` UI was removed.
-- Build frontend via `cd webapp && npm run build`.
-- Enable dashboard serving with `BROODMIND_WEBAPP_ENABLED=true`.
-- `broodmind start` now auto-builds webapp assets when needed (if the flag is enabled).
-
-## Architecture (Simple View)
-
-- `src/broodmind/queen/` - Queen logic (routing, context, orchestration)
-- `src/broodmind/workers/` - worker runtime + contracts
-- `src/broodmind/tools/` - tool registry and tool implementations
-- `src/broodmind/memory/` - memory, canon, memchain
-- `src/broodmind/telegram/` - bot transport layer
-- `src/broodmind/gateway/` - dashboard and API endpoints
-
-## Context Health and Reset
-
-The Queen monitors context pressure and can invoke `queen_context_reset`.
-
-- Preferred mode: `soft`
-- `hard` reset requires explicit confirmation
-- Reset writes handoff/audit artifacts to:
-  - `workspace/memory/handoff.md`
-  - `workspace/memory/handoff.json`
-  - `workspace/memory/context-audit.md`
-  - `workspace/memory/context-audit.jsonl`
-
-Tunable thresholds:
-
-- `BROODMIND_CONTEXT_WATCH_SIZE`
-- `BROODMIND_CONTEXT_WATCH_REPETITION`
-- `BROODMIND_CONTEXT_WATCH_ERROR_STREAK`
-- `BROODMIND_CONTEXT_WATCH_NO_PROGRESS`
-- `BROODMIND_CONTEXT_RESET_SOON_SIZE`
-- `BROODMIND_CONTEXT_RESET_SOON_REPETITION`
-- `BROODMIND_CONTEXT_RESET_SOON_ERROR_STREAK`
-- `BROODMIND_CONTEXT_RESET_SOON_NO_PROGRESS`
-
 ## Optional: Docker Worker Launcher
 
 Default runtime is non-Docker. If you want Dockerized workers:
@@ -201,14 +167,6 @@ BROODMIND_WORKER_DOCKER_IMAGE=broodmind-worker:latest
 ```
 
 Restart BroodMind after config changes.
-
-## Development
-
-```bash
-uv sync --dev
-uv run ruff check src tests
-uv run pytest -q
-```
 
 ## Troubleshooting
 
