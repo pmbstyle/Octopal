@@ -1,6 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+install_nodejs_with_available_manager() {
+  if command -v npm >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "npm not found. Installing Node.js and npm..."
+
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install -y nodejs npm
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y nodejs npm
+  elif command -v yum >/dev/null 2>&1; then
+    sudo yum install -y nodejs npm
+  elif command -v pacman >/dev/null 2>&1; then
+    sudo pacman -Sy --noconfirm nodejs npm
+  elif command -v zypper >/dev/null 2>&1; then
+    sudo zypper --non-interactive install nodejs npm
+  elif command -v apk >/dev/null 2>&1; then
+    sudo apk add --no-cache nodejs npm
+  elif command -v brew >/dev/null 2>&1; then
+    brew install node
+  else
+    echo "Could not auto-install Node.js/npm: no supported package manager was found." >&2
+    echo "Install Node.js 20+ and npm, then rerun ./scripts/bootstrap.sh." >&2
+    exit 1
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "Node.js/npm installation did not make npm available on PATH." >&2
+    echo "Open a new shell or add Node.js to PATH, then rerun ./scripts/bootstrap.sh." >&2
+    exit 1
+  fi
+}
+
 if [[ ! -f "pyproject.toml" ]]; then
   echo "Run this script from the repository root (pyproject.toml not found)." >&2
   exit 1
@@ -49,15 +84,13 @@ uv sync
 echo "Installing Playwright browser binaries..."
 uv run playwright install chromium
 
-if command -v npm >/dev/null 2>&1; then
-  echo "Installing WhatsApp bridge dependencies..."
-  (
-    cd scripts/whatsapp_bridge
-    npm install
-  )
-else
-  echo "npm not found. Skipping WhatsApp bridge dependency install."
-fi
+install_nodejs_with_available_manager
+
+echo "Installing WhatsApp bridge dependencies..."
+(
+  cd scripts/whatsapp_bridge
+  npm install
+)
 
 echo
 echo "Launching onboarding..."

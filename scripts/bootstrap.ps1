@@ -9,6 +9,37 @@ function Test-Uv {
     return [bool](Get-Command uv -ErrorAction SilentlyContinue)
 }
 
+function Test-Npm {
+    return [bool](Get-Command npm -ErrorAction SilentlyContinue)
+}
+
+function Install-NodeJs {
+    if (Test-Npm) {
+        return
+    }
+
+    Write-Host "npm not found. Installing Node.js and npm..."
+
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install --exact --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+    }
+    elseif (Get-Command choco -ErrorAction SilentlyContinue) {
+        choco install nodejs-lts -y
+    }
+    else {
+        throw "Could not auto-install Node.js/npm. Install Node.js LTS manually, restart PowerShell, and rerun .\scripts\bootstrap.ps1."
+    }
+
+    $machineNodePath = "${env:ProgramFiles}\nodejs"
+    if ((Test-Path $machineNodePath) -and ($env:Path -notlike "*$machineNodePath*")) {
+        $env:Path = "$machineNodePath;$env:Path"
+    }
+
+    if (-not (Test-Npm)) {
+        throw "Node.js/npm installation finished, but npm is still not on PATH. Restart PowerShell and rerun .\scripts\bootstrap.ps1."
+    }
+}
+
 if (-not (Test-Uv)) {
     Write-Host "uv not found. Installing..."
     powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -38,17 +69,15 @@ uv sync
 Write-Host "Installing Playwright browser binaries..."
 uv run playwright install chromium
 
-if (Get-Command npm -ErrorAction SilentlyContinue) {
-    Write-Host "Installing WhatsApp bridge dependencies..."
-    Push-Location "scripts/whatsapp_bridge"
-    try {
-        npm install
-    }
-    finally {
-        Pop-Location
-    }
-} else {
-    Write-Host "npm not found. Skipping WhatsApp bridge dependency install."
+Install-NodeJs
+
+Write-Host "Installing WhatsApp bridge dependencies..."
+Push-Location "scripts/whatsapp_bridge"
+try {
+    npm install
+}
+finally {
+    Pop-Location
 }
 
 Write-Host ""
