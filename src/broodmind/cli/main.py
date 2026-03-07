@@ -1193,6 +1193,7 @@ def _build_dashboard_snapshot(settings: Settings, last: int, store: SQLiteStore 
     metrics = read_metrics_snapshot(settings.state_dir) or {}
     queen_metrics = metrics.get("queen", {}) if isinstance(metrics, dict) else {}
     telegram_metrics = metrics.get("telegram", {}) if isinstance(metrics, dict) else {}
+    whatsapp_metrics = metrics.get("whatsapp", {}) if isinstance(metrics, dict) else {}
     exec_metrics = metrics.get("exec_run", {}) if isinstance(metrics, dict) else {}
     connectivity_metrics = metrics.get("connectivity", {}) if isinstance(metrics, dict) else {}
 
