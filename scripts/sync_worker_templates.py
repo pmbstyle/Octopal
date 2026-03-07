@@ -11,7 +11,9 @@ from broodmind.workers.templates import sync_default_templates
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logger = logging.getLogger(__name__)
-    parser = argparse.ArgumentParser(description="Sync default worker templates into workspace/workers.")
+    parser = argparse.ArgumentParser(
+        description="Sync worker templates from workspace_templates/workers into workspace/workers."
+    )
     parser.add_argument(
         "--workspace",
         default=os.getenv("BROODMIND_WORKSPACE_DIR", "workspace"),

@@ -50,7 +50,10 @@ echo "Installing Playwright browser binaries..."
 uv run playwright install chromium
 
 echo
+echo "Launching onboarding..."
+uv run broodmind configure
+
+echo
 echo "Bootstrap complete."
 echo "Next steps:"
-echo "  uv run broodmind configure"
 echo "  uv run broodmind start"

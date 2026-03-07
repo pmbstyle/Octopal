@@ -39,7 +39,10 @@ Write-Host "Installing Playwright browser binaries..."
 uv run playwright install chromium
 
 Write-Host ""
+Write-Host "Launching onboarding..."
+uv run broodmind configure
+
+Write-Host ""
 Write-Host "Bootstrap complete."
 Write-Host "Next steps:"
-Write-Host "  uv run broodmind configure"
 Write-Host "  uv run broodmind start"

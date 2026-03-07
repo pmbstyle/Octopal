@@ -7,13 +7,17 @@ Templates are stored in: workspace/workers/{worker_id}/worker.json
 This module is kept for backwards compatibility but worker templates
 are now managed as JSON files in the workspace directory.
 
-Default templates are provided in the source code at:
-src/broodmind/workers/default_templates/
+Default templates are provided from the repository bootstrap templates at:
+workspace_templates/workers/
 """
 from __future__ import annotations
 
 import shutil
 from pathlib import Path
+
+
+def _workspace_worker_template_root() -> Path:
+    return Path(__file__).resolve().parents[3] / "workspace_templates" / "workers"
 
 
 def sync_default_templates(workspace_dir: Path, *, overwrite: bool = False) -> dict[str, int]:
@@ -25,7 +29,9 @@ def sync_default_templates(workspace_dir: Path, *, overwrite: bool = False) -> d
     - updated: overwritten templates
     - skipped: templates that already existed and were not overwritten
     """
-    source_root = Path(__file__).parent / "default_templates"
+    source_root = _workspace_worker_template_root()
+    if not source_root.exists():
+        raise FileNotFoundError(f"workspace worker template folder not found: {source_root}")
     target_root = workspace_dir / "workers"
     target_root.mkdir(parents=True, exist_ok=True)
 
@@ -62,11 +68,11 @@ def initialize_templates(store) -> None:
     This is now a no-op since worker templates are auto-discovered
     from the filesystem at: workspace/workers/{id}/worker.json
 
-    Default templates are provided in the source code at:
-    src/broodmind/workers/default_templates/
+    Default templates are provided from:
+    workspace_templates/workers/
 
-    To add them to your workspace, copy the default_templates directory
-    to workspace/workers/
+    To add them to your workspace, sync workspace_templates/workers
+    into workspace/workers.
 
     For Docker:
         docker exec -it <container> python /app/scripts/sync_worker_templates.py

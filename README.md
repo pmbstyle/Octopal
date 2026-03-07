@@ -47,6 +47,20 @@ cd BroodMind
 uv sync
 ```
 
+One-shot bootstrap entrypoint:
+
+```bash
+# macOS/Linux
+./scripts/bootstrap.sh
+```
+
+```powershell
+# Windows PowerShell
+./scripts/bootstrap.ps1
+```
+
+These scripts install dependencies, install Playwright Chromium, and then launch `broodmind configure`.
+
 Alternative without `uv`:
 
 ```bash
