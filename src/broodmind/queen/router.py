@@ -267,6 +267,32 @@ async def route_or_reply(
                             last_error = tool_result_text
                     continue
                 
+                if had_tool_calls:
+                    logger.warning(
+                        "Tool execution completed without a final assistant response; falling back to text completion",
+                    )
+                    messages.append(
+                        Message(
+                            role="system",
+                            content=(
+                                "You have already used tools for this turn, but your last response was empty. "
+                                "Reply to the user now with a concise plain-language status update or answer."
+                            ),
+                        )
+                    )
+                    fallback_text = await _complete_text(
+                        provider,
+                        messages,
+                        context="empty_tool_response_fallback",
+                        on_partial=partial_callback,
+                    )
+                    return await _finalize_response(
+                        provider=provider,
+                        messages=messages,
+                        response_text=fallback_text,
+                        internal_followup=internal_followup,
+                    )
+
                 if content_raw:
                     logger.debug("Queen output", output=content_raw)
                 return await _finalize_response(
