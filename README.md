@@ -16,7 +16,7 @@ BroodMind is designed for persistent assistant workflows, not just single prompt
 
 This separation improves safety and reliability: sensitive context stays with the Queen, while workers receive only the minimum context needed to complete a task.
 
-## Core architecture
+## Core Architecture
 
 ```mermaid
 flowchart TD
@@ -45,8 +45,8 @@ flowchart TD
 ```
 
 It is designed for long-running assistant workflows, with memory, scheduling, and operational guardrails.
-The Queen, who holds all system context and sensitive data, never communicates with the world outside by itself. Instead, the Queen delegates tasks to workers with limited context and predefined tool/skill sets. Workers can spawn subworkers for multi-step tasks. Workers can only return response of their tasks or question/error responses. 
-This design increases data security, reduces context leakage, and helps guard against prompt injection attacks.
+The Queen, which holds all system context and sensitive data, never communicates with the outside world on its own. Instead, the Queen delegates tasks to workers with limited context and predefined tool/skill sets. Workers can spawn subworkers for multi-step tasks. Workers can only return response of their tasks or question/error responses. 
+This design improves data security, reduces context leakage, and protects the system from prompt injection attacks.
 
 ## What It Can Do
 
@@ -58,7 +58,7 @@ This design increases data security, reduces context leakage, and helps guard ag
 - Monitor context health and trigger structured context resets when needed
 - Schedule recurring tasks and background routines
 - Expose a private gateway and dashboard for status, workers, and system visibility
-- The system environment is shaped by a set of canonical memory files:
+- A set of canonical memory files shapes the system environment:
   - **MEMORY.md** – working memory and durable context; important facts, current state, and notes the system may need across sessions
   - **memory/canon/** – curated long-term knowledge that has been reviewed and promoted into trusted reference material
   - **USER.md** – user profile, preferences, habits, and interaction style
@@ -71,10 +71,10 @@ This design increases data security, reduces context leakage, and helps guard ag
 
 - Python 3.12+
 - `uv` (recommended)
-- Node 20+ for web ui
+- Node 20+ for web ui 
 - One user channel:
   Telegram bot token from [@BotFather](https://t.me/botfather), or
-  WhatsApp Web linking via QR (requires Node.js for the bridge)
+  WhatsApp Web linking via QR
 - Bring your own LLM API key:
   OpenRouter, OpenAI, Anthropic, Google Gemini, Mistral AI, Together AI, Groq, Z.ai, Custom OpenAI-compatible, Ollama
 
