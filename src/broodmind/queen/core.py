@@ -46,6 +46,9 @@ _FOLLOWUP_TASKS: dict[int, asyncio.Task] = {}
 _INTERNAL_QUEUES: dict[int, asyncio.Queue] = {}
 _INTERNAL_TASKS: dict[int, asyncio.Task] = {}
 _QUEUE_IDLE_TIMEOUT_SECONDS = 300.0
+# Worker-result follow-up can include multiple provider retries and a fallback
+# pass through Queen, so it needs a wider budget than a single LLM request.
+_WORKER_RESULT_ROUTING_TIMEOUT_SECONDS = 900.0
 _RESET_CONFIRM_THRESHOLD = 2
 _RESET_CONFIDENCE_MIN = 0.7
 
@@ -202,7 +205,7 @@ async def _internal_worker(queen: Queen, chat_id: int, queue: asyncio.Queue) -> 
                 try:
                     final_text = await asyncio.wait_for(
                         route_worker_result_back_to_queen(queen, chat_id, task_text, result),
-                        timeout=180.0,
+                        timeout=_WORKER_RESULT_ROUTING_TIMEOUT_SECONDS,
                     )
                 except TimeoutError:
                     logger.warning("Worker-result routing timed out", chat_id=chat_id)
