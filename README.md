@@ -131,6 +131,9 @@ npm run build
 
 Then set `BROODMIND_WEBAPP_ENABLED=1` in `.env` and start BroodMind again.
 
+<img width="1267" height="1128" alt="image" src="https://github.com/user-attachments/assets/58594129-e918-4061-9207-ca95da66056b" />
+
+
 ### 4. Manual setup
 
 If you do not want the bootstrap script, use the manual path below.
