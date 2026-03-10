@@ -53,6 +53,21 @@ _RESET_CONFIRM_THRESHOLD = 2
 _RESET_CONFIDENCE_MIN = 0.7
 
 
+def _build_worker_result_timeout_followup(result: WorkerResult) -> str:
+    """Return a minimal user-facing fallback when Queen routing times out."""
+    summary = (result.summary or "").strip()
+    if not summary:
+        summary = "Worker finished, but the follow-up routing step timed out."
+
+    lines = [summary]
+    if result.questions:
+        lines.append("")
+        lines.append("Open questions:")
+        lines.extend(f"- {question}" for question in result.questions[:3] if str(question).strip())
+
+    return "\n".join(lines).strip()
+
+
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
     raw = os.getenv(name)
     if raw is None:
@@ -209,7 +224,7 @@ async def _internal_worker(queen: Queen, chat_id: int, queue: asyncio.Queue) -> 
                     )
                 except TimeoutError:
                     logger.warning("Worker-result routing timed out", chat_id=chat_id)
-                    final_text = "NO_USER_RESPONSE"
+                    final_text = _build_worker_result_timeout_followup(result)
 
                 if should_send_worker_followup(final_text):
                     if queen.internal_send:

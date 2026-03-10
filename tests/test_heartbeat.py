@@ -3,7 +3,9 @@ from broodmind.utils import (
     is_heartbeat_ok,
     should_suppress_user_delivery,
 )
+from broodmind.queen.core import _build_worker_result_timeout_followup
 from broodmind.queen.router import should_send_worker_followup
+from broodmind.workers.contracts import WorkerResult
 
 def test_is_heartbeat_ok():
     assert is_heartbeat_ok("HEARTBEAT_OK") is True
@@ -51,6 +53,18 @@ def test_should_suppress_user_delivery():
     assert should_suppress_user_delivery("Result ready.\n**NO_USER_RESPONSE**")
     assert should_suppress_user_delivery("**HEARTBEAT_OK**")
     assert not should_suppress_user_delivery("Result ready.")
+
+
+def test_worker_result_timeout_followup_stays_user_visible():
+    text = _build_worker_result_timeout_followup(
+        WorkerResult(
+            summary="Digest is ready.",
+            questions=["Do you want the long version?", "Should I save it to canon?"],
+        )
+    )
+    assert "Digest is ready." in text
+    assert "Open questions:" in text
+    assert should_send_worker_followup(text) is True
 
 def test_queen_does_not_have_web_fetch():
     from broodmind.queen.router import _get_queen_tools
