@@ -16,6 +16,7 @@ from broodmind.tools.browser_tools import (
 from broodmind.tools.canon_tools import manage_canon, search_canon
 from broodmind.tools.download_file import download_file
 from broodmind.tools.exec_run import exec_run
+from broodmind.tools.experiments_tools import queen_experiment_log
 from broodmind.tools.fetch_plan import fetch_plan_tool
 from broodmind.tools.filesystem import fs_delete, fs_list, fs_move, fs_read, fs_write
 from broodmind.tools.llm_task import run_llm_subtask
@@ -178,6 +179,41 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             },
             permission="self_control",
             handler=_tool_queen_self_queue_update,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="queen_experiment_log",
+            description="Append a compact self-improvement observation or experiment result to workspace/experiments/results.jsonl.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "problem": {"type": "string", "description": "Short description of the repeated inefficiency or issue."},
+                    "classification": {
+                        "type": "string",
+                        "enum": ["behavioral", "system", "unclear"],
+                        "description": "Use behavioral for soft inefficiency, system for reproducible technical faults, unclear when not yet classified.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["failures", "deliberation_audit", "manual_observation", "self_queue", "worker_result"],
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["observed", "proposed", "kept", "discarded"],
+                    },
+                    "evidence": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Short evidence bullets for why this issue is repeating.",
+                    },
+                    "change_summary": {"type": "string", "description": "Optional short note about the attempted change."},
+                    "notes": {"type": "string", "description": "Optional short note or verdict detail."},
+                },
+                "required": ["problem"],
+                "additionalProperties": False,
+            },
+            permission="self_control",
+            handler=queen_experiment_log,
             is_async=True,
         ),
         ToolSpec(

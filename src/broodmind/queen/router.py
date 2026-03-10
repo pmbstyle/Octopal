@@ -29,6 +29,7 @@ _MIN_TOOL_COUNT_ON_OVERFLOW = 12
 _PRIORITY_TOOL_NAMES = {
     "queen_context_reset",
     "queen_context_health",
+    "queen_experiment_log",
     "check_schedule",
     "start_worker",
     "get_worker_result",
