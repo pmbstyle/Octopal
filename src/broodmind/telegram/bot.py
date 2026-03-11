@@ -55,19 +55,11 @@ async def _heartbeat_poker(queen: Queen, interval_seconds: int, chat_id: int):
                 elif not text:
                     logger.warning("Heartbeat produced empty response")
                 else:
-                    if queen.internal_send:
-                        await queen.internal_send(chat_id, text)
-                        logger.info(
-                            "Heartbeat delivered user-facing text",
-                            chat_id=chat_id,
-                            text_len=len(text),
-                        )
-                    else:
-                        logger.info(
-                            "Heartbeat produced non-control text but no sender was attached (chat_id=%s, preview=%s)",
-                            chat_id,
-                            text[:200],
-                        )
+                    logger.warning(
+                        "Heartbeat produced non-control text; suppressing delivery to Telegram",
+                        chat_id=chat_id,
+                        preview=text[:200],
+                    )
         except Exception:
             logger.exception("Internal heartbeat execution failed")
 

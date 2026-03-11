@@ -19,7 +19,11 @@ from broodmind.memory.canon import CanonService
 from broodmind.queen.prompt_builder import build_queen_prompt, build_bootstrap_context_prompt
 from broodmind.tools.registry import ToolPolicy, ToolPolicyPipelineStep, ToolSpec, filter_tools
 from broodmind.tools.tools import get_tools
-from broodmind.utils import is_heartbeat_ok, should_suppress_user_delivery
+from broodmind.utils import (
+    is_heartbeat_ok,
+    looks_like_textual_tool_invocation,
+    should_suppress_user_delivery,
+)
 from broodmind.workers.contracts import WorkerResult
 
 logger = structlog.get_logger(__name__)
@@ -290,7 +294,12 @@ async def route_or_reply(
                             else json.dumps(tool_result, ensure_ascii=False)
                         )
                         messages.append(
-                            {"role": "tool", "tool_call_id": call.get("id"), "content": tool_result_text}
+                            {
+                                "role": "tool",
+                                "tool_call_id": call.get("id"),
+                                "name": call.get("function", {}).get("name"),
+                                "content": tool_result_text,
+                            }
                         )
                         if "error" in tool_result_text.lower() or "failed" in tool_result_text.lower():
                             last_error = tool_result_text
@@ -869,6 +878,32 @@ async def _finalize_response(
     cleaned = normalize_plain_text(response_text or "")
     if not cleaned:
         return cleaned
+    if looks_like_textual_tool_invocation(cleaned):
+        logger.warning("Final response collapsed to textual tool invocation; attempting rewrite", preview=cleaned[:120])
+        rewrite_messages = list(messages)
+        rewrite_messages.append(
+            Message(
+                role="system",
+                content=(
+                    "Your previous draft collapsed into a tool invocation or tool syntax. "
+                    "Rewrite it now as a plain-language final response. "
+                    "Do not output a tool name by itself. Do not output tool syntax. "
+                    "If no user-visible response is needed, return exactly NO_USER_RESPONSE."
+                ),
+            )
+        )
+        rewritten = normalize_plain_text(
+            await _complete_text(
+                provider,
+                rewrite_messages,
+                context="rewrite_textual_tool_invocation",
+            )
+        )
+        if rewritten and not looks_like_textual_tool_invocation(rewritten):
+            return rewritten
+        if internal_followup:
+            return "NO_USER_RESPONSE"
+        return "I completed the check."
     return cleaned
 
 
@@ -1025,15 +1060,22 @@ def _sanitize_messages_for_complete(messages: list[Message | dict[str, Any]]) ->
     for msg in messages:
         role: str
         content: Any
+        tool_name = ""
         if isinstance(msg, Message):
             role = msg.role
             content = msg.content
         else:
             role = str(msg.get("role", "assistant"))
             content = msg.get("content", "")
+            if role == "tool":
+                tool_name = str(msg.get("name", "") or msg.get("tool_name", "") or "")
 
         normalized_role = role if role in {"system", "user", "assistant"} else "assistant"
         if role == "tool":
+            normalized_content = _coerce_tool_message_to_text(content, tool_name=tool_name)
+            if not normalized_content:
+                continue
+            sanitized.append({"role": "assistant", "content": normalized_content})
             continue
 
         normalized_content = _coerce_content_to_text(content)
@@ -1074,6 +1116,16 @@ def _coerce_content_to_text(content: Any) -> str:
         return json.dumps(content, ensure_ascii=False)
     except Exception:
         return str(content or "")
+
+
+def _coerce_tool_message_to_text(content: Any, *, tool_name: str = "") -> str:
+    rendered = _coerce_content_to_text(content).strip()
+    if not rendered:
+        return ""
+    if len(rendered) > 1200:
+        rendered = rendered[:1197].rstrip() + "..."
+    label = tool_name.strip() or "tool"
+    return f"Tool result ({label}): {rendered}"
 
 
 def _message_shape(messages: list[dict[str, str]]) -> list[dict[str, Any]]:

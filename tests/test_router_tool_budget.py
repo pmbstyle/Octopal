@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 
 from broodmind.queen.router import (
+    _finalize_response,
     _budget_tool_specs,
     _recover_textual_tool_call,
+    _sanitize_messages_for_complete,
     _shrink_tool_specs_for_retry,
 )
 from broodmind.providers.base import Message
@@ -288,3 +290,52 @@ def test_do_not_recover_human_text_wrapped_around_tool_name() -> None:
     )
 
     assert _recover_textual_tool_call("Checking schedule... check_schedule", [spec]) is None
+
+
+def test_sanitize_messages_keeps_tool_results_for_plain_fallback() -> None:
+    sanitized = _sanitize_messages_for_complete(
+        [
+            {"role": "system", "content": "Use tool results."},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call-1"}]},
+            {"role": "tool", "name": "check_schedule", "content": '{"status":"ok","tasks":[]}'},
+        ]
+    )
+
+    tool_summary = next(msg for msg in sanitized if msg["role"] == "assistant" and "Tool result" in msg["content"])
+    assert "Tool result (check_schedule)" in tool_summary["content"]
+    assert '"status":"ok"' in tool_summary["content"]
+
+
+def test_finalize_response_rewrites_bare_tool_name() -> None:
+    class DummyProvider:
+        async def complete(self, messages, **kwargs):
+            assert any("collapsed into a tool invocation" in str(m.get("content", "")) for m in messages)
+            return "I checked the worker list and the system is ready."
+
+    async def scenario() -> None:
+        result = await _finalize_response(
+            DummyProvider(),
+            [Message(role="system", content="Rewrite if needed.")],
+            "list_workers",
+            internal_followup=False,
+        )
+        assert result == "I checked the worker list and the system is ready."
+
+    asyncio.run(scenario())
+
+
+def test_finalize_response_returns_no_user_response_when_rewrite_still_bad() -> None:
+    class DummyProvider:
+        async def complete(self, messages, **kwargs):
+            return "check_schedule"
+
+    async def scenario() -> None:
+        result = await _finalize_response(
+            DummyProvider(),
+            [Message(role="system", content="Rewrite if needed.")],
+            "list_workers",
+            internal_followup=True,
+        )
+        assert result == "NO_USER_RESPONSE"
+
+    asyncio.run(scenario())

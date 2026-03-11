@@ -684,8 +684,9 @@ class Queen:
             await self.mcp_manager.load_and_connect_all()
         
         wake_up_prompt = (
-            "You are waking up. Read AGENTS.md and list available workers internally, "
-            "then produce a short friendly startup status message for the user."
+            "You are waking up. Read AGENTS.md and inspect available workers internally. "
+            "Use tools if needed, but never output a tool name or tool syntax as your final answer. "
+            "Then produce a short friendly startup status message for the user in plain language."
         )
         original_send = self.internal_send
         chat_ids = allowed_chat_ids or []

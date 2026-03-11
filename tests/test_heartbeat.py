@@ -3,6 +3,7 @@ from datetime import timedelta
 from broodmind.utils import (
     has_no_user_response_suffix,
     is_heartbeat_ok,
+    looks_like_textual_tool_invocation,
     should_suppress_user_delivery,
 )
 from broodmind.queen.core import (
@@ -110,7 +111,18 @@ def test_should_suppress_user_delivery():
     assert should_suppress_user_delivery("Result ready. NO_USER_RESPONSE")
     assert should_suppress_user_delivery("Result ready.\n**NO_USER_RESPONSE**")
     assert should_suppress_user_delivery("**HEARTBEAT_OK**")
+    assert should_suppress_user_delivery("list_workers")
+    assert should_suppress_user_delivery("check_schedule")
+    assert should_suppress_user_delivery("fs_read, file: memory/2026-03-11.md")
     assert not should_suppress_user_delivery("Result ready.")
+    assert not should_suppress_user_delivery("Проверяю расписание:")
+
+
+def test_detect_textual_tool_invocation():
+    assert looks_like_textual_tool_invocation("list_workers")
+    assert looks_like_textual_tool_invocation("fs_read, file: memory/2026-03-11.md")
+    assert not looks_like_textual_tool_invocation("Проверяю расписание:")
+    assert not looks_like_textual_tool_invocation("Checking schedule... check_schedule")
 
 
 def test_worker_result_timeout_followup_stays_user_visible():
