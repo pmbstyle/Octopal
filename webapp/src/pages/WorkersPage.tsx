@@ -244,7 +244,7 @@ export function WorkersPage() {
                               {worker.output ? (
                                 <div className="space-y-1">
                                   <div className="text-xs uppercase tracking-[0.2em] text-emerald-300">Output</div>
-                                  <pre className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 p-3 text-xs text-slate-200">
+                                  <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-lg border border-slate-800 bg-slate-900 p-3 text-xs text-slate-200">
                                     {JSON.stringify(worker.output, null, 2)}
                                   </pre>
                                 </div>
