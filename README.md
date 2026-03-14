@@ -1,5 +1,5 @@
 <p align="center">
-<img width="80%" alt="BroodMind" src="https://github.com/user-attachments/assets/fc911d8d-5d76-4de6-8bff-541c08009ea6" />
+<img width="60%" alt="BroodMind" src="https://github.com/pmbstyle/BroodMind/blob/main/logo.png" />
 </p>
 
 <p align="center">
