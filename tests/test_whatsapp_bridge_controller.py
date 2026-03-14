@@ -1,4 +1,4 @@
-from broodmind.whatsapp.bridge import WhatsAppBridgeController, WhatsAppBridgeError
+from broodmind.channels.whatsapp.bridge import WhatsAppBridgeController, WhatsAppBridgeError
 
 
 def test_parse_node_major_accepts_v_prefix() -> None:

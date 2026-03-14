@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import broodmind.whatsapp.runtime as whatsapp_runtime_module
-from broodmind.whatsapp.runtime import WhatsAppRuntime
+import broodmind.channels.whatsapp.runtime as whatsapp_runtime_module
+from broodmind.channels.whatsapp.runtime import WhatsAppRuntime
 
 
 class _FakeBridgeController:
@@ -42,7 +42,7 @@ class _FakeQueen:
 
     async def handle_message(self, text: str, chat_id: int):
         self.handled.append((text, chat_id))
-        return _FakeReply("ack")
+        return _FakeReply("hello back")
 
     async def stop_background_tasks(self) -> None:
         return None
@@ -86,7 +86,7 @@ def test_whatsapp_runtime_accepts_personal_self_chat(monkeypatch) -> None:
         )
         assert result["accepted"] is True
         assert fake_queen.handled
-        assert runtime.bridge.sent == [("+15551234567", "ack")]
+        assert runtime.bridge.sent == [("+15551234567", "hello back")]
 
     asyncio.run(scenario())
 

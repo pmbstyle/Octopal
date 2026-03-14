@@ -35,9 +35,9 @@ from broodmind.state import (
     write_start_status,
 )
 from broodmind.store.sqlite import SQLiteStore
-from broodmind.whatsapp.bridge import WhatsAppBridgeController, WhatsAppBridgeError
-from broodmind.whatsapp.ids import parse_allowed_whatsapp_numbers
-from broodmind.whatsapp.runtime import WhatsAppRuntime
+from broodmind.channels.whatsapp.bridge import WhatsAppBridgeController, WhatsAppBridgeError
+from broodmind.channels.whatsapp.ids import parse_allowed_whatsapp_numbers
+from broodmind.channels.whatsapp.runtime import WhatsAppRuntime
 from broodmind.workers.templates import sync_default_templates
 from aiogram import Bot
 
@@ -299,7 +299,7 @@ def start(
     foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground mode (showing logs)"),
 ) -> None:
     """Start the BroodMind Queen."""
-    from broodmind.telegram.bot import run_bot, build_dispatcher
+        from broodmind.channels.telegram.bot import run_bot, build_dispatcher
 
     try:
         settings = load_settings()

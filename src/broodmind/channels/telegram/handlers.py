@@ -19,8 +19,8 @@ from broodmind.logging_config import correlation_id_var
 from broodmind.queen.core import Queen, QueenReply
 from broodmind.runtime_metrics import update_component_gauges
 from broodmind.state import update_last_message
-from broodmind.telegram.access import is_allowed_chat, parse_allowed_chat_ids
-from broodmind.telegram.approvals import ApprovalManager
+from broodmind.channels.telegram.access import is_allowed_chat, parse_allowed_chat_ids
+from broodmind.channels.telegram.approvals import ApprovalManager
 from broodmind.utils import should_suppress_user_delivery, utc_now
 
 logger = structlog.get_logger(__name__)

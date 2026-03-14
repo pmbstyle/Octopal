@@ -16,7 +16,7 @@ from broodmind.channels import normalize_user_channel, user_channel_label
 from broodmind.cli.branding import print_banner
 from broodmind.config.manager import ConfigManager
 from broodmind.providers.catalog import get_provider_catalog_entry, list_registered_provider_ids
-from broodmind.whatsapp.ids import normalize_whatsapp_number, parse_allowed_whatsapp_numbers
+from broodmind.channels.whatsapp.ids import normalize_whatsapp_number, parse_allowed_whatsapp_numbers
 
 console = Console()
 ACCENT = "bright_cyan"

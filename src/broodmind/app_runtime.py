@@ -12,7 +12,7 @@ from broodmind.providers.openai_embeddings import OpenAIEmbeddingsProvider
 from broodmind.queen.core import Queen
 from broodmind.scheduler.service import SchedulerService
 from broodmind.store.sqlite import SQLiteStore
-from broodmind.telegram.approvals import ApprovalManager
+from broodmind.channels.telegram.approvals import ApprovalManager
 from broodmind.tools.skills_tools import ensure_skills_layout
 from broodmind.workers.launcher_factory import build_launcher
 from broodmind.workers.runtime import WorkerRuntime

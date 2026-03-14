@@ -38,7 +38,7 @@ from broodmind.queen.router import (
 from broodmind.runtime_metrics import update_component_gauges
 from broodmind.store.base import Store
 from broodmind.store.models import AuditEvent
-from broodmind.telegram.approvals import ApprovalManager
+from broodmind.channels.telegram.approvals import ApprovalManager
 from broodmind.utils import is_control_response, should_suppress_user_delivery, utc_now
 from broodmind.workers.contracts import TaskRequest, WorkerResult
 from broodmind.workers.runtime import WorkerRuntime

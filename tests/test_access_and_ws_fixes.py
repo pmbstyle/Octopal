@@ -9,7 +9,7 @@ import types
 
 from broodmind.config.settings import Settings
 from broodmind.queen.core import Queen
-from broodmind.telegram.access import is_allowed_chat, parse_allowed_chat_ids
+from broodmind.channels.telegram.access import is_allowed_chat, parse_allowed_chat_ids
 from broodmind.gateway.ws import _resolve_ws_chat_id
 from broodmind.tools.registry import ToolSpec
 from broodmind.workers.contracts import Capability, TaskRequest, WorkerResult
@@ -199,7 +199,7 @@ def test_dispatcher_uses_single_shared_mcp_manager(tmp_path: Path) -> None:
     if "telegramify_markdown" not in sys.modules:
         sys.modules["telegramify_markdown"] = types.SimpleNamespace(markdownify=lambda text: text)
 
-    from broodmind.telegram.bot import build_dispatcher
+    from broodmind.channels.telegram.bot import build_dispatcher
 
     settings = Settings(
         TELEGRAM_BOT_TOKEN="123:abc",

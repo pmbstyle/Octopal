@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from broodmind.whatsapp.routes import register_whatsapp_routes
+from broodmind.channels.whatsapp.routes import register_whatsapp_routes
 
 
 class _FakeRuntime:

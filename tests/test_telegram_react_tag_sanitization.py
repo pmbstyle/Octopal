@@ -6,7 +6,7 @@ import types
 if "telegramify_markdown" not in sys.modules:
     sys.modules["telegramify_markdown"] = types.SimpleNamespace(markdownify=lambda text: text)
 
-from broodmind.telegram.handlers import _extract_reaction_and_strip, _strip_reaction_tags
+from broodmind.channels.telegram.handlers import _extract_reaction_and_strip, _strip_reaction_tags
 
 
 def test_extract_reaction_and_strip_removes_tag() -> None:

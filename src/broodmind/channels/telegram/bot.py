@@ -9,8 +9,8 @@ from aiogram import Bot, Dispatcher
 from broodmind.app_runtime import build_queen
 from broodmind.config.settings import Settings
 from broodmind.queen.core import Queen, QueenReply
-from broodmind.telegram.approvals import ApprovalManager
-from broodmind.telegram.handlers import register_handlers
+from broodmind.channels.telegram.approvals import ApprovalManager
+from broodmind.channels.telegram.handlers import register_handlers
 from broodmind.utils import is_heartbeat_ok, is_control_response
 
 logger = structlog.get_logger(__name__)
@@ -68,8 +68,9 @@ async def run_bot(settings: Settings, existing_queen: Queen | None = None) -> No
     bot = Bot(token=settings.telegram_bot_token)
     if existing_queen:
         dp = Dispatcher()
-        from broodmind.telegram.approvals import ApprovalManager
-        from broodmind.telegram.handlers import register_handlers
+        from broodmind.channels.telegram.approvals import ApprovalManager
+        from broodmind.channels.telegram.handlers import register_handlers
+
         approvals = ApprovalManager(bot=bot)
         # Update queen's approval bot
         existing_queen.approvals = approvals

@@ -11,8 +11,12 @@ from broodmind.queen.core import Queen
 from broodmind.runtime_metrics import update_component_gauges
 from broodmind.state import update_last_message
 from broodmind.utils import should_suppress_user_delivery
-from broodmind.whatsapp.bridge import WhatsAppBridgeController
-from broodmind.whatsapp.ids import normalize_whatsapp_number, parse_allowed_whatsapp_numbers, whatsapp_chat_id
+from broodmind.channels.whatsapp.bridge import WhatsAppBridgeController
+from broodmind.channels.whatsapp.ids import (
+    normalize_whatsapp_number,
+    parse_allowed_whatsapp_numbers,
+    whatsapp_chat_id,
+)
 
 logger = structlog.get_logger(__name__)
 
