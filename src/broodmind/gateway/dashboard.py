@@ -20,7 +20,7 @@ from broodmind.infrastructure.config.settings import Settings
 from broodmind.runtime.metrics import read_metrics_snapshot
 from broodmind.runtime.state import is_pid_running, read_status
 from broodmind.infrastructure.store.sqlite import SQLiteStore
-from broodmind.infrastructure.store.models import AuditEvent, WorkerRecord
+from broodmind.infrastructure.store.models import AuditEvent, WorkerRecord, WorkerTemplateRecord
 
 _WINDOW_CHOICES = {15, 60, 240, 1440}
 _SERVICE_CHOICES = {"all", "gateway", "queen", "telegram", "whatsapp", "exec_run", "mcp", "workers"}
@@ -450,6 +450,9 @@ def _dashboard_v2_projection(snapshot: dict[str, Any], *, topic: str) -> dict[st
         }
     incidents = dict(snapshot.get("incidents", {}))
     summary = incidents.get("summary", {}) if isinstance(incidents, dict) else {}
+
+    template_cache: dict[str, WorkerTemplateRecord | None] = {}
+
     return {
         "contract_version": "dashboard.v2.overview",
         "generated_at": generated_at,
@@ -992,7 +995,7 @@ def _build_snapshot(settings: Settings, store: SQLiteStore, last: int, filters: 
                 for w in running_nodes
             ],
             "recent": [
-                _serialize_recent_worker(w)
+                _serialize_recent_worker(w, store=store, template_cache=template_cache)
                 for w in recent_workers[:last]
             ],
         },
@@ -1491,11 +1494,35 @@ def _estimate_mttr_minutes(recent_workers: list[WorkerRecord]) -> float | None:
     return round(sum(durations) / len(durations), 1)
 
 
-def _serialize_recent_worker(worker: WorkerRecord) -> dict[str, Any]:
+def _serialize_recent_worker(
+    worker: WorkerRecord,
+    *,
+    store: SQLiteStore | None = None,
+    template_cache: dict[str, WorkerTemplateRecord | None] | None = None,
+) -> dict[str, Any]:
     output = worker.output if isinstance(worker.output, dict) else None
+    template_config: dict[str, Any] | None = None
+    template_id = str(worker.template_id or "").strip()
+
+    if store is not None and template_id:
+        cache = template_cache if template_cache is not None else {}
+        template = cache.get(template_id)
+        if template_id not in cache:
+            template = store.get_worker_template(template_id)
+            cache[template_id] = template
+        if template is not None:
+            template_config = {
+                "model": template.model,
+                "max_thinking_steps": template.max_thinking_steps,
+                "default_timeout_seconds": template.default_timeout_seconds,
+                "available_tools": template.available_tools,
+                "can_spawn_children": template.can_spawn_children,
+            }
+
     return {
         "id": worker.id,
         "template_name": worker.template_name or worker.template_id or "",
+        "template_id": worker.template_id,
         "status": worker.status,
         "task": worker.task,
         "updated_at": worker.updated_at.isoformat(),
@@ -1507,6 +1534,7 @@ def _serialize_recent_worker(worker: WorkerRecord) -> dict[str, Any]:
         "spawn_depth": worker.spawn_depth,
         "result_preview": _worker_result_preview(worker),
         "output": output,
+        "template_config": template_config,
     }
 
 
