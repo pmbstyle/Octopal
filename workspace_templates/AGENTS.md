@@ -43,13 +43,16 @@ This ensures:
 
 ### Worker Usage Principles
 
-1. Use workers for external operations such as network access and third-party APIs.
-2. Provide clear task descriptions and acceptance criteria.
-3. Verify worker results before acting on them.
-4. Prefer small, testable tasks over broad open-ended delegation.
-5. Record key outcomes in daily memory after significant work.
-6. If a worker fails, capture the cause and mitigation when it matters.
-7. Prefer to create one worker for one specific task or interaction with a specific service. Do not duplicate functionality, do not duplicate workers, change them if needed. 
+1. Use workers for EXTERNAL operations (network, external APIs)
+2. Use workers for long-running or async tasks
+3. Prefer small, testable tasks with clear acceptance criteria
+4. After worker completion, record key outcomes in daily memory
+5. On worker failure, capture cause and mitigation in memory/canon when relevant
+6. NEVER delegate LOCAL operations to workers — do them directly
+7. Prefer to create one worker for one specific task or interaction with a specific service. Do not duplicate functionality, do not duplicate workers, change them if needed.
+8. Workers must be treated as unable to read/write Queen workspace files directly. Do not rely on worker filesystem access to shared workspace files
+9. If work depends on a local file, Queen must read the file first and pass the relevant content in worker inputs.
+10. If a worker produces file updates, Queen must write those updates to the workspace after verifying the result.
 
 ## Runtime Memory
 
