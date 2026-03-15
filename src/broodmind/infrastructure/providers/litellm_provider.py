@@ -76,6 +76,10 @@ class LiteLLMProvider:
         self._rate_limit_base_delay = max(0.1, float(settings.litellm_rate_limit_base_delay_seconds))
         self._rate_limit_max_delay = max(self._rate_limit_base_delay, float(settings.litellm_rate_limit_max_delay_seconds))
 
+    @property
+    def provider_id(self) -> str:
+        return self._profile.provider_id
+
     async def complete(self, messages: list[Message | dict], **kwargs: object) -> str:
         """Complete a chat request without tools."""
         if self._profile.requires_api_key and not self._api_key:
@@ -317,12 +321,23 @@ class LiteLLMProvider:
 
     async def _acompletion_guarded(self, **kwargs: object) -> Any:
         async with self._semaphore:
-            response = await acompletion(
-                model=self._model,
-                api_base=self._api_base,
-                api_key=self._api_key,
-                **kwargs,
-            )
+            try:
+                response = await acompletion(
+                    model=self._model,
+                    api_base=self._api_base,
+                    api_key=self._api_key,
+                    **kwargs,
+                )
+            except Exception as exc:
+                if not _is_closed_client_error(exc):
+                    raise
+                logger.warning("LiteLLM client was closed mid-request; retrying once with a fresh completion call")
+                response = await acompletion(
+                    model=self._model,
+                    api_base=self._api_base,
+                    api_key=self._api_key,
+                    **kwargs,
+                )
             # LiteLLM can occasionally return a nested awaitable object on
             # provider-error paths (seen on Python 3.14). Unwrap it to avoid
             # "coroutine ... was never awaited" warnings and leaked coroutines.
@@ -421,6 +436,11 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     name = type(exc).__name__.lower()
     err = str(exc).lower()
     return "ratelimit" in name or "rate limit" in err or "error code: 429" in err or "status code 429" in err
+
+
+def _is_closed_client_error(exc: Exception) -> bool:
+    err = str(exc).lower()
+    return "client has been closed" in err or "cannot send a request, as the client has been closed" in err
 
 
 def _extract_retry_after_seconds(exc: Exception) -> float | None:

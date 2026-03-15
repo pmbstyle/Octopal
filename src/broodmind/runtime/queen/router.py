@@ -77,6 +77,17 @@ def _is_vision_tool_compatibility_error(exc: Exception) -> bool:
     )
 
 
+def _is_invalid_tool_payload_error(exc: Exception) -> bool:
+    err = _exception_chain_text(exc).lower()
+    return (
+        "invalid api parameter" in err
+        or "'code': '1210'" in err
+        or '"code": "1210"' in err
+        or "tool_choice" in err
+        or "tools parameter" in err
+    )
+
+
 def _build_saved_image_fallback_text(user_text: str, saved_paths: list[str]) -> str:
     intro = user_text.strip() or "Please inspect the attached image."
     path_lines = "\n".join(f"- {path}" for path in saved_paths)
@@ -266,6 +277,18 @@ async def route_or_reply(
                             "Retrying completion with fewer tools after context overflow",
                             previous_tool_count=prior_count,
                             reduced_tool_count=len(active_tool_specs),
+                        )
+                        continue
+                    if _is_invalid_tool_payload_error(e) and len(active_tool_specs) > _MIN_TOOL_COUNT_ON_OVERFLOW:
+                        prior_count = len(active_tool_specs)
+                        active_tool_specs = _shrink_tool_specs_for_retry(active_tool_specs)
+                        tools = [spec.to_openai_tool() for spec in active_tool_specs]
+                        logger.warning(
+                            "Retrying completion with fewer tools after provider rejected tool payload",
+                            previous_tool_count=prior_count,
+                            reduced_tool_count=len(active_tool_specs),
+                            provider_id=getattr(provider, "provider_id", "unknown"),
+                            error=_exception_chain_text(e)[:500],
                         )
                         continue
                     if _is_transient_provider_error(e):
@@ -670,7 +693,10 @@ def _is_transient_provider_error(exc: Exception) -> bool:
             "503",
             "504",
             "service unavailable",
+            "connection error",
             "connection reset",
+            "client has been closed",
+            "apiconnectionerror",
             "temporary",
             "temporarily unavailable",
         )

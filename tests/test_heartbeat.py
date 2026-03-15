@@ -7,6 +7,7 @@ from broodmind.utils import (
     should_suppress_user_delivery,
 )
 from broodmind.runtime.queen.core import (
+    _coerce_control_plane_reply,
     _build_worker_result_timeout_followup,
     _extract_followup_required_marker,
     Queen,
@@ -135,6 +136,18 @@ def test_worker_result_timeout_followup_stays_user_visible():
     assert "Digest is ready." in text
     assert "Open questions:" in text
     assert should_send_worker_followup(text) is True
+
+
+def test_control_plane_reply_is_coerced_to_heartbeat_ok_for_non_control_text():
+    assert _coerce_control_plane_reply("Checking schedule now...") == "HEARTBEAT_OK"
+
+
+def test_control_plane_reply_preserves_no_user_response():
+    assert _coerce_control_plane_reply("Done. NO_USER_RESPONSE") == "NO_USER_RESPONSE"
+
+
+def test_control_plane_reply_preserves_existing_control_text():
+    assert _coerce_control_plane_reply("HEARTBEAT_OK") == "HEARTBEAT_OK"
 
 def test_queen_does_not_have_web_fetch():
     from broodmind.runtime.queen.router import _get_queen_tools

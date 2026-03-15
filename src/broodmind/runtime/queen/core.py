@@ -39,7 +39,7 @@ from broodmind.runtime.metrics import update_component_gauges
 from broodmind.infrastructure.store.base import Store
 from broodmind.infrastructure.store.models import AuditEvent
 from broodmind.channels.telegram.approvals import ApprovalManager
-from broodmind.utils import is_control_response, should_suppress_user_delivery, utc_now
+from broodmind.utils import has_no_user_response_suffix, is_control_response, should_suppress_user_delivery, utc_now
 from broodmind.runtime.workers.contracts import TaskRequest, WorkerResult
 from broodmind.runtime.workers.runtime import WorkerRuntime
 
@@ -67,6 +67,16 @@ def _build_worker_result_timeout_followup(result: WorkerResult) -> str:
         lines.extend(f"- {question}" for question in result.questions[:3] if str(question).strip())
 
     return "\n".join(lines).strip()
+
+
+def _coerce_control_plane_reply(text: str) -> str:
+    """Normalize internal control-plane replies to a strict channel-safe token."""
+    value = normalize_plain_text(text or "")
+    if is_control_response(value):
+        return value
+    if has_no_user_response_suffix(value):
+        return "NO_USER_RESPONSE"
+    return "HEARTBEAT_OK"
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
@@ -1199,6 +1209,9 @@ class Queen:
                     if not removed:
                         raise
             reply_text, wants_followup = _extract_followup_required_marker(reply_text)
+            if not track_progress:
+                reply_text = _coerce_control_plane_reply(reply_text)
+                wants_followup = False
             logger.info("Queen response ready")
             if persist_to_memory:
                 await self.memory.add_message("assistant", reply_text, {"chat_id": chat_id, "heartbeat": not track_progress})

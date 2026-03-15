@@ -213,6 +213,84 @@ def test_route_retries_image_message_with_saved_file_paths(monkeypatch, tmp_path
     asyncio.run(scenario())
 
 
+def test_route_retries_with_fewer_tools_after_invalid_tool_payload(monkeypatch) -> None:
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.tool_counts: list[int] = []
+
+        async def complete(self, messages, **kwargs):
+            return "Fallback text should not be used."
+
+        async def complete_stream(self, messages, *, on_partial, **kwargs):
+            raise AssertionError("streaming should not be used in this test")
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            self.tool_counts.append(len(tools))
+            if len(tools) > 12:
+                raise RuntimeError("OpenAIException - Invalid API parameter. {'error': {'code': '1210'}}")
+            return {"content": "Recovered after shrinking tool set.", "tool_calls": []}
+
+    class DummyMemory:
+        async def add_message(self, role, content, metadata=None):
+            return None
+
+    class DummyQueen:
+        store = object()
+        canon = object()
+        internal_progress_send = None
+        is_ws_active = False
+
+        async def set_typing(self, chat_id: int, active: bool) -> None:
+            return None
+
+        async def set_thinking(self, active: bool) -> None:
+            return None
+
+        def peek_context_wakeup(self, chat_id: int) -> str:
+            return ""
+
+    async def fake_build_queen_prompt(**kwargs):
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def fake_build_plan(provider, messages, has_tools):
+        return None
+
+    def fake_get_queen_tools(queen, chat_id):
+        tools = [
+            ToolSpec(
+                name=f"dummy_tool_{idx}",
+                description="dummy",
+                parameters={"type": "object", "properties": {}},
+                permission="exec",
+                handler=lambda args, ctx: {"ok": True},
+            )
+            for idx in range(20)
+        ]
+        return tools, {"queen": queen, "chat_id": chat_id}
+
+    import broodmind.runtime.queen.router as router
+
+    monkeypatch.setattr(router, "build_queen_prompt", fake_build_queen_prompt)
+    monkeypatch.setattr(router, "_build_plan", fake_build_plan)
+    monkeypatch.setattr(router, "_get_queen_tools", fake_get_queen_tools)
+
+    async def scenario() -> None:
+        provider = DummyProvider()
+        response = await router.route_or_reply(
+            DummyQueen(),
+            provider,
+            DummyMemory(),
+            "check this",
+            123,
+            "",
+        )
+        assert response == "Recovered after shrinking tool set."
+        assert provider.tool_counts[:2] == [20, 14]
+        assert provider.tool_counts[-1] == 12
+
+    asyncio.run(scenario())
+
+
 def test_route_passes_saved_file_paths_into_prompt(monkeypatch) -> None:
     class DummyProvider:
         async def complete(self, messages, **kwargs):
