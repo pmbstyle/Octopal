@@ -96,6 +96,7 @@ class Settings(BaseSettings):
     debug_prompts: bool = Field(False, alias="BROODMIND_DEBUG_PROMPTS")
 
     heartbeat_interval_seconds: int = Field(900, alias="BROODMIND_HEARTBEAT_INTERVAL_SECONDS")
+    user_message_grace_seconds: float = Field(5.0, alias="BROODMIND_USER_MESSAGE_GRACE_SECONDS")
 
     # Comma-separated list of Telegram chat IDs allowed to interact with the queen
     # Get your chat ID by messaging @userinfobot on Telegram

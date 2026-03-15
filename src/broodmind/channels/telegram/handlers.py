@@ -18,6 +18,7 @@ from aiogram.types import CallbackQuery, Message, ReactionTypeEmoji
 
 from broodmind.infrastructure.config.settings import Settings
 from broodmind.infrastructure.logging import correlation_id_var
+from broodmind.runtime.pending_turns import PendingTurnAggregator
 from broodmind.runtime.queen.core import Queen, QueenReply
 from broodmind.runtime.metrics import update_component_gauges
 from broodmind.runtime.state import update_last_message
@@ -42,6 +43,7 @@ _TYPING_REFS: dict[int, int] = {}
 _TYPING_LOCK: asyncio.Lock | None = None
 _SEND_IDLE_TIMEOUT_SECONDS = 300.0
 _TELEGRAM_PARSE_MODE: str | None = None
+_PENDING_TURNS: PendingTurnAggregator | None = None
 
 
 def _publish_runtime_metrics() -> None:
@@ -91,10 +93,14 @@ def _strip_reaction_tags(text: str) -> str:
 def register_handlers(
     dp: Dispatcher, queen: Queen, approvals: ApprovalManager, settings: Settings, bot: Bot
 ) -> None:
-    global _TELEGRAM_PARSE_MODE, _TYPING_LOCK
+    global _TELEGRAM_PARSE_MODE, _TYPING_LOCK, _PENDING_TURNS
     _TELEGRAM_PARSE_MODE = _normalize_parse_mode(settings.telegram_parse_mode)
     if _TYPING_LOCK is None:
         _TYPING_LOCK = asyncio.Lock()
+    _PENDING_TURNS = PendingTurnAggregator(
+        grace_seconds=getattr(settings, "user_message_grace_seconds", 5.0),
+        flush_callback=_flush_pending_turn_factory(queen, settings, bot),
+    )
     allowed_chat_ids = parse_allowed_chat_ids(settings.allowed_telegram_chat_ids)
 
     async def _reject_unauthorized_message(message: Message) -> None:
@@ -300,47 +306,16 @@ def register_handlers(
                         logger.debug("Failed to react to silent message", error=str(exc))
                 return
 
-            # 3. Normal Queen Processing
-            try:
-                reply = await queen.handle_message(
-                    text,
-                    message.chat.id,
-                    images=images,
-                    saved_file_paths=saved_file_paths,
-                )
-            except Exception:
-                logger.exception("Failed to handle message")
-                await _enqueue_send(
-                    message.bot,
-                    message.chat.id,
-                    "Я получил сообщение, но обработка сломалась на стороне королевы. Попробуй повторить ещё раз; если это было изображение, сейчас как раз чиню fallback для таких сообщений.",
-                    reply_to_message_id=message.message_id,
-                )
-                return
-
-            if isinstance(reply, QueenReply):
-                update_last_message(settings)
-                
-                final_text = reply.immediate or ""
-                
-                # 4. Reaction Parsing
-                emoji, final_text = _extract_reaction_and_strip(final_text)
-                if emoji:
-                    mapped_emoji = _normalize_reaction(emoji)
-                    try:
-                        await message.react([ReactionTypeEmoji(emoji=mapped_emoji)])
-                    except Exception as exc:
-                        logger.warning("Failed to apply reaction", emoji=emoji, mapped=mapped_emoji, error=str(exc))
-
-                if not should_suppress_user_delivery(final_text):
-                    # Reply with quote/reply to the current message
-                    await _enqueue_send(message.bot, message.chat.id, final_text, reply_to_message_id=message.message_id)
-                return
-
-        update_last_message(settings)
-        # Fallback for non-QueenReply results (shouldn't happen with current core types, but for safety)
-        if not should_suppress_user_delivery(str(reply)):
-            await _enqueue_send(message.bot, message.chat.id, str(reply), reply_to_message_id=message.message_id)
+            # 3. Queue into pending turn buffer and wait for the grace window to settle.
+            assert _PENDING_TURNS is not None
+            await _PENDING_TURNS.submit(
+                chat_id=message.chat.id,
+                text=text,
+                images=images,
+                saved_file_paths=saved_file_paths,
+                metadata={"reply_to_message_id": message.message_id},
+            )
+            return
 
     @dp.callback_query()
     async def handle_callback(query: CallbackQuery) -> None:
@@ -448,6 +423,76 @@ async def _typing_loop_by_id(bot: Bot, chat_id: int, stop: asyncio.Event) -> Non
                 continue
     except Exception:
         logger.debug("Typing indicator failed", chat_id=chat_id, exc_info=True)
+
+
+def _flush_pending_turn_factory(
+    queen: Queen,
+    settings: Settings,
+    bot: Bot,
+):
+    async def _flush_pending_turn(
+        chat_id: int,
+        text: str,
+        images: list[str],
+        saved_file_paths: list[str],
+        metadata: dict[str, Any],
+    ) -> None:
+        lock = _CHAT_LOCKS.setdefault(chat_id, asyncio.Lock())
+        reply_to_message_id = metadata.get("reply_to_message_id")
+        async with lock:
+            try:
+                reply = await queen.handle_message(
+                    text,
+                    chat_id,
+                    images=images,
+                    saved_file_paths=saved_file_paths,
+                )
+            except Exception:
+                logger.exception("Failed to handle aggregated message", chat_id=chat_id)
+                await _enqueue_send(
+                    bot,
+                    chat_id,
+                    "Я получил сообщение, но обработка сломалась на стороне королевы. Попробуй повторить ещё раз; если это было изображение, сейчас как раз чиню fallback для таких сообщений.",
+                    reply_to_message_id=reply_to_message_id,
+                )
+                return
+
+            if isinstance(reply, QueenReply):
+                update_last_message(settings)
+                final_text = reply.immediate or ""
+
+                emoji, final_text = _extract_reaction_and_strip(final_text)
+                if emoji and reply_to_message_id is not None:
+                    mapped_emoji = _normalize_reaction(emoji)
+                    try:
+                        await bot.set_message_reaction(
+                            chat_id=chat_id,
+                            message_id=reply_to_message_id,
+                            reaction=[ReactionTypeEmoji(emoji=mapped_emoji)],
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to apply reaction",
+                            chat_id=chat_id,
+                            emoji=emoji,
+                            mapped=mapped_emoji,
+                            error=str(exc),
+                        )
+
+                if not should_suppress_user_delivery(final_text):
+                    await _enqueue_send(
+                        bot,
+                        chat_id,
+                        final_text,
+                        reply_to_message_id=reply_to_message_id,
+                    )
+                return
+
+        update_last_message(settings)
+        if not should_suppress_user_delivery(str(reply)):
+            await _enqueue_send(bot, chat_id, str(reply), reply_to_message_id=reply_to_message_id)
+
+    return _flush_pending_turn
 
 
 def _chunk_text(text: str, limit: int) -> list[str]:
