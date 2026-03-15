@@ -53,6 +53,7 @@ def _make_settings(*, mode: str, allowed_numbers: str) -> SimpleNamespace:
     return SimpleNamespace(
         whatsapp_mode=mode,
         allowed_whatsapp_numbers=allowed_numbers,
+        user_message_grace_seconds=0.0,
         gateway_port=8000,
         whatsapp_callback_token="",
         whatsapp_bridge_host="127.0.0.1",
@@ -182,5 +183,50 @@ def test_whatsapp_runtime_accepts_image_only_payload_and_saves_path(monkeypatch,
         assert saved_paths[0].endswith(".jpg")
         assert Path(saved_paths[0]).is_file()
         assert str(tmp_path) in saved_paths[0]
+
+    asyncio.run(scenario())
+
+
+def test_whatsapp_runtime_aggregates_messages_within_grace_window(monkeypatch) -> None:
+    fake_queen = _FakeQueen()
+    monkeypatch.setattr(whatsapp_runtime_module, "build_queen", lambda settings: fake_queen)
+    monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
+    monkeypatch.setattr(whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None)
+    monkeypatch.setattr(whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None)
+
+    settings = _make_settings(mode="personal", allowed_numbers="+15551234567")
+    settings.user_message_grace_seconds = 0.05
+    runtime = WhatsAppRuntime(settings)
+    runtime.attach_queen_output()
+
+    async def scenario() -> None:
+        first = await runtime.handle_inbound(
+            {
+                "sender": "+15551234567",
+                "conversation": "+15551234567",
+                "self": "+15551234567",
+                "fromMe": True,
+                "selfChat": True,
+                "text": "hello",
+            }
+        )
+        second = await runtime.handle_inbound(
+            {
+                "sender": "+15551234567",
+                "conversation": "+15551234567",
+                "self": "+15551234567",
+                "fromMe": True,
+                "selfChat": True,
+                "text": "and another thing",
+            }
+        )
+        assert first["accepted"] is True
+        assert second["accepted"] is True
+        assert fake_queen.handled == []
+
+        await asyncio.sleep(0.12)
+
+        assert len(fake_queen.handled) == 1
+        assert fake_queen.handled[0]["text"] == "hello\n\nand another thing"
 
     asyncio.run(scenario())

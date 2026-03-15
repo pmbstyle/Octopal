@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -11,6 +10,7 @@ import structlog
 
 from broodmind.runtime.app import build_queen
 from broodmind.infrastructure.config.settings import Settings
+from broodmind.runtime.pending_turns import PendingTurnAggregator
 from broodmind.runtime.queen.core import Queen
 from broodmind.runtime.metrics import update_component_gauges
 from broodmind.runtime.state import update_last_message
@@ -32,6 +32,10 @@ class WhatsAppRuntime:
         self.queen: Queen = build_queen(settings)
         self._number_by_chat_id: dict[int, str] = {}
         self._lock_by_chat_id: dict[int, asyncio.Lock] = {}
+        self._pending_turns = PendingTurnAggregator(
+            grace_seconds=getattr(settings, "user_message_grace_seconds", 5.0),
+            flush_callback=self._flush_pending_turn,
+        )
         self._publish_metrics()
 
     def attach_queen_output(self) -> None:
@@ -84,6 +88,7 @@ class WhatsAppRuntime:
 
     async def stop(self) -> None:
         self.bridge.stop()
+        await self._pending_turns.stop()
         await self.queen.stop_background_tasks()
         self._publish_metrics(connected=False)
 
@@ -119,19 +124,12 @@ class WhatsAppRuntime:
         chat_number = normalize_whatsapp_number(conversation) or conversation
         chat_id = whatsapp_chat_id(chat_number)
         self._number_by_chat_id[chat_id] = chat_number
-        lock = self._lock_by_chat_id.setdefault(chat_id, asyncio.Lock())
-
-        async with lock:
-            reply = await self.queen.handle_message(
-                text,
-                chat_id,
-                images=images,
-                saved_file_paths=saved_file_paths,
-            )
-        update_last_message(self.settings)
-        immediate = getattr(reply, "immediate", "")
-        if immediate and not should_suppress_user_delivery(immediate):
-            await self.queen.internal_send(chat_id, immediate)
+        await self._pending_turns.submit(
+            chat_id=chat_id,
+            text=text,
+            images=images,
+            saved_file_paths=saved_file_paths,
+        )
         self._publish_metrics(last_sender=sender)
         return {"accepted": True, "chat_id": chat_id}
 
@@ -170,7 +168,7 @@ class WhatsAppRuntime:
             logger.warning("Failed to decode inbound WhatsApp image payload")
             return [], []
 
-        workspace_root = Path(os.getenv("BROODMIND_WORKSPACE_DIR", str(self.settings.workspace_dir))).resolve()
+        workspace_root = Path(self.settings.workspace_dir).resolve()
         image_dir = workspace_root / "tmp" / "whatsapp_images"
         image_dir.mkdir(parents=True, exist_ok=True)
 
@@ -189,6 +187,28 @@ class WhatsAppRuntime:
             return [], []
 
         return [image_data_url], [str(file_path)]
+
+    async def _flush_pending_turn(
+        self,
+        chat_id: int,
+        text: str,
+        images: list[str],
+        saved_file_paths: list[str],
+        metadata: dict[str, Any],
+    ) -> None:
+        del metadata
+        lock = self._lock_by_chat_id.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            reply = await self.queen.handle_message(
+                text,
+                chat_id,
+                images=images,
+                saved_file_paths=saved_file_paths,
+            )
+        update_last_message(self.settings)
+        immediate = getattr(reply, "immediate", "")
+        if immediate and not should_suppress_user_delivery(immediate):
+            await self.queen.internal_send(chat_id, immediate)
 
 
 def _chunk_text(text: str, limit: int) -> list[str]:
