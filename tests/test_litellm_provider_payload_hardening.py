@@ -95,3 +95,21 @@ def test_serialize_message_coerces_null_tool_call_content() -> None:
 
     assert serialized["content"] == ""
     assert serialized["tool_calls"][0]["function"]["name"] == "dummy_tool"
+
+
+def test_complete_retries_once_when_client_was_closed(monkeypatch) -> None:
+    calls = {"n": 0}
+
+    async def _fake_acompletion(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("Cannot send a request, as the client has been closed.")
+        return _response("ok-after-client-retry")
+
+    monkeypatch.setattr("broodmind.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
+    provider = LiteLLMProvider(_settings())
+
+    result = asyncio.run(provider.complete([{"role": "user", "content": "hello"}]))
+
+    assert result == "ok-after-client-retry"
+    assert calls["n"] == 2
