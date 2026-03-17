@@ -1,30 +1,31 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
-import os
 import base64
+import json
+import os
 import re
 import uuid
-from pathlib import Path
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 import structlog
 
 from broodmind.infrastructure.providers.base import InferenceProvider, Message
 from broodmind.runtime.memory.service import MemoryService
-from broodmind.runtime.memory.canon import CanonService
-from broodmind.runtime.queen.prompt_builder import build_queen_prompt, build_bootstrap_context_prompt
+from broodmind.runtime.queen.prompt_builder import (
+    build_bootstrap_context_prompt,
+    build_queen_prompt,
+)
+from broodmind.runtime.tool_payloads import render_tool_result_for_llm
+from broodmind.runtime.workers.contracts import WorkerResult
 from broodmind.tools.registry import ToolPolicy, ToolPolicyPipelineStep, ToolSpec, filter_tools
 from broodmind.tools.tools import get_tools
 from broodmind.utils import (
-    is_heartbeat_ok,
     looks_like_textual_tool_invocation,
     should_suppress_user_delivery,
 )
-from broodmind.runtime.workers.contracts import WorkerResult
 
 logger = structlog.get_logger(__name__)
 _MAX_PLAN_STEPS = 10
@@ -119,7 +120,7 @@ async def route_or_reply(
     # Internal chat_id (<= 0) should not trigger typing indicators.
     if chat_id > 0 and show_typing:
         await queen.set_typing(chat_id, True)
-    
+
     await queen.set_thinking(True)
     try:
         partial_callback = _build_partial_callback(queen=queen, chat_id=chat_id)
@@ -128,11 +129,11 @@ async def route_or_reply(
         if include_wakeup and hasattr(queen, "peek_context_wakeup"):
             wake_notice = str(queen.peek_context_wakeup(chat_id) or "")
         messages = await build_queen_prompt(
-            store=queen.store, 
-            memory=memory, 
-            canon=queen.canon, 
-            user_text=user_text, 
-            chat_id=chat_id, 
+            store=queen.store,
+            memory=memory,
+            canon=queen.canon,
+            user_text=user_text,
+            chat_id=chat_id,
             bootstrap_context=bootstrap_context,
             is_ws=is_ws,
             images=images,
@@ -158,7 +159,7 @@ async def route_or_reply(
                 await mcp_manager.ensure_configured_servers_connected()
             except Exception:
                 logger.warning("Failed to refresh configured MCP servers before routing", exc_info=True)
-        
+
         queen_tools, ctx = _get_queen_tools(queen, chat_id)
         logger.info("Queen tools fetched: count=%d", len(queen_tools))
         plan = await _build_plan(provider, messages, bool(queen_tools))
@@ -191,7 +192,7 @@ async def route_or_reply(
                     )
                 )
         tool_capable = getattr(provider, "complete_with_tools", None)
-        
+
         if callable(tool_capable):
             active_tool_specs = list(queen_tools)
             tools = [spec.to_openai_tool() for spec in active_tool_specs]
@@ -200,7 +201,7 @@ async def route_or_reply(
             transient_tool_failures = 0
             max_attempts = 10
             vision_tool_fallback_used = False
-            
+
             for _ in range(max_attempts):
                 try:
                     result = await provider.complete_with_tools(messages, tools=tools, tool_choice="auto")
@@ -214,24 +215,26 @@ async def route_or_reply(
                             workspace_dir = Path(os.getenv("BROODMIND_WORKSPACE_DIR", "workspace")).resolve()
                             img_dir = workspace_dir / "tmp" / "telegram_images"
                             img_dir.mkdir(parents=True, exist_ok=True)
-                            
-                            for idx, img_data in enumerate(images):
+
+                            for _idx, img_data in enumerate(images):
                                 # expect data:image/jpeg;base64,....
                                 if "," in img_data:
                                     header, b64_str = img_data.split(",", 1)
                                     ext = ".jpg"
-                                    if "png" in header: ext = ".png"
-                                    elif "webp" in header: ext = ".webp"
+                                    if "png" in header:
+                                        ext = ".png"
+                                    elif "webp" in header:
+                                        ext = ".webp"
                                 else:
                                     b64_str = img_data
-                                    ext = ".jpg" # assume jpg
-                                
+                                    ext = ".jpg"  # assume jpg
+
                                 file_name = f"img_{uuid.uuid4()}{ext}"
                                 file_path = img_dir / file_name
                                 with open(file_path, "wb") as f:
                                     f.write(base64.b64decode(b64_str))
                                 saved_paths.append(str(file_path))
-                            
+
                             fallback_text = _build_saved_image_fallback_text(user_text, saved_paths)
 
                             logger.info("Retrying with text-only fallback and saved images", count=len(saved_paths))
@@ -239,7 +242,7 @@ async def route_or_reply(
                             images = None
                             vision_tool_fallback_used = True
                             continue
-                            
+
                         except Exception as fallback_exc:
                             logger.error("Fallback save-and-retry failed", error=str(fallback_exc))
                             return "I see you sent an image, but I am unable to process it. My current model configuration might not support vision, and I could not save it for tool analysis."
@@ -341,21 +344,17 @@ async def route_or_reply(
                             raw_content=str(content_raw)[:200],
                         )
                         tool_calls = [recovered_call]
-                
+
                 if tool_calls:
                     had_tool_calls = True
                     assistant_msg: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls}
                     if content_raw:
                         assistant_msg["content"] = content_raw
                     messages.append(assistant_msg)
-                    
+
                     for call in tool_calls:
                         tool_result = await _handle_queen_tool_call(call, active_tool_specs, ctx)
-                        tool_result_text = (
-                            tool_result
-                            if isinstance(tool_result, str)
-                            else json.dumps(tool_result, ensure_ascii=False)
-                        )
+                        tool_result_text = render_tool_result_for_llm(tool_result).text
                         messages.append(
                             {
                                 "role": "tool",
@@ -367,7 +366,16 @@ async def route_or_reply(
                         if "error" in tool_result_text.lower() or "failed" in tool_result_text.lower():
                             last_error = tool_result_text
                     continue
-                
+
+                if content_raw:
+                    logger.debug("Queen output", output=content_raw)
+                    return await _finalize_response(
+                        provider=provider,
+                        messages=messages,
+                        response_text=content_raw,
+                        internal_followup=internal_followup,
+                    )
+
                 if had_tool_calls:
                     logger.warning(
                         "Tool execution completed without a final assistant response; falling back to text completion",
@@ -393,15 +401,13 @@ async def route_or_reply(
                         internal_followup=internal_followup,
                     )
 
-                if content_raw:
-                    logger.debug("Queen output", output=content_raw)
                 return await _finalize_response(
                     provider=provider,
                     messages=messages,
                     response_text=content_raw,
                     internal_followup=internal_followup,
                 )
-                
+
             if had_tool_calls:
                 if internal_followup:
                     return "NO_USER_RESPONSE"
@@ -423,7 +429,7 @@ async def route_or_reply(
                     response_text=final_resp,
                     internal_followup=internal_followup,
                 )
-                
+
             if last_error and _looks_like_tool_error(last_error):
                 if internal_followup:
                     return "NO_USER_RESPONSE"
@@ -444,9 +450,9 @@ async def route_or_reply(
                     response_text=final_resp,
                     internal_followup=internal_followup,
                 )
-                
+
             return ""
-            
+
         response_raw = await _complete_text(
             provider,
             messages,
@@ -509,7 +515,7 @@ async def route_worker_result_back_to_queen(
         "If a user-facing response is required now, provide it in plain text.\n"
         "If no user-facing response is needed, return exactly: NO_USER_RESPONSE"
     )
-    
+
     bootstrap_context = await build_bootstrap_context_prompt(queen.store, chat_id)
     reply_text = await route_or_reply(
         queen,
@@ -746,7 +752,7 @@ async def _handle_queen_tool_call(call: dict, tools: list[ToolSpec], ctx: dict[s
         args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
     except Exception:
         args = {}
-    
+
     logger.debug("Queen tool call", tool_name=name, args=args)
     for spec in tools:
         if spec.name == name:
@@ -1185,11 +1191,9 @@ def _coerce_content_to_text(content: Any) -> str:
 
 
 def _coerce_tool_message_to_text(content: Any, *, tool_name: str = "") -> str:
-    rendered = _coerce_content_to_text(content).strip()
+    rendered = render_tool_result_for_llm(content, max_chars=1200).text
     if not rendered:
         return ""
-    if len(rendered) > 1200:
-        rendered = rendered[:1197].rstrip() + "..."
     label = tool_name.strip() or "tool"
     return f"Tool result ({label}): {rendered}"
 

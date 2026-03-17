@@ -519,7 +519,7 @@ def test_sanitize_messages_keeps_tool_results_for_plain_fallback() -> None:
 
     tool_summary = next(msg for msg in sanitized if msg["role"] == "assistant" and "Tool result" in msg["content"])
     assert "Tool result (check_schedule)" in tool_summary["content"]
-    assert '"status":"ok"' in tool_summary["content"]
+    assert '"status": "ok"' in tool_summary["content"]
 
 
 def test_finalize_response_rewrites_bare_tool_name() -> None:

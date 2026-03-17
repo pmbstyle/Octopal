@@ -10,27 +10,28 @@ Workers are pre-defined agents that:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
-import random
-import hashlib
 import os
-import structlog
+import random
 import time
 import traceback
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from broodmind.infrastructure.config.settings import load_settings
 from broodmind.infrastructure.providers.litellm_provider import LiteLLMProvider
+from broodmind.runtime.tool_payloads import render_tool_result_for_llm
+from broodmind.runtime.workers.contracts import WorkerResult
 from broodmind.tools.registry import ToolPolicy, ToolPolicyPipelineStep, apply_tool_policy_pipeline
 from broodmind.tools.tools import get_tools
 from broodmind.worker_sdk.worker import Worker
-from broodmind.runtime.workers.contracts import WorkerResult
 
 _LOG_MAX_CHARS = 2000
 _MAX_TOOL_ITERS = 10
-_MAX_TOOL_RESULT_CHARS = 12_000
 _DEFAULT_TOOL_TIMEOUT_SECONDS = 60
 _DEFAULT_MAX_STEP_CAP = 30
 _DEFAULT_TOOL_LOOP_WARNING_THRESHOLD = 8
@@ -368,7 +369,7 @@ If you need clarification from the Queen, include:
         if isinstance(usage, dict):
             for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
                 value = usage.get(key)
-                if isinstance(value, (int, float)):
+                if isinstance(value, int | float):
                     telemetry["tokens"][key] += int(value)
         await worker.log("debug", f"LLM response: {response}")
 
@@ -491,18 +492,13 @@ If you need clarification from the Queen, include:
                             )
 
                 # Add tool result message
-                tool_result_text = (
-                    tool_result
-                    if isinstance(tool_result, str)
-                    else json.dumps(tool_result, ensure_ascii=False, default=str)
-                )
-                if len(tool_result_text) > _MAX_TOOL_RESULT_CHARS:
+                rendered_tool_result = render_tool_result_for_llm(tool_result)
+                if rendered_tool_result.was_compacted:
                     telemetry["tool_result_truncations"] += 1
-                tool_result_text = _truncate_text(tool_result_text, _MAX_TOOL_RESULT_CHARS)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
-                    "content": tool_result_text,
+                    "content": rendered_tool_result.text,
                 })
         else:
             # No tool calls, check if this is a completion
@@ -673,7 +669,7 @@ async def _execute_tool(
                     result = await asyncio.wait_for(_run_tool(), timeout=timeout_seconds)
                 else:
                     result = await _run_tool()
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 error_text = f"Tool timed out after {timeout_seconds}s: {tool_name}"
                 if attempt < max_attempts - 1:
                     retries += 1
