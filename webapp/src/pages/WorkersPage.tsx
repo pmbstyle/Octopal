@@ -106,13 +106,17 @@ export function WorkersPage() {
           return;
         }
         const sorted = sortTemplates(payload);
+        const nextSelectedId = sorted[0]?.id ?? "";
         setTemplates(sorted);
         setSelectedId((current) => {
           if (current && sorted.some((item) => item.id === current)) {
+            const currentTemplate = sorted.find((item) => item.id === current) ?? null;
+            setForm(toForm(currentTemplate));
             return current;
           }
-          return sorted[0]?.id ?? "";
+          return nextSelectedId;
         });
+        setForm(toForm(sorted[0] ?? null));
       })
       .catch((err: unknown) => {
         if (!active) {
@@ -137,16 +141,26 @@ export function WorkersPage() {
   );
 
   useEffect(() => {
+    if (!selectedTemplate && selectedId) {
+      return;
+    }
     setForm(toForm(selectedTemplate));
     setNotice("");
     setError("");
-  }, [selectedTemplate]);
+  }, [selectedId, selectedTemplate]);
 
   const isCreating = selectedId === "";
 
   function startCreate(): void {
     setSelectedId("");
     setForm(emptyForm);
+    setNotice("");
+    setError("");
+  }
+
+  function selectTemplate(template: WorkerTemplate): void {
+    setSelectedId(template.id);
+    setForm(toForm(template));
     setNotice("");
     setError("");
   }
@@ -269,7 +283,7 @@ export function WorkersPage() {
                   <button
                     key={template.id}
                     type="button"
-                    onClick={() => setSelectedId(template.id)}
+                    onClick={() => selectTemplate(template)}
                     className={[
                       "w-full rounded-xl border px-4 py-3 text-left transition",
                       selected
@@ -350,7 +364,6 @@ export function WorkersPage() {
                 onChange={(event) => handleChange("id", event.target.value)}
                 disabled={!isCreating || saving}
                 className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400/40"
-                placeholder="researcher"
               />
             </label>
             <label className="grid gap-2 text-sm text-slate-300">
@@ -360,7 +373,6 @@ export function WorkersPage() {
                 onChange={(event) => handleChange("name", event.target.value)}
                 disabled={saving}
                 className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400/40"
-                placeholder="Researcher"
               />
             </label>
             <label className="grid gap-2 text-sm text-slate-300 lg:col-span-2">
@@ -370,7 +382,6 @@ export function WorkersPage() {
                 onChange={(event) => handleChange("description", event.target.value)}
                 disabled={saving}
                 className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400/40"
-                placeholder="What this worker is good at"
               />
             </label>
             <label className="grid gap-2 text-sm text-slate-300 lg:col-span-2">
@@ -381,7 +392,6 @@ export function WorkersPage() {
                 disabled={saving}
                 rows={10}
                 className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400/40"
-                placeholder="Worker behavior and constraints"
               />
             </label>
             <label className="grid gap-2 text-sm text-slate-300">
@@ -392,7 +402,6 @@ export function WorkersPage() {
                 disabled={saving}
                 rows={4}
                 className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400/40"
-                placeholder="web_search, fs_read, start_child_worker"
               />
             </label>
             <label className="grid gap-2 text-sm text-slate-300">
@@ -403,7 +412,6 @@ export function WorkersPage() {
                 disabled={saving}
                 rows={4}
                 className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400/40"
-                placeholder="network, filesystem_read, exec"
               />
             </label>
             <label className="grid gap-2 text-sm text-slate-300">
@@ -413,7 +421,6 @@ export function WorkersPage() {
                 onChange={(event) => handleChange("model", event.target.value)}
                 disabled={saving}
                 className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400/40"
-                placeholder="Optional"
               />
             </label>
             <label className="grid gap-2 text-sm text-slate-300">
@@ -455,7 +462,6 @@ export function WorkersPage() {
                 onChange={(event) => handleChange("allowed_child_templates", event.target.value)}
                 disabled={saving}
                 className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400/40"
-                placeholder="child_a, child_b"
               />
             </label>
           </div>
