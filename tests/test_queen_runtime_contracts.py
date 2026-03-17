@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from broodmind.runtime.queen.core import Queen
@@ -254,3 +255,131 @@ def test_start_worker_async_emits_failed_progress_when_store_marks_failed(monkey
     assert final_state == "failed"
     assert "failed" in final_text.lower()
     assert final_meta["worker_status"] == "failed"
+
+
+def test_start_worker_async_infers_longer_timeout_for_context_heavy_network_tasks(monkeypatch) -> None:
+    class _Memory:
+        async def add_message(self, role: str, content: str, metadata: dict):
+            return None
+
+    template = SimpleNamespace(
+        id="openbotcity_citizen",
+        name="OpenBotCity Citizen",
+        available_tools=["openbotcity_dm_read", "openbotcity_dm_reply"],
+        required_permissions=["network"],
+        default_timeout_seconds=60,
+    )
+
+    class _Store:
+        def get_worker_template(self, template_id: str):
+            return template
+
+        def get_worker(self, worker_id: str):
+            return SimpleNamespace(status="completed")
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.captured_timeout = None
+
+        async def run_task(self, task_request, approval_requester=None):
+            self.captured_timeout = task_request.timeout_seconds
+            return WorkerResult(summary="ok")
+
+    import broodmind.runtime.queen.core as queen_core
+
+    monkeypatch.setattr(queen_core, "_enqueue_internal_result", lambda *args, **kwargs: None)
+
+    runtime = _Runtime()
+    queen = Queen(
+        provider=object(),
+        store=_Store(),
+        policy=object(),
+        runtime=runtime,
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+
+    async def scenario() -> None:
+        launch = await queen._start_worker_async(
+            worker_id="openbotcity_citizen",
+            task=(
+                "Read the full DM conversation with Atlas2, review the entire thread history, "
+                "and then respond thoughtfully with a careful reply."
+            ),
+            chat_id=1,
+            inputs={},
+            tools=None,
+            model=None,
+            timeout_seconds=None,
+        )
+        assert launch["status"] == "started"
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+
+    assert runtime.captured_timeout is not None
+    assert runtime.captured_timeout > 60
+
+
+def test_start_worker_async_keeps_explicit_timeout_override(monkeypatch) -> None:
+    class _Memory:
+        async def add_message(self, role: str, content: str, metadata: dict):
+            return None
+
+    template = SimpleNamespace(
+        id="openbotcity_citizen",
+        name="OpenBotCity Citizen",
+        available_tools=["openbotcity_dm_read", "openbotcity_dm_reply"],
+        required_permissions=["network"],
+        default_timeout_seconds=60,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    class _Store:
+        def get_worker_template(self, template_id: str):
+            return template
+
+        def get_worker(self, worker_id: str):
+            return SimpleNamespace(status="completed")
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.captured_timeout = None
+
+        async def run_task(self, task_request, approval_requester=None):
+            self.captured_timeout = task_request.timeout_seconds
+            return WorkerResult(summary="ok")
+
+    import broodmind.runtime.queen.core as queen_core
+
+    monkeypatch.setattr(queen_core, "_enqueue_internal_result", lambda *args, **kwargs: None)
+
+    runtime = _Runtime()
+    queen = Queen(
+        provider=object(),
+        store=_Store(),
+        policy=object(),
+        runtime=runtime,
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+
+    async def scenario() -> None:
+        launch = await queen._start_worker_async(
+            worker_id="openbotcity_citizen",
+            task="Read the full DM conversation and reply thoughtfully.",
+            chat_id=1,
+            inputs={},
+            tools=None,
+            model=None,
+            timeout_seconds=45,
+        )
+        assert launch["status"] == "started"
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+
+    assert runtime.captured_timeout == 45
