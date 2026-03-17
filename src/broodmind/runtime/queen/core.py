@@ -400,6 +400,32 @@ class Queen:
             self._self_queue_by_chat = {}
         if self._last_opportunities_by_chat is None:
             self._last_opportunities_by_chat = {}
+        if self._spawn_limits is None:
+            max_depth = _env_int("BROODMIND_WORKER_MAX_SPAWN_DEPTH", 2, minimum=0)
+            max_total = _env_int("BROODMIND_WORKER_MAX_CHILDREN_TOTAL", 20, minimum=1)
+            max_concurrent = _env_int("BROODMIND_WORKER_MAX_CHILDREN_CONCURRENT", 10, minimum=1)
+            self._spawn_limits = {
+                "max_depth": max_depth,
+                "max_children_total": max_total,
+                "max_children_concurrent": max_concurrent,
+            }
+        if self._housekeeping_cfg is None:
+            self._housekeeping_cfg = {
+                "tmp_retention_hours": _env_int(
+                    "BROODMIND_WORKSPACE_TMP_RETENTION_HOURS", 48, minimum=1
+                ),
+                "canon_events_max_bytes": _env_int(
+                    "BROODMIND_CANON_EVENTS_MAX_BYTES", 2_000_000, minimum=1024
+                ),
+                "canon_events_keep_archives": _env_int(
+                    "BROODMIND_CANON_EVENTS_KEEP_ARCHIVES", 7, minimum=1
+                ),
+            }
+        self._restore_worker_registry_state()
+        self._thinking_count = 0
+        self._tg_send = self.internal_send
+        self._tg_progress = self.internal_progress_send
+        self._tg_typing = self.internal_typing_control
 
     def _reserve_recent_task(
         self,
@@ -432,32 +458,6 @@ class Queen:
         stale_keys = [key for key, seen_at in self._recent_tasks.items() if seen_at < cutoff]
         for key in stale_keys:
             self._recent_tasks.pop(key, None)
-        if self._spawn_limits is None:
-            max_depth = _env_int("BROODMIND_WORKER_MAX_SPAWN_DEPTH", 2, minimum=0)
-            max_total = _env_int("BROODMIND_WORKER_MAX_CHILDREN_TOTAL", 20, minimum=1)
-            max_concurrent = _env_int("BROODMIND_WORKER_MAX_CHILDREN_CONCURRENT", 10, minimum=1)
-            self._spawn_limits = {
-                "max_depth": max_depth,
-                "max_children_total": max_total,
-                "max_children_concurrent": max_concurrent,
-            }
-        if self._housekeeping_cfg is None:
-            self._housekeeping_cfg = {
-                "tmp_retention_hours": _env_int(
-                    "BROODMIND_WORKSPACE_TMP_RETENTION_HOURS", 48, minimum=1
-                ),
-                "canon_events_max_bytes": _env_int(
-                    "BROODMIND_CANON_EVENTS_MAX_BYTES", 2_000_000, minimum=1024
-                ),
-                "canon_events_keep_archives": _env_int(
-                    "BROODMIND_CANON_EVENTS_KEEP_ARCHIVES", 7, minimum=1
-                ),
-            }
-        self._restore_worker_registry_state()
-        self._thinking_count = 0
-        self._tg_send = self.internal_send
-        self._tg_progress = self.internal_progress_send
-        self._tg_typing = self.internal_typing_control
 
     @property
     def is_ws_active(self) -> bool:
