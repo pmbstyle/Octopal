@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-import re
-
-
-import subprocess
-
 import json
+import re
+import subprocess
+from datetime import UTC, datetime
 
 _TEXTUAL_TOOL_NAME_RE = re.compile(r"^(?:mcp__[\w-]+__)?[a-z][a-z0-9_]{1,63}$", re.IGNORECASE)
 _TEXTUAL_TOOL_PREVIEW_RE = re.compile(
@@ -21,17 +18,17 @@ def get_tailscale_ips() -> list[str]:
         out = subprocess.check_output(["tailscale", "status", "--json"], text=True, stderr=subprocess.DEVNULL)
         data = json.loads(out)
         ips = []
-        
+
         # Add self IPs
         if "Self" in data and "TailscaleIPs" in data["Self"]:
             ips.extend(data["Self"]["TailscaleIPs"])
-            
+
         # Add peer IPs
         if "Peer" in data:
             for peer in data["Peer"].values():
                 if "TailscaleIPs" in peer:
                     ips.extend(peer["TailscaleIPs"])
-                    
+
         return list(set(ips))  # Unique IPs
     except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError):
         return []
@@ -55,16 +52,13 @@ def is_control_response(text: str) -> bool:
     value = (text or "").strip()
     if not value:
         return True
-        
+
     if is_heartbeat_ok(value):
         return True
-        
+
     # Check for NO_USER_RESPONSE variations
     normalized = value.upper().replace("_", "").replace(" ", "")
-    if normalized == "NOUSERRESPONSE":
-        return True
-        
-    return False
+    return normalized == "NOUSERRESPONSE"
 
 
 def has_no_user_response_suffix(text: str) -> bool:
@@ -96,6 +90,12 @@ def looks_like_textual_tool_invocation(text: str) -> bool:
     value = (text or "").strip()
     if not value or "\n" in value or len(value) > 300:
         return False
+    if is_control_response(value):
+        return False
+    if has_heartbeat_ok_edge(value):
+        return False
+    if has_no_user_response_suffix(value):
+        return False
 
     trimmed = re.sub(r"^[\s\W_]+", "", value, flags=re.UNICODE)
     trimmed = re.sub(r"[\s\W_]+$", "", trimmed, flags=re.UNICODE).strip()
@@ -119,6 +119,4 @@ def should_suppress_user_delivery(text: str) -> bool:
         return True
     if has_no_user_response_suffix(value):
         return True
-    if looks_like_textual_tool_invocation(value):
-        return True
-    return False
+    return bool(looks_like_textual_tool_invocation(value))

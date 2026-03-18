@@ -1,16 +1,10 @@
 from datetime import timedelta
 
-from broodmind.utils import (
-    has_no_user_response_suffix,
-    is_heartbeat_ok,
-    looks_like_textual_tool_invocation,
-    should_suppress_user_delivery,
-)
 from broodmind.runtime.queen.core import (
-    _coerce_control_plane_reply,
-    _build_worker_result_timeout_followup,
-    _extract_followup_required_marker,
     Queen,
+    _build_worker_result_timeout_followup,
+    _coerce_control_plane_reply,
+    _extract_followup_required_marker,
 )
 from broodmind.runtime.queen.router import (
     build_forced_worker_followup,
@@ -18,7 +12,14 @@ from broodmind.runtime.queen.router import (
     should_send_worker_followup,
 )
 from broodmind.runtime.workers.contracts import WorkerResult
-from broodmind.utils import utc_now
+from broodmind.utils import (
+    has_no_user_response_suffix,
+    is_heartbeat_ok,
+    looks_like_textual_tool_invocation,
+    should_suppress_user_delivery,
+    utc_now,
+)
+
 
 def test_is_heartbeat_ok():
     assert is_heartbeat_ok("HEARTBEAT_OK") is True
@@ -26,12 +27,12 @@ def test_is_heartbeat_ok():
     assert is_heartbeat_ok("  HEARTBEAT_OK  ") is True
     assert is_heartbeat_ok("HEARTBEAT_OK 😊") is True
     assert is_heartbeat_ok("Status: HEARTBEAT_OK") is True
-    
+
     # Multiple lines should fail
     assert is_heartbeat_ok("HEARTBEAT_OK\nNext line") is False
     assert is_heartbeat_ok("HEARTBEAT_OK\n") is True  # strip() handles trailing newline
     assert is_heartbeat_ok("Line 1\nHEARTBEAT_OK") is False
-    
+
     # Missing HEARTBEAT_OK should fail
     assert is_heartbeat_ok("OK") is False
     assert is_heartbeat_ok("") is False
@@ -122,6 +123,9 @@ def test_should_suppress_user_delivery():
 def test_detect_textual_tool_invocation():
     assert looks_like_textual_tool_invocation("list_workers")
     assert looks_like_textual_tool_invocation("fs_read, file: memory/2026-03-11.md")
+    assert not looks_like_textual_tool_invocation("NO_USER_RESPONSE")
+    assert not looks_like_textual_tool_invocation("HEARTBEAT_OK")
+    assert not looks_like_textual_tool_invocation("Result ready. NO_USER_RESPONSE")
     assert not looks_like_textual_tool_invocation("Проверяю расписание:")
     assert not looks_like_textual_tool_invocation("Checking schedule... check_schedule")
 
@@ -153,7 +157,7 @@ def test_queen_does_not_have_web_fetch():
     from broodmind.runtime.queen.router import _get_queen_tools
     class DummyQueen:
         store = None
-    
+
     tool_specs, _ = _get_queen_tools(DummyQueen(), 0)
     tool_names = [spec.name for spec in tool_specs]
     assert "web_fetch" not in tool_names
