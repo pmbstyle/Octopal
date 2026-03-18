@@ -16,6 +16,7 @@ from broodmind.utils import (
     has_no_user_response_suffix,
     is_heartbeat_ok,
     looks_like_textual_tool_invocation,
+    sanitize_user_facing_text,
     should_suppress_user_delivery,
     utc_now,
 )
@@ -116,8 +117,42 @@ def test_should_suppress_user_delivery():
     assert should_suppress_user_delivery("list_workers")
     assert should_suppress_user_delivery("check_schedule")
     assert should_suppress_user_delivery("fs_read, file: memory/2026-03-11.md")
+    assert should_suppress_user_delivery("Task failed: remote MCP tool response schema is incompatible.")
     assert not should_suppress_user_delivery("Result ready.")
     assert not should_suppress_user_delivery("Проверяю расписание:")
+
+
+def test_sanitize_user_facing_text_removes_reasoning_and_tool_traces():
+    raw = (
+        'Tool result (get_worker_result): {"status":"running","worker_id":"abc"}</think>\n'
+        "Workers are taking longer than expected.\n"
+        "</think>\n"
+        "Отлично! Все задачи завершены."
+    )
+    cleaned = sanitize_user_facing_text(raw)
+    assert "Tool result" not in cleaned
+    assert "</think>" not in cleaned
+    assert "Отлично! Все задачи завершены." in cleaned
+
+
+def test_sanitize_user_facing_text_collapses_result_payload_to_summary():
+    raw = """{
+  "type": "result",
+  "summary": "Completed exploration of Alice's areas of interest.",
+  "output": {"date": "2026-02-21"}
+}"""
+    assert sanitize_user_facing_text(raw) == "Completed exploration of Alice's areas of interest."
+
+
+def test_sanitize_user_facing_text_suppresses_worker_status_payload():
+    raw = """{
+  "status": "running",
+  "worker_id": "52189039-eb39-4c77-ba0c-8512705b5400",
+  "lineage_id": "52189039-eb39-4c77-ba0c-8512705b5400",
+  "root_task_id": "52189039-eb39-4c77-ba0c-8512705b5400",
+  "message": "Worker is still running. Result not available yet."
+}"""
+    assert sanitize_user_facing_text(raw) == ""
 
 
 def test_detect_textual_tool_invocation():

@@ -26,6 +26,7 @@ from broodmind.runtime.state import update_last_message
 from broodmind.utils import (
     extract_reaction_and_strip,
     normalize_reaction_emoji,
+    sanitize_user_facing_text,
     should_suppress_user_delivery,
     strip_reaction_tags,
     utc_now,
@@ -323,7 +324,10 @@ async def _send_chunked(bot: Bot, chat_id: int, text: str, reply_to_message_id: 
 
 async def _send_message_safe(bot: Bot, chat_id: int, text: str, reply_to_message_id: int | None = None) -> None:
     parse_mode = _TELEGRAM_PARSE_MODE
-    text = strip_reaction_tags(text)
+    text = sanitize_user_facing_text(strip_reaction_tags(text))
+    if not text:
+        logger.debug("Suppressed empty message after Telegram sanitization", chat_id=chat_id)
+        return
     outbound = text
     if parse_mode == "MarkdownV2":
         outbound = _prepare_markdown_v2(text)

@@ -24,6 +24,7 @@ from broodmind.tools.registry import ToolPolicy, ToolPolicyPipelineStep, ToolSpe
 from broodmind.tools.tools import get_tools
 from broodmind.utils import (
     looks_like_textual_tool_invocation,
+    sanitize_user_facing_text,
     should_suppress_user_delivery,
 )
 
@@ -585,8 +586,7 @@ def build_forced_worker_followup(result: WorkerResult) -> str:
 
 
 def normalize_plain_text(text: str) -> str:
-    cleaned = text.replace("\r\n", "\n").replace("\r", "\n")
-    return cleaned.strip()
+    return sanitize_user_facing_text(text or "")
 
 
 def _looks_like_tool_error(text: str) -> bool:
