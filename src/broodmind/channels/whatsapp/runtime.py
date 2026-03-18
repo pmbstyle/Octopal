@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from broodmind.runtime.state import update_last_message
 from broodmind.utils import (
     extract_reaction_and_strip,
     normalize_reaction_emoji,
+    sanitize_user_facing_text,
     should_suppress_user_delivery,
     strip_reaction_tags,
 )

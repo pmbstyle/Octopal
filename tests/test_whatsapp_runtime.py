@@ -287,6 +287,13 @@ def test_whatsapp_runtime_applies_reaction_and_strips_tag(monkeypatch) -> None:
         assert runtime.bridge.reactions == [
             {
                 "to": "+15551234567",
+                "emoji": "🤔",
+                "message_id": "wamid-1",
+                "remote_jid": "15551234567@s.whatsapp.net",
+                "target_from_me": True,
+            },
+            {
+                "to": "+15551234567",
                 "emoji": "👍",
                 "message_id": "wamid-1",
                 "remote_jid": "15551234567@s.whatsapp.net",
