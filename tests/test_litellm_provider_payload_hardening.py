@@ -177,3 +177,115 @@ def test_complete_respects_shared_cooldown_from_other_instance(monkeypatch) -> N
 
     assert result == "ok"
     assert sleeps == [3.5]
+
+
+def test_complete_with_tools_downgrades_response_format_to_json_object(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def _fake_acompletion(**kwargs):
+        calls.append(dict(kwargs))
+        response_format = kwargs.get("response_format")
+        if isinstance(response_format, dict) and response_format.get("type") == "json_schema":
+            raise RuntimeError(
+                "Provider returned error: response_format is invalid, recommended val is: must be text or json_object"
+            )
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "tool_calls": [],
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr("broodmind.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
+    LiteLLMProvider._tool_response_format_modes.clear()
+    provider = LiteLLMProvider(_settings())
+
+    result = asyncio.run(
+        provider.complete_with_tools(
+            [{"role": "user", "content": "hello"}],
+            tools=[{"type": "function", "function": {"name": "dummy"}}],
+            response_format={"type": "json_schema", "json_schema": {"name": "worker_result", "schema": {"type": "object"}}},
+        )
+    )
+
+    assert result["content"]
+    assert len(calls) == 2
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[1]["response_format"]["type"] == "json_object"
+    assert LiteLLMProvider._tool_response_format_modes[provider._tool_response_format_key()] == "json_object"
+
+
+def test_complete_with_tools_reuses_cached_response_format_mode(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def _fake_acompletion(**kwargs):
+        calls.append(dict(kwargs))
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "tool_calls": [],
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr("broodmind.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
+    LiteLLMProvider._tool_response_format_modes.clear()
+    provider = LiteLLMProvider(_settings())
+    LiteLLMProvider._tool_response_format_modes[provider._tool_response_format_key()] = "json_object"
+
+    asyncio.run(
+        provider.complete_with_tools(
+            [{"role": "user", "content": "hello"}],
+            tools=[{"type": "function", "function": {"name": "dummy"}}],
+            response_format={"type": "json_schema", "json_schema": {"name": "worker_result", "schema": {"type": "object"}}},
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["response_format"]["type"] == "json_object"
+
+
+def test_complete_with_tools_downgrades_to_no_response_format_when_needed(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def _fake_acompletion(**kwargs):
+        calls.append(dict(kwargs))
+        response_format = kwargs.get("response_format")
+        if response_format is not None:
+            raise RuntimeError("response_format unsupported")
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "tool_calls": [],
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr("broodmind.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
+    LiteLLMProvider._tool_response_format_modes.clear()
+    provider = LiteLLMProvider(_settings())
+
+    asyncio.run(
+        provider.complete_with_tools(
+            [{"role": "user", "content": "hello"}],
+            tools=[{"type": "function", "function": {"name": "dummy"}}],
+            response_format={"type": "json_schema", "json_schema": {"name": "worker_result", "schema": {"type": "object"}}},
+        )
+    )
+
+    assert [call.get("response_format", {"type": "none"}).get("type", "none") if isinstance(call.get("response_format"), dict) else "none" for call in calls] == [
+        "json_schema",
+        "json_object",
+        "none",
+    ]
+    assert LiteLLMProvider._tool_response_format_modes[provider._tool_response_format_key()] == "none"

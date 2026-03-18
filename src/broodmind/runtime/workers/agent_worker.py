@@ -623,25 +623,14 @@ async def _call_llm(
         "type": "json_schema",
         "json_schema": {"name": "worker_result", "schema": _RESULT_SCHEMA},
     }
-    # Use provider's complete_with_tools method.
-    try:
-        response = await provider.complete_with_tools(
-            messages=messages,
-            tools=openai_tools if openai_tools else [],
-            tool_choice="auto",
-            response_format=response_format,
-        )
-    except Exception as exc:
-        err = str(exc).lower()
-        unsupported_markers = ("response_format", "unsupported", "not supported", "invalid_request_error")
-        if any(marker in err for marker in unsupported_markers):
-            response = await provider.complete_with_tools(
-                messages=messages,
-                tools=openai_tools if openai_tools else [],
-                tool_choice="auto",
-            )
-        else:
-            raise
+    # Provider handles adaptive response_format downgrade when a route does not
+    # support schema-constrained outputs.
+    response = await provider.complete_with_tools(
+        messages=messages,
+        tools=openai_tools if openai_tools else [],
+        tool_choice="auto",
+        response_format=response_format,
+    )
 
     # Return in expected format: {"content": "...", "tool_calls": [...]}
     return response
