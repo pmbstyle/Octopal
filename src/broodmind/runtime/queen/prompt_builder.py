@@ -305,9 +305,9 @@ async def build_queen_prompt(
     recent_history = await memory.get_recent_history(chat_id, limit=20)
     if recent_history and recent_history[-1][0] == "user" and recent_history[-1][1] == user_text:
         recent_history = recent_history[:-1]
-    max_history_chars = _env_int("BROODMIND_CONTEXT_PRUNE_MAX_HISTORY_CHARS", 24_000, minimum=2_000)
+    max_history_chars = _env_int("BROODMIND_CONTEXT_PRUNE_MAX_HISTORY_CHARS", 100_000, minimum=2_000)
     keep_recent = _env_int("BROODMIND_CONTEXT_PRUNE_KEEP_RECENT", 12, minimum=1)
-    per_message_chars = _env_int("BROODMIND_CONTEXT_PRUNE_MESSAGE_CHARS", 3_000, minimum=500)
+    per_message_chars = _env_int("BROODMIND_CONTEXT_PRUNE_MESSAGE_CHARS", 32_000, minimum=500)
     recent_history, prune_stats = _prune_recent_history_window(
         recent_history,
         max_history_chars=max_history_chars,

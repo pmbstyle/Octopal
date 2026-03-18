@@ -26,7 +26,7 @@ class MemoryService:
     top_k: int = 5
     prefilter_k: int = 80
     min_score: float = 0.25
-    max_chars: int = 2000
+    max_chars: int = 32000
 
     async def add_message(
         self,

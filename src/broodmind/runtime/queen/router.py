@@ -490,7 +490,7 @@ async def route_worker_result_back_to_queen(
 
     if isinstance(result.output, dict):
         available_keys = list(result.output.keys())
-        if len(json.dumps(result.output)) > 8000:
+        if len(json.dumps(result.output)) > 64000:
             output_summary = {k: f"<{type(v).__name__}>" for k, v in result.output.items()}
             output_truncated = True
 
@@ -1191,7 +1191,7 @@ def _coerce_content_to_text(content: Any) -> str:
 
 
 def _coerce_tool_message_to_text(content: Any, *, tool_name: str = "") -> str:
-    rendered = render_tool_result_for_llm(content, max_chars=1200).text
+    rendered = render_tool_result_for_llm(content, max_chars=16000).text
     if not rendered:
         return ""
     label = tool_name.strip() or "tool"

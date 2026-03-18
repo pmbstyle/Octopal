@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from typing import Any
 
 _COMPACTION_META_KEY = "__broodmind_compaction__"
-_MAX_RENDER_CHARS = 4_000
-_MAX_CONTAINER_ITEMS = 24
-_MAX_DEPTH = 6
-_MAX_STRING_CHARS = 1_200
+_MAX_RENDER_CHARS = 32_000
+_MAX_CONTAINER_ITEMS = 48
+_MAX_DEPTH = 8
+_MAX_STRING_CHARS = 16_000
 
 
 @dataclass(frozen=True)

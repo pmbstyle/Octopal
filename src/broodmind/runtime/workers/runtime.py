@@ -847,13 +847,13 @@ def _repair_worker_result_payload(raw_result: Any) -> dict[str, Any]:
         return {
             "status": "failed",
             "summary": "Worker returned malformed result payload",
-            "output": {"raw_result": _truncate_text(str(raw_result), 4000)},
+            "output": {"raw_result": _truncate_text(str(raw_result), 32000)},
         }
 
     summary = str(raw_result.get("summary", "") or "").strip() or "Worker completed"
     output = raw_result.get("output")
     if output is not None and not _is_json_serializable(output):
-        output = {"repr": _truncate_text(repr(output), 4000)}
+        output = {"repr": _truncate_text(repr(output), 32000)}
 
     repaired: dict[str, Any] = {"summary": summary}
     status = raw_result.get("status")

@@ -122,13 +122,13 @@ _RECENT_WORKER_TASK_TTL_SECONDS = float(
 
 
 _WATCH_THRESHOLDS = {
-    "context_size_estimate": _env_int("BROODMIND_CONTEXT_WATCH_SIZE", 60000, minimum=5000),
+    "context_size_estimate": _env_int("BROODMIND_CONTEXT_WATCH_SIZE", 150000, minimum=5000),
     "repetition_score": _env_float("BROODMIND_CONTEXT_WATCH_REPETITION", 0.65, minimum=0.0, maximum=1.0),
     "error_streak": _env_int("BROODMIND_CONTEXT_WATCH_ERROR_STREAK", 3, minimum=1),
     "no_progress_turns": _env_int("BROODMIND_CONTEXT_WATCH_NO_PROGRESS", 4, minimum=1),
 }
 _RESET_SOON_THRESHOLDS = {
-    "context_size_estimate": _env_int("BROODMIND_CONTEXT_RESET_SOON_SIZE", 100000, minimum=5000),
+    "context_size_estimate": _env_int("BROODMIND_CONTEXT_RESET_SOON_SIZE", 250000, minimum=5000),
     "repetition_score": _env_float("BROODMIND_CONTEXT_RESET_SOON_REPETITION", 0.75, minimum=0.0, maximum=1.0),
     "error_streak": _env_int("BROODMIND_CONTEXT_RESET_SOON_ERROR_STREAK", 5, minimum=1),
     "no_progress_turns": _env_int("BROODMIND_CONTEXT_RESET_SOON_NO_PROGRESS", 7, minimum=1),
