@@ -281,16 +281,30 @@ class WhatsAppRuntime:
 
 def _chunk_text(text: str, limit: int) -> list[str]:
     if len(text) <= limit:
-        return [text]
+        return [_whatsappify(text)]
     parts: list[str] = []
     remaining = text
     while remaining:
         if len(remaining) <= limit:
-            parts.append(remaining)
+            parts.append(_whatsappify(remaining))
             break
         cut = remaining.rfind("\n", 0, limit)
         if cut <= 0:
             cut = limit
-        parts.append(remaining[:cut].strip())
+        parts.append(_whatsappify(remaining[:cut].strip()))
         remaining = remaining[cut:].lstrip()
     return [part for part in parts if part]
+
+
+def _whatsappify(text: str) -> str:
+    """Convert basic Markdown to WhatsApp format."""
+    if not text:
+        return ""
+    # Convert bold **text** to *text*
+    text = re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
+    # Convert italic _text_ or *text* to _text_
+    # We use a cautious approach here to avoid breaking things
+    text = re.sub(r"__(.*?)__", r"_\1_", text)
+    # Convert inline code `text` to ```text```
+    text = re.sub(r"`([^`\n]+)`", r"```\1```", text)
+    return text
