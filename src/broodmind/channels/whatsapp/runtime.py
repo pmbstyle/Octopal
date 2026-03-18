@@ -47,9 +47,24 @@ class WhatsAppRuntime:
         async def _internal_send(chat_id: int, text: str) -> None:
             if should_suppress_user_delivery(text):
                 return
-            clean_text = strip_reaction_tags(text)
+            
+            emoji, final_text = extract_reaction_and_strip(text)
+            if emoji:
+                to = self._number_by_chat_id.get(chat_id)
+                # We need a message ID to react. This simple runtime currently doesn't 
+                # track last inbound message ID globally per chat in a way that's easily 
+                # accessible here without more refactoring, but we can try to use 
+                # the one from the bridge if we had it. 
+                # For now, final reactions are handled in _flush_pending_turn.
+                pass
+
+            if not final_text:
+                return
+                
+            clean_text = sanitize_user_facing_text(final_text)
             if not clean_text:
                 return
+                
             to = self._number_by_chat_id.get(chat_id)
             if not to:
                 logger.warning("Missing WhatsApp recipient mapping", chat_id=chat_id)
@@ -63,10 +78,9 @@ class WhatsAppRuntime:
             text: str,
             meta: dict[str, object],
         ) -> None:
-            if state != "partial":
-                return
-            if text.strip():
-                logger.debug("Suppressed WhatsApp partial progress preview", chat_id=chat_id, text_len=len(text))
+            # WhatsApp doesn't support easy 'typing' but we can send status reactions 
+            # if we have the message ID.
+            logger.info("WhatsApp progress event", chat_id=chat_id, state=state, text=text)
 
         async def _internal_typing_control(chat_id: int, active: bool) -> None:
             logger.debug("WhatsApp typing indicator not implemented", chat_id=chat_id, active=active)
@@ -210,6 +224,24 @@ class WhatsAppRuntime:
         metadata: dict[str, Any],
     ) -> None:
         lock = self._lock_by_chat_id.setdefault(chat_id, asyncio.Lock())
+        to = self._number_by_chat_id.get(chat_id)
+        message_id = str(metadata.get("message_id", "") or "").strip()
+        remote_jid = str(metadata.get("remote_jid", "") or "").strip() or None
+        target_from_me = bool(metadata.get("target_from_me"))
+
+        # Immediate feedback
+        if to and message_id:
+            try:
+                self.bridge.send_reaction(
+                    to,
+                    "🤔",
+                    message_id=message_id,
+                    remote_jid=remote_jid,
+                    target_from_me=target_from_me,
+                )
+            except Exception:
+                logger.debug("Failed to set WhatsApp thinking reaction", chat_id=chat_id)
+
         async with lock:
             reply = await self.queen.handle_message(
                 text,
