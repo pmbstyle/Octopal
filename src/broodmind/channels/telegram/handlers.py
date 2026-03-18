@@ -323,25 +323,19 @@ async def _send_chunked(bot: Bot, chat_id: int, text: str, reply_to_message_id: 
 
 
 async def _send_message_safe(bot: Bot, chat_id: int, text: str, reply_to_message_id: int | None = None) -> None:
-    parse_mode = _TELEGRAM_PARSE_MODE
+    # Prefer HTML for better stability
+    parse_mode = "HTML"
     text = sanitize_user_facing_text(strip_reaction_tags(text))
     if not text:
         logger.debug("Suppressed empty message after Telegram sanitization", chat_id=chat_id)
         return
-    outbound = text
-    if parse_mode == "MarkdownV2":
-        outbound = _prepare_markdown_v2(text)
-
+    
     try:
-        if not parse_mode:
-            await bot.send_message(chat_id, text, reply_to_message_id=reply_to_message_id)
-        else:
-            await bot.send_message(chat_id, outbound, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id)
+        await bot.send_message(chat_id, text, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id)
     except TelegramBadRequest as exc:
-        # Formatting mismatch should not drop the message for the user.
+        # Fallback to plain text if HTML parsing fails
         logger.warning(
-            "Telegram parse failed; retrying without parse_mode (parse_mode=%s, error=%s)",
-            parse_mode,
+            "Telegram HTML parse failed; retrying without parse_mode (error=%s)",
             exc,
         )
         await bot.send_message(chat_id, text, reply_to_message_id=reply_to_message_id)
@@ -416,6 +410,18 @@ def _flush_pending_turn_factory(
     ) -> None:
         lock = _CHAT_LOCKS.setdefault(chat_id, asyncio.Lock())
         reply_to_message_id = metadata.get("reply_to_message_id")
+        
+        # Immediate feedback
+        if reply_to_message_id is not None:
+            try:
+                await bot.set_message_reaction(
+                    chat_id=chat_id,
+                    message_id=reply_to_message_id,
+                    reaction=[ReactionTypeEmoji(emoji="🤔")],
+                )
+            except Exception:
+                logger.debug("Failed to set thinking reaction", chat_id=chat_id, exc_info=True)
+
         async with lock:
             try:
                 reply = await queen.handle_message(
@@ -429,7 +435,7 @@ def _flush_pending_turn_factory(
                 await _enqueue_send(
                     bot,
                     chat_id,
-                    "Я получил сообщение, но обработка сломалась на стороне королевы. Попробуй повторить ещё раз; если это было изображение, сейчас как раз чиню fallback для таких сообщений.",
+                    "I received your message, but something broke on my side. Please try again.",
                     reply_to_message_id=reply_to_message_id,
                 )
                 return
@@ -448,21 +454,10 @@ def _flush_pending_turn_factory(
                             reaction=[ReactionTypeEmoji(emoji=mapped_emoji)],
                         )
                     except Exception as exc:
-                        logger.warning(
-                            "Failed to apply reaction",
-                            chat_id=chat_id,
-                            emoji=emoji,
-                            mapped=mapped_emoji,
-                            error=str(exc),
-                        )
-
-                if not should_suppress_user_delivery(final_text):
-                    await _enqueue_send(
-                        bot,
-                        chat_id,
-                        final_text,
-                        reply_to_message_id=reply_to_message_id,
-                    )
+                        logger.warning("Failed to set terminal reaction", chat_id=chat_id, emoji=emoji, exc_info=True)
+                
+                if final_text:
+                    await _enqueue_send(bot, chat_id, final_text, reply_to_message_id=reply_to_message_id)
                 return
 
         update_last_message(settings)
