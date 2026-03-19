@@ -8,10 +8,16 @@ from rich.panel import Panel
 from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.rule import Rule
 from rich.table import Table
-from rich.text import Text
 
 from broodmind.channels import normalize_user_channel
 from broodmind.cli.branding import print_banner
+from broodmind.cli.wizard import (
+    WizardConfirmParams,
+    WizardSelectOption,
+    WizardSelectParams,
+    WizardTextParams,
+    create_wizard_prompter,
+)
 from broodmind.infrastructure.config.models import BroodMindConfig, LLMConfig
 from broodmind.infrastructure.config.settings import (
     _resolve_env_file,
@@ -37,19 +43,11 @@ _PROVIDER_GROUPS: dict[str, tuple[str, ...]] = {
 def configure_wizard() -> None:
     """Run the modern interactive configuration wizard."""
     print_banner()
+    prompter = create_wizard_prompter(console)
 
-    console.print(
-        Panel(
-            Text("BroodMind Configuration Studio\n", style="bold bright_cyan")
-            + Text(
-                "Guided setup for your communication channels, LLM providers, and system behavior.",
-                style="dim",
-            ),
-            title="[bold white]Setup Wizard[/bold white]",
-            subtitle="[dim]Configuration will be saved to config.json[/dim]",
-            border_style=SURFACE,
-            padding=(1, 2),
-        )
+    prompter.intro(
+        "BroodMind Configuration Studio",
+        "Guided setup for your communication channels, LLM providers, and system behavior.",
     )
 
     config = load_config()
@@ -65,25 +63,38 @@ def configure_wizard() -> None:
         save_config(config)
         console.print("[green]Migration complete. Continuing with wizard...[/green]")
 
-    setup_mode = Prompt.ask(
-        "Setup mode",
-        choices=["quick", "advanced"],
-        default="quick",
+    setup_mode = prompter.select(
+        WizardSelectParams(
+            message="Setup mode",
+            initial_value="quick",
+            options=[
+                WizardSelectOption(
+                    value="quick",
+                    label="Quick Setup",
+                    hint="Configure the essentials and keep the defaults moving.",
+                ),
+                WizardSelectOption(
+                    value="advanced",
+                    label="Advanced Setup",
+                    hint="Tune transport, runtime, and provider details step by step.",
+                ),
+            ],
+        )
     )
     advanced_mode = setup_mode == "advanced"
 
     # 1. User Channel
-    _configure_user_channel(config, advanced_mode)
+    _configure_user_channel(config, advanced_mode, prompter)
 
     # 2. Queen LLM
-    _configure_llm(config, "Queen", config.llm, advanced_mode)
+    _configure_llm(config, "Queen", config.llm, advanced_mode, prompter)
 
     # 3. Worker LLM
     if Confirm.ask("Configure separate LLM settings for Workers?", default=False):
-        _configure_llm(config, "Worker (Default)", config.worker_llm_default, advanced_mode)
+        _configure_llm(config, "Worker (Default)", config.worker_llm_default, advanced_mode, prompter)
 
         if advanced_mode and Confirm.ask("Add specific worker overrides? (e.g. for 'researcher')", default=False):
-            _configure_worker_overrides(config)
+            _configure_worker_overrides(config, prompter)
 
     # 4. Storage & Workspace
     _configure_storage(config)
@@ -107,97 +118,200 @@ def configure_wizard() -> None:
         console.print("[yellow]Configuration cancelled. No changes were written.[/yellow]")
 
 
-def _configure_user_channel(config: BroodMindConfig, advanced: bool) -> None:
+def _configure_user_channel(config: BroodMindConfig, advanced: bool, prompter) -> None:
     console.print(Rule(f"[bold {ACCENT}]Channel Access[/bold {ACCENT}]"))
 
-    channel = Prompt.ask(
-        "Primary communication channel",
-        choices=["telegram", "whatsapp"],
-        default=normalize_user_channel(config.user_channel),
+    channel = prompter.select(
+        WizardSelectParams(
+            message="Primary communication channel",
+            initial_value=normalize_user_channel(config.user_channel),
+            options=[
+                WizardSelectOption(
+                    value="telegram",
+                    label="Telegram",
+                    hint="Bot token + allowlist, best when you want a clean bot entrypoint.",
+                ),
+                WizardSelectOption(
+                    value="whatsapp",
+                    label="WhatsApp",
+                    hint="Linked session via WhatsApp Web for a more personal chat flow.",
+                ),
+            ],
+        )
     )
     config.user_channel = channel
 
     if channel == "whatsapp":
-        console.print("[dim]WhatsApp uses a linked session (WhatsApp Web).[/dim]")
-        config.whatsapp.mode = Prompt.ask(
-            "WhatsApp mode",
-            choices=["personal", "separate"],
-            default=config.whatsapp.mode,
+        prompter.note(
+            "WhatsApp",
+            [
+                "WhatsApp uses a linked session through WhatsApp Web.",
+                "Choose personal if BroodMind should live inside your own account.",
+                "Choose separate if you plan to isolate it behind a dedicated session.",
+            ],
+        )
+        config.whatsapp.mode = prompter.select(
+            WizardSelectParams(
+                message="WhatsApp mode",
+                initial_value=config.whatsapp.mode,
+                options=[
+                    WizardSelectOption(
+                        value="personal",
+                        label="Personal",
+                        hint="Best default when BroodMind is assisting you directly.",
+                    ),
+                    WizardSelectOption(
+                        value="separate",
+                        label="Separate",
+                        hint="Use a dedicated linked session for cleaner boundaries.",
+                    ),
+                ],
+            )
         )
 
         nums = ",".join(config.whatsapp.allowed_numbers)
-        allowed = Prompt.ask("Allowed WhatsApp numbers (comma-separated)", default=nums)
+        allowed = prompter.text(
+            WizardTextParams(
+                message="Allowed WhatsApp numbers (comma-separated)",
+                initial_value=nums,
+                placeholder="+15551234567,+15557654321",
+            )
+        )
         config.whatsapp.allowed_numbers = [n.strip() for n in allowed.split(",") if n.strip()]
 
         if advanced:
-            config.whatsapp.bridge_host = Prompt.ask("Bridge host", default=config.whatsapp.bridge_host)
+            config.whatsapp.bridge_host = prompter.text(
+                WizardTextParams(
+                    message="Bridge host",
+                    initial_value=config.whatsapp.bridge_host,
+                )
+            )
             config.whatsapp.bridge_port = IntPrompt.ask("Bridge port", default=config.whatsapp.bridge_port)
     else:
-        console.print("[dim]Get your bot token from @BotFather on Telegram.[/dim]")
-        config.telegram.bot_token = Prompt.ask(
-            "Telegram Bot Token",
-            default=config.telegram.bot_token,
-            password=bool(config.telegram.bot_token)
+        prompter.note(
+            "Telegram",
+            [
+                "Create or manage your bot with @BotFather in Telegram.",
+                "Paste the bot token here and list the chat IDs that are allowed to talk to BroodMind.",
+            ],
+        )
+        config.telegram.bot_token = prompter.text(
+            WizardTextParams(
+                message="Telegram Bot Token",
+                initial_value=config.telegram.bot_token,
+                secret=bool(config.telegram.bot_token),
+            )
         )
 
         ids = ",".join(config.telegram.allowed_chat_ids)
-        allowed_ids = Prompt.ask("Allowed Telegram Chat IDs (comma-separated)", default=ids)
+        allowed_ids = prompter.text(
+            WizardTextParams(
+                message="Allowed Telegram Chat IDs (comma-separated)",
+                initial_value=ids,
+                placeholder="123456789,987654321",
+            )
+        )
         config.telegram.allowed_chat_ids = [i.strip() for i in allowed_ids.split(",") if i.strip()]
 
         if advanced:
-            config.telegram.parse_mode = Prompt.ask(
-                "Parse mode",
-                choices=["MarkdownV2", "HTML", "Markdown"],
-                default=config.telegram.parse_mode
+            config.telegram.parse_mode = prompter.select(
+                WizardSelectParams(
+                    message="Parse mode",
+                    initial_value=config.telegram.parse_mode,
+                    options=[
+                        WizardSelectOption(value="MarkdownV2", label="MarkdownV2"),
+                        WizardSelectOption(value="HTML", label="HTML"),
+                        WizardSelectOption(value="Markdown", label="Markdown"),
+                    ],
+                )
             )
 
 
-def _configure_llm(master_config: BroodMindConfig, label: str, config: LLMConfig, advanced: bool) -> None:
+def _configure_llm(
+    master_config: BroodMindConfig,
+    label: str,
+    config: LLMConfig,
+    advanced: bool,
+    prompter,
+) -> None:
     console.print(Rule(f"[bold {ACCENT}]{label} LLM Settings[/bold {ACCENT}]"))
 
-    provider_choices = _render_provider_select_list()
+    provider_choices = _render_provider_select_list(prompter)
     current_id = config.provider_id or "zai"
-
-    default_choice = 1
-    for i, pid in enumerate(provider_choices, start=1):
-        if pid == current_id:
-            default_choice = i
-            break
-
-    selected_idx = IntPrompt.ask(
-        f"Choose provider for {label}",
-        choices=[str(i) for i in range(1, len(provider_choices) + 1)],
-        default=default_choice,
+    provider_id = prompter.select(
+        WizardSelectParams(
+            message=f"Choose provider for {label}",
+            initial_value=current_id,
+            options=provider_choices,
+            searchable=True,
+        )
     )
-
-    provider_id = provider_choices[selected_idx - 1]
     entry = get_provider_catalog_entry(provider_id)
     config.provider_id = provider_id
 
-    console.print(Panel(f"[bold]{entry.label}[/bold]\n{entry.description}", border_style=SURFACE))
+    prompter.note(
+        entry.label,
+        [
+            entry.description,
+            f"Suggested default model: {entry.default_model}",
+        ],
+    )
 
-    if entry.requires_api_key or Confirm.ask(f"Configure {entry.api_key_label}?", default=bool(config.api_key)):
-        config.api_key = Prompt.ask(entry.api_key_label, default=config.api_key, password=bool(config.api_key))
+    if entry.requires_api_key or prompter.confirm(
+        WizardConfirmParams(
+            message=f"Configure {entry.api_key_label}?",
+            initial_value=bool(config.api_key),
+        )
+    ):
+        config.api_key = prompter.text(
+            WizardTextParams(
+                message=entry.api_key_label,
+                initial_value=config.api_key,
+                secret=bool(config.api_key),
+            )
+        )
 
-    config.model = Prompt.ask(f"{entry.model_label} (default: {entry.default_model})", default=config.model or entry.default_model)
+    config.model = prompter.text(
+        WizardTextParams(
+            message=f"{entry.model_label} (default: {entry.default_model})",
+            initial_value=config.model or entry.default_model,
+        )
+    )
 
     if entry.supports_custom_base_url:
         current_base = config.api_base or entry.default_api_base or ""
         if advanced:
-            config.api_base = Prompt.ask(entry.base_url_label, default=current_base)
+            config.api_base = prompter.text(
+                WizardTextParams(
+                    message=entry.base_url_label,
+                    initial_value=current_base,
+                )
+            )
         else:
-            use_default_base = Confirm.ask(
-                f"Use recommended endpoint for {label}? ({current_base or 'provider-managed default'})",
-                default=True,
+            use_default_base = prompter.confirm(
+                WizardConfirmParams(
+                    message=f"Use recommended endpoint for {label}? ({current_base or 'provider-managed default'})",
+                    initial_value=True,
+                )
             )
             if use_default_base:
                 config.api_base = current_base or None
             else:
-                config.api_base = Prompt.ask(entry.base_url_label, default=current_base)
+                config.api_base = prompter.text(
+                    WizardTextParams(
+                        message=entry.base_url_label,
+                        initial_value=current_base,
+                    )
+                )
 
     if advanced:
         if entry.supports_model_prefix_override:
-            config.model_prefix = Prompt.ask("Provider prefix (LiteLLM)", default=config.model_prefix or entry.model_prefix)
+            config.model_prefix = prompter.text(
+                WizardTextParams(
+                    message="Provider prefix (LiteLLM)",
+                    initial_value=config.model_prefix or entry.model_prefix,
+                )
+            )
 
         # Runtime settings (global for now, but could be per-provider)
         if label == "Queen":
@@ -205,7 +319,7 @@ def _configure_llm(master_config: BroodMindConfig, label: str, config: LLMConfig
             master_config.litellm.num_retries = IntPrompt.ask("Max retries", default=master_config.litellm.num_retries)
 
 
-def _configure_worker_overrides(config: BroodMindConfig) -> None:
+def _configure_worker_overrides(config: BroodMindConfig, prompter) -> None:
     while True:
         name = Prompt.ask("Worker template name to override (e.g. 'researcher', or empty to finish)")
         if not name:
@@ -214,7 +328,7 @@ def _configure_worker_overrides(config: BroodMindConfig) -> None:
         if name not in config.worker_llm_overrides:
             config.worker_llm_overrides[name] = LLMConfig()
 
-        _configure_llm(config, f"Override: {name}", config.worker_llm_overrides[name], False)
+        _configure_llm(config, f"Override: {name}", config.worker_llm_overrides[name], False, prompter)
 
         if not Confirm.ask("Add another override?", default=True):
             break
@@ -254,19 +368,24 @@ def _configure_runtime_advanced(config: BroodMindConfig) -> None:
         config.gateway.dashboard_token = Prompt.ask("Dashboard access token (optional)", default=config.gateway.dashboard_token)
 
 
-def _render_provider_select_list() -> list[str]:
-    provider_choices: list[str] = []
-    lines: list[str] = []
+def _render_provider_select_list(prompter) -> list[WizardSelectOption[str]]:
+    provider_choices: list[WizardSelectOption[str]] = []
+    help_lines: list[str] = ["Search works here, so you can type part of a provider name."]
 
     for category, provider_ids in _PROVIDER_GROUPS.items():
-        lines.append(f"[bold yellow]{category}[/bold yellow]")
+        help_lines.append(f"{category}:")
         for pid in provider_ids:
             entry = get_provider_catalog_entry(pid)
-            provider_choices.append(pid)
-            lines.append(f"  {len(provider_choices)}. {entry.label} [dim]({pid})[/dim]")
-        lines.append("")
+            provider_choices.append(
+                WizardSelectOption(
+                    value=pid,
+                    label=entry.label,
+                    hint=f"{category} - {entry.description}",
+                )
+            )
+            help_lines.append(f"- {entry.label} ({pid})")
 
-    console.print(Panel("\n".join(lines).strip(), title="Available Providers", border_style=SURFACE, padding=(1, 2)))
+    prompter.note("Available Providers", help_lines)
     return provider_choices
 
 
