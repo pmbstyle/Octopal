@@ -31,9 +31,14 @@ class LiteLLMProvider:
     _rate_limit_cooldowns: dict[tuple[str, str, str], float] = {}
     _tool_response_format_modes: dict[tuple[str, str, str], str] = {}
 
-    def __init__(self, settings: Settings, model: str | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        model: str | None = None,
+        config: LLMConfig | None = None,
+    ) -> None:
         self._settings = settings
-        self._profile = resolve_litellm_profile(settings, model_override=model)
+        self._profile = resolve_litellm_profile(settings, model_override=model, config_override=config)
         self._model = self._profile.model
         self._api_base = (self._profile.api_base or "").rstrip("/") or None
         self._api_key = self._profile.api_key
