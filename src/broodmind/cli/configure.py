@@ -250,7 +250,7 @@ def _configure_llm(
     current_id = config.provider_id or "zai"
     provider_id = prompter.select(
         WizardSelectParams(
-            message=f"Choose provider for {label}",
+            message=f"{label} provider",
             initial_value=current_id,
             options=provider_choices,
             searchable=True,
@@ -283,8 +283,9 @@ def _configure_llm(
 
     config.model = prompter.text(
         WizardTextParams(
-            message=f"{entry.model_label} (default: {entry.default_model})",
+            message=f"{entry.model_label}",
             initial_value=config.model or entry.default_model,
+            placeholder=entry.default_model,
         )
     )
 
@@ -300,7 +301,7 @@ def _configure_llm(
         else:
             use_default_base = prompter.confirm(
                 WizardConfirmParams(
-                    message=f"Use recommended endpoint for {label}? ({current_base or 'provider-managed default'})",
+                    message=f"Use recommended endpoint for {label}?",
                     initial_value=True,
                 )
             )
@@ -593,22 +594,23 @@ def _edit_section(config: BroodMindConfig, sections: list[WizardSection], prompt
 
 def _render_provider_select_list(prompter) -> list[WizardSelectOption[str]]:
     provider_choices: list[WizardSelectOption[str]] = []
-    help_lines: list[str] = ["Search works here, so you can type part of a provider name."]
+    help_lines = [
+        "Type part of a provider name, then use the arrow keys to pick one.",
+        "The description is shown after you select it, so this step stays compact.",
+    ]
 
     for category, provider_ids in _PROVIDER_GROUPS.items():
-        help_lines.append(f"{category}:")
         for pid in provider_ids:
             entry = get_provider_catalog_entry(pid)
             provider_choices.append(
                 WizardSelectOption(
                     value=pid,
                     label=entry.label,
-                    hint=f"{category} - {entry.description}",
+                    hint=f"{category} · {pid}",
                 )
             )
-            help_lines.append(f"- {entry.label} ({pid})")
 
-    prompter.note("Available Providers", help_lines)
+    prompter.note("Provider Search", help_lines)
     return provider_choices
 
 
