@@ -24,7 +24,7 @@ from broodmind.infrastructure.mcp.manager import MCPManager
 from broodmind.infrastructure.config.settings import Settings
 from broodmind.infrastructure.config.models import LLMConfig
 from broodmind.infrastructure.store.base import Store
-from broodmind.infrastructure.store.models import AuditEvent, WorkerRecord, WorkerTemplate
+from broodmind.infrastructure.store.models import AuditEvent, WorkerRecord, WorkerTemplateRecord
 
 
 @dataclass
@@ -45,7 +45,7 @@ class WorkerRuntime:
     ) -> WorkerResult:
         """Run a task with the specified worker template."""
         # Get worker template
-        template = await asyncio.to_thread(
+        template: WorkerTemplateRecord | None = await asyncio.to_thread(
             self.store.get_worker_template, task_request.worker_id
         )
         if not template:
@@ -140,7 +140,7 @@ class WorkerRuntime:
         return await self.run(spec, approval_requester=approval_requester)
 
     def _resolve_worker_llm_config(
-        self, template: WorkerTemplate, task_request: TaskRequest
+        self, template: WorkerTemplateRecord, task_request: TaskRequest
     ) -> LLMConfig | None:
         """Resolve LLM configuration for a worker task."""
         config_obj = self.settings.config_obj
