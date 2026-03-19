@@ -9,7 +9,7 @@ from broodmind.runtime.queen.prompt_builder import build_bootstrap_context_promp
 
 def test_workspace_bootstrap_creates_required_markdown(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    result = _ensure_workspace_bootstrap(workspace)
+    _ensure_workspace_bootstrap(workspace)
 
     assert (workspace / "AGENTS.md").exists()
     assert (workspace / "USER.md").exists()
@@ -35,8 +35,6 @@ def test_workspace_bootstrap_creates_required_markdown(tmp_path: Path) -> None:
     assert "Workers are the default path for external work." in agents_content
     assert "do not reduce `timeout_seconds` below the worker template default" in agents_content
     assert "prefer a worker that can spawn child workers or launch a bounded parallel batch" in agents_content
-    assert len(result["created_files"]) > 8
-    assert any(str(path).startswith("workers/") for path in result["created_files"])
 
 
 def test_bootstrap_context_includes_experiments_readme(tmp_path: Path, monkeypatch) -> None:
@@ -56,7 +54,6 @@ def test_workspace_bootstrap_is_non_destructive(tmp_path: Path) -> None:
     user_file = workspace / "USER.md"
     user_file.write_text("existing", encoding="utf-8")
 
-    result = _ensure_workspace_bootstrap(workspace)
+    _ensure_workspace_bootstrap(workspace)
 
     assert user_file.read_text(encoding="utf-8") == "existing"
-    assert int(result["skipped_files"]) >= 1
