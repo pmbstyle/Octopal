@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
+from broodmind.infrastructure.config.settings import Settings
 from broodmind.infrastructure.store.models import WorkerTemplateRecord
 from broodmind.runtime.workers.contracts import Capability, TaskRequest, WorkerResult
 from broodmind.runtime.workers.runtime import WorkerRuntime
@@ -54,6 +55,7 @@ def test_runtime_does_not_auto_inject_global_mcp_tools(tmp_path: Path) -> None:
         workspace_dir=tmp_path,
         launcher=object(),
         mcp_manager=_MCP(),
+        settings=Settings(),
     )
 
     captured: dict[str, object] = {}
@@ -126,6 +128,7 @@ def test_runtime_ensures_configured_mcp_before_launch(tmp_path: Path) -> None:
         workspace_dir=tmp_path,
         launcher=object(),
         mcp_manager=mcp_manager,
+        settings=Settings(),
     )
 
     captured: dict[str, object] = {}

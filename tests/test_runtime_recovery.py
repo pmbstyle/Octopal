@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from broodmind.infrastructure.config.settings import Settings
 from broodmind.runtime.workers.contracts import WorkerResult, WorkerSpec
 from broodmind.runtime.workers.runtime import (
     WorkerRuntime,
@@ -116,6 +117,7 @@ def test_runtime_recovers_after_transient_failure(tmp_path: Path) -> None:
         workspace_dir=tmp_path,
         launcher=launcher,
         mcp_manager=None,
+        settings=Settings(),
     )
     calls = {"count": 0}
 
@@ -146,6 +148,7 @@ def test_runtime_fails_after_recovery_exhausted(tmp_path: Path) -> None:
         workspace_dir=tmp_path,
         launcher=launcher,
         mcp_manager=None,
+        settings=Settings(),
     )
 
     async def fake_read_loop(spec, process, approval_requester=None):
@@ -190,6 +193,7 @@ def test_worker_mcp_call_restores_configured_session(tmp_path: Path) -> None:
         workspace_dir=tmp_path,
         launcher=launcher,
         mcp_manager=_MCP(),
+        settings=Settings(),
     )
 
     writes: list[dict] = []
@@ -225,6 +229,7 @@ def test_worker_failed_result_marks_store_failed(tmp_path: Path) -> None:
         workspace_dir=tmp_path,
         launcher=launcher,
         mcp_manager=None,
+        settings=Settings(),
     )
 
     process = _FakeProcess(pid=1)
@@ -251,6 +256,7 @@ def test_stderr_loop_batches_traceback_into_single_log(tmp_path: Path) -> None:
         workspace_dir=tmp_path,
         launcher=_LauncherStub(),
         mcp_manager=None,
+        settings=Settings(),
     )
     captured: list[tuple[str, str | None, str]] = []
 

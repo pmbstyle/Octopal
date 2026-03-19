@@ -25,6 +25,23 @@ from broodmind.infrastructure.config.settings import Settings
 from broodmind.infrastructure.config.models import LLMConfig
 from broodmind.infrastructure.store.base import Store
 from broodmind.infrastructure.store.models import AuditEvent, WorkerRecord, WorkerTemplateRecord
+from broodmind.runtime.intents.types import ActionIntent
+from broodmind.runtime.policy.engine import PolicyEngine
+from broodmind.runtime.workers.contracts import TaskRequest, WorkerResult, WorkerSpec
+from broodmind.runtime.workers.launcher import WorkerLauncher
+from broodmind.utils import utc_now
+from broodmind.runtime.tool_errors import ToolBridgeError
+
+logger = structlog.get_logger(__name__)
+
+# Constants
+_MAX_RECOVERY_ATTEMPTS = 1
+_RECOVERY_BACKOFF_SECONDS = 0.2
+_STDERR_BATCH_IDLE_SECONDS = 0.05
+_STDERR_BATCH_MAX_LINES = 40
+_STDERR_BATCH_MAX_CHARS = 12000
+
+WORKER_MODULE = "broodmind.runtime.workers.agent_worker"
 
 
 @dataclass
