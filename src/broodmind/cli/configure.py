@@ -181,8 +181,19 @@ def _configure_llm(master_config: BroodMindConfig, label: str, config: LLMConfig
 
     config.model = Prompt.ask(f"{entry.model_label} (default: {entry.default_model})", default=config.model or entry.default_model)
 
-    if entry.supports_custom_base_url and (advanced or provider_id in {"custom", "ollama"}):
-        config.api_base = Prompt.ask(entry.base_url_label, default=config.api_base or entry.default_api_base)
+    if entry.supports_custom_base_url:
+        current_base = config.api_base or entry.default_api_base or ""
+        if advanced:
+            config.api_base = Prompt.ask(entry.base_url_label, default=current_base)
+        else:
+            use_default_base = Confirm.ask(
+                f"Use recommended endpoint for {label}? ({current_base or 'provider-managed default'})",
+                default=True,
+            )
+            if use_default_base:
+                config.api_base = current_base or None
+            else:
+                config.api_base = Prompt.ask(entry.base_url_label, default=current_base)
 
     if advanced:
         if entry.supports_model_prefix_override:
