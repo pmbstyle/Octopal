@@ -8,7 +8,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from broodmind.channels import DEFAULT_USER_CHANNEL
-from broodmind.infrastructure.config.models import BroodMindConfig, LLMConfig
+from broodmind.infrastructure.config.models import BroodMindConfig
 
 
 class Settings(BaseSettings):
@@ -170,13 +170,14 @@ def load_config() -> BroodMindConfig:
         except Exception:
             # Fallback to default if JSON is malformed
             pass
-    
+
     # If no config file, try to build one from environment for migration
     config = BroodMindConfig()
     env_file = _resolve_env_file()
     temp_settings = Settings(_env_file=env_file) if env_file else Settings()
-    
+
     # Map legacy settings to structured config
+    config.user_channel = temp_settings.user_channel
     config.telegram.bot_token = temp_settings.telegram_bot_token
     if temp_settings.allowed_telegram_chat_ids:
         config.telegram.allowed_chat_ids = [
@@ -190,7 +191,7 @@ def load_config() -> BroodMindConfig:
     config.llm.api_key = temp_settings.litellm_api_key
     config.llm.api_base = temp_settings.litellm_api_base
     config.llm.model_prefix = temp_settings.litellm_model_prefix
-    
+
     # If not set, try legacy fallbacks
     if not config.llm.provider_id:
         if temp_settings.zai_api_key:
@@ -272,7 +273,7 @@ def save_config(config: BroodMindConfig) -> None:
     config_file = _resolve_config_file()
     if not config_file:
         config_file = Path.cwd() / "config.json"
-    
+
     with config_file.open("w", encoding="utf-8") as f:
         json.dump(config.model_dump(mode="json"), f, indent=2)
 
@@ -280,11 +281,7 @@ def save_config(config: BroodMindConfig) -> None:
 def load_settings() -> Settings:
     config = load_config()
     env_file = _resolve_env_file()
-    
-    if env_file is not None:
-        settings = Settings(_env_file=env_file)
-    else:
-        settings = Settings()
+    settings = Settings(_env_file=env_file) if env_file is not None else Settings()
 
     # Apply structured config overrides to legacy settings
     _sync_settings_from_config(settings, config)
@@ -293,7 +290,7 @@ def load_settings() -> Settings:
         legacy = os.getenv("Z_AI_API_KEY")
         if legacy:
             settings = settings.model_copy(update={"zai_api_key": legacy})
-    
+
     # Store the config object for new code to use
     settings.config_obj = config
     return settings
@@ -301,31 +298,24 @@ def load_settings() -> Settings:
 
 def _sync_settings_from_config(settings: Settings, config: BroodMindConfig) -> None:
     """Sync values from BroodMindConfig to Settings for backward compatibility."""
-    updates: dict[str, object] = {}
-    
+    updates: dict[str, object | None] = {}
+
+    updates["user_channel"] = config.user_channel
+
     # Telegram
-    if config.telegram.bot_token:
-        updates["telegram_bot_token"] = config.telegram.bot_token
-    if config.telegram.allowed_chat_ids:
-        updates["allowed_telegram_chat_ids"] = ",".join(config.telegram.allowed_chat_ids)
-    if config.telegram.parse_mode:
-        updates["telegram_parse_mode"] = config.telegram.parse_mode
-        
+    updates["telegram_bot_token"] = config.telegram.bot_token
+    updates["allowed_telegram_chat_ids"] = ",".join(config.telegram.allowed_chat_ids)
+    updates["telegram_parse_mode"] = config.telegram.parse_mode
+
     # LLM (Queen)
-    if config.llm.provider_id:
-        updates["litellm_provider_id"] = config.llm.provider_id
-    if config.llm.model:
-        updates["litellm_model"] = config.llm.model
-    if config.llm.api_key:
-        updates["litellm_api_key"] = config.llm.api_key
-    if config.llm.api_base:
-        updates["litellm_api_base"] = config.llm.api_base
-    if config.llm.model_prefix:
-        updates["litellm_model_prefix"] = config.llm.model_prefix
-    
+    updates["litellm_provider_id"] = config.llm.provider_id
+    updates["litellm_model"] = config.llm.model
+    updates["litellm_api_key"] = config.llm.api_key
+    updates["litellm_api_base"] = config.llm.api_base
+    updates["litellm_model_prefix"] = config.llm.model_prefix
+
     # Sync minimax_api_key for legacy support
-    if config.llm.provider_id == "minimax" and config.llm.api_key:
-        updates["minimax_api_key"] = config.llm.api_key
+    updates["minimax_api_key"] = config.llm.api_key if config.llm.provider_id == "minimax" else None
 
     # LiteLLM Runtime
     updates["litellm_num_retries"] = config.litellm.num_retries
@@ -356,35 +346,29 @@ def _sync_settings_from_config(settings: Settings, config: BroodMindConfig) -> N
     updates["dashboard_token"] = config.gateway.dashboard_token
     updates["tailscale_auto_serve"] = config.gateway.tailscale_auto_serve
     updates["webapp_enabled"] = config.gateway.webapp_enabled
-    if config.gateway.webapp_dist_dir:
-        updates["webapp_dist_dir"] = config.gateway.webapp_dist_dir
+    updates["webapp_dist_dir"] = config.gateway.webapp_dist_dir
 
     # Workers
     updates["worker_launcher"] = config.workers.launcher
     updates["worker_docker_image"] = config.workers.docker_image
     updates["worker_docker_workspace"] = config.workers.docker_workspace
-    if config.workers.docker_host_workspace:
-        updates["worker_docker_host_workspace"] = config.workers.docker_host_workspace
+    updates["worker_docker_host_workspace"] = config.workers.docker_host_workspace
     updates["worker_max_spawn_depth"] = config.workers.max_spawn_depth
     updates["worker_max_children_total"] = config.workers.max_children_total
     updates["worker_max_children_concurrent"] = config.workers.max_children_concurrent
 
     # WhatsApp
     updates["whatsapp_mode"] = config.whatsapp.mode
-    if config.whatsapp.allowed_numbers:
-        updates["allowed_whatsapp_numbers"] = ",".join(config.whatsapp.allowed_numbers)
-    if config.whatsapp.auth_dir:
-        updates["whatsapp_auth_dir"] = config.whatsapp.auth_dir
+    updates["allowed_whatsapp_numbers"] = ",".join(config.whatsapp.allowed_numbers)
+    updates["whatsapp_auth_dir"] = config.whatsapp.auth_dir
     updates["whatsapp_bridge_host"] = config.whatsapp.bridge_host
     updates["whatsapp_bridge_port"] = config.whatsapp.bridge_port
     updates["whatsapp_callback_token"] = config.whatsapp.callback_token
     updates["whatsapp_node_command"] = config.whatsapp.node_command
 
     # Search
-    if config.search.brave_api_key:
-        updates["brave_api_key"] = config.search.brave_api_key
-    if config.search.firecrawl_api_key:
-        updates["firecrawl_api_key"] = config.search.firecrawl_api_key
+    updates["brave_api_key"] = config.search.brave_api_key
+    updates["firecrawl_api_key"] = config.search.firecrawl_api_key
 
     # Common
     updates["log_level"] = config.log_level

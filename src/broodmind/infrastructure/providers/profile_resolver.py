@@ -4,7 +4,10 @@ from dataclasses import dataclass
 
 from broodmind.infrastructure.config.models import LLMConfig
 from broodmind.infrastructure.config.settings import Settings
-from broodmind.infrastructure.providers.catalog import ProviderCatalogEntry, get_provider_catalog_entry
+from broodmind.infrastructure.providers.catalog import (
+    ProviderCatalogEntry,
+    get_provider_catalog_entry,
+)
 
 
 @dataclass(frozen=True)
@@ -30,31 +33,33 @@ def resolve_litellm_profile(
     # Prefer config_override if provided, otherwise fallback to settings.config_obj.llm
     # (Queen default) or legacy settings.
     config = config_override or (settings.config_obj.llm if settings.config_obj else None)
-    
+
     provider_id, source = _resolve_provider_id(settings, config)
     entry = get_provider_catalog_entry(provider_id)
+
+    shared_profile_values = config_override is None
 
     raw_model = _first_non_empty(
         model_override,
         config.model if config else None,
-        settings.litellm_model,
+        settings.litellm_model if shared_profile_values else None,
         *_legacy_model_candidates(settings, provider_id),
         entry.default_model,
     )
     model_prefix = _first_non_empty(
         config.model_prefix if config else None,
-        settings.litellm_model_prefix,
+        settings.litellm_model_prefix if shared_profile_values else None,
         entry.model_prefix,
     )
     api_base = _first_non_empty(
         config.api_base if config else None,
-        settings.litellm_api_base,
+        settings.litellm_api_base if shared_profile_values else None,
         *_legacy_base_candidates(settings, provider_id),
         entry.default_api_base,
     )
     api_key = _first_non_empty(
         config.api_key if config else None,
-        settings.litellm_api_key,
+        settings.litellm_api_key if shared_profile_values else None,
         *_legacy_key_candidates(settings, provider_id),
     )
 

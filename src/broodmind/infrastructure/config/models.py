@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, Field
+
+from broodmind.channels import DEFAULT_USER_CHANNEL
 
 
 class TelegramConfig(BaseModel):
@@ -81,15 +82,16 @@ class SearchConfig(BaseModel):
 
 
 class BroodMindConfig(BaseModel):
+    user_channel: str = DEFAULT_USER_CHANNEL
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
-    
+
     # Queen LLM settings
     llm: LLMConfig = Field(default_factory=LLMConfig)
-    
+
     # Worker LLM settings
     worker_llm_default: LLMConfig = Field(default_factory=LLMConfig)
     worker_llm_overrides: dict[str, LLMConfig] = Field(default_factory=dict)
-    
+
     litellm: LiteLLMRuntimeConfig = Field(default_factory=LiteLLMRuntimeConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
@@ -97,7 +99,7 @@ class BroodMindConfig(BaseModel):
     workers: WorkerRuntimeConfig = Field(default_factory=WorkerRuntimeConfig)
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
-    
+
     log_level: str = "INFO"
     debug_prompts: bool = False
     heartbeat_interval_seconds: int = 900
