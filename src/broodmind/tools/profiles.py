@@ -34,7 +34,7 @@ DEFAULT_TOOL_PROFILES: dict[str, ToolProfile] = {
                 "web_search",
                 "web_fetch",
                 "markdown_new_fetch",
-                "fetch_plan",
+                "fetch_plan_tool",
                 "search_canon",
                 "manage_canon",
                 "run_llm_subtask",
@@ -75,6 +75,11 @@ DEFAULT_TOOL_PROFILES: dict[str, ToolProfile] = {
         description="Operational and maintenance tools for runtime, process, and release work.",
         policy=ToolPolicy(
             allow=[
+                "gateway_status",
+                "scheduler_status",
+                "worker_session_status",
+                "worker_yield",
+                "mcp_discover",
                 "service_health",
                 "service_logs",
                 "process_inspect",

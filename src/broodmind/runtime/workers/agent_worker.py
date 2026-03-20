@@ -29,7 +29,6 @@ from broodmind.runtime.tool_loop import (
     _hash_tool_call,
     _hash_tool_outcome,
     _resolve_tool_loop_thresholds,
-    _tool_no_progress_streak,
 )
 from broodmind.runtime.tool_payloads import render_tool_result_for_llm
 from broodmind.runtime.workers.contracts import WorkerResult

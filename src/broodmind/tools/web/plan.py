@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import suppress
 from typing import Any
 
-from broodmind.tools.browser.actions import browser_close, browser_extract, browser_open, browser_snapshot
+from broodmind.tools.browser.actions import (
+    browser_close,
+    browser_extract,
+    browser_open,
+    browser_snapshot,
+)
 from broodmind.tools.web.fetch import markdown_new_fetch, web_fetch
 
 
@@ -83,6 +89,7 @@ async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     if allow_browser and remaining_budget() > 1.0:
         browser_attempt = {"tool": "browser_plan", "status": "error", "duration_ms": 0, "reason": ""}
         browser_start = time.perf_counter()
+        browser_payload: dict[str, Any] | None = None
         try:
             open_resp = await browser_open({"url": url}, ctx)
             if str(open_resp).lower().startswith("error"):
@@ -95,14 +102,14 @@ async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                     extract = await browser_extract({"max_chars": max_chars}, ctx)
                     extract_result = _parse_fetch_output(extract)
                     snippet = str(extract_result.get("text") or snap)[:max_chars]
-                    browser_attempt["status"] = "ok"
-                    browser_attempt["reason"] = (
-                        "browser extracted visible text"
-                        if extract_result.get("ok")
-                        else "browser snapshot captured"
-                    )
-                    return _to_json(
-                        {
+                    if _has_enough_content({"snippet": snippet}, min_content_chars):
+                        browser_attempt["status"] = "ok"
+                        browser_attempt["reason"] = (
+                            "browser extracted visible text"
+                            if extract_result.get("ok")
+                            else "browser snapshot captured"
+                        )
+                        browser_payload = {
                             "ok": True,
                             "degraded": True,
                             "fallback_used": True,
@@ -111,20 +118,23 @@ async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                             "url": url,
                             "goal": goal,
                             "snippet": snippet,
-                            "plan": attempts + [browser_attempt],
                             "next_best_action": _next_best_browser_action(goal),
                         }
-                    )
+                    else:
+                        browser_attempt["reason"] = (
+                            f"browser content below min_content_chars ({len(snippet.strip())} < {min_content_chars})"
+                        )
         except Exception as exc:
             browser_attempt["reason"] = f"browser exception: {exc}"
         finally:
             browser_attempt["duration_ms"] = int((time.perf_counter() - browser_start) * 1000)
             attempts.append(browser_attempt)
             if close_browser:
-                try:
+                with suppress(Exception):
                     await browser_close({}, ctx)
-                except Exception:
-                    pass
+        if browser_payload is not None:
+            browser_payload["plan"] = attempts
+            return _to_json(browser_payload)
 
     return _to_json(
         {
