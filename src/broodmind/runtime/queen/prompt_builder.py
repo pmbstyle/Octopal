@@ -275,6 +275,7 @@ async def build_queen_prompt(
     images: list[str] | None = None,
     saved_file_paths: list[str] | None = None,
     wake_notice: str = "",
+    tool_policy_summary: str = "",
 ) -> list[Message]:
     """Assembles all the pieces into the final message list for the LLM."""
 
@@ -332,6 +333,13 @@ async def build_queen_prompt(
             )
         )
     messages.append(Message(role="system", content=datetime_prompt))
+    if tool_policy_summary.strip():
+        messages.append(
+            Message(
+                role="system",
+                content=tool_policy_summary.strip(),
+            )
+        )
 
     if canon_context:
         messages.append(Message(role="system", content=canon_context))

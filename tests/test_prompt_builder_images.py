@@ -67,3 +67,38 @@ def test_build_queen_prompt_includes_worker_first_guardrails() -> None:
         assert "prefer a capable parent worker that can spawn child workers or use `start_workers_parallel`" in system_message.content
 
     asyncio.run(scenario())
+
+
+def test_build_queen_prompt_includes_tool_policy_summary() -> None:
+    class DummyMemory:
+        async def get_context(self, user_text: str, exclude_chat_id: int | None = None):
+            return []
+
+        async def get_recent_history(self, chat_id: int, limit: int = 20):
+            return []
+
+    class DummyCanon:
+        def get_tier1_context(self):
+            return ""
+
+    async def scenario() -> None:
+        messages = await build_queen_prompt(
+            store=object(),
+            memory=DummyMemory(),
+            canon=DummyCanon(),
+            user_text="inspect tools",
+            chat_id=123,
+            bootstrap_context="",
+            tool_policy_summary=(
+                "Tool policy contract:\n"
+                "- Use safe tools by default.\n"
+                "- If a tool is blocked by policy, do not repeat the same call."
+            ),
+        )
+        contents = [str(msg.content) for msg in messages if isinstance(msg.content, str)]
+        merged = "\n".join(contents)
+        assert "Tool policy contract:" in merged
+        assert "Use safe tools by default." in merged
+        assert "do not repeat the same call" in merged
+
+    asyncio.run(scenario())

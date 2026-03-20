@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from broodmind.runtime.queen.router import _handle_queen_tool_call, _record_queen_tool_call
+from broodmind.runtime.queen.router import (
+    _build_queen_tool_policy_summary,
+    _handle_queen_tool_call,
+    _record_queen_tool_call,
+)
+from broodmind.tools.metadata import ToolMetadata
+from broodmind.tools.diagnostics import resolve_tool_diagnostics
 from broodmind.tools.registry import ToolSpec
 
 
@@ -80,3 +86,54 @@ def test_record_queen_tool_call_returns_critical_for_global_breaker() -> None:
     assert state is not None
     assert state["level"] == "critical"
     assert state["detector"] == "global_circuit_breaker"
+
+
+@pytest.mark.asyncio
+async def test_handle_queen_tool_call_returns_policy_block_for_known_blocked_tool() -> None:
+    blocked_tool = _tool("exec_run", handler=lambda _args, _ctx: "ok")
+    blocked_tool = ToolSpec(
+        name=blocked_tool.name,
+        description=blocked_tool.description,
+        parameters=blocked_tool.parameters,
+        permission="exec",
+        handler=blocked_tool.handler,
+        is_async=blocked_tool.is_async,
+        metadata=blocked_tool.metadata,
+    )
+    report = resolve_tool_diagnostics(
+        [blocked_tool],
+        permissions={"exec": False},
+    )
+
+    result, meta = await _handle_queen_tool_call(
+        {"function": {"name": "exec_run", "arguments": "{}"}},
+        [],
+        {"tool_resolution_report": report},
+    )
+
+    assert result["type"] == "policy_block"
+    assert result["tool"] == "exec_run"
+    assert result["reason"] == "blocked_by_permission:exec"
+    assert meta["error_type"] == "policy_block"
+
+
+def test_build_queen_tool_policy_summary_counts_risk_classes() -> None:
+    safe_tool = _tool("web_search", handler=lambda _args, _ctx: "ok")
+    dangerous_tool = ToolSpec(
+        name="exec_run",
+        description="exec tool",
+        parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        permission="exec",
+        handler=lambda _args, _ctx: "ok",
+        metadata=ToolMetadata(category="ops", risk="dangerous"),
+    )
+    report = resolve_tool_diagnostics(
+        [safe_tool, dangerous_tool],
+        permissions={"network": True, "exec": False},
+    )
+
+    summary = _build_queen_tool_policy_summary([safe_tool], report)
+
+    assert "Tool policy contract:" in summary
+    assert "active_safe=1" in summary
+    assert "blocked_dangerous=1" in summary
