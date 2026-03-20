@@ -74,6 +74,17 @@ def test_forced_worker_followup_uses_generic_message_when_only_internal_summary_
     assert build_forced_worker_followup(result) == "Task finished. Output is ready in `research/candidates.md`."
 
 
+def test_forced_worker_followup_drops_empty_generic_completion():
+    result = WorkerResult(
+        summary="Fetched latest status and saved internal state.",
+        output={},
+        tools_used=["exec_run", "fs_read"],
+    )
+    assert should_force_worker_followup(result) is True
+    assert build_forced_worker_followup(result) == ""
+    assert should_send_worker_followup(build_forced_worker_followup(result)) is False
+
+
 def test_followup_required_marker_is_stripped_and_detected():
     text, wants_followup = _extract_followup_required_marker(
         "Проверю статус child worker и вернусь с итогом.\nFOLLOWUP_REQUIRED"

@@ -578,6 +578,8 @@ def should_force_worker_followup(result: WorkerResult) -> bool:
 def build_forced_worker_followup(result: WorkerResult) -> str:
     """Build a concise Queen-style fallback when routing suppresses a useful update."""
     lead = _build_generic_worker_completion_message(result)
+    if lead == "Task finished.":
+        return ""
 
     if len(lead) > 700:
         lead = lead[:697].rstrip() + "..."
