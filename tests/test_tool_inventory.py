@@ -54,3 +54,30 @@ def test_catalog_returns_annotated_tools() -> None:
     tools = {tool.name: tool for tool in get_tools(mcp_manager=None)}
     assert tools["web_search"].metadata.category == "web"
     assert tools["start_worker"].metadata.category == "workers"
+
+
+def test_catalog_classifies_browser_scheduler_database_release_and_template_tools() -> None:
+    tools = {tool.name: tool for tool in get_tools(mcp_manager=None)}
+
+    assert tools["browser_open"].metadata.category == "browser"
+    assert tools["fetch_plan_tool"].metadata.category == "web"
+    assert tools["check_schedule"].metadata.category == "scheduler"
+    assert tools["db_restore"].metadata.category == "database"
+    assert tools["rollback_release"].metadata.category == "release"
+    assert tools["update_worker_template"].metadata.category == "templates"
+
+
+def test_catalog_marks_high_impact_mutating_tools_with_higher_risk() -> None:
+    tools = {tool.name: tool for tool in get_tools(mcp_manager=None)}
+
+    assert tools["db_restore"].metadata.risk == "dangerous"
+    assert tools["rollback_release"].metadata.risk == "dangerous"
+    assert tools["delete_worker_template"].metadata.risk == "dangerous"
+    assert tools["docker_compose_control"].metadata.risk == "guarded"
+
+
+def test_misc_bucket_is_reduced_after_taxonomy_cleanup() -> None:
+    tools = get_tools(mcp_manager=None)
+    misc_names = [tool.name for tool in tools if tool.metadata.category == "misc"]
+
+    assert len(misc_names) < 10

@@ -55,10 +55,37 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
         profile_tags=("research", "minimal"),
         capabilities=("network_fetch", "fetch"),
     ),
-    "fetch_plan": ToolMetadata(
+    "fetch_plan_tool": ToolMetadata(
         category="web",
         profile_tags=("research",),
         capabilities=("network_fetch", "planning"),
+    ),
+    "browser_open": ToolMetadata(
+        category="browser",
+        profile_tags=("research", "ops"),
+        capabilities=("browser_navigate",),
+    ),
+    "browser_snapshot": ToolMetadata(
+        category="browser",
+        profile_tags=("research", "ops"),
+        capabilities=("browser_read", "snapshot"),
+    ),
+    "browser_click": ToolMetadata(
+        category="browser",
+        risk="guarded",
+        profile_tags=("research", "ops"),
+        capabilities=("browser_interact",),
+    ),
+    "browser_type": ToolMetadata(
+        category="browser",
+        risk="guarded",
+        profile_tags=("research", "ops"),
+        capabilities=("browser_interact", "browser_write"),
+    ),
+    "browser_close": ToolMetadata(
+        category="browser",
+        profile_tags=("research", "ops"),
+        capabilities=("browser_manage",),
     ),
     "run_llm_subtask": ToolMetadata(
         category="llm",
@@ -120,6 +147,50 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
         risk="guarded",
         profile_tags=("ops",),
         capabilities=("memory_write", "self_improve"),
+    ),
+    "queen_memchain_status": ToolMetadata(
+        category="runtime",
+        profile_tags=("ops",),
+        capabilities=("self_observe", "integrity_read"),
+    ),
+    "queen_memchain_verify": ToolMetadata(
+        category="runtime",
+        profile_tags=("ops",),
+        capabilities=("self_observe", "integrity_verify"),
+    ),
+    "queen_memchain_record": ToolMetadata(
+        category="runtime",
+        risk="guarded",
+        profile_tags=("ops",),
+        capabilities=("integrity_write",),
+    ),
+    "queen_memchain_init": ToolMetadata(
+        category="runtime",
+        risk="guarded",
+        profile_tags=("ops",),
+        capabilities=("integrity_write", "bootstrap"),
+    ),
+    "list_schedule": ToolMetadata(
+        category="scheduler",
+        profile_tags=("ops",),
+        capabilities=("schedule_read",),
+    ),
+    "check_schedule": ToolMetadata(
+        category="scheduler",
+        profile_tags=("ops",),
+        capabilities=("schedule_read", "schedule_tick"),
+    ),
+    "schedule_task": ToolMetadata(
+        category="scheduler",
+        risk="guarded",
+        profile_tags=("ops",),
+        capabilities=("schedule_write",),
+    ),
+    "remove_task": ToolMetadata(
+        category="scheduler",
+        risk="guarded",
+        profile_tags=("ops",),
+        capabilities=("schedule_write",),
     ),
     "list_workers": ToolMetadata(
         category="workers",
@@ -197,6 +268,12 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
         profile_tags=("ops",),
         capabilities=("service_read", "log_read"),
     ),
+    "docker_compose_control": ToolMetadata(
+        category="ops",
+        risk="guarded",
+        profile_tags=("ops",),
+        capabilities=("service_control", "container_control"),
+    ),
     "process_inspect": ToolMetadata(
         category="ops",
         profile_tags=("ops",),
@@ -239,6 +316,59 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
         category="ops",
         profile_tags=("ops",),
         capabilities=("artifact_read",),
+    ),
+    "db_backup": ToolMetadata(
+        category="database",
+        risk="guarded",
+        profile_tags=("ops",),
+        capabilities=("database_backup",),
+    ),
+    "db_restore": ToolMetadata(
+        category="database",
+        risk="dangerous",
+        profile_tags=("ops",),
+        capabilities=("database_restore",),
+    ),
+    "db_maintenance": ToolMetadata(
+        category="database",
+        risk="guarded",
+        profile_tags=("ops",),
+        capabilities=("database_maintenance",),
+    ),
+    "db_query_readonly": ToolMetadata(
+        category="database",
+        profile_tags=("ops",),
+        capabilities=("database_read",),
+    ),
+    "release_snapshot": ToolMetadata(
+        category="release",
+        risk="guarded",
+        profile_tags=("ops",),
+        capabilities=("release_snapshot",),
+    ),
+    "rollback_release": ToolMetadata(
+        category="release",
+        risk="dangerous",
+        profile_tags=("ops",),
+        capabilities=("release_rollback",),
+    ),
+    "create_worker_template": ToolMetadata(
+        category="templates",
+        risk="guarded",
+        profile_tags=("ops", "coding"),
+        capabilities=("template_write",),
+    ),
+    "update_worker_template": ToolMetadata(
+        category="templates",
+        risk="guarded",
+        profile_tags=("ops", "coding"),
+        capabilities=("template_write",),
+    ),
+    "delete_worker_template": ToolMetadata(
+        category="templates",
+        risk="dangerous",
+        profile_tags=("ops",),
+        capabilities=("template_delete",),
     ),
     "mcp_connect": ToolMetadata(
         category="mcp",
