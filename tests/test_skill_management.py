@@ -268,6 +268,48 @@ metadata:
     assert payload["skills"][0]["missing_env"] == ["OPENAI_API_KEY"]
 
 
+def test_list_skills_reports_untrusted_installed_scripts(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "noop.py").write_text("print('ok')\n", encoding="utf-8")
+    (workspace_dir / "skills" / "installed.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "installs": [
+                    {
+                        "skill_id": "writer",
+                        "source": "zanblayde/agent-commons",
+                        "source_kind": "clawhub_slug",
+                        "trusted": False,
+                        "has_scripts": True,
+                        "path": str(skill_dir / "SKILL.md"),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    payload = json.loads(_tool_list_skills({}, {}))
+
+    assert payload["skills"][0]["installer_managed"] is True
+    assert payload["skills"][0]["trusted"] is False
+    assert payload["skills"][0]["status"] == "not_ready"
+    assert "not trusted yet" in payload["skills"][0]["reasons"][0]
+
+
 def test_run_skill_script_blocks_when_skill_is_not_ready(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "image-lab"
@@ -301,3 +343,47 @@ metadata:
 
     assert "is not ready" in result
     assert "OPENAI_API_KEY" in result
+
+
+def test_run_skill_script_blocks_untrusted_installed_scripts(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+scope: worker
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "noop.py").write_text("print('ok')\n", encoding="utf-8")
+    (workspace_dir / "skills" / "installed.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "installs": [
+                    {
+                        "skill_id": "writer",
+                        "source": "zanblayde/agent-commons",
+                        "source_kind": "clawhub_slug",
+                        "trusted": False,
+                        "has_scripts": True,
+                        "path": str(skill_dir / "SKILL.md"),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    result = _tool_run_skill_script(
+        {"skill_id": "writer", "script": "noop.py"},
+        {"base_dir": workspace_dir / "workers", "worker": object()},
+    )
+
+    assert "is not ready" in result
+    assert "not trusted yet" in result

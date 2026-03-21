@@ -130,3 +130,36 @@ description: Helps write copy
     payload = json.loads(result.stdout)
     assert payload["status"] == "removed"
     assert not (workspace_dir / "skills" / "writer").exists()
+
+
+def test_skill_trust_and_untrust_commands_toggle_manifest_state(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    source_dir = tmp_path / "writer"
+    source_dir.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "broodmind.cli.main.load_settings",
+        lambda: SimpleNamespace(workspace_dir=workspace_dir),
+    )
+
+    install_result = runner.invoke(app, ["skill", "install", str(source_dir), "--json"])
+    assert install_result.exit_code == 0
+
+    untrust_result = runner.invoke(app, ["skill", "untrust", "writer", "--json"])
+    assert untrust_result.exit_code == 0
+    untrust_payload = json.loads(untrust_result.stdout)
+    assert untrust_payload["status"] == "untrusted"
+    assert untrust_payload["trusted"] is False
+
+    trust_result = runner.invoke(app, ["skill", "trust", "writer", "--json"])
+    assert trust_result.exit_code == 0
+    trust_payload = json.loads(trust_result.stdout)
+    assert trust_payload["status"] == "trusted"
+    assert trust_payload["trusted"] is True

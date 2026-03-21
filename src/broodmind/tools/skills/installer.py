@@ -65,6 +65,7 @@ def install_skill_from_source(
     *,
     workspace_dir: Path,
     clawhub_site: str = _DEFAULT_CLAWHUB_SITE,
+    trusted: bool | None = None,
 ) -> dict[str, Any]:
     ensure_skills_layout(workspace_dir)
     install_source = detect_skill_install_source(source)
@@ -81,7 +82,13 @@ def install_skill_from_source(
         destination = _prepare_install_destination(workspace_dir, bundle, install_source)
         _copy_bundle(bundle.bundle_dir, destination)
         manifest = _read_install_manifest(workspace_dir)
-        record = _build_install_record(bundle, install_source, clawhub_site, destination)
+        record = _build_install_record(
+            bundle,
+            install_source,
+            clawhub_site,
+            destination,
+            trusted=trusted,
+        )
         installs = [item for item in manifest.get("installs", []) if isinstance(item, dict)]
         installs = [item for item in installs if str(item.get("skill_id", "")) != bundle.id]
         installs.append(record)
@@ -95,6 +102,8 @@ def install_skill_from_source(
             "path": str(destination / bundle.skill_file.name),
             "source_kind": install_source.kind,
             "source": install_source.normalized,
+            "trusted": bool(record.get("trusted", False)),
+            "has_scripts": bool(record.get("has_scripts", False)),
             "manifest_path": str(_install_manifest_path(workspace_dir)),
         }
 
@@ -122,10 +131,12 @@ def update_installed_skill(
     if not source:
         raise ValueError(f"skill '{skill_id}' does not have a stored source")
     resolved_site = clawhub_site or str(record.get("clawhub_site", "")).strip() or _DEFAULT_CLAWHUB_SITE
+    trusted = bool(record.get("trusted", False))
     payload = install_skill_from_source(
         source,
         workspace_dir=workspace_dir,
         clawhub_site=resolved_site,
+        trusted=trusted,
     )
     payload["status"] = "updated"
     payload["previous_source"] = source
@@ -167,6 +178,33 @@ def get_installed_skill_record(workspace_dir: Path, skill_id: str) -> dict[str, 
     manifest = _read_install_manifest(workspace_dir)
     installs = [item for item in manifest.get("installs", []) if isinstance(item, dict)]
     return next((item for item in installs if str(item.get("skill_id", "")) == skill_id), None)
+
+
+def set_installed_skill_trust(
+    skill_id: str,
+    *,
+    workspace_dir: Path,
+    trusted: bool,
+) -> dict[str, Any]:
+    manifest = _read_install_manifest(workspace_dir)
+    installs = [item for item in manifest.get("installs", []) if isinstance(item, dict)]
+    updated = False
+    for item in installs:
+        if str(item.get("skill_id", "")) != skill_id:
+            continue
+        item["trusted"] = bool(trusted)
+        updated = True
+        break
+    if not updated:
+        raise ValueError(f"skill '{skill_id}' is not installer-managed")
+    manifest["installs"] = installs
+    _write_install_manifest(workspace_dir, manifest)
+    return {
+        "status": "trusted" if trusted else "untrusted",
+        "skill_id": skill_id,
+        "trusted": bool(trusted),
+        "manifest_path": str(_install_manifest_path(workspace_dir)),
+    }
 
 
 def _materialize_install_source(
@@ -307,7 +345,10 @@ def _build_install_record(
     install_source: SkillInstallSource,
     clawhub_site: str,
     destination: Path,
+    *,
+    trusted: bool | None,
 ) -> dict[str, Any]:
+    resolved_trust = _default_trust_for_source(install_source) if trusted is None else bool(trusted)
     return {
         "skill_id": bundle.id,
         "name": bundle.name,
@@ -316,6 +357,8 @@ def _build_install_record(
         "source_kind": install_source.kind,
         "source": install_source.normalized,
         "clawhub_site": clawhub_site.rstrip("/") if install_source.kind == "clawhub_slug" else "",
+        "trusted": resolved_trust,
+        "has_scripts": bool(bundle.scripts_dir),
     }
 
 
@@ -344,3 +387,7 @@ def _write_install_manifest(workspace_dir: Path, payload: dict[str, Any]) -> Non
     path = _install_manifest_path(workspace_dir)
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     path.write_text(text, encoding="utf-8")
+
+
+def _default_trust_for_source(install_source: SkillInstallSource) -> bool:
+    return install_source.kind in {"local_dir", "local_skill_md", "local_zip"}

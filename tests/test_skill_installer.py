@@ -9,6 +9,7 @@ from broodmind.tools.skills.installer import (
     install_skill_from_source,
     list_installed_skill_sources,
     remove_installed_skill,
+    set_installed_skill_trust,
     update_installed_skill,
 )
 
@@ -39,6 +40,7 @@ description: Helps write copy
     installs = list_installed_skill_sources(workspace_dir)
     assert installs["count"] == 1
     assert installs["installs"][0]["source_kind"] == "local_dir"
+    assert installs["installs"][0]["trusted"] is True
 
 
 def test_install_skill_from_local_zip_extracts_bundle(tmp_path: Path) -> None:
@@ -97,6 +99,7 @@ description: Shared agent helpers
     assert payload["source_kind"] == "clawhub_slug"
     installs = list_installed_skill_sources(workspace_dir)
     assert installs["installs"][0]["source"] == "zanblayde/agent-commons"
+    assert installs["installs"][0]["trusted"] is False
 
 
 def test_install_skill_refuses_to_overwrite_unmanaged_existing_bundle(tmp_path: Path) -> None:
@@ -181,3 +184,25 @@ description: Helps write copy
     assert not (workspace_dir / "skills" / "writer").exists()
     installs = list_installed_skill_sources(workspace_dir)
     assert installs["count"] == 0
+
+
+def test_set_installed_skill_trust_updates_manifest_entry(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    source_dir = tmp_path / "writer"
+    source_dir.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+
+    install_skill_from_source(str(source_dir), workspace_dir=workspace_dir, trusted=False)
+
+    payload = set_installed_skill_trust("writer", workspace_dir=workspace_dir, trusted=True)
+
+    assert payload["status"] == "trusted"
+    installs = list_installed_skill_sources(workspace_dir)
+    assert installs["installs"][0]["trusted"] is True

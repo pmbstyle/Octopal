@@ -43,6 +43,7 @@ from broodmind.tools.skills.installer import (
     install_skill_from_source,
     list_installed_skill_sources,
     remove_installed_skill,
+    set_installed_skill_trust,
     update_installed_skill,
 )
 from broodmind.tools import get_tools, resolve_tool_diagnostics
@@ -1277,6 +1278,8 @@ def skill_install(
     console.print(f"[bold green][V] Installed skill[/bold green] {payload['skill_id']}")
     console.print(f"[dim]Source:[/dim] {payload['source']}")
     console.print(f"[dim]Path:[/dim] {payload['path']}")
+    if not bool(payload.get("trusted", True)):
+        console.print("[yellow]Scripts from this imported skill are untrusted until you run `broodmind skill trust <id>`.[/yellow]")
 
 
 @skill_app.command("list")
@@ -1300,6 +1303,7 @@ def skill_list(
     table.add_column("Skill")
     table.add_column("Source")
     table.add_column("Kind")
+    table.add_column("Trust")
     table.add_column("Path")
     for item in installs:
         if not isinstance(item, dict):
@@ -1308,6 +1312,7 @@ def skill_list(
             str(item.get("skill_id", "")),
             str(item.get("source", "")),
             str(item.get("source_kind", "")),
+            "trusted" if bool(item.get("trusted", False)) else "untrusted",
             str(item.get("path", "")),
         )
     console.print(table)
@@ -1340,6 +1345,60 @@ def skill_update(
 
     console.print(f"[bold green][V] Updated skill[/bold green] {payload['skill_id']}")
     console.print(f"[dim]Source:[/dim] {payload['source']}")
+
+
+@skill_app.command("trust")
+def skill_trust(
+    skill_id: str = typer.Argument(..., help="Installer-managed skill id."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Mark an installer-managed skill as trusted for script execution."""
+    settings = load_settings()
+    try:
+        payload = set_installed_skill_trust(
+            skill_id,
+            workspace_dir=settings.workspace_dir.resolve(),
+            trusted=True,
+        )
+    except Exception as exc:
+        if json_output:
+            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+        else:
+            console.print(f"[bold red]Skill trust failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from None
+
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    console.print(f"[bold green][V] Trusted skill[/bold green] {payload['skill_id']}")
+
+
+@skill_app.command("untrust")
+def skill_untrust(
+    skill_id: str = typer.Argument(..., help="Installer-managed skill id."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Mark an installer-managed skill as untrusted for script execution."""
+    settings = load_settings()
+    try:
+        payload = set_installed_skill_trust(
+            skill_id,
+            workspace_dir=settings.workspace_dir.resolve(),
+            trusted=False,
+        )
+    except Exception as exc:
+        if json_output:
+            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+        else:
+            console.print(f"[bold red]Skill untrust failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from None
+
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    console.print(f"[bold green][V] Untrusted skill[/bold green] {payload['skill_id']}")
 
 
 @skill_app.command("remove")

@@ -203,6 +203,11 @@ def _tool_list_skills(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                 "exists": bool(raw.get("exists", False)),
                 "source": str(raw.get("source", "registry")),
                 "auto_discovered": bool(raw.get("auto_discovered", False)),
+                "installer_managed": bool(raw.get("installer_managed", False)),
+                "trusted": bool(raw.get("trusted", True)),
+                "has_scripts": bool(raw.get("has_scripts", False)),
+                "installed_source": str(raw.get("installed_source", "")),
+                "installed_source_kind": str(raw.get("installed_source_kind", "")),
                 **_evaluate_skill_status(raw),
             }
         )
@@ -430,6 +435,11 @@ def _run_skill(skill_data: dict[str, Any], args: dict[str, Any], ctx: dict[str, 
         "scope": scope,
         "path": str(skill_data.get("path", "")),
         "source": str(skill_data.get("source", "registry")),
+        "installer_managed": bool(skill_data.get("installer_managed", False)),
+        "trusted": bool(skill_data.get("trusted", True)),
+        "has_scripts": bool(skill_data.get("has_scripts", False)),
+        "installed_source": str(skill_data.get("installed_source", "")),
+        "installed_source_kind": str(skill_data.get("installed_source_kind", "")),
         **_evaluate_skill_status(skill_data),
         "task": task,
         "input": input_payload if isinstance(input_payload, (dict, list, str, int, float, bool)) else None,
@@ -542,6 +552,12 @@ def _skill_path_exists(workspace_dir: Path, skill_data: dict[str, Any]) -> bool:
 
 def _load_skill_inventory(workspace_dir: Path) -> list[dict[str, Any]]:
     registry = _load_registry(workspace_dir)
+    installed_manifest = _load_installed_manifest(workspace_dir)
+    installed_by_id = {
+        str(item.get("skill_id", "")).strip(): item
+        for item in installed_manifest.get("installs", [])
+        if isinstance(item, dict) and str(item.get("skill_id", "")).strip()
+    }
     registry_skills = [item for item in registry.get("skills", []) if isinstance(item, dict)]
     inventory_by_id: dict[str, dict[str, Any]] = {}
 
@@ -549,26 +565,35 @@ def _load_skill_inventory(workspace_dir: Path) -> list[dict[str, Any]]:
         bundle = _load_registry_bundle(workspace_dir, raw)
         skill_id = str(raw.get("id", "")).strip()
         if bundle is not None:
-            inventory_by_id[bundle.id] = _skill_record_from_bundle(
-                workspace_dir,
-                bundle,
-                source="registry",
-                auto_discovered=False,
+            inventory_by_id[bundle.id] = _merge_installed_metadata(
+                _skill_record_from_bundle(
+                    workspace_dir,
+                    bundle,
+                    source="registry",
+                    auto_discovered=False,
+                ),
+                installed_by_id.get(bundle.id),
             )
             continue
         if not _SKILL_ID_RE.fullmatch(skill_id):
             continue
-        inventory_by_id[skill_id] = _skill_record_from_registry(workspace_dir, raw)
+        inventory_by_id[skill_id] = _merge_installed_metadata(
+            _skill_record_from_registry(workspace_dir, raw),
+            installed_by_id.get(skill_id),
+        )
 
     for bundle_dir in discover_skill_bundle_dirs(workspace_dir):
         bundle = load_skill_bundle(bundle_dir, workspace_dir=workspace_dir)
         if bundle is None or bundle.id in inventory_by_id:
             continue
-        inventory_by_id[bundle.id] = _skill_record_from_bundle(
-            workspace_dir,
-            bundle,
-            source="bundle",
-            auto_discovered=True,
+        inventory_by_id[bundle.id] = _merge_installed_metadata(
+            _skill_record_from_bundle(
+                workspace_dir,
+                bundle,
+                source="bundle",
+                auto_discovered=True,
+            ),
+            installed_by_id.get(bundle.id),
         )
 
     return sorted(inventory_by_id.values(), key=lambda item: str(item.get("id", "")))
@@ -632,6 +657,9 @@ def _skill_record_from_registry(workspace_dir: Path, raw: dict[str, Any]) -> dic
         "requires_bins": [],
         "requires_env": [],
         "requires_config": [],
+        "installer_managed": False,
+        "trusted": True,
+        "has_scripts": False,
     }
 
 
@@ -656,6 +684,8 @@ def _evaluate_skill_status(skill_data: dict[str, Any]) -> dict[str, Any]:
         reasons.append("missing env: " + ", ".join(missing_env))
     if missing_config:
         reasons.append("missing config: " + ", ".join(missing_config))
+    if bool(skill_data.get("has_scripts", False)) and bool(skill_data.get("installer_managed", False)) and not bool(skill_data.get("trusted", True)):
+        reasons.append("skill scripts are not trusted yet")
 
     if not enabled:
         status = "disabled"
@@ -675,6 +705,37 @@ def _evaluate_skill_status(skill_data: dict[str, Any]) -> dict[str, Any]:
         "missing_config": missing_config,
         "reasons": reasons,
     }
+
+
+def _merge_installed_metadata(skill_data: dict[str, Any], installed_record: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(installed_record, dict):
+        skill_data.setdefault("installer_managed", False)
+        skill_data.setdefault("trusted", True)
+        skill_data.setdefault("has_scripts", bool(skill_data.get("scripts_dir")))
+        return skill_data
+    merged = dict(skill_data)
+    merged["installer_managed"] = True
+    merged["trusted"] = bool(installed_record.get("trusted", False))
+    merged["has_scripts"] = bool(installed_record.get("has_scripts", bool(skill_data.get("scripts_dir"))))
+    merged["installed_source"] = str(installed_record.get("source", "")).strip()
+    merged["installed_source_kind"] = str(installed_record.get("source_kind", "")).strip()
+    return merged
+
+
+def _load_installed_manifest(workspace_dir: Path) -> dict[str, Any]:
+    path = workspace_dir / "skills" / "installed.json"
+    if not path.exists():
+        return {"version": 1, "installs": []}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"version": 1, "installs": []}
+    if not isinstance(payload, dict):
+        return {"version": 1, "installs": []}
+    installs = payload.get("installs")
+    if not isinstance(installs, list):
+        payload["installs"] = []
+    return payload
 
 
 def _missing_binaries(value: Any) -> list[str]:

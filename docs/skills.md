@@ -110,11 +110,35 @@ Lifecycle commands:
 uv run broodmind skill install <source>
 uv run broodmind skill list
 uv run broodmind skill update <skill-id>
+uv run broodmind skill trust <skill-id>
+uv run broodmind skill untrust <skill-id>
 uv run broodmind skill remove <skill-id>
 ```
 
 `update` reinstalls from the stored source recorded in `installed.json`.
 `remove` only affects installer-managed skills and will not delete unmanaged local bundles.
+
+### Trust model for imported scripts
+
+BroodMind treats imported script-backed skills more carefully than local ones.
+
+- local installs from a folder, local `SKILL.md`, or local `.zip` are trusted by default
+- external installs from ClawHub or remote URLs are untrusted by default when they include `scripts/`
+- untrusted imported scripts stay visible in the skill inventory, but `run_skill_script` will refuse to execute them
+
+When you want to allow script execution for an imported skill:
+
+```bash
+uv run broodmind skill trust <skill-id>
+```
+
+To block script execution again:
+
+```bash
+uv run broodmind skill untrust <skill-id>
+```
+
+This trust flag only affects script execution. The skill guidance in `SKILL.md` can still be read and used.
 
 ## ClawHub compatibility
 
@@ -132,6 +156,7 @@ That means:
 - install UX is familiar to ClawHub/OpenClaw users
 - installed skills become normal BroodMind skill bundles
 - BroodMind keeps its own manifest and runtime policy model
+- imported script-backed skills can be reviewed locally before being trusted
 
 ## Direct SKILL.md URLs
 
@@ -160,6 +185,7 @@ Current requirement checks:
 - missing binaries from `requires.bins`
 - missing environment variables from `requires.env`
 - missing config keys from `requires.config`
+- untrusted imported script bundles
 
 Config requirements are currently checked via env vars named like:
 
