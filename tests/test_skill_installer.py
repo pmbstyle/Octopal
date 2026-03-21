@@ -67,6 +67,36 @@ description: Generate images
     assert (workspace_dir / "skills" / "image-lab" / "skill.md").exists()
 
 
+def test_install_skill_reports_next_step_for_python_runtime_env(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    source_dir = tmp_path / "job-search"
+    scripts_dir = source_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        """---
+name: job-search
+description: Search jobs
+metadata:
+  {
+    "broodmind": {
+      "runtime": {
+        "python": {
+          "packages": ["python-jobspy"]
+        }
+      }
+    }
+  }
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "jobspy.py").write_text("print('ok')\n", encoding="utf-8")
+
+    payload = install_skill_from_source(str(source_dir), workspace_dir=workspace_dir)
+
+    assert payload["next_step"] == "uv run broodmind skill prepare-env job-search"
+
+
 def test_install_skill_from_clawhub_slug_uses_download_adapter(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
     archive_source_dir = tmp_path / "source"

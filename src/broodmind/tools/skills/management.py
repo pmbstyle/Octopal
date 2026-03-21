@@ -17,6 +17,10 @@ from broodmind.tools.skills.bundles import (
     discover_skill_bundle_dirs,
     load_skill_bundle,
 )
+from broodmind.tools.skills.runtime_envs import (
+    get_skill_env_status,
+    resolve_skill_runtime_execution,
+)
 from broodmind.tools.registry import ToolSpec
 
 logger = structlog.get_logger(__name__)
@@ -210,6 +214,11 @@ def _tool_list_skills(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                 "installed_source_kind": str(raw.get("installed_source_kind", "")),
                 "scan_status": str(raw.get("scan_status", "")),
                 "scan_findings_count": int(raw.get("scan_findings_count", 0)),
+                "runtime_kind": str(raw.get("runtime_kind", "")),
+                "runtime_required": bool(raw.get("runtime_required", False)),
+                "runtime_recommended": bool(raw.get("runtime_recommended", False)),
+                "runtime_prepared": bool(raw.get("runtime_prepared", False)),
+                "runtime_next_step": str(raw.get("runtime_next_step", "")),
                 **_evaluate_skill_status(raw),
             }
         )
@@ -360,7 +369,13 @@ def _tool_run_skill_script(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
     runner = str(args.get("runner", "")).strip().lower()
     try:
-        command = _build_skill_script_command(script_path, runner)
+        runtime_execution = resolve_skill_runtime_execution(
+            skill_id,
+            workspace_dir=workspace_dir,
+            script_path=script_path,
+            explicit_runner=runner,
+        )
+        command = runtime_execution["runner"] or _build_skill_script_command(script_path, runner)
     except ValueError as exc:
         return f"run_skill_script error: {exc}"
 
@@ -379,6 +394,7 @@ def _tool_run_skill_script(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             text=True,
             timeout=timeout_seconds,
             shell=False,
+            env=runtime_execution.get("env"),
         )
     except subprocess.TimeoutExpired:
         return f"run_skill_script error: script timed out after {timeout_seconds}s."
@@ -444,6 +460,11 @@ def _run_skill(skill_data: dict[str, Any], args: dict[str, Any], ctx: dict[str, 
         "installed_source_kind": str(skill_data.get("installed_source_kind", "")),
         "scan_status": str(skill_data.get("scan_status", "")),
         "scan_findings_count": int(skill_data.get("scan_findings_count", 0)),
+        "runtime_kind": str(skill_data.get("runtime_kind", "")),
+        "runtime_required": bool(skill_data.get("runtime_required", False)),
+        "runtime_recommended": bool(skill_data.get("runtime_recommended", False)),
+        "runtime_prepared": bool(skill_data.get("runtime_prepared", False)),
+        "runtime_next_step": str(skill_data.get("runtime_next_step", "")),
         **_evaluate_skill_status(skill_data),
         "task": task,
         "input": input_payload if isinstance(input_payload, (dict, list, str, int, float, bool)) else None,
@@ -637,6 +658,11 @@ def _skill_record_from_bundle(
         "requires_bins": list(bundle.metadata.requires.bins),
         "requires_env": list(bundle.metadata.requires.env),
         "requires_config": list(bundle.metadata.requires.config),
+        "runtime_kind": "",
+        "runtime_required": False,
+        "runtime_recommended": False,
+        "runtime_prepared": False,
+        "runtime_next_step": "",
     }
 
 
@@ -664,6 +690,11 @@ def _skill_record_from_registry(workspace_dir: Path, raw: dict[str, Any]) -> dic
         "installer_managed": False,
         "trusted": True,
         "has_scripts": False,
+        "runtime_kind": "",
+        "runtime_required": False,
+        "runtime_recommended": False,
+        "runtime_prepared": False,
+        "runtime_next_step": "",
     }
 
 
@@ -690,6 +721,12 @@ def _evaluate_skill_status(skill_data: dict[str, Any]) -> dict[str, Any]:
         reasons.append("missing config: " + ", ".join(missing_config))
     if bool(skill_data.get("has_scripts", False)) and bool(skill_data.get("installer_managed", False)) and not bool(skill_data.get("trusted", True)):
         reasons.append("skill scripts are not trusted yet")
+    if bool(skill_data.get("runtime_required", False)) and not bool(skill_data.get("runtime_prepared", False)):
+        next_step = str(skill_data.get("runtime_next_step", "")).strip()
+        if next_step:
+            reasons.append(f"runtime env is not prepared; run `{next_step}`")
+        else:
+            reasons.append("runtime env is not prepared")
 
     if not enabled:
         status = "disabled"
@@ -712,6 +749,7 @@ def _evaluate_skill_status(skill_data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _merge_installed_metadata(skill_data: dict[str, Any], installed_record: dict[str, Any] | None) -> dict[str, Any]:
+    _merge_runtime_metadata(skill_data)
     if not isinstance(installed_record, dict):
         skill_data.setdefault("installer_managed", False)
         skill_data.setdefault("trusted", True)
@@ -730,6 +768,19 @@ def _merge_installed_metadata(skill_data: dict[str, Any], installed_record: dict
     merged["scan_status"] = str(scan.get("status", "missing")) if isinstance(scan, dict) else "missing"
     merged["scan_findings_count"] = len(findings) if isinstance(findings, list) else 0
     return merged
+
+
+def _merge_runtime_metadata(skill_data: dict[str, Any]) -> None:
+    workspace_dir = _workspace_root()
+    skill_id = str(skill_data.get("id", "")).strip()
+    if not skill_id:
+        return
+    status = get_skill_env_status(skill_id, workspace_dir=workspace_dir)
+    skill_data["runtime_kind"] = str(status.get("kind", ""))
+    skill_data["runtime_required"] = bool(status.get("required", False))
+    skill_data["runtime_recommended"] = bool(status.get("recommended", False))
+    skill_data["runtime_prepared"] = bool(status.get("prepared", False))
+    skill_data["runtime_next_step"] = str(status.get("next_step", ""))
 
 
 def _load_installed_manifest(workspace_dir: Path) -> dict[str, Any]:

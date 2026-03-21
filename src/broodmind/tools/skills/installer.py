@@ -13,6 +13,7 @@ import httpx
 
 from broodmind.tools.skills.bundles import SkillBundle, load_skill_bundle
 from broodmind.tools.skills.management import ensure_skills_layout
+from broodmind.tools.skills.runtime_envs import build_runtime_install_hint
 from broodmind.tools.skills.scanner import scan_skill_bundle
 
 _DEFAULT_CLAWHUB_SITE = "https://clawhub.ai"
@@ -95,6 +96,7 @@ def install_skill_from_source(
         installs.append(record)
         manifest["installs"] = sorted(installs, key=lambda item: str(item.get("skill_id", "")))
         _write_install_manifest(workspace_dir, manifest)
+        next_step = build_runtime_install_hint(bundle.id, workspace_dir=workspace_dir)
         return {
             "status": "installed",
             "skill_id": bundle.id,
@@ -105,6 +107,7 @@ def install_skill_from_source(
             "source": install_source.normalized,
             "trusted": bool(record.get("trusted", False)),
             "has_scripts": bool(record.get("has_scripts", False)),
+            "next_step": next_step,
             "manifest_path": str(_install_manifest_path(workspace_dir)),
         }
 

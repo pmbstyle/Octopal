@@ -403,3 +403,39 @@ scope: worker
 
     assert "is not ready" in result
     assert "not trusted yet" in result
+
+
+def test_run_skill_script_blocks_when_runtime_env_is_required(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "job-search"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: job-search
+description: Search jobs
+scope: worker
+metadata:
+  {
+    "broodmind": {
+      "runtime": {
+        "python": {
+          "packages": ["python-jobspy"]
+        }
+      }
+    }
+  }
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "jobspy.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    result = _tool_run_skill_script(
+        {"skill_id": "job-search", "script": "jobspy.py"},
+        {"base_dir": workspace_dir / "workers", "worker": object()},
+    )
+
+    assert "runtime env is not prepared" in result
+    assert "prepare-env job-search" in result

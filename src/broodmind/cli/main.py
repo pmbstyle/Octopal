@@ -47,6 +47,11 @@ from broodmind.tools.skills.installer import (
     update_installed_skill,
     verify_installed_skill,
 )
+from broodmind.tools.skills.runtime_envs import (
+    get_skill_env_status,
+    prepare_skill_env,
+    remove_skill_env,
+)
 from broodmind.tools import get_tools, resolve_tool_diagnostics
 from broodmind.tools.registry import ToolPolicy, ToolPolicyPipelineStep, ToolSpec
 from aiogram import Bot
@@ -1281,6 +1286,9 @@ def skill_install(
     console.print(f"[dim]Path:[/dim] {payload['path']}")
     if not bool(payload.get("trusted", True)):
         console.print("[yellow]Scripts from this imported skill are untrusted until you run `broodmind skill trust <id>`.[/yellow]")
+    next_step = str(payload.get("next_step", "")).strip()
+    if next_step:
+        console.print(f"[yellow]Next step:[/yellow] {next_step}")
 
 
 @skill_app.command("list")
@@ -1437,6 +1445,86 @@ def skill_verify(
     console.print(f"[dim]Scan status:[/dim] {scan.get('status', 'missing')}")
     console.print(f"[dim]Files scanned:[/dim] {scan.get('file_count', 0)}")
     console.print(f"[dim]Findings:[/dim] {len(findings)}")
+
+
+@skill_app.command("prepare-env")
+def skill_prepare_env(
+    skill_id: str = typer.Argument(..., help="Skill id."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Prepare an isolated runtime env for a skill."""
+    settings = load_settings()
+    try:
+        payload = prepare_skill_env(
+            skill_id,
+            workspace_dir=settings.workspace_dir.resolve(),
+        )
+    except Exception as exc:
+        if json_output:
+            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+        else:
+            console.print(f"[bold red]Skill env prepare failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from None
+
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    console.print(f"[bold green][V] Prepared skill env[/bold green] {payload['skill_id']}")
+    if payload.get("kind"):
+        console.print(f"[dim]Runtime:[/dim] {payload['kind']}")
+    if payload.get("env_dir"):
+        console.print(f"[dim]Env dir:[/dim] {payload['env_dir']}")
+
+
+@skill_app.command("remove-env")
+def skill_remove_env(
+    skill_id: str = typer.Argument(..., help="Skill id."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Remove an isolated runtime env for a skill."""
+    settings = load_settings()
+    try:
+        payload = remove_skill_env(
+            skill_id,
+            workspace_dir=settings.workspace_dir.resolve(),
+        )
+    except Exception as exc:
+        if json_output:
+            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+        else:
+            console.print(f"[bold red]Skill env remove failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from None
+
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    console.print(f"[bold green][V] Removed skill env[/bold green] {payload['skill_id']}")
+
+
+@skill_app.command("env-status")
+def skill_env_status(
+    skill_id: str = typer.Argument(..., help="Skill id."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Show isolated runtime env status for a skill."""
+    settings = load_settings()
+    payload = get_skill_env_status(skill_id, workspace_dir=settings.workspace_dir.resolve())
+
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    console.print(f"[bold cyan]Skill env status[/bold cyan] {payload['skill_id']}")
+    console.print(f"[dim]Runtime:[/dim] {payload.get('kind') or '-'}")
+    console.print(f"[dim]Status:[/dim] {payload.get('status') or '-'}")
+    reason = str(payload.get("reason", "")).strip()
+    if reason:
+        console.print(f"[dim]Reason:[/dim] {reason}")
+    next_step = str(payload.get("next_step", "")).strip()
+    if next_step:
+        console.print(f"[dim]Next step:[/dim] {next_step}")
 
 
 @skill_app.command("remove")

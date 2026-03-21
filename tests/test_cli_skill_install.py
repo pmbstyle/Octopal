@@ -264,3 +264,41 @@ description: Helps write copy
     assert allowed.exit_code == 0
     allowed_payload = json.loads(allowed.stdout)
     assert allowed_payload["status"] == "trusted"
+
+
+def test_skill_env_status_command_reports_next_step(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "job-search"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: job-search
+description: Search jobs
+metadata:
+  {
+    "broodmind": {
+      "runtime": {
+        "python": {
+          "packages": ["python-jobspy"]
+        }
+      }
+    }
+  }
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "jobspy.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "broodmind.cli.main.load_settings",
+        lambda: SimpleNamespace(workspace_dir=workspace_dir),
+    )
+
+    result = runner.invoke(app, ["skill", "env-status", "job-search", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "python"
+    assert payload["prepared"] is False
+    assert "prepare-env job-search" in payload["next_step"]
