@@ -276,7 +276,8 @@ BroodMind supports workspace-local skill bundles under `workspace/skills/<skill-
 - runs bundled scripts through a dedicated safe runner instead of raw shell
 - can install external skills with ClawHub-style commands like `uv run broodmind skill install <publisher>/<skill-pack>`
 - also accepts direct `SKILL.md` URLs and local bundle paths
-- supports installer lifecycle commands: `skill install`, `skill list`, `skill update`, `skill verify`, `skill trust`, `skill untrust`, `skill remove`
+- supports installer lifecycle commands: `skill install`, `skill list`, `skill update`, `skill verify`, `skill env-status`, `skill prepare-env`, `skill remove-env`, `skill trust`, `skill untrust`, `skill remove`
+- supports isolated per-skill runtime envs for Python and JS/TS script-backed skills
 
 See [docs/skills.md](docs/skills.md) for the current format and behavior.
 

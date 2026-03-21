@@ -54,6 +54,9 @@ Supported fields today:
 - `metadata.broodmind.requires.bins`
 - `metadata.broodmind.requires.env`
 - `metadata.broodmind.requires.config`
+- `metadata.broodmind.runtime.python.packages`
+- `metadata.broodmind.runtime.node.packages`
+- `metadata.broodmind.runtime.node.packageManager`
 
 `metadata.openclaw` is also understood for compatibility when porting skill packs.
 
@@ -111,6 +114,9 @@ uv run broodmind skill install <source>
 uv run broodmind skill list
 uv run broodmind skill update <skill-id>
 uv run broodmind skill verify <skill-id>
+uv run broodmind skill env-status <skill-id>
+uv run broodmind skill prepare-env <skill-id>
+uv run broodmind skill remove-env <skill-id>
 uv run broodmind skill trust <skill-id>
 uv run broodmind skill untrust <skill-id>
 uv run broodmind skill remove <skill-id>
@@ -118,6 +124,57 @@ uv run broodmind skill remove <skill-id>
 
 `update` reinstalls from the stored source recorded in `installed.json`.
 `remove` only affects installer-managed skills and will not delete unmanaged local bundles.
+If a skill includes Python or JS/TS scripts, BroodMind may recommend `skill prepare-env <skill-id>` as the next step.
+
+### Isolated runtime envs
+
+Script-backed skills can now use isolated runtime envs stored under:
+
+```text
+workspace/.skill-envs/<skill-id>/
+```
+
+This keeps the main BroodMind environment clean while still allowing per-skill dependencies.
+
+Typical flow:
+
+```bash
+uv run broodmind skill install <source>
+uv run broodmind skill verify <skill-id>
+uv run broodmind skill trust <skill-id>
+uv run broodmind skill prepare-env <skill-id>
+```
+
+Python skills can declare packages like:
+
+```md
+metadata:
+  {
+    "broodmind": {
+      "runtime": {
+        "python": {
+          "packages": ["python-jobspy"]
+        }
+      }
+    }
+  }
+```
+
+Node or TypeScript skills can declare packages like:
+
+```md
+metadata:
+  {
+    "broodmind": {
+      "runtime": {
+        "node": {
+          "packages": ["tsx"],
+          "packageManager": "npm"
+        }
+      }
+    }
+  }
+```
 
 ### Trust model for imported scripts
 
