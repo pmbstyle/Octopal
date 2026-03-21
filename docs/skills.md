@@ -11,7 +11,7 @@ Recommended structure:
 ```text
 workspace/
   skills/
-    image-lab/
+    my-skill/
       SKILL.md
       scripts/
       references/
@@ -29,16 +29,16 @@ workspace/
 
 ```md
 ---
-name: image-lab
-description: Generate or edit images
+name: my-skill
+description: Describe what this skill does
 scope: worker
 metadata:
   {
     "broodmind": {
-      "primaryEnv": "OPENAI_API_KEY",
+      "primaryEnv": "MY_API_KEY",
       "requires": {
         "bins": ["python"],
-        "env": ["OPENAI_API_KEY"]
+        "env": ["MY_API_KEY"]
       }
     }
   }
@@ -84,10 +84,10 @@ uv run broodmind skill install <source>
 Supported source styles today:
 
 ```bash
-uv run broodmind skill install zanblayde/agent-commons
-uv run broodmind skill install clawhub:zanblayde/agent-commons
-uv run broodmind skill install https://example.com/skills/writer/SKILL.md
-uv run broodmind skill install https://example.com/bundles/writer.zip
+uv run broodmind skill install publisher/skill-pack
+uv run broodmind skill install clawhub:publisher/skill-pack
+uv run broodmind skill install https://host/path/to/SKILL.md
+uv run broodmind skill install https://host/path/to/skill.zip
 uv run broodmind skill install ./local-skill
 ```
 
@@ -165,13 +165,13 @@ Refresh the report at any time with:
 uv run broodmind skill verify <skill-id>
 ```
 
-This is intentionally a review aid, not a sandbox or malware detector. It helps surface the obvious things before a human decides to trust the imported scripts.
+This is a review aid, not a sandbox or malware detector.
 
 ## ClawHub compatibility
 
 BroodMind is compatible with the ClawHub install workflow at the UX level:
 
-- ClawHub-style slug input like `zanblayde/agent-commons`
+- ClawHub-style slug input like `publisher/skill-pack`
 - `clawhub:<slug>` explicit source prefix
 - frontmatter compatibility for `metadata.openclaw`
 
@@ -220,12 +220,6 @@ Config requirements are currently checked via env vars named like:
 BROODMIND_SKILL_CONFIG_<KEY>
 ```
 
-Example:
-
-```text
-BROODMIND_SKILL_CONFIG_GITHUB_OWNER=my-org
-```
-
 ## Script execution
 
 Use `run_skill_script` to execute helpers from `scripts/`.
@@ -242,22 +236,10 @@ Example call shape:
 
 ```json
 {
-  "skill_id": "image-lab",
+  "skill_id": "my-skill",
   "script": "render.py",
   "args": ["prompt.txt"],
   "workdir": ".",
   "timeout_seconds": 60
 }
 ```
-
-## Current limits
-
-This is the current foundation, not the final platform.
-
-Still planned:
-
-- richer config sources beyond env vars
-- install/status UX
-- hot reload / watchers
-- optional import helpers for external skill packs
-- more explicit script/runtime metadata

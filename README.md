@@ -21,7 +21,7 @@ This separation improves safety and reliability: sensitive context stays with th
 - Run as a persistent AI operator over Telegram or WhatsApp
 - Plan work and delegate tasks to specialized workers
 - Execute filesystem, web, browser, shell, and MCP tools under policy controls
-- Create and reuse worker templates, MCP server connections, and skills([SKILL.md](https://agentskills.io/home))
+- Create and reuse worker templates, MCP server connections, and `SKILL.md`-based skills
 - Maintain persistent memory, canon, and user/system identity files
 - Monitor context health and trigger structured context resets when needed
 - Schedule recurring tasks and background routines
@@ -274,9 +274,9 @@ BroodMind supports workspace-local skill bundles under `workspace/skills/<skill-
 - supports optional `scripts/`, `references/`, and `assets/`
 - exposes readiness checks for required binaries and env vars
 - runs bundled scripts through a dedicated safe runner instead of raw shell
-- can install external skills with ClawHub-style commands like `uv run broodmind skill install zanblayde/agent-commons`
+- can install external skills with ClawHub-style commands like `uv run broodmind skill install <publisher>/<skill-pack>`
 - also accepts direct `SKILL.md` URLs and local bundle paths
-- supports installer lifecycle commands: `skill install`, `skill list`, `skill update`, `skill remove`
+- supports installer lifecycle commands: `skill install`, `skill list`, `skill update`, `skill verify`, `skill trust`, `skill untrust`, `skill remove`
 
 See [docs/skills.md](docs/skills.md) for the current format and behavior.
 
