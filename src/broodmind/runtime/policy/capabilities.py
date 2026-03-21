@@ -15,6 +15,7 @@ DEFAULT_CAPABILITY_WHITELIST: dict[str, list[str]] = {
     "mcp_exec": ["*"],
     "mcp_manage": ["worker"],
     "skill_use": ["worker"],
+    "skill_exec": ["worker", "python", "node"],
     "skill_manage": ["worker"],
     "email": ["*"],
     "payment": [],
