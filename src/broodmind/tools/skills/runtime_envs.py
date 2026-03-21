@@ -21,6 +21,12 @@ def detect_skill_runtime(bundle: SkillBundle) -> dict[str, Any]:
     has_node_scripts = any(suffix in _NODE_SCRIPT_SUFFIXES for suffix in script_suffixes)
     python_packages = list(bundle.metadata.runtime.python.packages)
     node_packages = list(bundle.metadata.runtime.node.packages)
+    package_manager = bundle.metadata.runtime.node.package_manager
+
+    if not python_packages:
+        python_packages = _read_python_requirements(bundle.bundle_dir)
+    if not node_packages:
+        node_packages, package_manager = _read_node_package_manifest(bundle.bundle_dir, package_manager)
 
     if (has_python_scripts or python_packages) and (has_node_scripts or node_packages):
         return {
@@ -30,7 +36,7 @@ def detect_skill_runtime(bundle: SkillBundle) -> dict[str, Any]:
             "reason": "mixed python and node runtimes are not supported yet",
             "python_packages": python_packages,
             "node_packages": node_packages,
-            "package_manager": bundle.metadata.runtime.node.package_manager,
+            "package_manager": package_manager,
         }
 
     if has_python_scripts or python_packages:
@@ -52,7 +58,7 @@ def detect_skill_runtime(bundle: SkillBundle) -> dict[str, Any]:
             "reason": "",
             "python_packages": [],
             "node_packages": node_packages,
-            "package_manager": bundle.metadata.runtime.node.package_manager,
+            "package_manager": package_manager,
         }
 
     return {
@@ -283,6 +289,55 @@ def _collect_script_suffixes(scripts_dir: Path | None) -> set[str]:
     if scripts_dir is None or not scripts_dir.exists():
         return set()
     return {path.suffix.lower() for path in scripts_dir.rglob("*") if path.is_file() and path.suffix}
+
+
+def _read_python_requirements(bundle_dir: Path) -> list[str]:
+    requirements_path = bundle_dir / "requirements.txt"
+    if not requirements_path.exists() or not requirements_path.is_file():
+        return []
+    packages: list[str] = []
+    for raw_line in requirements_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(("-r", "--requirement")):
+            continue
+        packages.append(line)
+    return packages
+
+
+def _read_node_package_manifest(bundle_dir: Path, fallback_package_manager: str) -> tuple[list[str], str]:
+    package_json_path = bundle_dir / "package.json"
+    if not package_json_path.exists() or not package_json_path.is_file():
+        return [], fallback_package_manager
+    try:
+        payload = json.loads(package_json_path.read_text(encoding="utf-8"))
+    except Exception:
+        return [], fallback_package_manager
+    if not isinstance(payload, dict):
+        return [], fallback_package_manager
+
+    packages: list[str] = []
+    for key in ("dependencies", "devDependencies", "optionalDependencies"):
+        block = payload.get(key)
+        if not isinstance(block, dict):
+            continue
+        for package_name, package_version in block.items():
+            name = str(package_name).strip()
+            version = str(package_version).strip()
+            if not name:
+                continue
+            packages.append(f"{name}@{version}" if version else name)
+
+    package_manager = _normalize_node_package_manager(payload.get("packageManager"), fallback_package_manager)
+    return packages, package_manager
+
+
+def _normalize_node_package_manager(value: Any, fallback: str) -> str:
+    raw = str(value or fallback or "npm").strip().lower()
+    if raw.startswith("npm@"):
+        return "npm"
+    return raw if raw in {"npm"} else "npm"
 
 
 def _prepare_python_env(env_dir: Path, packages: list[str]) -> None:

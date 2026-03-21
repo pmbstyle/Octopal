@@ -176,6 +176,11 @@ metadata:
   }
 ```
 
+For third-party skills without BroodMind runtime metadata, BroodMind also falls back to:
+
+- `requirements.txt` for Python package lists
+- `package.json` `dependencies` and `devDependencies` for Node or TypeScript skills
+
 ### Trust model for imported scripts
 
 BroodMind treats imported script-backed skills more carefully than local ones.

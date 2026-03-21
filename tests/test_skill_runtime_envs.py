@@ -142,3 +142,67 @@ metadata:
     assert payload["kind"] == "node"
     manifest = json.loads((workspace_dir / ".skill-envs" / "ui-helper" / "env.json").read_text(encoding="utf-8"))
     assert manifest["node_packages"] == ["tsx"]
+
+
+def test_get_skill_env_status_reads_python_requirements_txt_without_metadata(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "reporter"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: reporter
+description: Build reports
+---
+""",
+        encoding="utf-8",
+    )
+    (skill_dir / "requirements.txt").write_text(
+        """
+# comment
+requests==2.32.0
+rich>=13
+""".strip(),
+        encoding="utf-8",
+    )
+    (scripts_dir / "report.py").write_text("print('ok')\n", encoding="utf-8")
+
+    status = get_skill_env_status("reporter", workspace_dir=workspace_dir)
+
+    assert status["kind"] == "python"
+    assert status["required"] is True
+    assert status["python_packages"] == ["requests==2.32.0", "rich>=13"]
+
+
+def test_get_skill_env_status_reads_package_json_without_metadata(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "ui-helper"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: ui-helper
+description: Run TS helpers
+---
+""",
+        encoding="utf-8",
+    )
+    (skill_dir / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "ui-helper",
+                "packageManager": "npm@10.8.0",
+                "dependencies": {"chalk": "^5.4.0"},
+                "devDependencies": {"tsx": "^4.19.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (scripts_dir / "helper.ts").write_text("console.log('ok')\n", encoding="utf-8")
+
+    status = get_skill_env_status("ui-helper", workspace_dir=workspace_dir)
+
+    assert status["kind"] == "node"
+    assert status["required"] is True
+    assert status["package_manager"] == "npm"
+    assert status["node_packages"] == ["chalk@^5.4.0", "tsx@^4.19.0"]
