@@ -233,3 +233,71 @@ description: Helps write copy
     )
 
     assert "must stay inside the skill scripts directory" in result
+
+
+def test_list_skills_reports_not_ready_requirements(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "image-lab"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: image-lab
+description: Generate images
+metadata:
+  {
+    "broodmind": {
+      "primaryEnv": "OPENAI_API_KEY",
+      "requires": {
+        "bins": ["definitely_missing_binary"],
+        "env": ["OPENAI_API_KEY"]
+      }
+    }
+  }
+---
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    payload = json.loads(_tool_list_skills({}, {}))
+
+    assert payload["skills"][0]["status"] == "not_ready"
+    assert payload["skills"][0]["ready"] is False
+    assert payload["skills"][0]["missing_bins"] == ["definitely_missing_binary"]
+    assert payload["skills"][0]["missing_env"] == ["OPENAI_API_KEY"]
+
+
+def test_run_skill_script_blocks_when_skill_is_not_ready(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "image-lab"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: image-lab
+description: Generate images
+scope: worker
+metadata:
+  {
+    "broodmind": {
+      "requires": {
+        "env": ["OPENAI_API_KEY"]
+      }
+    }
+  }
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "noop.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    result = _tool_run_skill_script(
+        {"skill_id": "image-lab", "script": "noop.py"},
+        {"base_dir": workspace_dir / "workers", "worker": object()},
+    )
+
+    assert "is not ready" in result
+    assert "OPENAI_API_KEY" in result

@@ -203,6 +203,7 @@ def _tool_list_skills(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                 "exists": bool(raw.get("exists", False)),
                 "source": str(raw.get("source", "registry")),
                 "auto_discovered": bool(raw.get("auto_discovered", False)),
+                **_evaluate_skill_status(raw),
             }
         )
     payload = {
@@ -313,6 +314,11 @@ def _tool_run_skill_script(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         return f"run_skill_script error: skill '{skill_id}' not found."
     if not bool(skill_data.get("enabled", True)):
         return f"run_skill_script error: skill '{skill_id}' is disabled."
+    readiness = _evaluate_skill_status(skill_data)
+    if not bool(readiness.get("ready", False)):
+        reasons = readiness.get("reasons", [])
+        reason_suffix = f" Reasons: {', '.join(str(item) for item in reasons)}" if reasons else ""
+        return f"run_skill_script error: skill '{skill_id}' is not ready.{reason_suffix}"
 
     scope = str(skill_data.get("scope", "both")).strip().lower() or "both"
     caller_scope = _caller_scope(ctx)
@@ -424,6 +430,7 @@ def _run_skill(skill_data: dict[str, Any], args: dict[str, Any], ctx: dict[str, 
         "scope": scope,
         "path": str(skill_data.get("path", "")),
         "source": str(skill_data.get("source", "registry")),
+        **_evaluate_skill_status(skill_data),
         "task": task,
         "input": input_payload if isinstance(input_payload, (dict, list, str, int, float, bool)) else None,
         "truncated": truncated,
@@ -596,6 +603,11 @@ def _skill_record_from_bundle(
         "references_dir": str(bundle.references_dir) if bundle.references_dir else "",
         "assets_dir": str(bundle.assets_dir) if bundle.assets_dir else "",
         "registry_path": bundle.registry_path or "",
+        "primary_env": bundle.metadata.primary_env or "",
+        "homepage": bundle.metadata.homepage or "",
+        "requires_bins": list(bundle.metadata.requires.bins),
+        "requires_env": list(bundle.metadata.requires.env),
+        "requires_config": list(bundle.metadata.requires.config),
     }
 
 
@@ -615,12 +627,93 @@ def _skill_record_from_registry(workspace_dir: Path, raw: dict[str, Any]) -> dic
         "references_dir": "",
         "assets_dir": "",
         "registry_path": str(raw.get("path", "")).strip(),
+        "primary_env": "",
+        "homepage": "",
+        "requires_bins": [],
+        "requires_env": [],
+        "requires_config": [],
     }
 
 
 def _resolve_scope_value(value: Any) -> str:
     scope = str(value or "both").strip().lower() or "both"
     return scope if scope in {"queen", "worker", "both"} else "both"
+
+
+def _evaluate_skill_status(skill_data: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(skill_data.get("enabled", True))
+    exists = bool(skill_data.get("exists", False))
+    missing_bins = _missing_binaries(skill_data.get("requires_bins"))
+    missing_env = _missing_env_vars(skill_data.get("requires_env"))
+    missing_config = _missing_config_requirements(skill_data.get("requires_config"))
+
+    reasons: list[str] = []
+    if not exists:
+        reasons.append("missing SKILL.md")
+    if missing_bins:
+        reasons.append("missing binaries: " + ", ".join(missing_bins))
+    if missing_env:
+        reasons.append("missing env: " + ", ".join(missing_env))
+    if missing_config:
+        reasons.append("missing config: " + ", ".join(missing_config))
+
+    if not enabled:
+        status = "disabled"
+        ready = False
+    elif reasons:
+        status = "not_ready"
+        ready = False
+    else:
+        status = "ready"
+        ready = True
+
+    return {
+        "status": status,
+        "ready": ready,
+        "missing_bins": missing_bins,
+        "missing_env": missing_env,
+        "missing_config": missing_config,
+        "reasons": reasons,
+    }
+
+
+def _missing_binaries(value: Any) -> list[str]:
+    missing: list[str] = []
+    for item in _normalize_string_list(value):
+        if shutil.which(item):
+            continue
+        missing.append(item)
+    return missing
+
+
+def _missing_env_vars(value: Any) -> list[str]:
+    missing: list[str] = []
+    for item in _normalize_string_list(value):
+        if os.getenv(item):
+            continue
+        missing.append(item)
+    return missing
+
+
+def _missing_config_requirements(value: Any) -> list[str]:
+    missing: list[str] = []
+    for item in _normalize_string_list(value):
+        env_key = f"BROODMIND_SKILL_CONFIG_{item.upper()}"
+        if os.getenv(env_key):
+            continue
+        missing.append(item)
+    return missing
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    normalized: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            normalized.append(text)
+    return normalized
 
 
 def _resolve_skill_script_path(scripts_dir: Path, script_raw: str) -> Path:

@@ -265,6 +265,18 @@ Communication channels, by default, provide full support of functions like:
 Dashboard provides a complete view of what's happening within a system in real-time.
 Built-in Tailscale tunneling and token-based authentication prevent unauthorised access.
 
+### 🧩 Skills and skill bundles
+
+BroodMind supports workspace-local skill bundles under `workspace/skills/<skill-id>/`.
+
+- auto-discovers `SKILL.md` bundles
+- keeps `skills/registry.json` as a compatibility layer
+- supports optional `scripts/`, `references/`, and `assets/`
+- exposes readiness checks for required binaries and env vars
+- runs bundled scripts through a dedicated safe runner instead of raw shell
+
+See [docs/skills.md](docs/skills.md) for the current format and behavior.
+
 ## Troubleshooting
 
 ### Telegram bot starts but does not reply
