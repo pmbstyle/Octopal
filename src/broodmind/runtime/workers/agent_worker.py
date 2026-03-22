@@ -215,6 +215,13 @@ Available tools:
 
 When you need to use a tool, the system will automatically call it for you. Just indicate what you want to do in your response.
 
+Skill usage:
+- BroodMind skills are internal tools, not MCP servers.
+- Use list_skills to discover available skills and their readiness/runtime status.
+- Use skill_<id> to read a skill's guidance from SKILL.md.
+- If a skill includes bundled scripts, use run_skill_script to execute them.
+- Do not use exec_run for scripts that belong to a skill bundle unless run_skill_script is unavailable.
+
 When you have completed the task, respond with:
 {{
   "type": "result",

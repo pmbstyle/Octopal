@@ -9,6 +9,7 @@ from broodmind.tools.skills.management import (
     _tool_run_skill_script,
     _tool_add_skill,
     _tool_list_skills,
+    _run_skill,
     remove_skill,
     set_skill_trust,
     get_registered_skill_tools,
@@ -161,6 +162,30 @@ description: Helps write copy
 
     assert [tool.name for tool in tools] == ["skill_writer"]
     assert "Helps write copy" in tools[0].description
+
+
+def test_run_skill_payload_includes_usage_hints_for_script_skill(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "noop.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    inventory = _load_skill_inventory(workspace_dir)
+    payload = json.loads(_run_skill(inventory[0], {}, {"worker": object()}))
+
+    assert payload["scripts_available"] is True
+    assert "not MCP servers" in payload["usage_hint"]
+    assert "run_skill_script" in payload["script_usage_hint"]
 
 
 def test_skill_management_tools_include_run_skill_script() -> None:

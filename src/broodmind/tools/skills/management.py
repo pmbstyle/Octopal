@@ -49,7 +49,7 @@ def get_skill_management_tools() -> list[ToolSpec]:
     return [
         ToolSpec(
             name="list_skills",
-            description="List internal skills from registry and auto-discovered skill bundles.",
+            description="List internal BroodMind skills from registry and auto-discovered bundles. Skills are internal tools, not MCP servers.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -102,7 +102,7 @@ def get_skill_management_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="run_skill_script",
-            description="Run a script from a skill bundle scripts/ directory without invoking a shell.",
+            description="Run a script from a BroodMind skill bundle scripts/ directory without invoking a shell. Prefer this over exec_run for skill scripts.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -162,7 +162,9 @@ def get_registered_skill_tools() -> list[ToolSpec]:
                 name=tool_name,
                 description=(
                     f"Apply internal skill '{name}'. "
-                    f"{description}" + (f" Scope: {scope}." if scope in {"queen", "worker", "both"} else "")
+                    f"{description}"
+                    + (" Use run_skill_script for bundled scripts." if bool(raw.get("has_scripts", False)) or bool(raw.get("scripts_dir", "")) else "")
+                    + (f" Scope: {scope}." if scope in {"queen", "worker", "both"} else "")
                 ),
                 parameters={
                     "type": "object",
@@ -470,6 +472,16 @@ def _run_skill(skill_data: dict[str, Any], args: dict[str, Any], ctx: dict[str, 
         "runtime_recommended": bool(skill_data.get("runtime_recommended", False)),
         "runtime_prepared": bool(skill_data.get("runtime_prepared", False)),
         "runtime_next_step": str(skill_data.get("runtime_next_step", "")),
+        "scripts_available": bool(skill_data.get("has_scripts", False)),
+        "usage_hint": (
+            "Skills are internal BroodMind tools, not MCP servers. Read this guidance first. "
+            "If the skill includes scripts, run them with run_skill_script instead of exec_run."
+        ),
+        "script_usage_hint": (
+            f"Use run_skill_script with skill_id='{skill_data.get('id', '')}'."
+            if bool(skill_data.get("has_scripts", False))
+            else ""
+        ),
         **_evaluate_skill_status(skill_data),
         "task": task,
         "input": input_payload if isinstance(input_payload, (dict, list, str, int, float, bool)) else None,
