@@ -13,6 +13,7 @@ import httpx
 
 from broodmind.tools.skills.bundles import SkillBundle, load_skill_bundle
 from broodmind.tools.skills.management import ensure_skills_layout
+from broodmind.tools.skills.runtime_envs import get_skill_env_status, prepare_skill_env
 from broodmind.tools.skills.scanner import scan_skill_bundle
 
 _DEFAULT_CLAWHUB_SITE = "https://clawhub.ai"
@@ -95,6 +96,8 @@ def install_skill_from_source(
         installs.append(record)
         manifest["installs"] = sorted(installs, key=lambda item: str(item.get("skill_id", "")))
         _write_install_manifest(workspace_dir, manifest)
+        env_result = _auto_prepare_skill_env(bundle.id, workspace_dir=workspace_dir)
+        next_steps = _install_next_steps(record, env_result)
         return {
             "status": "installed",
             "skill_id": bundle.id,
@@ -105,6 +108,11 @@ def install_skill_from_source(
             "source": install_source.normalized,
             "trusted": bool(record.get("trusted", False)),
             "has_scripts": bool(record.get("has_scripts", False)),
+            "verified": True,
+            "env_prepared": bool(env_result.get("prepared", False)),
+            "env_kind": str(env_result.get("kind", "")),
+            "env_error": str(env_result.get("error", "")),
+            "next_steps": next_steps,
             "manifest_path": str(_install_manifest_path(workspace_dir)),
         }
 
@@ -253,6 +261,39 @@ def verify_installed_skill(skill_id: str, *, workspace_dir: Path) -> dict[str, A
         "script_scan": updated_record.get("script_scan", {}),
         "manifest_path": str(_install_manifest_path(workspace_dir)),
     }
+
+
+def _auto_prepare_skill_env(skill_id: str, *, workspace_dir: Path) -> dict[str, Any]:
+    status = get_skill_env_status(skill_id, workspace_dir=workspace_dir)
+    kind = str(status.get("kind", "")).strip()
+    if not kind:
+        return {"prepared": False, "kind": "", "error": ""}
+    if str(status.get("status", "")) == "unsupported":
+        return {"prepared": False, "kind": kind, "error": str(status.get("reason", ""))}
+    if bool(status.get("prepared", False)):
+        return {"prepared": True, "kind": kind, "error": ""}
+    try:
+        payload = prepare_skill_env(skill_id, workspace_dir=workspace_dir)
+        return {
+            "prepared": bool(payload.get("status") == "prepared"),
+            "kind": str(payload.get("kind", kind)),
+            "error": "",
+        }
+    except Exception as exc:
+        return {
+            "prepared": False,
+            "kind": kind,
+            "error": str(exc),
+        }
+
+
+def _install_next_steps(record: dict[str, Any], env_result: dict[str, Any]) -> list[str]:
+    next_steps: list[str] = []
+    if str(env_result.get("kind", "")).strip() and not bool(env_result.get("prepared", False)):
+        next_steps.append(f"uv run broodmind skill prepare-env {record['skill_id']}")
+    if bool(record.get("has_scripts", False)) and not bool(record.get("trusted", True)):
+        next_steps.append(f"uv run broodmind skill trust {record['skill_id']}")
+    return next_steps
 
 
 def _materialize_install_source(

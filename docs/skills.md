@@ -54,6 +54,9 @@ Supported fields today:
 - `metadata.broodmind.requires.bins`
 - `metadata.broodmind.requires.env`
 - `metadata.broodmind.requires.config`
+- `metadata.broodmind.runtime.python.packages`
+- `metadata.broodmind.runtime.node.packages`
+- `metadata.broodmind.runtime.node.packageManager`
 
 `metadata.openclaw` is also understood for compatibility when porting skill packs.
 
@@ -97,7 +100,7 @@ Installed skills are copied into `workspace/skills/<skill-id>/` and tracked in:
 workspace/skills/installed.json
 ```
 
-You can inspect installer-managed entries with:
+You can inspect all discovered skills, including local bundles and installer-managed entries, with:
 
 ```bash
 uv run broodmind skill list
@@ -110,19 +113,74 @@ Lifecycle commands:
 uv run broodmind skill install <source>
 uv run broodmind skill list
 uv run broodmind skill update <skill-id>
-uv run broodmind skill verify <skill-id>
 uv run broodmind skill trust <skill-id>
 uv run broodmind skill untrust <skill-id>
 uv run broodmind skill remove <skill-id>
 ```
 
 `update` reinstalls from the stored source recorded in `installed.json`.
-`remove` only affects installer-managed skills and will not delete unmanaged local bundles.
+`remove` works for both installer-managed skills and local workspace skills. For local bundles, it removes the bundle from `workspace/skills/<skill-id>/` when possible.
+For script-backed skills, install and update automatically scan scripts and prepare an isolated runtime env when possible.
+
+### Isolated runtime envs
+
+Script-backed skills now require isolated runtime envs stored under:
+
+```text
+workspace/.skill-envs/<skill-id>/
+```
+
+This keeps the main BroodMind environment clean while still allowing per-skill dependencies.
+Any skill with scripts must be prepared before `run_skill_script` will execute it, but installer-managed skills now do this automatically during install and update.
+
+Typical flow:
+
+```bash
+uv run broodmind skill install <source>
+uv run broodmind skill trust <skill-id>
+```
+
+Python skills can declare packages like:
+
+```md
+metadata:
+  {
+    "broodmind": {
+      "runtime": {
+        "python": {
+          "packages": ["python-jobspy"]
+        }
+      }
+    }
+  }
+```
+
+Node or TypeScript skills can declare packages like:
+
+```md
+metadata:
+  {
+    "broodmind": {
+      "runtime": {
+        "node": {
+          "packages": ["tsx"],
+          "packageManager": "npm"
+        }
+      }
+    }
+  }
+```
+
+For third-party skills without BroodMind runtime metadata, BroodMind also falls back to:
+
+- `requirements.txt` for Python package lists
+- `package.json` `dependencies` and `devDependencies` for Node or TypeScript skills
 
 ### Trust model for imported scripts
 
 BroodMind treats imported script-backed skills more carefully than local ones.
 
+- local workspace skills are trusted by default
 - local installs from a folder, local `SKILL.md`, or local `.zip` are trusted by default
 - external installs from ClawHub or remote URLs are untrusted by default when they include `scripts/`
 - untrusted imported scripts stay visible in the skill inventory, but `run_skill_script` will refuse to execute them
@@ -145,13 +203,13 @@ To block script execution again:
 uv run broodmind skill untrust <skill-id>
 ```
 
-This trust flag only affects script execution. The skill guidance in `SKILL.md` can still be read and used.
+This trust flag affects script execution for both imported and local script-backed skills. The skill guidance in `SKILL.md` can still be read and used.
 
 ### Verification scan
 
 Installer-managed skills now keep a lightweight verification report in `installed.json`.
 
-The scan currently records:
+Install and update run this scan automatically. The scan currently records:
 
 - hashes and sizes for files inside `scripts/`
 - heuristic findings for network calls
@@ -159,10 +217,11 @@ The scan currently records:
 - destructive file operations
 - runtime package installation
 
-Refresh the report at any time with:
+If you need to repair a local or manually edited skill env, these maintenance commands are still available:
 
 ```bash
-uv run broodmind skill verify <skill-id>
+uv run broodmind skill prepare-env <skill-id>
+uv run broodmind skill remove-env <skill-id>
 ```
 
 This is a review aid, not a sandbox or malware detector.

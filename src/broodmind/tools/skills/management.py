@@ -17,6 +17,11 @@ from broodmind.tools.skills.bundles import (
     discover_skill_bundle_dirs,
     load_skill_bundle,
 )
+from broodmind.tools.skills.runtime_envs import (
+    get_skill_env_status,
+    remove_skill_env,
+    resolve_skill_runtime_execution,
+)
 from broodmind.tools.registry import ToolSpec
 
 logger = structlog.get_logger(__name__)
@@ -44,7 +49,7 @@ def get_skill_management_tools() -> list[ToolSpec]:
     return [
         ToolSpec(
             name="list_skills",
-            description="List internal skills from registry and auto-discovered skill bundles.",
+            description="List internal BroodMind skills from registry and auto-discovered bundles. Skills are internal tools, not MCP servers.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -82,6 +87,32 @@ def get_skill_management_tools() -> list[ToolSpec]:
             handler=_tool_add_skill,
         ),
         ToolSpec(
+            name="use_skill",
+            description="Read guidance from an internal BroodMind skill by id. Prefer this generic tool for workers instead of hardcoding dynamic skill_<id> tools.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_id": {"type": "string", "description": "Skill id to read guidance from."},
+                    "task": {
+                        "type": "string",
+                        "description": "Optional task context to pair with the skill guidance.",
+                    },
+                    "input": {
+                        "type": "object",
+                        "description": "Optional structured input context for this skill run.",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Max characters to return from SKILL.md (200-200000).",
+                    },
+                },
+                "required": ["skill_id"],
+                "additionalProperties": False,
+            },
+            permission="skill_use",
+            handler=_tool_use_skill,
+        ),
+        ToolSpec(
             name="remove_skill",
             description="Remove a skill from the internal registry by id.",
             parameters={
@@ -97,7 +128,7 @@ def get_skill_management_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="run_skill_script",
-            description="Run a script from a skill bundle scripts/ directory without invoking a shell.",
+            description="Run a script from a BroodMind skill bundle scripts/ directory without invoking a shell. Prefer this over exec_run for skill scripts.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -157,7 +188,9 @@ def get_registered_skill_tools() -> list[ToolSpec]:
                 name=tool_name,
                 description=(
                     f"Apply internal skill '{name}'. "
-                    f"{description}" + (f" Scope: {scope}." if scope in {"queen", "worker", "both"} else "")
+                    f"{description}"
+                    + (" Use run_skill_script for bundled scripts." if bool(raw.get("has_scripts", False)) or bool(raw.get("scripts_dir", "")) else "")
+                    + (f" Scope: {scope}." if scope in {"queen", "worker", "both"} else "")
                 ),
                 parameters={
                     "type": "object",
@@ -187,6 +220,24 @@ def get_registered_skill_tools() -> list[ToolSpec]:
 def _tool_list_skills(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     workspace_dir = _workspace_root()
     include_disabled = bool(args.get("include_disabled", False))
+    payload = list_skill_inventory(workspace_dir, include_disabled=include_disabled)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _tool_use_skill(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    workspace_dir = _workspace_root()
+    skill_id = str(args.get("skill_id", "")).strip()
+    if not _SKILL_ID_RE.fullmatch(skill_id):
+        return "use_skill error: skill_id must match ^[a-z0-9][a-z0-9_-]*$."
+    skill_data = next((item for item in _load_skill_inventory(workspace_dir) if str(item.get("id", "")) == skill_id), None)
+    if skill_data is None:
+        return f"use_skill error: skill '{skill_id}' not found."
+    if not bool(skill_data.get("enabled", True)):
+        return f"use_skill error: skill '{skill_id}' is disabled."
+    return _run_skill(skill_data, args, ctx)
+
+
+def list_skill_inventory(workspace_dir: Path, *, include_disabled: bool = True) -> dict[str, Any]:
     listed: list[dict[str, Any]] = []
     for raw in _load_skill_inventory(workspace_dir):
         enabled = bool(raw.get("enabled", True))
@@ -210,15 +261,19 @@ def _tool_list_skills(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                 "installed_source_kind": str(raw.get("installed_source_kind", "")),
                 "scan_status": str(raw.get("scan_status", "")),
                 "scan_findings_count": int(raw.get("scan_findings_count", 0)),
+                "runtime_kind": str(raw.get("runtime_kind", "")),
+                "runtime_required": bool(raw.get("runtime_required", False)),
+                "runtime_recommended": bool(raw.get("runtime_recommended", False)),
+                "runtime_prepared": bool(raw.get("runtime_prepared", False)),
+                "runtime_next_step": str(raw.get("runtime_next_step", "")),
                 **_evaluate_skill_status(raw),
             }
         )
-    payload = {
+    return {
         "count": len(listed),
         "registry_path": str(_registry_path(workspace_dir)),
         "skills": listed,
     }
-    return json.dumps(payload, ensure_ascii=False)
 
 
 def _tool_add_skill(args: dict[str, Any], ctx: dict[str, Any]) -> str:
@@ -290,24 +345,11 @@ def _tool_remove_skill(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     skill_id = str(args.get("id", "")).strip()
     if not _SKILL_ID_RE.fullmatch(skill_id):
         return "remove_skill error: id must match ^[a-z0-9][a-z0-9_-]*$."
-
-    registry = _load_registry(workspace_dir)
-    skills = [item for item in registry.get("skills", []) if isinstance(item, dict)]
-    kept = [item for item in skills if str(item.get("id", "")) != skill_id]
-    if len(kept) == len(skills):
-        return f"remove_skill error: skill '{skill_id}' not found."
-
-    registry["skills"] = kept
-    _write_registry(workspace_dir, registry)
-    return json.dumps(
-        {
-            "status": "removed",
-            "id": skill_id,
-            "registry_path": str(_registry_path(workspace_dir)),
-            "message": f"Skill '{skill_id}' removed from registry.",
-        },
-        ensure_ascii=False,
-    )
+    try:
+        payload = remove_skill(skill_id, workspace_dir=workspace_dir)
+    except ValueError as exc:
+        return f"remove_skill error: {exc}"
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _tool_run_skill_script(args: dict[str, Any], ctx: dict[str, Any]) -> str:
@@ -360,7 +402,13 @@ def _tool_run_skill_script(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
     runner = str(args.get("runner", "")).strip().lower()
     try:
-        command = _build_skill_script_command(script_path, runner)
+        runtime_execution = resolve_skill_runtime_execution(
+            skill_id,
+            workspace_dir=workspace_dir,
+            script_path=script_path,
+            explicit_runner=runner,
+        )
+        command = runtime_execution["runner"] or _build_skill_script_command(script_path, runner)
     except ValueError as exc:
         return f"run_skill_script error: {exc}"
 
@@ -379,6 +427,7 @@ def _tool_run_skill_script(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             text=True,
             timeout=timeout_seconds,
             shell=False,
+            env=runtime_execution.get("env"),
         )
     except subprocess.TimeoutExpired:
         return f"run_skill_script error: script timed out after {timeout_seconds}s."
@@ -444,6 +493,21 @@ def _run_skill(skill_data: dict[str, Any], args: dict[str, Any], ctx: dict[str, 
         "installed_source_kind": str(skill_data.get("installed_source_kind", "")),
         "scan_status": str(skill_data.get("scan_status", "")),
         "scan_findings_count": int(skill_data.get("scan_findings_count", 0)),
+        "runtime_kind": str(skill_data.get("runtime_kind", "")),
+        "runtime_required": bool(skill_data.get("runtime_required", False)),
+        "runtime_recommended": bool(skill_data.get("runtime_recommended", False)),
+        "runtime_prepared": bool(skill_data.get("runtime_prepared", False)),
+        "runtime_next_step": str(skill_data.get("runtime_next_step", "")),
+        "scripts_available": bool(skill_data.get("has_scripts", False)),
+        "usage_hint": (
+            "Skills are internal BroodMind tools, not MCP servers. Read this guidance first. "
+            "If the skill includes scripts, run them with run_skill_script instead of exec_run."
+        ),
+        "script_usage_hint": (
+            f"Use run_skill_script with skill_id='{skill_data.get('id', '')}'."
+            if bool(skill_data.get("has_scripts", False))
+            else ""
+        ),
         **_evaluate_skill_status(skill_data),
         "task": task,
         "input": input_payload if isinstance(input_payload, (dict, list, str, int, float, bool)) else None,
@@ -569,15 +633,14 @@ def _load_skill_inventory(workspace_dir: Path) -> list[dict[str, Any]]:
         bundle = _load_registry_bundle(workspace_dir, raw)
         skill_id = str(raw.get("id", "")).strip()
         if bundle is not None:
-            inventory_by_id[bundle.id] = _merge_installed_metadata(
-                _skill_record_from_bundle(
-                    workspace_dir,
-                    bundle,
-                    source="registry",
-                    auto_discovered=False,
-                ),
-                installed_by_id.get(bundle.id),
+            record = _skill_record_from_bundle(
+                workspace_dir,
+                bundle,
+                source="registry",
+                auto_discovered=False,
             )
+            record["trusted"] = bool(raw.get("trusted", True))
+            inventory_by_id[bundle.id] = _merge_installed_metadata(record, installed_by_id.get(bundle.id))
             continue
         if not _SKILL_ID_RE.fullmatch(skill_id):
             continue
@@ -637,6 +700,16 @@ def _skill_record_from_bundle(
         "requires_bins": list(bundle.metadata.requires.bins),
         "requires_env": list(bundle.metadata.requires.env),
         "requires_config": list(bundle.metadata.requires.config),
+        "installer_managed": False,
+        "trusted": True,
+        "has_scripts": bool(bundle.scripts_dir),
+        "scan_status": "clean" if bool(bundle.scripts_dir) else "no_scripts",
+        "scan_findings_count": 0,
+        "runtime_kind": "",
+        "runtime_required": False,
+        "runtime_recommended": False,
+        "runtime_prepared": False,
+        "runtime_next_step": "",
     }
 
 
@@ -648,6 +721,7 @@ def _skill_record_from_registry(workspace_dir: Path, raw: dict[str, Any]) -> dic
         "path": str(raw.get("path", "")).strip(),
         "scope": _resolve_scope_value(raw.get("scope")),
         "enabled": bool(raw.get("enabled", True)),
+        "trusted": bool(raw.get("trusted", True)),
         "exists": _skill_path_exists(workspace_dir, raw),
         "source": "registry",
         "auto_discovered": False,
@@ -664,6 +738,11 @@ def _skill_record_from_registry(workspace_dir: Path, raw: dict[str, Any]) -> dic
         "installer_managed": False,
         "trusted": True,
         "has_scripts": False,
+        "runtime_kind": "",
+        "runtime_required": False,
+        "runtime_recommended": False,
+        "runtime_prepared": False,
+        "runtime_next_step": "",
     }
 
 
@@ -688,8 +767,15 @@ def _evaluate_skill_status(skill_data: dict[str, Any]) -> dict[str, Any]:
         reasons.append("missing env: " + ", ".join(missing_env))
     if missing_config:
         reasons.append("missing config: " + ", ".join(missing_config))
-    if bool(skill_data.get("has_scripts", False)) and bool(skill_data.get("installer_managed", False)) and not bool(skill_data.get("trusted", True)):
+    has_runtime_scripts = bool(skill_data.get("has_scripts", False)) or bool(skill_data.get("runtime_kind", "")) or bool(skill_data.get("runtime_required", False))
+    if has_runtime_scripts and not bool(skill_data.get("trusted", True)):
         reasons.append("skill scripts are not trusted yet")
+    if bool(skill_data.get("runtime_required", False)) and not bool(skill_data.get("runtime_prepared", False)):
+        next_step = str(skill_data.get("runtime_next_step", "")).strip()
+        if next_step:
+            reasons.append(f"runtime env is not prepared; run `{next_step}`")
+        else:
+            reasons.append("runtime env is not prepared")
 
     if not enabled:
         status = "disabled"
@@ -712,6 +798,7 @@ def _evaluate_skill_status(skill_data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _merge_installed_metadata(skill_data: dict[str, Any], installed_record: dict[str, Any] | None) -> dict[str, Any]:
+    _merge_runtime_metadata(skill_data)
     if not isinstance(installed_record, dict):
         skill_data.setdefault("installer_managed", False)
         skill_data.setdefault("trusted", True)
@@ -730,6 +817,214 @@ def _merge_installed_metadata(skill_data: dict[str, Any], installed_record: dict
     merged["scan_status"] = str(scan.get("status", "missing")) if isinstance(scan, dict) else "missing"
     merged["scan_findings_count"] = len(findings) if isinstance(findings, list) else 0
     return merged
+
+
+def set_skill_trust(
+    skill_id: str,
+    *,
+    workspace_dir: Path,
+    trusted: bool,
+    force: bool = False,
+) -> dict[str, Any]:
+    skill_id = str(skill_id).strip()
+    if not _SKILL_ID_RE.fullmatch(skill_id):
+        raise ValueError("skill id must match ^[a-z0-9][a-z0-9_-]*$")
+
+    inventory = _load_skill_inventory(workspace_dir)
+    skill_data = next((item for item in inventory if str(item.get("id", "")) == skill_id), None)
+    if skill_data is None:
+        raise ValueError(f"skill '{skill_id}' not found")
+
+    if bool(skill_data.get("installer_managed", False)):
+        return _set_installed_skill_trust(skill_id, workspace_dir=workspace_dir, trusted=trusted, force=force)
+
+    return _set_local_skill_trust(skill_data, workspace_dir=workspace_dir, trusted=trusted)
+
+
+def remove_skill(skill_id: str, *, workspace_dir: Path) -> dict[str, Any]:
+    skill_id = str(skill_id).strip()
+    if not _SKILL_ID_RE.fullmatch(skill_id):
+        raise ValueError("skill id must match ^[a-z0-9][a-z0-9_-]*$")
+
+    inventory = _load_skill_inventory(workspace_dir)
+    skill_data = next((item for item in inventory if str(item.get("id", "")) == skill_id), None)
+    if skill_data is None:
+        raise ValueError(f"skill '{skill_id}' not found")
+
+    if bool(skill_data.get("installer_managed", False)):
+        payload = _remove_installed_skill(skill_id, workspace_dir=workspace_dir)
+        env_payload = remove_skill_env(skill_id, workspace_dir=workspace_dir)
+        payload["removed_env"] = bool(env_payload.get("removed", False))
+        return payload
+
+    removed_path = _remove_local_skill_path(skill_data, workspace_dir=workspace_dir)
+    env_payload = remove_skill_env(skill_id, workspace_dir=workspace_dir)
+    registry = _load_registry(workspace_dir)
+    registry["skills"] = [
+        item
+        for item in registry.get("skills", [])
+        if not isinstance(item, dict) or str(item.get("id", "")).strip() != skill_id
+    ]
+    _write_registry(workspace_dir, registry)
+    return {
+        "status": "removed",
+        "skill_id": skill_id,
+        "removed_path": removed_path,
+        "removed_env": bool(env_payload.get("removed", False)),
+        "installer_managed": False,
+        "manifest_path": str(_registry_path(workspace_dir)),
+    }
+
+
+def _set_local_skill_trust(skill_data: dict[str, Any], *, workspace_dir: Path, trusted: bool) -> dict[str, Any]:
+    registry = _load_registry(workspace_dir)
+    skills = [item for item in registry.get("skills", []) if isinstance(item, dict)]
+    skill_id = str(skill_data.get("id", "")).strip()
+    updated = False
+    for item in skills:
+        if str(item.get("id", "")).strip() != skill_id:
+            continue
+        item["trusted"] = bool(trusted)
+        updated = True
+        break
+    if not updated:
+        skills.append(
+            {
+                "id": skill_id,
+                "name": str(skill_data.get("name", "")).strip(),
+                "description": str(skill_data.get("description", "")).strip(),
+                "path": str(skill_data.get("path", "")).strip(),
+                "scope": _resolve_scope_value(skill_data.get("scope")),
+                "enabled": bool(skill_data.get("enabled", True)),
+                "trusted": bool(trusted),
+            }
+        )
+    registry["skills"] = sorted(skills, key=lambda item: str(item.get("id", "")))
+    _write_registry(workspace_dir, registry)
+    return {
+        "status": "trusted" if trusted else "untrusted",
+        "skill_id": skill_id,
+        "trusted": bool(trusted),
+        "installer_managed": False,
+        "manifest_path": str(_registry_path(workspace_dir)),
+    }
+
+
+def _remove_local_skill_path(skill_data: dict[str, Any], *, workspace_dir: Path) -> bool:
+    skill_path = _resolve_registered_skill_path(workspace_dir, skill_data)
+    if skill_path is None or not skill_path.exists():
+        return False
+    skills_root = (workspace_dir / "skills").resolve()
+    try:
+        skill_path.resolve().relative_to(skills_root)
+    except ValueError:
+        return False
+    bundle_dir = skill_path.parent
+    if bundle_dir == skills_root:
+        return False
+    if bundle_dir.exists():
+        shutil.rmtree(bundle_dir)
+        return True
+    return False
+
+
+def _set_installed_skill_trust(
+    skill_id: str,
+    *,
+    workspace_dir: Path,
+    trusted: bool,
+    force: bool = False,
+) -> dict[str, Any]:
+    manifest = _load_installed_manifest(workspace_dir)
+    installs = [item for item in manifest.get("installs", []) if isinstance(item, dict)]
+    updated = False
+    for item in installs:
+        if str(item.get("skill_id", "")) != skill_id:
+            continue
+        scan = item.get("script_scan")
+        scan_status = str(scan.get("status", "")).strip() if isinstance(scan, dict) else ""
+        if trusted and bool(item.get("has_scripts", False)):
+            if scan_status == "review_required" and not force:
+                raise ValueError(
+                    f"skill '{skill_id}' has script scan findings; re-run trust with --force after review"
+                )
+            if not scan_status:
+                raise ValueError(f"skill '{skill_id}' has not been verified yet")
+        item["trusted"] = bool(trusted)
+        updated = True
+        break
+    if not updated:
+        raise ValueError(f"skill '{skill_id}' is not installer-managed")
+    manifest["installs"] = installs
+    _write_installed_manifest(workspace_dir, manifest)
+    return {
+        "status": "trusted" if trusted else "untrusted",
+        "skill_id": skill_id,
+        "trusted": bool(trusted),
+        "installer_managed": True,
+        "manifest_path": str(workspace_dir / "skills" / "installed.json"),
+    }
+
+
+def _remove_installed_skill(skill_id: str, *, workspace_dir: Path) -> dict[str, Any]:
+    manifest = _load_installed_manifest(workspace_dir)
+    installs = [item for item in manifest.get("installs", []) if isinstance(item, dict)]
+    record = next((item for item in installs if str(item.get("skill_id", "")) == skill_id), None)
+    if record is None:
+        raise ValueError(f"skill '{skill_id}' is not installer-managed")
+
+    removed_path = False
+    bundle_path_raw = str(record.get("path", "")).strip()
+    if bundle_path_raw:
+        bundle_path = Path(bundle_path_raw).resolve()
+        try:
+            bundle_path.relative_to((workspace_dir / "skills").resolve())
+        except ValueError as exc:
+            raise ValueError("stored install path points outside workspace skills directory") from exc
+        bundle_dir = bundle_path.parent
+        if bundle_dir.exists():
+            shutil.rmtree(bundle_dir)
+            removed_path = True
+
+    manifest["installs"] = [item for item in installs if str(item.get("skill_id", "")) != skill_id]
+    _write_installed_manifest(workspace_dir, manifest)
+    return {
+        "status": "removed",
+        "skill_id": skill_id,
+        "removed_path": removed_path,
+        "installer_managed": True,
+        "manifest_path": str(workspace_dir / "skills" / "installed.json"),
+    }
+
+
+def _write_installed_manifest(workspace_dir: Path, payload: dict[str, Any]) -> None:
+    path = workspace_dir / "skills" / "installed.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        tmp.replace(path)
+    except PermissionError:
+        path.write_text(text, encoding="utf-8")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+
+
+def _merge_runtime_metadata(skill_data: dict[str, Any]) -> None:
+    workspace_dir = _workspace_root()
+    skill_id = str(skill_data.get("id", "")).strip()
+    if not skill_id:
+        return
+    status = get_skill_env_status(skill_id, workspace_dir=workspace_dir)
+    skill_data["runtime_kind"] = str(status.get("kind", ""))
+    skill_data["runtime_required"] = bool(status.get("required", False))
+    skill_data["runtime_recommended"] = bool(status.get("recommended", False))
+    skill_data["runtime_prepared"] = bool(status.get("prepared", False))
+    skill_data["runtime_next_step"] = str(status.get("next_step", ""))
 
 
 def _load_installed_manifest(workspace_dir: Path) -> dict[str, Any]:

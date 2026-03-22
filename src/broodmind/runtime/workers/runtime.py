@@ -251,6 +251,7 @@ class WorkerRuntime:
         env = {
             **os.environ,
             "PYTHONPATH": _pythonpath(),
+            "BROODMIND_WORKSPACE_DIR": str(self.workspace_dir.resolve()),
         }
 
         attempts = 0
@@ -466,7 +467,12 @@ class WorkerRuntime:
 
             msg_type = payload.get("type")
             if msg_type == "log":
-                logger.debug("Worker %s: %s", spec.id, payload.get("message"))
+                level = str(payload.get("level", "debug") or "debug").strip().lower()
+                message = str(payload.get("message", "") or "").strip()
+                if not message:
+                    return None
+                log_method = getattr(logger, level, logger.debug)
+                log_method("Worker %s: %s", spec.id, message)
                 return None
             if msg_type == "queen_tool_call":
                 if not self.queen:

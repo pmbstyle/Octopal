@@ -340,7 +340,7 @@ def get_worker_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="create_worker_template",
-            description="Create a new worker template by writing a worker.json file to the workspace.",
+            description="Create a new worker template by writing a worker.json file to the workspace. When a worker needs BroodMind skills, prefer generic tools like list_skills, use_skill, and run_skill_script instead of hardcoding dynamic skill_<id> tools.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -363,7 +363,7 @@ def get_worker_tools() -> list[ToolSpec]:
                     "available_tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Tool names this worker can use (e.g., ['web_search', 'web_fetch']).",
+                        "description": "Tool names this worker can use (e.g., ['web_search', 'web_fetch']). For BroodMind skills, prefer ['list_skills', 'use_skill', 'run_skill_script'] over dynamic skill_<id> tool names.",
                     },
                     "required_permissions": {
                         "type": "array",
@@ -400,7 +400,7 @@ def get_worker_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="update_worker_template",
-            description="Update an existing worker template. Reads the worker.json file, modifies the specified fields, and writes it back.",
+            description="Update an existing worker template. Reads the worker.json file, modifies the specified fields, and writes it back. For BroodMind skills, prefer generic tools like list_skills, use_skill, and run_skill_script over dynamic skill_<id> tool names.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -414,7 +414,7 @@ def get_worker_tools() -> list[ToolSpec]:
                     "available_tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "New tool list (optional).",
+                        "description": "New tool list (optional). For BroodMind skills, prefer ['list_skills', 'use_skill', 'run_skill_script'] over dynamic skill_<id> tool names.",
                     },
                     "required_permissions": {
                         "type": "array",
@@ -510,6 +510,8 @@ def _tool_create_worker_template(args: dict[str, object], ctx: dict[str, object]
     # Get optional parameters with defaults
     available_tools = args.get("available_tools") if isinstance(args.get("available_tools"), list) else []
     required_permissions = args.get("required_permissions") if isinstance(args.get("required_permissions"), list) else []
+    available_tools = _normalize_str_list(available_tools)
+    required_permissions = _infer_required_permissions(available_tools, required_permissions)
     model = str(args.get("model", "")).strip() or None
     max_thinking_steps = int(args.get("max_thinking_steps")) if args.get("max_thinking_steps") else 10
     default_timeout_seconds = int(args.get("default_timeout_seconds")) if args.get("default_timeout_seconds") else 300
@@ -586,9 +588,9 @@ def _tool_update_worker_template(args: dict[str, object], ctx: dict[str, object]
     if args.get("system_prompt"):
         existing_config["system_prompt"] = str(args.get("system_prompt")).strip()
     if isinstance(args.get("available_tools"), list):
-        existing_config["available_tools"] = args.get("available_tools")
+        existing_config["available_tools"] = _normalize_str_list(args.get("available_tools"))
     if isinstance(args.get("required_permissions"), list):
-        existing_config["required_permissions"] = args.get("required_permissions")
+        existing_config["required_permissions"] = _normalize_str_list(args.get("required_permissions"))
     if args.get("model"):
         existing_config["model"] = str(args.get("model")).strip()
     if args.get("max_thinking_steps"):
@@ -599,6 +601,12 @@ def _tool_update_worker_template(args: dict[str, object], ctx: dict[str, object]
         existing_config["can_spawn_children"] = bool(args.get("can_spawn_children"))
     if isinstance(args.get("allowed_child_templates"), list):
         existing_config["allowed_child_templates"] = _normalize_str_list(args.get("allowed_child_templates"))
+
+    existing_config["available_tools"] = _normalize_str_list(existing_config.get("available_tools"))
+    existing_config["required_permissions"] = _infer_required_permissions(
+        existing_config.get("available_tools"),
+        existing_config.get("required_permissions"),
+    )
 
     # Write updated worker.json
     try:
@@ -615,6 +623,25 @@ def _tool_update_worker_template(args: dict[str, object], ctx: dict[str, object]
         "allowed_child_templates": _normalize_str_list(existing_config.get("allowed_child_templates")),
         "message": f"Worker template '{existing_config['name']}' updated successfully at workers/{worker_id}/worker.json"
     }, ensure_ascii=False)
+
+
+def _infer_required_permissions(available_tools: object, required_permissions: object) -> list[str]:
+    normalized_permissions = _normalize_str_list(required_permissions)
+    seen = set(normalized_permissions)
+
+    from broodmind.tools.tools import get_tools
+
+    tool_names = set(_normalize_str_list(available_tools))
+    for tool in get_tools():
+        if str(tool.name).strip().lower() not in tool_names:
+            continue
+        permission = str(getattr(tool, "permission", "")).strip().lower()
+        if not permission or permission in seen:
+            continue
+        seen.add(permission)
+        normalized_permissions.append(permission)
+
+    return normalized_permissions
 
 
 def _tool_delete_worker_template(args: dict[str, object], ctx: dict[str, object]) -> str:

@@ -36,23 +36,16 @@ description: Helps write copy
     assert payload["skill_id"] == "writer"
 
 
-def test_skill_list_command_reads_installed_manifest(tmp_path: Path, monkeypatch) -> None:
+def test_skill_list_command_includes_local_skill(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
-    (workspace_dir / "skills").mkdir(parents=True)
-    (workspace_dir / "skills" / "installed.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "installs": [
-                    {
-                        "skill_id": "writer",
-                        "source": "zanblayde/agent-commons",
-                        "source_kind": "clawhub_slug",
-                        "path": str(workspace_dir / "skills" / "writer" / "SKILL.md"),
-                    }
-                ],
-            }
-        ),
+    skill_dir = workspace_dir / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -65,7 +58,8 @@ def test_skill_list_command_reads_installed_manifest(tmp_path: Path, monkeypatch
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["count"] == 1
-    assert payload["installs"][0]["skill_id"] == "writer"
+    assert payload["skills"][0]["id"] == "writer"
+    assert payload["skills"][0]["installer_managed"] is False
 
 
 def test_skill_update_command_uses_saved_source(tmp_path: Path, monkeypatch) -> None:
@@ -104,11 +98,11 @@ description: v2
     assert payload["status"] == "updated"
 
 
-def test_skill_remove_command_deletes_installed_skill(tmp_path: Path, monkeypatch) -> None:
+def test_skill_remove_command_deletes_local_skill(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
-    source_dir = tmp_path / "writer"
-    source_dir.mkdir(parents=True)
-    (source_dir / "SKILL.md").write_text(
+    skill_dir = workspace_dir / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
         """---
 name: writer
 description: Helps write copy
@@ -120,9 +114,6 @@ description: Helps write copy
         "broodmind.cli.main.load_settings",
         lambda: SimpleNamespace(workspace_dir=workspace_dir),
     )
-
-    install_result = runner.invoke(app, ["skill", "install", str(source_dir), "--json"])
-    assert install_result.exit_code == 0
 
     result = runner.invoke(app, ["skill", "remove", "writer", "--json"])
 
@@ -132,10 +123,11 @@ description: Helps write copy
     assert not (workspace_dir / "skills" / "writer").exists()
 
 
-def test_skill_trust_and_untrust_commands_toggle_manifest_state(tmp_path: Path, monkeypatch) -> None:
+def test_skill_trust_and_untrust_commands_toggle_local_skill_state(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
-    source_dir = tmp_path / "writer"
-    source_dir.mkdir(parents=True)
+    source_dir = workspace_dir / "skills" / "writer"
+    scripts_dir = source_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
     (source_dir / "SKILL.md").write_text(
         """---
 name: writer
@@ -144,13 +136,11 @@ description: Helps write copy
 """,
         encoding="utf-8",
     )
+    (scripts_dir / "noop.py").write_text("print('ok')\n", encoding="utf-8")
     monkeypatch.setattr(
         "broodmind.cli.main.load_settings",
         lambda: SimpleNamespace(workspace_dir=workspace_dir),
     )
-
-    install_result = runner.invoke(app, ["skill", "install", str(source_dir), "--json"])
-    assert install_result.exit_code == 0
 
     untrust_result = runner.invoke(app, ["skill", "untrust", "writer", "--json"])
     assert untrust_result.exit_code == 0
@@ -158,59 +148,15 @@ description: Helps write copy
     assert untrust_payload["status"] == "untrusted"
     assert untrust_payload["trusted"] is False
 
+    listed = runner.invoke(app, ["skill", "list", "--json"])
+    listed_payload = json.loads(listed.stdout)
+    assert listed_payload["skills"][0]["trusted"] is False
+
     trust_result = runner.invoke(app, ["skill", "trust", "writer", "--json"])
     assert trust_result.exit_code == 0
     trust_payload = json.loads(trust_result.stdout)
     assert trust_payload["status"] == "trusted"
     assert trust_payload["trusted"] is True
-
-
-def test_skill_verify_command_reports_scan_findings(tmp_path: Path, monkeypatch) -> None:
-    workspace_dir = tmp_path / "workspace"
-    skill_dir = workspace_dir / "skills" / "writer"
-    scripts_dir = skill_dir / "scripts"
-    scripts_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        """---
-name: writer
-description: Helps write copy
----
-""",
-        encoding="utf-8",
-    )
-    (scripts_dir / "fetch.py").write_text(
-        "import requests\nrequests.get('https://example.com')\n",
-        encoding="utf-8",
-    )
-    (workspace_dir / "skills" / "installed.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "installs": [
-                    {
-                        "skill_id": "writer",
-                        "source": "zanblayde/agent-commons",
-                        "source_kind": "clawhub_slug",
-                        "trusted": False,
-                        "has_scripts": True,
-                        "path": str(skill_dir / "SKILL.md"),
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "broodmind.cli.main.load_settings",
-        lambda: SimpleNamespace(workspace_dir=workspace_dir),
-    )
-
-    result = runner.invoke(app, ["skill", "verify", "writer", "--json"])
-
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert payload["status"] == "verified"
-    assert payload["script_scan"]["status"] == "review_required"
 
 
 def test_skill_trust_requires_force_when_scan_has_findings(tmp_path: Path, monkeypatch) -> None:
@@ -264,3 +210,49 @@ description: Helps write copy
     assert allowed.exit_code == 0
     allowed_payload = json.loads(allowed.stdout)
     assert allowed_payload["status"] == "trusted"
+
+
+def test_skill_install_command_auto_prepares_env_and_returns_trust_next_step(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "job-search"
+    source_dir = tmp_path / "job-search"
+    scripts_dir = source_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        """---
+name: job-search
+description: Search jobs
+metadata:
+  {
+    "broodmind": {
+      "runtime": {
+        "python": {
+          "packages": ["python-jobspy"]
+        }
+      }
+    }
+  }
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "jobspy.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "broodmind.cli.main.load_settings",
+        lambda: SimpleNamespace(workspace_dir=workspace_dir),
+    )
+    monkeypatch.setattr(
+        "broodmind.tools.skills.installer.prepare_skill_env",
+        lambda skill_id, workspace_dir: {
+            "status": "prepared",
+            "skill_id": skill_id,
+            "kind": "python",
+        },
+    )
+
+    result = runner.invoke(app, ["skill", "install", str(source_dir), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["env_prepared"] is True
+    assert payload["env_kind"] == "python"

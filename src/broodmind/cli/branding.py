@@ -11,7 +11,7 @@ from rich.text import Text
 
 BROOD_SILVER = "#d8dde2"
 MIND_GOLD = "#f0c15d"
-WASP_GOLD = "#ead77a"
+WASP_GOLD = "#f0c15d"
 SUBTLE_STEEL = "#5f8ea3"
 
 

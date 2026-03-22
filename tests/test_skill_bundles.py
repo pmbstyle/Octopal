@@ -147,3 +147,29 @@ description: Valid bundle
 def test_resolve_skill_bundle_metadata_handles_missing_or_invalid_json() -> None:
     assert resolve_skill_bundle_metadata({}) == SkillBundleMetadata()
     assert resolve_skill_bundle_metadata({"metadata": "not-json"}) == SkillBundleMetadata(raw={})
+
+
+def test_resolve_skill_bundle_metadata_reads_runtime_blocks() -> None:
+    metadata = resolve_skill_bundle_metadata(
+        {
+            "metadata": """
+{
+  "broodmind": {
+    "runtime": {
+      "python": {
+        "packages": ["python-jobspy"]
+      },
+      "node": {
+        "packages": ["tsx"],
+        "packageManager": "npm"
+      }
+    }
+  }
+}
+""".strip()
+        }
+    )
+
+    assert metadata.runtime.python.packages == ("python-jobspy",)
+    assert metadata.runtime.node.packages == ("tsx",)
+    assert metadata.runtime.node.package_manager == "npm"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from broodmind.tools.skills.management import (
@@ -8,6 +9,11 @@ from broodmind.tools.skills.management import (
     _tool_run_skill_script,
     _tool_add_skill,
     _tool_list_skills,
+    _tool_remove_skill,
+    _tool_use_skill,
+    _run_skill,
+    remove_skill,
+    set_skill_trust,
     get_registered_skill_tools,
     get_skill_management_tools,
 )
@@ -81,6 +87,51 @@ description: Generate images from prompts
     assert inventory[0]["description"] == "Generate images from prompts"
     assert inventory[0]["scope"] == "queen"
     assert inventory[0]["enabled"] is False
+
+
+def test_registry_skill_file_path_still_detects_bundle_scripts(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "job-search"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: job-search
+description: Search jobs
+scope: worker
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "jobspy.py").write_text("print('ok')\n", encoding="utf-8")
+    (workspace_dir / "skills" / "registry.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "skills": [
+                    {
+                        "id": "job-search",
+                        "name": "job-search",
+                        "description": "Search jobs",
+                        "path": "skills/job-search/SKILL.md",
+                        "scope": "worker",
+                        "enabled": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    inventory = _load_skill_inventory(workspace_dir)
+
+    assert len(inventory) == 1
+    assert inventory[0]["id"] == "job-search"
+    assert inventory[0]["has_scripts"] is True
+    assert inventory[0]["scripts_dir"].endswith("skills/job-search/scripts") or inventory[0]["scripts_dir"].endswith(
+        "skills\\job-search\\scripts"
+    )
 
 
 def test_load_skill_inventory_keeps_legacy_registry_skill(tmp_path: Path, monkeypatch) -> None:
@@ -160,10 +211,58 @@ description: Helps write copy
     assert "Helps write copy" in tools[0].description
 
 
+def test_run_skill_payload_includes_usage_hints_for_script_skill(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "noop.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    inventory = _load_skill_inventory(workspace_dir)
+    payload = json.loads(_run_skill(inventory[0], {}, {"worker": object()}))
+
+    assert payload["scripts_available"] is True
+    assert "not MCP servers" in payload["usage_hint"]
+    assert "run_skill_script" in payload["script_usage_hint"]
+
+
 def test_skill_management_tools_include_run_skill_script() -> None:
     tools = get_skill_management_tools()
 
     assert "run_skill_script" in [tool.name for tool in tools]
+    assert "use_skill" in [tool.name for tool in tools]
+
+
+def test_use_skill_reads_guidance_by_id(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+
+# Writer
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    payload = json.loads(_tool_use_skill({"skill_id": "writer"}, {"worker": object()}))
+
+    assert payload["skill_id"] == "writer"
+    assert "Skills are internal BroodMind tools" in payload["usage_hint"]
+    assert "# Writer" in payload["guidance"]
 
 
 def test_run_skill_script_executes_python_from_bundle_scripts_dir(tmp_path: Path, monkeypatch) -> None:
@@ -197,6 +296,30 @@ print(json.dumps(payload))
         encoding="utf-8",
     )
     monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+    monkeypatch.setattr(
+        "broodmind.tools.skills.management.get_skill_env_status",
+        lambda skill_id, workspace_dir: {
+            "skill_id": skill_id,
+            "kind": "python",
+            "required": True,
+            "recommended": True,
+            "prepared": True,
+            "status": "prepared",
+            "reason": "",
+            "manifest_path": "",
+            "next_step": "",
+            "python_packages": [],
+            "node_packages": [],
+            "package_manager": "",
+        },
+    )
+    monkeypatch.setattr(
+        "broodmind.tools.skills.management.resolve_skill_runtime_execution",
+        lambda skill_id, workspace_dir, script_path, explicit_runner: {
+            "runner": [sys.executable, str(script_path)],
+            "env": None,
+        },
+    )
 
     raw = _tool_run_skill_script(
         {"skill_id": "writer", "script": "echo_args.py", "args": ["hello"], "workdir": "."},
@@ -226,6 +349,23 @@ description: Helps write copy
     )
     (scripts_dir / "ok.py").write_text("print('ok')\n", encoding="utf-8")
     monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+    monkeypatch.setattr(
+        "broodmind.tools.skills.management.get_skill_env_status",
+        lambda skill_id, workspace_dir: {
+            "skill_id": skill_id,
+            "kind": "python",
+            "required": True,
+            "recommended": True,
+            "prepared": True,
+            "status": "prepared",
+            "reason": "",
+            "manifest_path": "",
+            "next_step": "",
+            "python_packages": [],
+            "node_packages": [],
+            "package_manager": "",
+        },
+    )
 
     result = _tool_run_skill_script(
         {"skill_id": "writer", "script": "../outside.py"},
@@ -316,7 +456,73 @@ description: Helps write copy
     assert payload["skills"][0]["status"] == "not_ready"
     assert "not trusted yet" in payload["skills"][0]["reasons"][0]
     assert payload["skills"][0]["scan_status"] == "clean"
-    assert payload["skills"][0]["scan_findings_count"] == 0
+
+
+def test_list_skills_reports_untrusted_local_scripts(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "noop.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    set_skill_trust("writer", workspace_dir=workspace_dir, trusted=False)
+    payload = json.loads(_tool_list_skills({}, {}))
+
+    assert payload["skills"][0]["installer_managed"] is False
+    assert payload["skills"][0]["trusted"] is False
+    assert payload["skills"][0]["status"] == "not_ready"
+    assert any("not trusted yet" in reason for reason in payload["skills"][0]["reasons"])
+
+
+def test_remove_skill_deletes_local_bundle(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    payload = remove_skill("writer", workspace_dir=workspace_dir)
+
+    assert payload["status"] == "removed"
+    assert payload["installer_managed"] is False
+    assert not skill_dir.exists()
+
+
+def test_tool_remove_skill_deletes_auto_discovered_local_bundle(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    payload = json.loads(_tool_remove_skill({"id": "writer"}, {}))
+
+    assert payload["status"] == "removed"
+    assert payload["skill_id"] == "writer"
+    assert not skill_dir.exists()
 
 
 def test_run_skill_script_blocks_when_skill_is_not_ready(tmp_path: Path, monkeypatch) -> None:
@@ -403,3 +609,65 @@ scope: worker
 
     assert "is not ready" in result
     assert "not trusted yet" in result
+
+
+def test_run_skill_script_blocks_when_runtime_env_is_required(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "job-search"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: job-search
+description: Search jobs
+scope: worker
+metadata:
+  {
+    "broodmind": {
+      "runtime": {
+        "python": {
+          "packages": ["python-jobspy"]
+        }
+      }
+    }
+  }
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "jobspy.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    result = _tool_run_skill_script(
+        {"skill_id": "job-search", "script": "jobspy.py"},
+        {"base_dir": workspace_dir / "workers", "worker": object()},
+    )
+
+    assert "runtime env is not prepared" in result
+    assert "prepare-env job-search" in result
+
+
+def test_run_skill_script_blocks_python_script_without_prepared_env(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+scope: worker
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "tool.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    result = _tool_run_skill_script(
+        {"skill_id": "writer", "script": "tool.py"},
+        {"base_dir": workspace_dir / "workers", "worker": object()},
+    )
+
+    assert "runtime env is not prepared" in result
+    assert "prepare-env writer" in result

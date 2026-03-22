@@ -19,12 +19,30 @@ class SkillBundleRequirements:
 
 
 @dataclass(frozen=True)
+class SkillBundlePythonRuntime:
+    packages: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SkillBundleNodeRuntime:
+    packages: tuple[str, ...] = ()
+    package_manager: str = "npm"
+
+
+@dataclass(frozen=True)
+class SkillBundleRuntime:
+    python: SkillBundlePythonRuntime = field(default_factory=SkillBundlePythonRuntime)
+    node: SkillBundleNodeRuntime = field(default_factory=SkillBundleNodeRuntime)
+
+
+@dataclass(frozen=True)
 class SkillBundleMetadata:
     skill_key: str | None = None
     primary_env: str | None = None
     homepage: str | None = None
     always: bool = False
     requires: SkillBundleRequirements = field(default_factory=SkillBundleRequirements)
+    runtime: SkillBundleRuntime = field(default_factory=SkillBundleRuntime)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -80,6 +98,7 @@ def load_skill_bundle(
     skill_file = _resolve_bundle_skill_file(candidate)
     if skill_file is None:
         return None
+    bundle_root = candidate if candidate.is_dir() else skill_file.parent
 
     if workspace_dir is not None:
         root = workspace_dir.resolve()
@@ -94,12 +113,12 @@ def load_skill_bundle(
         return None
 
     frontmatter = parse_skill_frontmatter(guidance)
-    name = _resolve_bundle_name(frontmatter, registry_entry, candidate)
+    name = _resolve_bundle_name(frontmatter, registry_entry, bundle_root)
     description = _resolve_bundle_description(frontmatter, registry_entry)
     if not name or not description:
         return None
 
-    skill_id = _resolve_bundle_id(frontmatter, registry_entry, candidate)
+    skill_id = _resolve_bundle_id(frontmatter, registry_entry, bundle_root)
     if not _SKILL_ID_RE.fullmatch(skill_id):
         return None
 
@@ -107,9 +126,9 @@ def load_skill_bundle(
     scope = _resolve_scope(frontmatter, registry_entry)
     enabled = bool(registry_entry.get("enabled", True)) if isinstance(registry_entry, dict) else True
 
-    scripts_dir = _existing_child_dir(candidate, "scripts")
-    references_dir = _existing_child_dir(candidate, "references")
-    assets_dir = _existing_child_dir(candidate, "assets")
+    scripts_dir = _existing_child_dir(bundle_root, "scripts")
+    references_dir = _existing_child_dir(bundle_root, "references")
+    assets_dir = _existing_child_dir(bundle_root, "assets")
 
     registry_path: str | None = None
     if isinstance(registry_entry, dict):
@@ -120,7 +139,7 @@ def load_skill_bundle(
         id=skill_id,
         name=name,
         description=description,
-        bundle_dir=candidate,
+        bundle_dir=bundle_root,
         skill_file=skill_file,
         guidance=guidance,
         frontmatter=frontmatter,
@@ -168,6 +187,12 @@ def resolve_skill_bundle_metadata(frontmatter: dict[str, str]) -> SkillBundleMet
 
     requires = block.get("requires")
     requires_dict = requires if isinstance(requires, dict) else {}
+    runtime = block.get("runtime")
+    runtime_dict = runtime if isinstance(runtime, dict) else {}
+    python_runtime = runtime_dict.get("python")
+    python_runtime_dict = python_runtime if isinstance(python_runtime, dict) else {}
+    node_runtime = runtime_dict.get("node")
+    node_runtime_dict = node_runtime if isinstance(node_runtime, dict) else {}
     return SkillBundleMetadata(
         skill_key=_clean_optional_text(block.get("skillKey")),
         primary_env=_clean_optional_text(block.get("primaryEnv")),
@@ -177,6 +202,15 @@ def resolve_skill_bundle_metadata(frontmatter: dict[str, str]) -> SkillBundleMet
             bins=_normalize_str_tuple(requires_dict.get("bins")),
             env=_normalize_str_tuple(requires_dict.get("env")),
             config=_normalize_str_tuple(requires_dict.get("config")),
+        ),
+        runtime=SkillBundleRuntime(
+            python=SkillBundlePythonRuntime(
+                packages=_normalize_str_tuple(python_runtime_dict.get("packages")),
+            ),
+            node=SkillBundleNodeRuntime(
+                packages=_normalize_str_tuple(node_runtime_dict.get("packages")),
+                package_manager=_normalize_package_manager(node_runtime_dict.get("packageManager")),
+            ),
         ),
         raw=parsed,
     )
@@ -308,6 +342,11 @@ def _normalize_str_tuple(value: Any) -> tuple[str, ...]:
 def _clean_optional_text(value: Any) -> str | None:
     text = str(value).strip() if value is not None else ""
     return text or None
+
+
+def _normalize_package_manager(value: Any) -> str:
+    normalized = str(value or "npm").strip().lower() or "npm"
+    return normalized if normalized in {"npm"} else "npm"
 
 
 def _slugify(value: str) -> str:
