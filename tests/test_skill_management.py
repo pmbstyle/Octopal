@@ -9,6 +9,7 @@ from broodmind.tools.skills.management import (
     _tool_run_skill_script,
     _tool_add_skill,
     _tool_list_skills,
+    _tool_use_skill,
     _run_skill,
     remove_skill,
     set_skill_trust,
@@ -192,6 +193,30 @@ def test_skill_management_tools_include_run_skill_script() -> None:
     tools = get_skill_management_tools()
 
     assert "run_skill_script" in [tool.name for tool in tools]
+    assert "use_skill" in [tool.name for tool in tools]
+
+
+def test_use_skill_reads_guidance_by_id(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+
+# Writer
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    payload = json.loads(_tool_use_skill({"skill_id": "writer"}, {"worker": object()}))
+
+    assert payload["skill_id"] == "writer"
+    assert "Skills are internal BroodMind tools" in payload["usage_hint"]
+    assert "# Writer" in payload["guidance"]
 
 
 def test_run_skill_script_executes_python_from_bundle_scripts_dir(tmp_path: Path, monkeypatch) -> None:

@@ -218,7 +218,8 @@ When you need to use a tool, the system will automatically call it for you. Just
 Skill usage:
 - BroodMind skills are internal tools, not MCP servers.
 - Use list_skills to discover available skills and their readiness/runtime status.
-- Use skill_<id> to read a skill's guidance from SKILL.md.
+- Use use_skill to read a skill's guidance from SKILL.md.
+- Dynamic skill_<id> tools may exist for compatibility, but workers should prefer use_skill.
 - If a skill includes bundled scripts, use run_skill_script to execute them.
 - Do not use exec_run for scripts that belong to a skill bundle unless run_skill_script is unavailable.
 

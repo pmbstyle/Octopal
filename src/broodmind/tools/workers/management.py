@@ -340,7 +340,7 @@ def get_worker_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="create_worker_template",
-            description="Create a new worker template by writing a worker.json file to the workspace.",
+            description="Create a new worker template by writing a worker.json file to the workspace. When a worker needs BroodMind skills, prefer generic tools like list_skills, use_skill, and run_skill_script instead of hardcoding dynamic skill_<id> tools.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -363,7 +363,7 @@ def get_worker_tools() -> list[ToolSpec]:
                     "available_tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Tool names this worker can use (e.g., ['web_search', 'web_fetch']).",
+                        "description": "Tool names this worker can use (e.g., ['web_search', 'web_fetch']). For BroodMind skills, prefer ['list_skills', 'use_skill', 'run_skill_script'] over dynamic skill_<id> tool names.",
                     },
                     "required_permissions": {
                         "type": "array",
@@ -400,7 +400,7 @@ def get_worker_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="update_worker_template",
-            description="Update an existing worker template. Reads the worker.json file, modifies the specified fields, and writes it back.",
+            description="Update an existing worker template. Reads the worker.json file, modifies the specified fields, and writes it back. For BroodMind skills, prefer generic tools like list_skills, use_skill, and run_skill_script over dynamic skill_<id> tool names.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -414,7 +414,7 @@ def get_worker_tools() -> list[ToolSpec]:
                     "available_tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "New tool list (optional).",
+                        "description": "New tool list (optional). For BroodMind skills, prefer ['list_skills', 'use_skill', 'run_skill_script'] over dynamic skill_<id> tool names.",
                     },
                     "required_permissions": {
                         "type": "array",

@@ -87,6 +87,32 @@ def get_skill_management_tools() -> list[ToolSpec]:
             handler=_tool_add_skill,
         ),
         ToolSpec(
+            name="use_skill",
+            description="Read guidance from an internal BroodMind skill by id. Prefer this generic tool for workers instead of hardcoding dynamic skill_<id> tools.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_id": {"type": "string", "description": "Skill id to read guidance from."},
+                    "task": {
+                        "type": "string",
+                        "description": "Optional task context to pair with the skill guidance.",
+                    },
+                    "input": {
+                        "type": "object",
+                        "description": "Optional structured input context for this skill run.",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Max characters to return from SKILL.md (200-200000).",
+                    },
+                },
+                "required": ["skill_id"],
+                "additionalProperties": False,
+            },
+            permission="skill_use",
+            handler=_tool_use_skill,
+        ),
+        ToolSpec(
             name="remove_skill",
             description="Remove a skill from the internal registry by id.",
             parameters={
@@ -196,6 +222,19 @@ def _tool_list_skills(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     include_disabled = bool(args.get("include_disabled", False))
     payload = list_skill_inventory(workspace_dir, include_disabled=include_disabled)
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _tool_use_skill(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    workspace_dir = _workspace_root()
+    skill_id = str(args.get("skill_id", "")).strip()
+    if not _SKILL_ID_RE.fullmatch(skill_id):
+        return "use_skill error: skill_id must match ^[a-z0-9][a-z0-9_-]*$."
+    skill_data = next((item for item in _load_skill_inventory(workspace_dir) if str(item.get("id", "")) == skill_id), None)
+    if skill_data is None:
+        return f"use_skill error: skill '{skill_id}' not found."
+    if not bool(skill_data.get("enabled", True)):
+        return f"use_skill error: skill '{skill_id}' is disabled."
+    return _run_skill(skill_data, args, ctx)
 
 
 def list_skill_inventory(workspace_dir: Path, *, include_disabled: bool = True) -> dict[str, Any]:

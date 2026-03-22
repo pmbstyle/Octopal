@@ -86,7 +86,8 @@ Users may send images.
 BroodMind skills are internal tools, not MCP servers.
 
 - Use list_skills to discover which skills are available and whether they are ready.
-- Use skill_<id> to read the skill guidance from SKILL.md.
+- Use use_skill to read the skill guidance from SKILL.md.
+- Dynamic skill_<id> tools may exist for compatibility, but when designing worker templates prefer the generic use_skill tool.
 - If a skill includes bundled scripts, execute them with run_skill_script.
 - Do not prefer exec_run for skill bundle scripts when run_skill_script is available.
 - A skill can be available even if there is no MCP entry for it.
