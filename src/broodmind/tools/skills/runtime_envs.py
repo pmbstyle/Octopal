@@ -5,11 +5,12 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from broodmind.tools.skills.bundles import SkillBundle, load_skill_bundle
+from broodmind.tools.skills.bundles import SkillBundle, discover_skill_bundle_dirs, load_skill_bundle
 
 _PYTHON_SCRIPT_SUFFIXES = {".py"}
 _NODE_SCRIPT_SUFFIXES = {".js", ".mjs", ".cjs", ".ts"}
@@ -145,29 +146,35 @@ def prepare_skill_env(skill_id: str, *, workspace_dir: Path) -> dict[str, Any]:
     if runtime["kind"] == "mixed":
         raise ValueError("mixed python and node runtimes are not supported yet")
 
+    env_root = _skill_env_root(workspace_dir)
     env_dir = _skill_env_dir(workspace_dir, skill_id)
-    if env_dir.exists():
-        shutil.rmtree(env_dir)
-    env_dir.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(tempfile.mkdtemp(prefix=f"{skill_id}-staging-", dir=str(env_root)))
 
-    if runtime["kind"] == "python":
-        _prepare_python_env(env_dir, runtime["python_packages"])
-        executable = _python_env_executable(env_dir)
-    else:
-        _prepare_node_env(env_dir, runtime["node_packages"])
-        executable = _node_env_runner(env_dir)
+    try:
+        if runtime["kind"] == "python":
+            _prepare_python_env(staging_dir, runtime["python_packages"])
+            executable = _python_env_executable(staging_dir)
+        else:
+            _prepare_node_env(staging_dir, runtime["node_packages"])
+            executable = _node_env_runner(staging_dir)
 
-    manifest = {
-        "version": 1,
-        "skill_id": skill_id,
-        "kind": runtime["kind"],
-        "created_at": datetime.now(UTC).isoformat(),
-        "python_packages": runtime["python_packages"],
-        "node_packages": runtime["node_packages"],
-        "package_manager": runtime["package_manager"],
-        "executable": str(executable),
-    }
-    _write_env_manifest(workspace_dir, skill_id, manifest)
+        manifest = {
+            "version": 1,
+            "skill_id": skill_id,
+            "kind": runtime["kind"],
+            "created_at": datetime.now(UTC).isoformat(),
+            "python_packages": runtime["python_packages"],
+            "node_packages": runtime["node_packages"],
+            "package_manager": runtime["package_manager"],
+            "executable": str(executable),
+        }
+        _write_env_manifest_at(staging_dir / "env.json", manifest)
+        _replace_skill_env_dir(env_dir, staging_dir)
+    except Exception:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
     return {
         "status": "prepared",
         "skill_id": skill_id,
@@ -250,8 +257,30 @@ def resolve_skill_runtime_execution(
 def _load_workspace_skill_bundle(skill_id: str, workspace_dir: Path) -> SkillBundle | None:
     skill_dir = workspace_dir / "skills" / skill_id
     if not skill_dir.exists():
-        return None
-    return load_skill_bundle(skill_dir, workspace_dir=workspace_dir)
+        skill_dir = None
+    if skill_dir is not None:
+        bundle = load_skill_bundle(skill_dir, workspace_dir=workspace_dir)
+        if bundle is not None and bundle.id == skill_id:
+            return bundle
+
+    registry = _read_skills_registry(workspace_dir)
+    for item in registry.get("skills", []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id", "")).strip() != skill_id:
+            continue
+        resolved = _resolve_registry_skill_path(workspace_dir, str(item.get("path", "")).strip())
+        if resolved is None:
+            continue
+        bundle = load_skill_bundle(resolved, workspace_dir=workspace_dir, registry_entry=item)
+        if bundle is not None and bundle.id == skill_id:
+            return bundle
+
+    for bundle_dir in discover_skill_bundle_dirs(workspace_dir):
+        bundle = load_skill_bundle(bundle_dir, workspace_dir=workspace_dir)
+        if bundle is not None and bundle.id == skill_id:
+            return bundle
+    return None
 
 
 def _skill_env_root(workspace_dir: Path) -> Path:
@@ -281,6 +310,10 @@ def _read_env_manifest(workspace_dir: Path, skill_id: str) -> dict[str, Any]:
 
 def _write_env_manifest(workspace_dir: Path, skill_id: str, payload: dict[str, Any]) -> None:
     path = _skill_env_manifest_path(workspace_dir, skill_id)
+    _write_env_manifest_at(path, payload)
+
+
+def _write_env_manifest_at(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -407,3 +440,62 @@ def _is_env_manifest_usable(manifest: dict[str, Any], env_dir: Path) -> bool:
     if kind == "node":
         return (env_dir / "package.json").exists()
     return False
+
+
+def _replace_skill_env_dir(target_dir: Path, staging_dir: Path) -> None:
+    backup_dir: Path | None = None
+    try:
+        if target_dir.exists():
+            backup_dir = target_dir.with_name(f"{target_dir.name}.backup")
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir, ignore_errors=True)
+            target_dir.replace(backup_dir)
+        staging_dir.replace(target_dir)
+        if backup_dir and backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+    except Exception:
+        if target_dir.exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
+        if backup_dir and backup_dir.exists():
+            backup_dir.replace(target_dir)
+        raise
+
+
+def _read_skills_registry(workspace_dir: Path) -> dict[str, Any]:
+    path = workspace_dir / "skills" / "registry.json"
+    if not path.exists():
+        return {"version": 1, "skills": []}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"version": 1, "skills": []}
+    if not isinstance(payload, dict):
+        return {"version": 1, "skills": []}
+    skills = payload.get("skills")
+    if not isinstance(skills, list):
+        payload["skills"] = []
+    return payload
+
+
+def _resolve_registry_skill_path(workspace_dir: Path, path_raw: str) -> Path | None:
+    if not path_raw:
+        return None
+    candidate = Path(path_raw)
+    if not candidate.is_absolute():
+        candidate = workspace_dir / candidate
+    candidate = candidate.resolve()
+    try:
+        candidate.relative_to(workspace_dir.resolve())
+    except ValueError:
+        return None
+    if candidate.is_dir():
+        upper = candidate / "SKILL.md"
+        lower = candidate / "skill.md"
+        if upper.exists():
+            return upper
+        if lower.exists():
+            return lower
+        return None
+    if candidate.is_file() and candidate.name.lower() == "skill.md":
+        return candidate
+    return None

@@ -9,6 +9,7 @@ from broodmind.tools.skills.management import (
     _tool_run_skill_script,
     _tool_add_skill,
     _tool_list_skills,
+    _tool_remove_skill,
     _tool_use_skill,
     _run_skill,
     remove_skill,
@@ -500,6 +501,27 @@ description: Helps write copy
 
     assert payload["status"] == "removed"
     assert payload["installer_managed"] is False
+    assert not skill_dir.exists()
+
+
+def test_tool_remove_skill_deletes_auto_discovered_local_bundle(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    payload = json.loads(_tool_remove_skill({"id": "writer"}, {}))
+
+    assert payload["status"] == "removed"
+    assert payload["skill_id"] == "writer"
     assert not skill_dir.exists()
 
 

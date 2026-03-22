@@ -345,24 +345,11 @@ def _tool_remove_skill(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     skill_id = str(args.get("id", "")).strip()
     if not _SKILL_ID_RE.fullmatch(skill_id):
         return "remove_skill error: id must match ^[a-z0-9][a-z0-9_-]*$."
-
-    registry = _load_registry(workspace_dir)
-    skills = [item for item in registry.get("skills", []) if isinstance(item, dict)]
-    kept = [item for item in skills if str(item.get("id", "")) != skill_id]
-    if len(kept) == len(skills):
-        return f"remove_skill error: skill '{skill_id}' not found."
-
-    registry["skills"] = kept
-    _write_registry(workspace_dir, registry)
-    return json.dumps(
-        {
-            "status": "removed",
-            "id": skill_id,
-            "registry_path": str(_registry_path(workspace_dir)),
-            "message": f"Skill '{skill_id}' removed from registry.",
-        },
-        ensure_ascii=False,
-    )
+    try:
+        payload = remove_skill(skill_id, workspace_dir=workspace_dir)
+    except ValueError as exc:
+        return f"remove_skill error: {exc}"
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _tool_run_skill_script(args: dict[str, Any], ctx: dict[str, Any]) -> str:
