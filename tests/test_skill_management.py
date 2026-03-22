@@ -88,6 +88,51 @@ description: Generate images from prompts
     assert inventory[0]["enabled"] is False
 
 
+def test_registry_skill_file_path_still_detects_bundle_scripts(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "job-search"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: job-search
+description: Search jobs
+scope: worker
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "jobspy.py").write_text("print('ok')\n", encoding="utf-8")
+    (workspace_dir / "skills" / "registry.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "skills": [
+                    {
+                        "id": "job-search",
+                        "name": "job-search",
+                        "description": "Search jobs",
+                        "path": "skills/job-search/SKILL.md",
+                        "scope": "worker",
+                        "enabled": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BROODMIND_WORKSPACE_DIR", str(workspace_dir))
+
+    inventory = _load_skill_inventory(workspace_dir)
+
+    assert len(inventory) == 1
+    assert inventory[0]["id"] == "job-search"
+    assert inventory[0]["has_scripts"] is True
+    assert inventory[0]["scripts_dir"].endswith("skills/job-search/scripts") or inventory[0]["scripts_dir"].endswith(
+        "skills\\job-search\\scripts"
+    )
+
+
 def test_load_skill_inventory_keeps_legacy_registry_skill(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
     legacy_dir = workspace_dir / "legacy"
