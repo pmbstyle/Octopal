@@ -136,6 +136,15 @@ async def run_agent_worker(spec_path: str) -> None:
         "info",
         f"AgentWorker start: id={worker.spec.id} run_id={worker.spec.run_id}",
     )
+    await worker.log(
+        "info",
+        (
+            "AgentWorker context: "
+            f"cwd={Path.cwd()} "
+            f"workspace={os.getenv('BROODMIND_WORKSPACE_DIR', '') or '<unset>'} "
+            f"tools={list(worker.spec.available_tools or [])}"
+        ),
+    )
 
     try:
         result = await execute_agent_task(worker, base_dir)
@@ -564,6 +573,10 @@ async def _execute_tool(
         }
 
     tool = tool_map[tool_name]
+    await worker.log(
+        "info",
+        _summarize_tool_start(tool_name, tool_input, timeout_seconds=timeout_seconds),
+    )
 
     try:
         # Tool handlers expect (args, ctx) where ctx is a dict
@@ -597,12 +610,15 @@ async def _execute_tool(
                     retries += 1
                     await asyncio.sleep(_retry_backoff(attempt))
                     continue
-                return {"error": error_text}, {
+                error_result = {"error": error_text}
+                error_meta = {
                     "retries": retries,
                     "timed_out": True,
                     "had_error": True,
                     "error_type": "transient",
                 }
+                await worker.log("warning", _summarize_tool_finish(tool_name, error_result, error_meta))
+                return error_result, error_meta
             except Exception as exc:
                 await worker.log("error", f"Tool execution failed: {tool_name}: {exc}")
                 error_text = str(exc)
@@ -617,12 +633,15 @@ async def _execute_tool(
                     retries += 1
                     await asyncio.sleep(_retry_backoff(attempt))
                     continue
-                return {"error": error_text}, {
+                error_result = {"error": error_text}
+                error_meta = {
                     "retries": retries,
                     "timed_out": False,
                     "had_error": True,
                     **error_info,
                 }
+                await worker.log("warning", _summarize_tool_finish(tool_name, error_result, error_meta))
+                return error_result, error_meta
 
             if _result_has_error(result):
                 error_text = _extract_error_text(result)
@@ -647,19 +666,23 @@ async def _execute_tool(
                     retries += 1
                     await asyncio.sleep(_retry_backoff(attempt))
                     continue
-                return result, {
+                error_meta = {
                     "retries": retries,
                     "timed_out": False,
                     "had_error": True,
                     **error_info,
                 }
+                await worker.log("warning", _summarize_tool_finish(tool_name, result, error_meta))
+                return result, error_meta
 
-            return result, {
+            success_meta = {
                 "retries": retries,
                 "timed_out": False,
                 "had_error": False,
                 "error_type": "none",
             }
+            await worker.log("info", _summarize_tool_finish(tool_name, result, success_meta))
+            return result, success_meta
     except Exception as exc:
         await worker.log("error", f"Tool execution failed: {tool_name}: {exc}")
         error_info = _tool_error_info(
@@ -668,12 +691,15 @@ async def _execute_tool(
             bridge=exc.bridge if isinstance(exc, ToolBridgeError) else None,
             retryable=exc.retryable if isinstance(exc, ToolBridgeError) else None,
         )
-        return {"error": str(exc)}, {
+        error_result = {"error": str(exc)}
+        error_meta = {
             "retries": 0,
             "timed_out": False,
             "had_error": True,
             **error_info,
         }
+        await worker.log("warning", _summarize_tool_finish(tool_name, error_result, error_meta))
+        return error_result, error_meta
 
 
 def _with_queen_tool_proxies(tools: list[Any], worker: Worker) -> list[Any]:
@@ -849,3 +875,40 @@ def _attach_telemetry(output: Any, telemetry: dict[str, Any]) -> dict[str, Any]:
     payload = output if isinstance(output, dict) else {}
     payload["_telemetry"] = telemetry
     return payload
+
+
+def _summarize_tool_start(tool_name: str | None, tool_input: dict[str, Any], *, timeout_seconds: int | None) -> str:
+    keys = sorted(str(key) for key in tool_input.keys())
+    return f"Tool start: {tool_name} timeout={timeout_seconds or 0}s input_keys={keys}"
+
+
+def _summarize_tool_finish(tool_name: str | None, result: Any, meta: dict[str, Any]) -> str:
+    error_text = _truncate_text(_extract_error_text(result), 240) if _result_has_error(result) else ""
+    result_shape = _describe_tool_result_shape(result)
+    parts = [
+        f"Tool finish: {tool_name}",
+        f"status={'error' if meta.get('had_error') else 'ok'}",
+        f"result={result_shape}",
+    ]
+    if meta.get("retries"):
+        parts.append(f"retries={meta['retries']}")
+    if meta.get("timed_out"):
+        parts.append("timed_out=true")
+    if meta.get("error_type") and meta.get("error_type") != "none":
+        parts.append(f"error_type={meta['error_type']}")
+    if error_text:
+        parts.append(f"error={error_text}")
+    return " ".join(parts)
+
+
+def _describe_tool_result_shape(result: Any) -> str:
+    if isinstance(result, dict):
+        keys = sorted(str(key) for key in result.keys())[:8]
+        return f"dict(keys={keys}, chars={len(json.dumps(result, ensure_ascii=False, default=str))})"
+    if isinstance(result, list):
+        return f"list(len={len(result)})"
+    if isinstance(result, str):
+        return f"str(chars={len(result)})"
+    if result is None:
+        return "null"
+    return type(result).__name__
