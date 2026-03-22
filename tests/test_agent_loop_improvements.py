@@ -11,9 +11,11 @@ from broodmind.runtime.workers.agent_worker import (
     _detect_tool_loop,
     _execute_tool,
     _extract_mcp_identity,
+    _extract_error_text,
     _hash_tool_call,
     _hash_tool_outcome,
     _parse_tool_arguments,
+    _result_has_error,
     _resolve_tool_loop_thresholds,
     _tool_no_progress_streak,
 )
@@ -183,6 +185,12 @@ def test_execute_tool_timeout_returns_error() -> None:
 def test_tool_error_classification() -> None:
     assert _classify_tool_error("connection timeout while fetching") == "transient"
     assert _classify_tool_error("permission denied by policy") == "permanent"
+
+
+def test_plain_tool_error_strings_are_treated_as_errors() -> None:
+    result = "run_skill_script error: skill 'job-search' has no scripts directory."
+    assert _result_has_error(result) is True
+    assert "no scripts directory" in _extract_error_text(result)
 
 
 def test_execute_tool_preserves_structured_bridge_error_metadata() -> None:

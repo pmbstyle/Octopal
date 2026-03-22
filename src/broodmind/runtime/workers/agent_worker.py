@@ -836,6 +836,7 @@ def _result_has_error(result: Any) -> bool:
         return (
             lowered.startswith("error")
             or lowered.startswith("failed")
+            or " error:" in lowered
             or "tool execution failed" in lowered
         )
     return False
