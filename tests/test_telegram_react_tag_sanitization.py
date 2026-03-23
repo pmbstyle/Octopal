@@ -20,6 +20,12 @@ def test_extract_reaction_and_strip_removes_tag() -> None:
     assert text == "Hello there"
 
 
+def test_extract_reaction_and_strip_handles_zero_width_noise_in_tag() -> None:
+    emoji, text = extract_reaction_and_strip("<react>\u200b👍</react>")
+    assert emoji == "👍"
+    assert text == ""
+
+
 def test_strip_reaction_tags_removes_unknown_react_markup() -> None:
     cleaned = strip_reaction_tags("Text <react>not-an-emoji</react> remains")
     assert "<react>" not in cleaned

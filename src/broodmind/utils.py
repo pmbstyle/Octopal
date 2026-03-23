@@ -10,7 +10,7 @@ _TEXTUAL_TOOL_PREVIEW_RE = re.compile(
     r"^(?P<tool>(?:mcp__[\w-]+__)?[a-z][a-z0-9_]{1,63})(?P<rest>(?:,\s*[a-z_][a-z0-9_ -]{0,31}:\s*[^,\n]{1,200})+)$",
     re.IGNORECASE,
 )
-_REACT_TAG_RE = re.compile(r"<react>(.*?)</react>", re.IGNORECASE | re.DOTALL)
+_REACT_TAG_RE = re.compile(r"<\s*react\s*>(.*?)<\s*/\s*react\s*>", re.IGNORECASE | re.DOTALL)
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _THINK_TAG_RE = re.compile(r"</?think>", re.IGNORECASE)
 _TOOL_TAG_RE = re.compile(r"</?(?:tool_call|tool_code|tool_result|step|plan|thought).*?>", re.IGNORECASE)
@@ -19,6 +19,7 @@ _TOOL_RESULT_LINE_RE = re.compile(
     r"(?:^|\n)\s*Tool result \([^)]+\):\s*(?:\{.*?\}|\[.*?\]|.+?)(?=\n|$)",
     re.IGNORECASE | re.DOTALL,
 )
+_ZERO_WIDTH_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u2060]")
 # Standard Telegram bot reactions (as of Bot API 7.3+)
 _TELEGRAM_SUPPORTED_REACTIONS = {
     "👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢", "🎉", "🤩", "🤮", "💩",
@@ -88,16 +89,18 @@ def normalize_reaction_emoji(emoji: str) -> str:
 
 
 def extract_reaction_and_strip(text: str) -> tuple[str | None, str]:
-    match = _REACT_TAG_RE.search(text or "")
+    normalized_text = _ZERO_WIDTH_RE.sub("", text or "")
+    match = _REACT_TAG_RE.search(normalized_text)
     if not match:
-        return None, text or ""
+        return None, normalized_text
     emoji = (match.group(1) or "").strip() or None
-    cleaned = _REACT_TAG_RE.sub("", text or "").strip()
+    cleaned = _REACT_TAG_RE.sub("", normalized_text).strip()
     return emoji, cleaned
 
 
 def strip_reaction_tags(text: str) -> str:
-    return _REACT_TAG_RE.sub("", text or "").strip()
+    normalized_text = _ZERO_WIDTH_RE.sub("", text or "")
+    return _REACT_TAG_RE.sub("", normalized_text).strip()
 
 
 def escape_html(text: str) -> str:
