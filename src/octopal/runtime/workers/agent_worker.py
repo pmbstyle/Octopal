@@ -30,6 +30,7 @@ from octopal.runtime.tool_loop import (
     _hash_tool_outcome,
     _resolve_tool_loop_thresholds,
 )
+from octopal.runtime.tool_loop import _tool_no_progress_streak as _tool_no_progress_streak
 from octopal.runtime.tool_payloads import render_tool_result_for_llm
 from octopal.runtime.workers.contracts import WorkerResult
 from octopal.tools.registry import ToolPolicy, ToolPolicyPipelineStep, apply_tool_policy_pipeline
