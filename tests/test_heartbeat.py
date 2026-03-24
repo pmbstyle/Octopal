@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from datetime import timedelta
 
@@ -9,6 +10,7 @@ from broodmind.runtime.queen.core import (
     _coerce_control_plane_reply,
     _extract_followup_required_marker,
     _merge_worker_followup_texts,
+    _schedule_worker_followup_flush,
 )
 from broodmind.runtime.queen.router import (
     build_forced_worker_followup,
@@ -300,6 +302,51 @@ async def test_batched_worker_followups_send_single_combined_message(monkeypatch
         )
     ]
     assert queen_core._WORKER_FOLLOWUP_BATCHES == {}
+
+
+@pytest.mark.asyncio
+async def test_batched_worker_followups_wait_for_pending_internal_results(monkeypatch):
+    monkeypatch.setattr(queen_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
+    queen_core._WORKER_FOLLOWUP_BATCHES.clear()
+
+    sent_messages = []
+
+    class DummyMemory:
+        async def add_message(self, role, text, metadata):
+            return None
+
+    async def _send(chat_id, text):
+        sent_messages.append((chat_id, text))
+
+    queen = Queen(
+        approvals=None,
+        memory=DummyMemory(),
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+        internal_send=_send,
+    )
+
+    queen.mark_internal_result_pending("corr-queue")
+    queen.mark_internal_result_pending("corr-queue")
+
+    await _enqueue_batched_worker_followup(queen, 321, "corr-queue", "Первый апдейт.")
+    await asyncio.sleep(0.03)
+    assert sent_messages == []
+
+    queen.mark_internal_result_processed("corr-queue")
+    _schedule_worker_followup_flush(queen, 321, "corr-queue")
+    await _enqueue_batched_worker_followup(queen, 321, "corr-queue", "Второй апдейт.")
+    await asyncio.sleep(0.03)
+    assert sent_messages == []
+
+    queen.mark_internal_result_processed("corr-queue")
+    _schedule_worker_followup_flush(queen, 321, "corr-queue")
+    await asyncio.sleep(0.03)
+
+    assert sent_messages == [(321, "Первый апдейт.\n\nВторой апдейт.")]
 
 
 def test_queen_does_not_have_web_fetch():

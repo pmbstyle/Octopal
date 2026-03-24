@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -52,9 +53,11 @@ _TYPING_REFS: dict[int, int] = {}
 _TYPING_LOCK: asyncio.Lock | None = None
 _SEND_IDLE_TIMEOUT_SECONDS = 300.0
 _INBOUND_MESSAGE_DEDUP_TTL_SECONDS = 300.0
+_INBOUND_PAYLOAD_DEDUP_TTL_SECONDS = 120.0
 _TELEGRAM_PARSE_MODE: str | None = None
 _PENDING_TURNS: PendingTurnAggregator | None = None
 _RECENT_INBOUND_MESSAGE_IDS: dict[tuple[int, int], float] = {}
+_RECENT_INBOUND_PAYLOADS: dict[tuple[int, int | str, str], float] = {}
 
 
 def _publish_runtime_metrics() -> None:
@@ -92,6 +95,40 @@ def _is_duplicate_inbound_message(chat_id: int, message_id: int) -> bool:
     if message_key in _RECENT_INBOUND_MESSAGE_IDS:
         return True
     _RECENT_INBOUND_MESSAGE_IDS[message_key] = now
+    return False
+
+
+def _prune_recent_inbound_payloads(now: float | None = None) -> None:
+    if not _RECENT_INBOUND_PAYLOADS:
+        return
+    current = time.monotonic() if now is None else now
+    cutoff = current - _INBOUND_PAYLOAD_DEDUP_TTL_SECONDS
+    expired = [
+        key
+        for key, seen_at in _RECENT_INBOUND_PAYLOADS.items()
+        if seen_at < cutoff
+    ]
+    for key in expired:
+        _RECENT_INBOUND_PAYLOADS.pop(key, None)
+
+
+def _build_inbound_message_fingerprint(text: str, photo_ids: list[str] | None = None) -> str:
+    normalized_text = re.sub(r"\s+", " ", (text or "").strip()).casefold()
+    normalized_photos = [photo_id.strip() for photo_id in (photo_ids or []) if photo_id and photo_id.strip()]
+    return f"text={normalized_text}|photos={'|'.join(normalized_photos)}"
+
+
+def _is_duplicate_inbound_payload(chat_id: int, sender_id: int | None, fingerprint: str) -> bool:
+    normalized = (fingerprint or "").strip()
+    if not normalized or normalized == "text=|photos=":
+        return False
+    now = time.monotonic()
+    _prune_recent_inbound_payloads(now)
+    sender_key: int | str = sender_id if sender_id is not None else "unknown"
+    payload_key = (chat_id, sender_key, normalized)
+    if payload_key in _RECENT_INBOUND_PAYLOADS:
+        return True
+    _RECENT_INBOUND_PAYLOADS[payload_key] = now
     return False
 
 
@@ -253,9 +290,30 @@ def register_handlers(
         if not is_allowed_chat(message.chat.id, allowed_chat_ids):
             await _reject_unauthorized_message(message)
             return
+        if getattr(message.from_user, "is_bot", False):
+            logger.info(
+                "Skipping bot-authored Telegram inbound message",
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+            )
+            return
         if _is_duplicate_inbound_message(message.chat.id, message.message_id):
             logger.info(
                 "Skipping duplicate Telegram inbound message",
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+            )
+            return
+        text = message.text or message.caption or ""
+        photo_ids = [str(getattr(photo, "file_unique_id", "") or "").strip() for photo in (message.photo or [])]
+        inbound_fingerprint = _build_inbound_message_fingerprint(text, photo_ids)
+        if _is_duplicate_inbound_payload(
+            message.chat.id,
+            getattr(message.from_user, "id", None),
+            inbound_fingerprint,
+        ):
+            logger.info(
+                "Skipping duplicate Telegram inbound payload",
                 chat_id=message.chat.id,
                 message_id=message.message_id,
             )
@@ -265,7 +323,6 @@ def register_handlers(
         correlation_id_var.set(correlation_id)
 
         # 1. Extract text and images
-        text = message.text or message.caption or ""
         images: list[str] = []
         saved_file_paths: list[str] = []
 
