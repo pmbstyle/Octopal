@@ -57,7 +57,18 @@ Octo:
 
 ## 🚀 Quick Start
 
-### 1. Prerequisites
+### Install with one line
+
+```bash
+# macOS/Linux
+curl -fsSL https://octopal.ca/octopal.sh | bash
+```
+```powershell
+# Windows PowerShell
+irm https://octopal.ca/octopal.ps1 | iex
+```
+
+### 1. Install from git
 
 - Python 3.12+
 - `uv` (recommended)
