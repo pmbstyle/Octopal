@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from octopal.tools.filesystem.download import download_file
-from octopal.tools.filesystem.files import fs_delete, fs_write
+from octopal.tools.filesystem.files import fs_delete, fs_list, fs_read, fs_write
 
 
 def _ensure_symlink_supported(tmp_path: Path) -> None:
@@ -77,3 +78,50 @@ def test_download_file_rejects_filename_with_directories(tmp_path: Path) -> None
         )
     )
     assert "filename must not contain directory components" in payload
+
+
+def test_fs_tools_keep_worker_scratch_and_allow_explicit_shared_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    worker_dir = workspace / "workers" / "worker-1"
+    shared_dir = workspace / "src"
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    shared_dir.mkdir(parents=True, exist_ok=True)
+
+    (worker_dir / "notes.txt").write_text("local", encoding="utf-8")
+    (shared_dir / "shared.txt").write_text("shared", encoding="utf-8")
+    (worker_dir / "src").mkdir(parents=True, exist_ok=True)
+    (worker_dir / "src" / "scratch_only.txt").write_text("scratch", encoding="utf-8")
+
+    ctx = {
+        "base_dir": worker_dir,
+        "workspace_root": workspace,
+        "worker": SimpleNamespace(spec=SimpleNamespace(allowed_paths=["src"], id="worker-1")),
+    }
+
+    assert fs_read({"path": "notes.txt"}, ctx) == "local"
+    assert fs_read({"path": "src/shared.txt"}, ctx) == "shared"
+    assert fs_list({"path": "src"}, ctx) == "shared.txt"
+
+    assert fs_write({"path": "draft.md", "content": "worker-only"}, ctx) == "fs_write ok"
+    assert (worker_dir / "draft.md").read_text(encoding="utf-8") == "worker-only"
+
+    assert fs_write({"path": "src/generated.txt", "content": "from-worker"}, ctx) == "fs_write ok"
+    assert (shared_dir / "generated.txt").read_text(encoding="utf-8") == "from-worker"
+
+
+def test_fs_tools_without_allowed_paths_stay_in_worker_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    worker_dir = workspace / "workers" / "worker-1"
+    shared_dir = workspace / "src"
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    shared_dir.mkdir(parents=True, exist_ok=True)
+
+    ctx = {
+        "base_dir": worker_dir,
+        "workspace_root": workspace,
+        "worker": SimpleNamespace(spec=SimpleNamespace(allowed_paths=None, id="worker-1")),
+    }
+
+    assert fs_write({"path": "src/local_only.txt", "content": "scratch"}, ctx) == "fs_write ok"
+    assert (worker_dir / "src" / "local_only.txt").read_text(encoding="utf-8") == "scratch"
+    assert not (shared_dir / "local_only.txt").exists()

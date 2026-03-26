@@ -675,7 +675,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             permission="filesystem_read",
-            handler=lambda args, ctx: fs_read(args, ctx["base_dir"]),
+            handler=lambda args, ctx: fs_read(args, ctx),
             is_async=True,
         ),
         ToolSpec(
@@ -694,7 +694,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             permission="filesystem_write",
-            handler=lambda args, ctx: fs_write(args, ctx["base_dir"]),
+            handler=lambda args, ctx: fs_write(args, ctx),
             is_async=True,
         ),
         ToolSpec(
@@ -711,7 +711,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             permission="filesystem_read",
-            handler=lambda args, ctx: fs_list(args, ctx["base_dir"]),
+            handler=lambda args, ctx: fs_list(args, ctx),
             is_async=True,
         ),
         ToolSpec(
@@ -733,7 +733,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             permission="filesystem_write",
-            handler=lambda args, ctx: fs_move(args, ctx["base_dir"]),
+            handler=lambda args, ctx: fs_move(args, ctx),
             is_async=True,
         ),
         ToolSpec(
@@ -751,7 +751,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             permission="filesystem_write",
-            handler=lambda args, ctx: fs_delete(args, ctx["base_dir"]),
+            handler=lambda args, ctx: fs_delete(args, ctx),
             is_async=True,
         ),
         ToolSpec(

@@ -1694,6 +1694,7 @@ class Octo:
         lineage_id: str | None = None,
         root_task_id: str | None = None,
         spawn_depth: int = 0,
+        allowed_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         if parent_worker_id:
             violation = self._check_child_spawn_limits(
@@ -1792,6 +1793,7 @@ class Octo:
                 lineage_id=effective_lineage_id,
                 root_task_id=effective_root_task_id,
                 spawn_depth=effective_spawn_depth,
+                allowed_paths=allowed_paths,
             )
             self.register_worker_correlation(run_id, correlation_id)
 

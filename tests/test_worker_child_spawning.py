@@ -162,3 +162,47 @@ def test_start_child_worker_propagates_lineage_fields() -> None:
     assert result["root_task_id"] == "root-9"
     assert result["spawn_depth"] == 2
     assert octo.last_launch["parent_worker_id"] == "parent-run-9"
+
+
+def test_start_child_worker_preserves_missing_allowed_paths_and_forwards_explicit_ones() -> None:
+    templates = {
+        "parent": _template("parent", perms=["network", "filesystem_read"], can_spawn=True, allowed_children=["child"]),
+        "child": _template("child", perms=["network"]),
+    }
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store(templates)
+            self.launches: list[dict[str, object]] = []
+
+        async def _start_worker_async(self, **kwargs):
+            self.launches.append(kwargs)
+            return {
+                "status": "started",
+                "worker_id": f"child-run-{len(self.launches)}",
+                "run_id": f"child-run-{len(self.launches)}",
+            }
+
+    octo = _Octo()
+
+    async def _scenario() -> None:
+        await _tool_start_child_worker(
+            {"worker_id": "child", "task": "fetch rss"},
+            {
+                "octo": octo,
+                "chat_id": 1,
+                "worker": _caller_worker(effective_permissions=["network", "filesystem_read"]),
+            },
+        )
+        await _tool_start_child_worker(
+            {"worker_id": "child", "task": "inspect file", "allowed_paths": ["src/app.py"]},
+            {
+                "octo": octo,
+                "chat_id": 1,
+                "worker": _caller_worker(effective_permissions=["network", "filesystem_read"]),
+            },
+        )
+
+    asyncio.run(_scenario())
+    assert octo.launches[0]["allowed_paths"] is None
+    assert octo.launches[1]["allowed_paths"] == ["src/app.py"]

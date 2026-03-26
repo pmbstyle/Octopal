@@ -43,6 +43,7 @@ class TaskRequest(BaseModel):
     lineage_id: str | None = None
     root_task_id: str | None = None
     spawn_depth: int = 0
+    allowed_paths: list[str] | None = None  # Restricted workspace paths the worker can access
 
 
 class WorkerSpec(BaseModel):
@@ -70,6 +71,7 @@ class WorkerSpec(BaseModel):
     root_task_id: str | None = None
     spawn_depth: int = 0
     effective_permissions: list[str] = Field(default_factory=list)
+    allowed_paths: list[str] | None = None
 
 
 class KnowledgeProposal(BaseModel):

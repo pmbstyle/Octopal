@@ -151,6 +151,7 @@ class WorkerRuntime:
             root_task_id=task_request.root_task_id,
             spawn_depth=task_request.spawn_depth,
             effective_permissions=list(template.required_permissions),
+            allowed_paths=task_request.allowed_paths,
         )
 
         # Run worker

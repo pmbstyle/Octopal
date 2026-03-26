@@ -74,6 +74,51 @@ def test_start_workers_parallel_launches_multiple() -> None:
     assert all(item["worker_id"] for item in result["launches"])
 
 
+def test_start_workers_parallel_forwards_allowed_paths_per_task() -> None:
+    templates = [
+        _template("coder", "fix code and bugs", ["fs_read"], ["filesystem_read"]),
+    ]
+
+    class _Store:
+        def list_worker_templates(self):
+            return templates
+
+        def get_worker_template(self, worker_id: str):
+            for item in templates:
+                if item.id == worker_id:
+                    return item
+            return None
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+            self.launches: list[dict[str, object]] = []
+
+        async def _start_worker_async(self, **kwargs):
+            self.launches.append(kwargs)
+            run_id = f"run-{len(self.launches)}"
+            return {"status": "started", "worker_id": run_id, "run_id": run_id, **kwargs}
+
+    octo = _Octo()
+
+    async def _scenario() -> dict:
+        payload = await _tool_start_workers_parallel(
+            {
+                "tasks": [
+                    {"task": "fix parser bug", "worker_id": "coder"},
+                    {"task": "edit shared module", "worker_id": "coder", "allowed_paths": ["src/parser.py"]},
+                ],
+            },
+            {"octo": octo, "chat_id": 123},
+        )
+        return json.loads(payload)
+
+    result = asyncio.run(_scenario())
+    assert result["started_count"] == 2
+    assert octo.launches[0]["allowed_paths"] is None
+    assert octo.launches[1]["allowed_paths"] == ["src/parser.py"]
+
+
 def test_synthesize_worker_results_reports_completed_failed_and_pending() -> None:
     now = datetime.now(UTC)
     records = {

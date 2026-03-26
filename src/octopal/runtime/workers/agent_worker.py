@@ -126,7 +126,9 @@ async def run_agent_worker(spec_path: str) -> None:
     from octopal.infrastructure.logging import correlation_id_var
 
     worker = Worker.from_spec_file(spec_path)
-    base_dir = Path(spec_path).parent
+    worker_dir = Path(spec_path).parent
+    workspace_env = os.getenv("OCTOPAL_WORKSPACE_DIR", "").strip()
+    workspace_root = Path(workspace_env) if workspace_env else worker_dir
 
     # Set the correlation ID for this worker's context
     if worker.spec.correlation_id:
@@ -141,13 +143,14 @@ async def run_agent_worker(spec_path: str) -> None:
         (
             "AgentWorker context: "
             f"cwd={Path.cwd()} "
-            f"workspace={os.getenv('OCTOPAL_WORKSPACE_DIR', '') or '<unset>'} "
+            f"workspace={workspace_env or '<unset>'} "
+            f"worker_dir={worker_dir} "
             f"tools={list(worker.spec.available_tools or [])}"
         ),
     )
 
     try:
-        result = await execute_agent_task(worker, base_dir)
+        result = await execute_agent_task(worker, workspace_root, worker_dir)
         await worker.complete(result)
     except Exception as exc:
         error_text = str(exc)
@@ -164,7 +167,7 @@ async def run_agent_worker(spec_path: str) -> None:
         )
 
 
-async def execute_agent_task(worker: Worker, base_dir: Path) -> WorkerResult:
+async def execute_agent_task(worker: Worker, workspace_root: Path, worker_dir: Path) -> WorkerResult:
     """Execute the agent's task with tools."""
     spec = worker.spec
 
@@ -321,7 +324,8 @@ Important:
                 tool_result, tool_meta = await _execute_tool(
                     tool_name,
                     tool_input,
-                    base_dir,
+                    workspace_root,
+                    worker_dir,
                     worker,
                     tool_map,
                     timeout_seconds=tool_timeout,
@@ -557,7 +561,8 @@ async def _call_llm(
 async def _execute_tool(
     tool_name: str | None,
     tool_input: dict,
-    base_dir: Path,
+    workspace_root: Path,
+    worker_dir: Path,
     worker: Worker,
     tool_map: dict[str, Any],
     *,
@@ -580,9 +585,15 @@ async def _execute_tool(
 
     try:
         # Tool handlers expect (args, ctx) where ctx is a dict
-        # Filesystem tools need base_dir in context, others don't
+        # Filesystem tools use worker_dir as the scratch workspace and
+        # workspace_root for explicitly shared paths.
         # worker instance is needed for intent requests
-        ctx = {"base_dir": base_dir, "worker": worker}
+        ctx = {
+            "base_dir": worker_dir,
+            "worker_dir": worker_dir,
+            "workspace_root": workspace_root,
+            "worker": worker,
+        }
 
         # Use tool.is_async to determine if it needs to be awaited
         async def _run_tool() -> Any:

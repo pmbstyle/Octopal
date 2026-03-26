@@ -96,6 +96,11 @@ def get_worker_tools() -> list[ToolSpec]:
                         "items": {"type": "string"},
                         "description": "Optional permissions the selected worker should include.",
                     },
+                    "allowed_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional restricted workspace paths the worker can access. If omitted, worker can access entire workspace (legacy behavior). For safety, always specify explicit paths (e.g. ['src/api', 'tests/test_api.py']).",
+                    },
                 },
                 "required": ["task"],
                 "additionalProperties": False,
@@ -146,6 +151,11 @@ def get_worker_tools() -> list[ToolSpec]:
                         "items": {"type": "string"},
                         "description": "Optional permissions the selected worker should include.",
                     },
+                    "allowed_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional restricted workspace paths the worker can access. If omitted, worker can access entire workspace (legacy behavior). For safety, always specify explicit paths (e.g. ['src/api', 'tests/test_api.py']).",
+                    },
                 },
                 "required": ["task"],
                 "additionalProperties": False,
@@ -174,6 +184,10 @@ def get_worker_tools() -> list[ToolSpec]:
                                 "timeout_seconds": {"type": "number"},
                                 "required_tools": {"type": "array", "items": {"type": "string"}},
                                 "required_permissions": {"type": "array", "items": {"type": "string"}},
+                                "allowed_paths": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
                             },
                             "required": ["task"],
                             "additionalProperties": False,
@@ -749,6 +763,7 @@ async def _start_worker_common(
         lineage_id=child_ctx["lineage_id"] if child_ctx else None,
         root_task_id=child_ctx["root_task_id"] if child_ctx else None,
         spawn_depth=(child_ctx["spawn_depth"] + 1) if child_ctx else 0,
+        allowed_paths=args.get("allowed_paths") if "allowed_paths" in args else None,
     )
     status = str(launch.get("status", "started"))
     launched_worker_id = launch.get("worker_id")
@@ -848,6 +863,7 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
                 lineage_id=child_ctx["lineage_id"] if child_ctx else None,
                 root_task_id=child_ctx["root_task_id"] if child_ctx else None,
                 spawn_depth=(child_ctx["spawn_depth"] + 1) if child_ctx else 0,
+                allowed_paths=item.get("allowed_paths") if "allowed_paths" in item else None,
             )
 
         return {
