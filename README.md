@@ -51,9 +51,9 @@ User:
 Octo:
 1. Spawns Web Researcher
 2. Researcher fetches sources
-3. Writer worker generates summary
+3. Writer worker generates a summary
 4. Octo stores canon entry
-5. Result returned to user
+5. Result returned to the user
 
 ## 🚀 Quick Start
 
@@ -172,9 +172,7 @@ octopal configure
 
 - `uv run octopal configure` writes the structured config there.
 - Runtime loads `config.json` first and maps it into legacy settings for older code paths.
-- `.env` is still supported as a legacy fallback and migration source.
 - If both files exist, `config.json` wins for overlapping settings.
-- You can override the default locations with `OCTOPAL_CONFIG_FILE` and `OCTOPAL_ENV_FILE`.
 
 In practice: use the wizard and treat `.env.example` as a compatibility reference, not the main setup path.
 
@@ -342,8 +340,7 @@ See [docs/skills.md](docs/skills.md) for the current format and behavior.
 ### LLM errors
 
 - Run `uv run octopal configure` and pick the provider you want to use.
-- For the current structured config, check `llm.provider_id`, `llm.model`, and `llm.api_key` in `config.json`.
-- Existing `OCTOPAL_LITELLM_*`, `ZAI_*`, and `OPENROUTER_*` environment variables still work as legacy fallbacks.
+- In your config file, check `llm.provider_id`, `llm.model`, and `llm.api_key` in `config.json`.
 
 ### Web search/fetch issues
 
