@@ -3,18 +3,47 @@
 </p>
 
 <p align="center">
-  <strong>MULTI-AGENT AI ORCHESTRATION ON YOUR DEVICE</strong>
+  <strong>SECURE MULTI-AGENT EXECUTION RUNTIME</strong>
 </p>
 
-Octopal is a local AI agent that runs autonomous workers to complete tasks for you.
-It acts as a persistent AI operator that can plan work, spawn specialized agents, and manage long-running workflows.
+Octopal is a local AI runtime that executes autonomous agents in isolated environments.
 
-The **Octo** is the long-running coordinator: it holds memory, plans work, chooses tools, manages context, and delegates execution.
-**Workers** are short-lived specialists with limited permissions, bounded context, and task-specific tool access.
+It acts as a persistent operator that plans work, spawns specialized workers, and runs tasks on your behalf — without exposing your system to risk.
 
-Octopal is designed for persistent assistant workflows, not just single prompts. It combines conversation channels, reusable workers, scheduling, memory, canon, policy controls, and an ops dashboard into one local system you can run on your own machine or server.
+Running AI agents without isolation is unsafe.  
+Octopal fixes this by design.
 
-This separation improves safety and reliability: sensitive context stays with the Octo, while workers receive only the minimal context needed to complete a task.
+- Workers run in ephemeral Docker containers by default  
+- No access to your system or workspace unless explicitly granted  
+- Filesystem access is restricted via allowlisted paths  
+- Secrets and environment variables are never exposed  
+- Every execution is sandboxed and disposable  
+
+The **Octo** is the long-running coordinator: it holds memory, plans work, chooses tools, and delegates execution.  
+**Workers** are short-lived specialists with bounded context, strict permissions, and isolated execution.
+
+This architecture enforces a hard boundary between reasoning and execution:
+the Octo never performs external actions directly — all side effects happen inside controlled worker environments.
+
+## 🔒 Secure by Default Execution
+
+Octopal is designed with a strict isolation model for all workers.
+
+- Workers run in ephemeral Docker containers by default
+- No access to your system or workspace unless explicitly granted
+- Filesystem access is restricted via allowlisted paths
+- Environment variables and secrets are never exposed to workers
+- Each execution is sandboxed and fully disposable
+
+Even when interacting with untrusted content (web pages, scripts, external tools), workers operate in a controlled environment that prevents system compromise.
+
+### Why this matters
+
+Modern AI agents frequently interact with untrusted data (web pages, APIs, generated code).
+Without isolation, a simple tool call (e.g. shell execution or remote fetch) can expose your system.
+
+Octopal prevents this by design:
+workers cannot access your system, secrets, or filesystem unless explicitly allowed.
 
 ## 🪛 What It Can Do
 
