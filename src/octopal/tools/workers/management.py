@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 _WORKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
 _MAX_PARALLEL_BATCH = 10
+_ALLOWED_PATHS_GUIDANCE = (
+    "Workers always keep their own private scratch workspace. "
+    "Use allowed_paths only when the worker needs files from Octo's main workspace, "
+    "and pass the smallest explicit set that will do the job. "
+    "If the task only needs the worker's own scratch space, omit allowed_paths."
+)
 
 
 def get_worker_tools() -> list[ToolSpec]:
@@ -52,7 +58,10 @@ def get_worker_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="start_worker",
-            description="Start a worker task. If worker_id is omitted or set to 'auto', the worker specialization router selects the best template.",
+            description=(
+                "Start a worker task. If worker_id is omitted or set to 'auto', the worker specialization router "
+                f"selects the best template. {_ALLOWED_PATHS_GUIDANCE}"
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -99,7 +108,12 @@ def get_worker_tools() -> list[ToolSpec]:
                     "allowed_paths": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional restricted workspace paths the worker can access. If omitted, worker can access entire workspace (legacy behavior). For safety, always specify explicit paths (e.g. ['src/api', 'tests/test_api.py']).",
+                        "description": (
+                            "Optional main-workspace paths to share with the worker in addition to its own scratch "
+                            "workspace. Use the smallest explicit set needed, for example ['skills/job-search/SKILL.md', "
+                            "'experiments/README.md']. Omit this when the worker only needs its own scratch files. "
+                            "If omitted, worker launch stays in legacy full-workspace mode."
+                        ),
                     },
                 },
                 "required": ["task"],
@@ -111,7 +125,10 @@ def get_worker_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="start_child_worker",
-            description="Start a child worker from inside a worker context with lineage tracking and spawn-policy checks.",
+            description=(
+                "Start a child worker from inside a worker context with lineage tracking and spawn-policy checks. "
+                f"{_ALLOWED_PATHS_GUIDANCE}"
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -154,7 +171,13 @@ def get_worker_tools() -> list[ToolSpec]:
                     "allowed_paths": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional restricted workspace paths the worker can access. If omitted, worker can access entire workspace (legacy behavior). For safety, always specify explicit paths (e.g. ['src/api', 'tests/test_api.py']).",
+                        "description": (
+                            "Optional main-workspace paths to share with the child worker in addition to its own "
+                            "scratch workspace. Use the smallest explicit set needed, for example "
+                            "['skills/job-search/SKILL.md', 'memory/canon/facts.md']. Omit this when the child only "
+                            "needs its own scratch files. "
+                            "If omitted, worker launch stays in legacy full-workspace mode."
+                        ),
                     },
                 },
                 "required": ["task"],
@@ -166,7 +189,11 @@ def get_worker_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="start_workers_parallel",
-            description="Launch multiple worker tasks in parallel and return run IDs plus routing decisions.",
+            description=(
+                "Launch multiple worker tasks in parallel and return run IDs plus routing decisions. "
+                "Each worker still gets its own scratch workspace. "
+                "For any shared project files, set allowed_paths per task with the smallest explicit path set."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -187,6 +214,10 @@ def get_worker_tools() -> list[ToolSpec]:
                                 "allowed_paths": {
                                     "type": "array",
                                     "items": {"type": "string"},
+                                    "description": (
+                                        "Optional main-workspace paths to share with this worker in addition to its "
+                                        "own scratch workspace. Use the smallest explicit set needed."
+                                    ),
                                 },
                             },
                             "required": ["task"],
