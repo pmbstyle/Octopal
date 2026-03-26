@@ -111,8 +111,7 @@ def get_worker_tools() -> list[ToolSpec]:
                         "description": (
                             "Optional main-workspace paths to share with the worker in addition to its own scratch "
                             "workspace. Use the smallest explicit set needed, for example ['skills/job-search/SKILL.md', "
-                            "'experiments/README.md']. Omit this when the worker only needs its own scratch files. "
-                            "If omitted, worker launch stays in legacy full-workspace mode."
+                            "'experiments/README.md']. Omit this when the worker only needs its own scratch files."
                         ),
                     },
                 },
@@ -175,8 +174,7 @@ def get_worker_tools() -> list[ToolSpec]:
                             "Optional main-workspace paths to share with the child worker in addition to its own "
                             "scratch workspace. Use the smallest explicit set needed, for example "
                             "['skills/job-search/SKILL.md', 'memory/canon/facts.md']. Omit this when the child only "
-                            "needs its own scratch files. "
-                            "If omitted, worker launch stays in legacy full-workspace mode."
+                            "needs its own scratch files."
                         ),
                     },
                 },

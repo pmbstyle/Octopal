@@ -71,36 +71,32 @@ class DockerLauncher:
 
         cmd_args = ["docker", "run", "--rm", "-i"]
 
-        if allowed_paths is not None:
-            host_worker_dir = Path(cwd).resolve()
-            container_worker_dir = f"{container_ws}/workers/{worker_id}"
-            cmd_args.extend(["-v", f"{host_worker_dir}:{container_worker_dir}"])
+        host_worker_dir = Path(cwd).resolve()
+        container_worker_dir = f"{container_ws}/workers/{worker_id}"
+        cmd_args.extend(["-v", f"{host_worker_dir}:{container_worker_dir}"])
 
-            host_ws_path = Path(self.host_workspace).resolve()
-            seen_mounts: set[tuple[str, str]] = set()
-            for rel_path in allowed_paths:
-                if not isinstance(rel_path, str) or not rel_path.strip():
+        host_ws_path = Path(self.host_workspace).resolve()
+        seen_mounts: set[tuple[str, str]] = set()
+        for rel_path in allowed_paths or []:
+            if not isinstance(rel_path, str) or not rel_path.strip():
+                continue
+            host_path = (host_ws_path / rel_path).resolve()
+            try:
+                host_path.relative_to(host_ws_path)
+            except ValueError:
+                continue
+            if not host_path.exists():
+                continue
+            mount_targets = (
+                f"{container_ws}/{rel_path}",
+                f"{container_worker_dir}/{rel_path}",
+            )
+            for mount_target in mount_targets:
+                mount_key = (str(host_path), mount_target)
+                if mount_key in seen_mounts:
                     continue
-                host_path = (host_ws_path / rel_path).resolve()
-                try:
-                    host_path.relative_to(host_ws_path)
-                except ValueError:
-                    continue
-                if not host_path.exists():
-                    continue
-                mount_targets = (
-                    f"{container_ws}/{rel_path}",
-                    f"{container_worker_dir}/{rel_path}",
-                )
-                for mount_target in mount_targets:
-                    mount_key = (str(host_path), mount_target)
-                    if mount_key in seen_mounts:
-                        continue
-                    cmd_args.extend(["-v", f"{host_path}:{mount_target}"])
-                    seen_mounts.add(mount_key)
-        else:
-            # Legacy fallback: mount the whole workspace
-            cmd_args.extend(["-v", f"{self.host_workspace}:{self.container_workspace}"])
+                cmd_args.extend(["-v", f"{host_path}:{mount_target}"])
+                seen_mounts.add(mount_key)
 
         spec_in_container = f"{container_ws}/workers/{worker_id}/spec.json"
         cmd_args.extend([

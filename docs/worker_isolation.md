@@ -14,7 +14,7 @@ Every worker always keeps its own private scratch workspace at `workspace/worker
 3. **Python-Level Security (`same_env`):** Filesystem tools keep unrestricted access to the worker's scratch directory, but any path that targets Octo's shared workspace must match the `allowed_paths` allowlist.
 4. **Docker-Level Security (`docker`):** Restricted workers get mounts for their own scratch directory plus only the explicitly shared paths. Unshared parts of the Octo workspace are not mounted.
 
-If `allowed_paths` is omitted entirely, worker launch behavior stays unchanged from legacy mode.
+If `allowed_paths` is omitted, the worker only sees its own scratch workspace.
 
 ## Execution Environments
 
@@ -24,7 +24,7 @@ Octopal supports two worker launcher modes, configurable via `config.json` (`wor
 This is the most secure and robust way to run workers, especially when executing untrusted code or fetching data from the open web.
 
 - **Ephemeral Containers:** Each worker run spins up a fresh, isolated Docker container based on the `octopal-worker` image. 
-- **Volume Mounting:** Restricted workers get their scratch directory plus the explicitly shared `allowed_paths`. Legacy launches without `allowed_paths` keep the full workspace mount for compatibility.
+- **Volume Mounting:** Workers get their scratch directory by default. Docker mounts additional main-workspace paths only when `allowed_paths` explicitly requests them.
 - **Environment Scrubbing:** The worker container is stripped of sensitive host environment variables. API keys, Telegram tokens, and host configurations are not passed down.
 - **Clean Death:** Once the worker completes its task or fails, the `--rm` flag ensures the container is immediately destroyed, leaving no background processes or state behind.
 

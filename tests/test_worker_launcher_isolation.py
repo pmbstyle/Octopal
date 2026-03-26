@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from octopal.runtime.workers.launcher import DockerLauncher
 
 
-def test_docker_launcher_keeps_legacy_workspace_mount_when_allowed_paths_missing(
+def test_docker_launcher_mounts_only_worker_dir_when_allowed_paths_missing(
     tmp_path: Path, monkeypatch
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -36,7 +36,8 @@ def test_docker_launcher_keeps_legacy_workspace_mount_when_allowed_paths_missing
     )
 
     args = captured["args"]
-    assert f"{workspace}:/workspace" in args
+    assert f"{worker_dir}:/workspace/workers/worker-1" in args
+    assert f"{workspace}:/workspace" not in args
     assert "SECRET" not in captured["kwargs"]["env"]
     assert captured["kwargs"]["env"]["OCTOPAL_WORKSPACE_DIR"] == "/workspace"
 
