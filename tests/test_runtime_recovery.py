@@ -89,7 +89,9 @@ class _LauncherStub:
 
     async def launch(self, spec_path: str, cwd: str, env: dict[str, str]):
         self.calls += 1
-        return _FakeProcess(pid=self.calls)
+        # Use a clearly fake pid so Linux cleanup paths do not accidentally
+        # inspect or signal a real low-numbered system process during tests.
+        return _FakeProcess(pid=500_000 + self.calls)
 
 
 def _spec() -> WorkerSpec:
