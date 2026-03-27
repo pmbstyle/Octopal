@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -58,6 +61,23 @@ def exec_run(args: dict[str, Any], base_dir: Path) -> str:
         return _handle_management(action, args)
     else:
         return f"exec_run error: Unknown action '{action}'"
+
+
+def cleanup_background_sessions() -> int:
+    """Terminate all tracked background sessions for the current worker process."""
+    session_ids = list(_PROCESS_REGISTRY.keys())
+    cleaned = 0
+    for session_id in session_ids:
+        session = _PROCESS_REGISTRY.get(session_id)
+        if session is None:
+            continue
+        _terminate_session_process(session)
+        _close_session_pipes(session)
+        _PROCESS_REGISTRY.pop(session_id, None)
+        cleaned += 1
+    if cleaned:
+        _publish_runtime_metrics()
+    return cleaned
 
 
 # -------------------------------------------------------------------------
@@ -130,6 +150,7 @@ def _handle_start(args: dict[str, Any], base_dir: Path) -> str:
                 stdin=subprocess.PIPE,
                 text=True,
                 bufsize=1, # Line buffered
+                **_background_popen_kwargs(),
             )
             session_id = str(uuid.uuid4())
 
@@ -232,13 +253,8 @@ def _handle_management(action: str, args: dict[str, Any]) -> str:
              return f"exec_run error: Failed to write to process: {e}"
 
     elif action == "kill":
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-
+        _terminate_session_process(session)
+        _close_session_pipes(session)
         del _PROCESS_REGISTRY[session_id]
         _publish_runtime_metrics()
         return json.dumps({"status": "killed", "session_id": session_id})
@@ -269,3 +285,50 @@ def _prune_process_registry(now: float | None = None) -> None:
         _PROCESS_REGISTRY.pop(session_id, None)
     if stale:
         _publish_runtime_metrics()
+
+
+def _background_popen_kwargs() -> dict[str, Any]:
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _terminate_session_process(session: dict[str, Any]) -> None:
+    proc = session.get("process")
+    if proc is None or proc.poll() is not None:
+        return
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=2)
+        return
+
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=2)
+
+
+def _close_session_pipes(session: dict[str, Any]) -> None:
+    proc = session.get("process")
+    if proc is None:
+        return
+    for pipe_name in ("stdin", "stdout", "stderr"):
+        pipe = getattr(proc, pipe_name, None)
+        if pipe is None:
+            continue
+        with contextlib.suppress(Exception):
+            pipe.close()

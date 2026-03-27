@@ -124,6 +124,7 @@ def _parse_positive_int_env(name: str, default: int) -> int:
 async def run_agent_worker(spec_path: str) -> None:
     """Main entry point for simplified agent worker."""
     from octopal.infrastructure.logging import correlation_id_var
+    from octopal.tools.ops.exec_run import cleanup_background_sessions
 
     worker = Worker.from_spec_file(spec_path)
     worker_dir = Path(spec_path).parent
@@ -165,6 +166,8 @@ async def run_agent_worker(spec_path: str) -> None:
                 },
             )
         )
+    finally:
+        cleanup_background_sessions()
 
 
 async def execute_agent_task(worker: Worker, workspace_root: Path, worker_dir: Path) -> WorkerResult:

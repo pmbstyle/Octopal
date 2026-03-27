@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import octopal.tools.ops.exec_run as exec_run_tools
 import octopal.tools.ops.management as ops_tools
 from octopal.tools.ops.management import docker_compose_control, test_run
 
@@ -42,3 +43,46 @@ def test_docker_exec_preserves_quoted_args(monkeypatch, tmp_path: Path) -> None:
     assert "api" in captured
     api_index = captured.index("api")
     assert captured[api_index + 1 :] == ["echo", "hello world"]
+
+
+def test_cleanup_background_sessions_terminates_and_clears_registry(monkeypatch) -> None:
+    class _Pipe:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.pid = 1234
+            self.stdin = _Pipe()
+            self.stdout = _Pipe()
+            self.stderr = _Pipe()
+
+        def poll(self):
+            return None
+
+    proc = _Proc()
+    original_registry = dict(exec_run_tools._PROCESS_REGISTRY)
+    exec_run_tools._PROCESS_REGISTRY.clear()
+    exec_run_tools._PROCESS_REGISTRY["session-1"] = {"process": proc, "buffer": object()}
+    terminated: list[int] = []
+
+    def _fake_terminate(session: dict) -> None:
+        terminated.append(session["process"].pid)
+
+    monkeypatch.setattr(exec_run_tools, "_terminate_session_process", _fake_terminate)
+
+    try:
+        cleaned = exec_run_tools.cleanup_background_sessions()
+    finally:
+        exec_run_tools._PROCESS_REGISTRY.clear()
+        exec_run_tools._PROCESS_REGISTRY.update(original_registry)
+
+    assert cleaned == 1
+    assert terminated == [1234]
+    assert proc.stdin.closed is True
+    assert proc.stdout.closed is True
+    assert proc.stderr.closed is True
+    assert exec_run_tools._PROCESS_REGISTRY == original_registry
