@@ -94,7 +94,7 @@ def test_start_worker_auto_routes_and_returns_router_metadata() -> None:
     assert isinstance(result["router_reason"], str) and result["router_reason"]
 
 
-def test_start_worker_does_not_forward_model_override() -> None:
+def test_start_worker_passes_null_model_to_runtime() -> None:
     templates = [
         _template("coder", "Coder", "Handles code refactors and bugfixes", ["fs_read"], ["filesystem_read"]),
     ]
@@ -134,4 +134,4 @@ def test_start_worker_does_not_forward_model_override() -> None:
     result = asyncio.run(_scenario())
     assert result["worker_template_id"] == "coder"
     assert octo.captured is not None
-    assert "model" not in octo.captured
+    assert octo.captured["model"] is None

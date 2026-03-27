@@ -119,7 +119,7 @@ def test_start_workers_parallel_forwards_allowed_paths_per_task() -> None:
     assert octo.launches[1]["allowed_paths"] == ["src/parser.py"]
 
 
-def test_start_workers_parallel_does_not_forward_model_override() -> None:
+def test_start_workers_parallel_passes_null_model_to_runtime() -> None:
     templates = [
         _template("coder", "fix code and bugs", ["fs_read"], ["filesystem_read"]),
     ]
@@ -159,7 +159,7 @@ def test_start_workers_parallel_does_not_forward_model_override() -> None:
 
     result = asyncio.run(_scenario())
     assert result["started_count"] == 1
-    assert "model" not in octo.launches[0]
+    assert octo.launches[0]["model"] is None
 
 
 def test_synthesize_worker_results_reports_completed_failed_and_pending() -> None:
