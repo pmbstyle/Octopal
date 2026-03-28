@@ -7,6 +7,7 @@ from pathlib import Path
 from octopal.runtime.housekeeping import (
     cleanup_ephemeral_worker_dirs,
     cleanup_workspace_tmp,
+    remove_tree_with_retries,
     rotate_canon_events,
 )
 
@@ -54,6 +55,31 @@ def test_cleanup_ephemeral_worker_dirs_removes_old_uuid_dirs_only(tmp_path: Path
     assert not stale_worker.exists()
     assert template_worker.exists()
     assert fresh_worker.exists()
+
+
+def test_remove_tree_with_retries_retries_permission_errors(tmp_path: Path) -> None:
+    target = tmp_path / "worker"
+    target.mkdir()
+
+    calls = {"count": 0}
+
+    def _flaky_rmtree(path: Path, onerror=None) -> None:
+        assert path == target
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise PermissionError("directory is busy")
+
+    import octopal.runtime.housekeeping as housekeeping_mod
+
+    original_rmtree = housekeeping_mod.shutil.rmtree
+    housekeeping_mod.shutil.rmtree = _flaky_rmtree
+    try:
+        removed = remove_tree_with_retries(target, retries=3, base_delay_seconds=0)
+    finally:
+        housekeeping_mod.shutil.rmtree = original_rmtree
+
+    assert removed is True
+    assert calls["count"] == 3
 
 
 def test_rotate_canon_events_bootstraps_snapshot_and_keeps_archives(tmp_path: Path) -> None:

@@ -312,7 +312,7 @@ def test_sanitize_task_text_redacts_embedded_secrets() -> None:
     assert sanitized.count("[REDACTED_SECRET]") >= 2
 
 
-def test_cleanup_worker_dir_retries_permission_errors(tmp_path: Path) -> None:
+def test_cleanup_worker_dir_uses_retrying_remove_helper(tmp_path: Path) -> None:
     runtime = WorkerRuntime(
         store=_StoreStub(),
         policy=_PolicyStub(),
@@ -326,22 +326,23 @@ def test_cleanup_worker_dir_retries_permission_errors(tmp_path: Path) -> None:
 
     calls = {"count": 0}
 
-    def _flaky_rmtree(path: Path) -> None:
+    def _remove_tree(path: Path, *, retries: int, base_delay_seconds: float) -> bool:
         assert path == worker_dir
+        assert retries == 8
+        assert base_delay_seconds == 0.25
         calls["count"] += 1
-        if calls["count"] < 3:
-            raise PermissionError("directory is busy")
+        return True
 
     import octopal.runtime.workers.runtime as runtime_mod
 
-    original_rmtree = runtime_mod.shutil.rmtree
-    runtime_mod.shutil.rmtree = _flaky_rmtree
+    original_remove_tree = runtime_mod.remove_tree_with_retries
+    runtime_mod.remove_tree_with_retries = _remove_tree
     try:
         asyncio.run(runtime._cleanup_worker_dir(worker_dir))
     finally:
-        runtime_mod.shutil.rmtree = original_rmtree
+        runtime_mod.remove_tree_with_retries = original_remove_tree
 
-    assert calls["count"] == 3
+    assert calls["count"] == 1
 
 
 def test_runtime_waits_for_worker_exit_after_result(tmp_path: Path) -> None:
