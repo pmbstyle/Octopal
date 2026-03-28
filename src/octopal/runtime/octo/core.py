@@ -706,6 +706,9 @@ class Octo:
                 "tmp_retention_hours": _env_int(
                     "OCTOPAL_WORKSPACE_TMP_RETENTION_HOURS", 48, minimum=1
                 ),
+                "worker_dir_retention_minutes": _env_int(
+                    "OCTOPAL_WORKER_DIR_RETENTION_MINUTES", 15, minimum=1
+                ),
                 "canon_events_max_bytes": _env_int(
                     "OCTOPAL_CANON_EVENTS_MAX_BYTES", 2_000_000, minimum=1024
                 ),
@@ -838,7 +841,7 @@ class Octo:
                 worker_result = await asyncio.to_thread(
                     cleanup_ephemeral_worker_dirs,
                     self.canon.workspace_dir,
-                    retention_hours=int(cfg.get("worker_dir_retention_hours", 24)),
+                    retention_minutes=int(cfg.get("worker_dir_retention_minutes", 15)),
                 )
                 if worker_result.deleted_dirs or worker_result.errors:
                     logger.info(

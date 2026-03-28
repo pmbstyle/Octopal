@@ -49,7 +49,7 @@ def test_cleanup_ephemeral_worker_dirs_removes_old_uuid_dirs_only(tmp_path: Path
     os.utime(stale_worker / "data", (old_ts, old_ts))
     os.utime(stale_worker, (old_ts, old_ts))
 
-    result = cleanup_ephemeral_worker_dirs(workspace, retention_hours=24)
+    result = cleanup_ephemeral_worker_dirs(workspace, retention_minutes=15)
 
     assert result.deleted_dirs == 1
     assert not stale_worker.exists()

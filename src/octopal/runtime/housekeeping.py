@@ -72,14 +72,14 @@ def remove_tree_with_retries(
 def cleanup_ephemeral_worker_dirs(
     workspace_dir: Path,
     *,
-    retention_hours: int,
+    retention_minutes: int,
 ) -> WorkerDirCleanupResult:
     result = WorkerDirCleanupResult()
     workers_dir = workspace_dir / "workers"
-    if retention_hours <= 0 or not workers_dir.exists():
+    if retention_minutes <= 0 or not workers_dir.exists():
         return result
 
-    cutoff = datetime.now(UTC) - timedelta(hours=retention_hours)
+    cutoff = datetime.now(UTC) - timedelta(minutes=retention_minutes)
     for worker_dir in workers_dir.iterdir():
         if not worker_dir.is_dir():
             continue
