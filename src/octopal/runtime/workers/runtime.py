@@ -12,7 +12,6 @@ import json
 import os
 import signal
 import re
-import shutil
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -27,6 +26,7 @@ from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.mcp.manager import MCPManager
 from octopal.infrastructure.store.base import Store
 from octopal.infrastructure.store.models import AuditEvent, WorkerRecord, WorkerTemplateRecord
+from octopal.runtime.housekeeping import remove_tree_with_retries
 from octopal.runtime.intents.types import ActionIntent
 from octopal.runtime.policy.engine import PolicyEngine
 from octopal.runtime.tool_errors import ToolBridgeError
@@ -819,21 +819,16 @@ class WorkerRuntime:
         if not await asyncio.to_thread(worker_dir.exists):
             return
 
-        for attempt in range(1, 4):
-            try:
-                await asyncio.to_thread(shutil.rmtree, worker_dir)
-                logger.info("WorkerRuntime cleaned up worker dir: %s", worker_dir)
-                return
-            except FileNotFoundError:
-                return
-            except PermissionError as exc:
-                if attempt == 3:
-                    logger.warning("WorkerRuntime cleanup failed after retries: %s", exc)
-                    return
-                await asyncio.sleep(0.1 * attempt)
-            except Exception as exc:
-                logger.warning("WorkerRuntime cleanup failed: %s", exc)
-                return
+        removed = await asyncio.to_thread(
+            remove_tree_with_retries,
+            worker_dir,
+            retries=8,
+            base_delay_seconds=0.25,
+        )
+        if removed:
+            logger.info("WorkerRuntime cleaned up worker dir: %s", worker_dir)
+            return
+        logger.warning("WorkerRuntime cleanup failed after retries: %s", worker_dir)
 
     async def _safe_terminate_process(self, process: asyncio.subprocess.Process) -> None:
         try:

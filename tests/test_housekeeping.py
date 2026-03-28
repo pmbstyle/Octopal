@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
-from octopal.runtime.housekeeping import cleanup_workspace_tmp, rotate_canon_events
+from octopal.runtime.housekeeping import (
+    cleanup_ephemeral_worker_dirs,
+    cleanup_workspace_tmp,
+    rotate_canon_events,
+)
 
 
 def _touch(path: Path, text: str = "x") -> None:
@@ -18,9 +24,6 @@ def test_cleanup_workspace_tmp_removes_old_files(tmp_path: Path) -> None:
     _touch(new_file, "new")
 
     # Make old file older than 72h.
-    import os
-    import time
-
     old_ts = time.time() - (72 * 3600)
     os.utime(old_file, (old_ts, old_ts))
 
@@ -28,6 +31,29 @@ def test_cleanup_workspace_tmp_removes_old_files(tmp_path: Path) -> None:
     assert result.deleted_files >= 1
     assert not old_file.exists()
     assert new_file.exists()
+
+
+def test_cleanup_ephemeral_worker_dirs_removes_old_uuid_dirs_only(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    stale_worker = workspace / "workers" / "657aa2f0-7e40-4666-98dd-941fd435692a"
+    template_worker = workspace / "workers" / "coder"
+    fresh_worker = workspace / "workers" / "30e3a19a-6998-44b2-9a7b-4dc328f9b482"
+
+    _touch(stale_worker / "data" / "note.txt", "stale")
+    _touch(template_worker / "worker.json", '{"id":"coder"}')
+    _touch(fresh_worker / "spec.json", "{}")
+
+    old_ts = time.time() - (72 * 3600)
+    os.utime(stale_worker / "data" / "note.txt", (old_ts, old_ts))
+    os.utime(stale_worker / "data", (old_ts, old_ts))
+    os.utime(stale_worker, (old_ts, old_ts))
+
+    result = cleanup_ephemeral_worker_dirs(workspace, retention_hours=24)
+
+    assert result.deleted_dirs == 1
+    assert not stale_worker.exists()
+    assert template_worker.exists()
+    assert fresh_worker.exists()
 
 
 def test_rotate_canon_events_bootstraps_snapshot_and_keeps_archives(tmp_path: Path) -> None:

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import stat
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,6 +26,83 @@ class CanonRotationResult:
     archived_file: str | None = None
     deleted_archives: int = 0
     bootstrap_entries: int = 0
+
+
+@dataclass
+class WorkerDirCleanupResult:
+    deleted_dirs: int = 0
+    errors: int = 0
+
+
+def remove_tree_with_retries(
+    path: Path,
+    *,
+    retries: int = 6,
+    base_delay_seconds: float = 0.25,
+) -> bool:
+    """Remove a directory tree with Windows-friendly retry behavior."""
+    if not path.exists():
+        return True
+
+    def _onerror(func, value, exc_info) -> None:
+        try:
+            os.chmod(value, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+        except OSError:
+            pass
+        func(value)
+
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            shutil.rmtree(path, onerror=_onerror)
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError:
+            if attempt == retries:
+                return False
+            time.sleep(base_delay_seconds * attempt)
+        except OSError:
+            if attempt == retries:
+                return False
+            time.sleep(base_delay_seconds * attempt)
+
+    return not path.exists()
+
+
+def cleanup_ephemeral_worker_dirs(
+    workspace_dir: Path,
+    *,
+    retention_hours: int,
+) -> WorkerDirCleanupResult:
+    result = WorkerDirCleanupResult()
+    workers_dir = workspace_dir / "workers"
+    if retention_hours <= 0 or not workers_dir.exists():
+        return result
+
+    cutoff = datetime.now(UTC) - timedelta(hours=retention_hours)
+    for worker_dir in workers_dir.iterdir():
+        if not worker_dir.is_dir():
+            continue
+        try:
+            uuid.UUID(worker_dir.name)
+        except ValueError:
+            continue
+
+        try:
+            modified = datetime.fromtimestamp(worker_dir.stat().st_mtime, tz=UTC)
+        except OSError:
+            result.errors += 1
+            continue
+
+        if modified >= cutoff:
+            continue
+
+        if remove_tree_with_retries(worker_dir):
+            result.deleted_dirs += 1
+        else:
+            result.errors += 1
+
+    return result
 
 
 def cleanup_workspace_tmp(workspace_dir: Path, *, retention_hours: int) -> TmpCleanupResult:
