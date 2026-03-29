@@ -21,8 +21,12 @@ from octopal.tools.browser.actions import (
     browser_click,
     browser_close,
     browser_extract,
+    browser_focus_tab,
+    browser_navigate,
     browser_open,
+    browser_screenshot,
     browser_snapshot,
+    browser_tabs,
     browser_type,
     browser_wait_for,
     browser_workflow,
@@ -30,8 +34,6 @@ from octopal.tools.browser.actions import (
 from octopal.tools.filesystem.download import download_file
 from octopal.tools.filesystem.files import fs_delete, fs_list, fs_move, fs_read, fs_write
 from octopal.tools.inventory import annotate_tool_specs
-from octopal.tools.llm.subtask import run_llm_subtask
-from octopal.tools.mcp.management import get_mcp_mgmt_tools
 from octopal.tools.memory.canon import manage_canon, search_canon
 from octopal.tools.memory.experiments import octo_experiment_log
 from octopal.tools.ops.exec_run import exec_run
@@ -66,6 +68,8 @@ logger = structlog.get_logger(__name__)
 
 
 def get_tools(mcp_manager=None) -> list[ToolSpec]:
+    from octopal.tools.mcp.management import get_mcp_mgmt_tools
+
     tools = [
         ToolSpec(
             name="manage_canon",
@@ -360,7 +364,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             permission="llm_subtask", # A new permission to control access to this powerful tool
-            handler=lambda args, ctx: run_llm_subtask(args, ctx["octo"].provider),
+            handler=_tool_run_llm_subtask,
             is_async=True,
         ),
         ToolSpec(
@@ -534,6 +538,8 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "URL to open."},
+                    "target_id": {"type": "string", "description": "Optional existing tab target id."},
+                    "new_tab": {"type": "boolean", "description": "Open in a new tab before loading the URL."},
                 },
                 "required": ["url"],
                 "additionalProperties": False,
@@ -543,9 +549,38 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             is_async=True,
         ),
         ToolSpec(
+            name="browser_tabs",
+            description="List open browser tabs for this chat session, including the active target id.",
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+            permission="network",
+            handler=lambda args, ctx: browser_tabs(args, ctx),
+            is_async=True,
+        ),
+        ToolSpec(
+            name="browser_focus_tab",
+            description="Switch the active browser tab using a target id returned by browser_tabs.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "Tab target id (e.g. 't1')."},
+                },
+                "required": ["target_id"],
+                "additionalProperties": False,
+            },
+            permission="network",
+            handler=lambda args, ctx: browser_focus_tab(args, ctx),
+            is_async=True,
+        ),
+        ToolSpec(
             name="browser_snapshot",
             description="Capture an accessibility snapshot of the current page. Provides [ref=eN] tags for interacting with elements.",
-            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+            parameters={
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "Optional tab target id to snapshot."},
+                },
+                "additionalProperties": False,
+            },
             permission="network",
             handler=lambda args, ctx: browser_snapshot(args, ctx),
             is_async=True,
@@ -557,6 +592,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "ref": {"type": "string", "description": "Element reference (e.g. 'e1')."},
+                    "target_id": {"type": "string", "description": "Optional tab target id for the ref lookup."},
                 },
                 "required": ["ref"],
                 "additionalProperties": False,
@@ -574,6 +610,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     "ref": {"type": "string", "description": "Element reference (e.g. 'e1')."},
                     "text": {"type": "string", "description": "Text to type."},
                     "press_enter": {"type": "boolean", "description": "Whether to press Enter after typing."},
+                    "target_id": {"type": "string", "description": "Optional tab target id for the ref lookup."},
                 },
                 "required": ["ref", "text"],
                 "additionalProperties": False,
@@ -583,9 +620,31 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             is_async=True,
         ),
         ToolSpec(
+            name="browser_navigate",
+            description="Navigate the current or specified browser tab to a new URL.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to navigate to."},
+                    "target_id": {"type": "string", "description": "Optional tab target id."},
+                },
+                "required": ["url"],
+                "additionalProperties": False,
+            },
+            permission="network",
+            handler=lambda args, ctx: browser_navigate(args, ctx),
+            is_async=True,
+        ),
+        ToolSpec(
             name="browser_close",
             description="Close the browser session for the current chat.",
-            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+            parameters={
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "Optional tab target id to close instead of the full session."},
+                },
+                "additionalProperties": False,
+            },
             permission="network",
             handler=lambda args, ctx: browser_close(args, ctx),
             is_async=True,
@@ -598,6 +657,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "properties": {
                     "ref": {"type": "string", "description": "Optional element reference from browser_snapshot."},
                     "text": {"type": "string", "description": "Optional visible text to wait for."},
+                    "target_id": {"type": "string", "description": "Optional tab target id."},
                     "state": {
                         "type": "string",
                         "description": "Desired locator state.",
@@ -619,6 +679,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "properties": {
                     "ref": {"type": "string", "description": "Optional element reference from browser_snapshot."},
                     "max_chars": {"type": "integer", "description": "Maximum text length to return (100-20000)."},
+                    "target_id": {"type": "string", "description": "Optional tab target id."},
                 },
                 "additionalProperties": False,
             },
@@ -627,8 +688,23 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             is_async=True,
         ),
         ToolSpec(
+            name="browser_screenshot",
+            description="Capture a PNG screenshot of the current or specified browser tab.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "Optional tab target id."},
+                    "full_page": {"type": "boolean", "description": "Capture the full page instead of only the viewport."},
+                },
+                "additionalProperties": False,
+            },
+            permission="network",
+            handler=lambda args, ctx: browser_screenshot(args, ctx),
+            is_async=True,
+        ),
+        ToolSpec(
             name="browser_workflow",
-            description="Run a short browser workflow as one tool call by sequencing existing browser actions like open, snapshot, click, type, wait_for, extract, and close.",
+            description="Run a short browser workflow as one tool call by sequencing browser actions like open, tabs, focus_tab, navigate, snapshot, screenshot, click, type, wait_for, extract, and close.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -640,12 +716,15 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                             "properties": {
                                 "action": {
                                     "type": "string",
-                                    "enum": ["open", "snapshot", "click", "type", "wait_for", "extract", "close"],
+                                    "enum": ["open", "tabs", "focus_tab", "navigate", "snapshot", "screenshot", "click", "type", "wait_for", "extract", "close"],
                                 },
                                 "url": {"type": "string"},
+                                "target_id": {"type": "string"},
+                                "new_tab": {"type": "boolean"},
                                 "ref": {"type": "string"},
                                 "text": {"type": "string"},
                                 "press_enter": {"type": "boolean"},
+                                "full_page": {"type": "boolean"},
                                 "state": {"type": "string", "enum": ["attached", "detached", "hidden", "visible"]},
                                 "timeout_ms": {"type": "integer"},
                                 "max_chars": {"type": "integer"},
@@ -1065,6 +1144,12 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             logger.info("Injecting %d MCP tools into registry", len(mcp_tools))
             tools.extend(mcp_tools)
     return annotate_tool_specs(tools)
+
+
+def _tool_run_llm_subtask(args, ctx):
+    from octopal.tools.llm.subtask import run_llm_subtask
+
+    return run_llm_subtask(args, ctx["octo"].provider)
 
 
 async def _tool_check_schedule(args, ctx) -> str:

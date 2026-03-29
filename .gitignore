@@ -44,6 +44,7 @@ HEARTBEAT.md
 /src/octopal/tools/ops/__pycache__
 /src/octopal/tools/skills/__pycache__
 /src/octopal/tools/web/__pycache__
+/src/octopal/tools/web/providers/__pycache__
 /src/octopal/tools/workers/__pycache__
 /src/octopal/runtime/scheduler/__pycache__
 /src/octopal/infrastructure/config/__pycache__
