@@ -215,6 +215,146 @@ def test_runtime_launch_env_includes_workspace_dir(tmp_path: Path) -> None:
     assert env["OCTOPAL_WORKSPACE_DIR"] == str(runtime.workspace_dir.resolve())
 
 
+def test_runtime_launch_env_includes_search_keys_from_config(tmp_path: Path, monkeypatch) -> None:
+    template = WorkerTemplateRecord(
+        id="worker",
+        name="Worker",
+        description="Test worker",
+        system_prompt="Do work",
+        available_tools=["web_search"],
+        required_permissions=["network"],
+        model=None,
+        max_thinking_steps=3,
+        default_timeout_seconds=30,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    class _Store:
+        def get_worker_template(self, worker_id: str):
+            return template
+
+        def create_worker(self, _record):
+            return None
+
+        def update_worker_status(self, _worker_id: str, _status: str):
+            return None
+
+        def append_audit(self, _event):
+            return None
+
+        def update_worker_result(self, _worker_id: str, **_kwargs):
+            return None
+
+    class _Policy:
+        def grant_capabilities(self, capabilities):
+            return [Capability(type="network", scope="worker")]
+
+    captured: dict[str, object] = {}
+
+    class _Launcher:
+        async def launch(self, spec_path: str, cwd: str, env: dict[str, str]):
+            captured["env"] = env
+            raise RuntimeError("stop after env capture")
+
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    settings = Settings(
+        config_obj=OctopalConfig(search={"brave_api_key": "brave-from-config"})
+    )
+    runtime = WorkerRuntime(
+        store=_Store(),
+        policy=_Policy(),
+        workspace_dir=tmp_path / "workspace",
+        launcher=_Launcher(),
+        settings=settings,
+    )
+    runtime.workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    request = TaskRequest(worker_id="worker", task="hello")
+
+    try:
+        asyncio.run(runtime.run_task(request))
+    except RuntimeError as exc:
+        assert "stop after env capture" in str(exc)
+    else:
+        raise AssertionError("Expected launch to stop after env capture")
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["BRAVE_API_KEY"] == "brave-from-config"
+
+
+def test_runtime_launch_env_keeps_provider_secrets_out_of_worker_env(tmp_path: Path, monkeypatch) -> None:
+    template = WorkerTemplateRecord(
+        id="worker",
+        name="Worker",
+        description="Test worker",
+        system_prompt="Do work",
+        available_tools=["web_search"],
+        required_permissions=["network"],
+        model=None,
+        max_thinking_steps=3,
+        default_timeout_seconds=30,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    class _Store:
+        def get_worker_template(self, worker_id: str):
+            return template
+
+        def create_worker(self, _record):
+            return None
+
+        def update_worker_status(self, _worker_id: str, _status: str):
+            return None
+
+        def append_audit(self, _event):
+            return None
+
+        def update_worker_result(self, _worker_id: str, **_kwargs):
+            return None
+
+    class _Policy:
+        def grant_capabilities(self, capabilities):
+            return [Capability(type="network", scope="worker")]
+
+    captured: dict[str, object] = {}
+
+    class _Launcher:
+        async def launch(self, spec_path: str, cwd: str, env: dict[str, str]):
+            captured["env"] = env
+            raise RuntimeError("stop after env capture")
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    settings = Settings(
+        config_obj=OctopalConfig(search={"brave_api_key": "brave-from-config"}),
+        OPENROUTER_API_KEY="openrouter-secret",
+    )
+    runtime = WorkerRuntime(
+        store=_Store(),
+        policy=_Policy(),
+        workspace_dir=tmp_path / "workspace",
+        launcher=_Launcher(),
+        settings=settings,
+    )
+    runtime.workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    request = TaskRequest(worker_id="worker", task="hello")
+
+    try:
+        asyncio.run(runtime.run_task(request))
+    except RuntimeError as exc:
+        assert "stop after env capture" in str(exc)
+    else:
+        raise AssertionError("Expected launch to stop after env capture")
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["BRAVE_API_KEY"] == "brave-from-config"
+    assert "OPENROUTER_API_KEY" not in env
+
+
 def test_runtime_ignores_task_level_model_override(tmp_path: Path) -> None:
     template = WorkerTemplateRecord(
         id="worker",

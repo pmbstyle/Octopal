@@ -21,7 +21,11 @@ from octopal.infrastructure.mcp.manager import MCPManager
 from octopal.infrastructure.providers.base import InferenceProvider
 from octopal.infrastructure.store.base import Store
 from octopal.infrastructure.store.models import AuditEvent
-from octopal.runtime.housekeeping import cleanup_workspace_tmp, rotate_canon_events
+from octopal.runtime.housekeeping import (
+    cleanup_ephemeral_worker_dirs,
+    cleanup_workspace_tmp,
+    rotate_canon_events,
+)
 from octopal.runtime.intents.types import ActionIntent
 from octopal.runtime.memory.canon import CanonService
 from octopal.runtime.memory.memchain import memchain_record
@@ -702,6 +706,9 @@ class Octo:
                 "tmp_retention_hours": _env_int(
                     "OCTOPAL_WORKSPACE_TMP_RETENTION_HOURS", 48, minimum=1
                 ),
+                "worker_dir_retention_minutes": _env_int(
+                    "OCTOPAL_WORKER_DIR_RETENTION_MINUTES", 15, minimum=1
+                ),
                 "canon_events_max_bytes": _env_int(
                     "OCTOPAL_CANON_EVENTS_MAX_BYTES", 2_000_000, minimum=1024
                 ),
@@ -831,6 +838,18 @@ class Octo:
                     logger.info("Periodic cleanup complete", deleted_workers=deleted)
 
                 cfg = self._housekeeping_cfg or {}
+                worker_result = await asyncio.to_thread(
+                    cleanup_ephemeral_worker_dirs,
+                    self.canon.workspace_dir,
+                    retention_minutes=int(cfg.get("worker_dir_retention_minutes", 15)),
+                )
+                if worker_result.deleted_dirs or worker_result.errors:
+                    logger.info(
+                        "Ephemeral worker dir cleanup complete",
+                        deleted_dirs=worker_result.deleted_dirs,
+                        errors=worker_result.errors,
+                    )
+
                 tmp_result = await asyncio.to_thread(
                     cleanup_workspace_tmp,
                     self.canon.workspace_dir,

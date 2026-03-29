@@ -12,7 +12,6 @@ import json
 import os
 import signal
 import re
-import shutil
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -27,6 +26,7 @@ from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.mcp.manager import MCPManager
 from octopal.infrastructure.store.base import Store
 from octopal.infrastructure.store.models import AuditEvent, WorkerRecord, WorkerTemplateRecord
+from octopal.runtime.housekeeping import remove_tree_with_retries
 from octopal.runtime.intents.types import ActionIntent
 from octopal.runtime.policy.engine import PolicyEngine
 from octopal.runtime.tool_errors import ToolBridgeError
@@ -51,6 +51,17 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)\b(bearer\s+)([^\s,;]+)"),
     re.compile(r'(?i)\b(api[_ -]?key|token|secret|password)\b(\s*[:=]\s*)(["\']?)([^"\'\s,;]+)\3'),
     re.compile(r"\b(?:moltbook|openai|sk|rk)_[A-Za-z0-9_-]{12,}\b"),
+)
+_WORKER_ENV_SETTING_FIELDS = (
+    "litellm_num_retries",
+    "litellm_timeout",
+    "litellm_fallbacks",
+    "litellm_drop_params",
+    "litellm_caching",
+    "litellm_max_concurrency",
+    "litellm_rate_limit_max_retries",
+    "litellm_rate_limit_base_delay_seconds",
+    "litellm_rate_limit_max_delay_seconds",
 )
 
 
@@ -260,11 +271,7 @@ class WorkerRuntime:
         )
 
         # Build environment
-        env = {
-            **os.environ,
-            "PYTHONPATH": _pythonpath(),
-            "OCTOPAL_WORKSPACE_DIR": str(self.workspace_dir.resolve()),
-        }
+        env = self._build_worker_env(spec)
 
         attempts = 0
         max_attempts = 1 + _MAX_RECOVERY_ATTEMPTS
@@ -434,6 +441,25 @@ class WorkerRuntime:
         if not process:
             return False
         return process.returncode is None
+
+    def _build_worker_env(self, spec: WorkerSpec) -> dict[str, str]:
+        env = {
+            **os.environ,
+            "PYTHONPATH": _pythonpath(),
+            "OCTOPAL_WORKSPACE_DIR": str(self.workspace_dir.resolve()),
+        }
+
+        config_obj = self.settings.config_obj
+        for field_name in _WORKER_ENV_SETTING_FIELDS:
+            value = getattr(self.settings, field_name, None)
+            if value in (None, ""):
+                continue
+            env[_settings_env_name(field_name)] = str(value)
+
+        tool_env = _tool_env_from_settings(self.settings, spec.available_tools)
+        env.update(tool_env)
+
+        return env
 
     async def _write_to_worker(self, process: asyncio.subprocess.Process, payload: dict[str, Any]) -> None:
         """Write a JSON message to the worker's stdin."""
@@ -819,21 +845,16 @@ class WorkerRuntime:
         if not await asyncio.to_thread(worker_dir.exists):
             return
 
-        for attempt in range(1, 4):
-            try:
-                await asyncio.to_thread(shutil.rmtree, worker_dir)
-                logger.info("WorkerRuntime cleaned up worker dir: %s", worker_dir)
-                return
-            except FileNotFoundError:
-                return
-            except PermissionError as exc:
-                if attempt == 3:
-                    logger.warning("WorkerRuntime cleanup failed after retries: %s", exc)
-                    return
-                await asyncio.sleep(0.1 * attempt)
-            except Exception as exc:
-                logger.warning("WorkerRuntime cleanup failed: %s", exc)
-                return
+        removed = await asyncio.to_thread(
+            remove_tree_with_retries,
+            worker_dir,
+            retries=8,
+            base_delay_seconds=0.25,
+        )
+        if removed:
+            logger.info("WorkerRuntime cleaned up worker dir: %s", worker_dir)
+            return
+        logger.warning("WorkerRuntime cleanup failed after retries: %s", worker_dir)
 
     async def _safe_terminate_process(self, process: asyncio.subprocess.Process) -> None:
         try:
@@ -1048,6 +1069,32 @@ def _pythonpath() -> str:
     import sys
 
     return os.pathsep.join([p for p in sys.path if p])
+
+
+def _settings_env_name(field_name: str) -> str:
+    field = Settings.model_fields.get(field_name)
+    if field and field.alias:
+        return str(field.alias)
+    return field_name.upper()
+
+
+def _tool_env_from_settings(settings: Settings, tool_names: list[str]) -> dict[str, str]:
+    lowered_tools = {str(name).strip().lower() for name in tool_names if str(name).strip()}
+    env: dict[str, str] = {}
+    brave_api_key = settings.brave_api_key or (
+        settings.config_obj.search.brave_api_key if settings.config_obj else None
+    )
+    firecrawl_api_key = settings.firecrawl_api_key or (
+        settings.config_obj.search.firecrawl_api_key if settings.config_obj else None
+    )
+
+    if "web_search" in lowered_tools and brave_api_key:
+        env["BRAVE_API_KEY"] = brave_api_key
+
+    if any(name in lowered_tools for name in {"web_fetch", "markdown_new_fetch"}) and firecrawl_api_key:
+        env["FIRECRAWL_API_KEY"] = firecrawl_api_key
+
+    return env
 
 
 def _extract_mcp_tool_identity(tool_name: str, server_ids: list[str]) -> tuple[str | None, str | None]:
