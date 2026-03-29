@@ -9,9 +9,9 @@ import time
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import typer
-from aiogram import Bot
 from rich import box
 from rich.align import Align
 from rich.console import Console
@@ -22,14 +22,9 @@ from rich.prompt import Confirm
 from rich.table import Table
 
 from octopal.channels import normalize_user_channel, user_channel_label
-from octopal.channels.whatsapp.bridge import WhatsAppBridgeController, WhatsAppBridgeError
-from octopal.channels.whatsapp.ids import parse_allowed_whatsapp_numbers
-from octopal.channels.whatsapp.runtime import WhatsAppRuntime
 from octopal.cli.branding import print_banner
-from octopal.gateway.app import build_app
 from octopal.infrastructure.config.settings import Settings, load_settings, save_config
 from octopal.infrastructure.logging import configure_logging
-from octopal.infrastructure.providers.profile_resolver import resolve_litellm_profile
 from octopal.infrastructure.store.sqlite import SQLiteStore
 from octopal.runtime.metrics import read_metrics_snapshot
 from octopal.runtime.state import (
@@ -74,6 +69,48 @@ def configure() -> None:
     """Run the interactive configuration wizard."""
     from octopal.cli.configure import configure_wizard
     configure_wizard()
+
+
+def _build_telegram_bot(token: str) -> Any:
+    from aiogram import Bot
+
+    return Bot(token=token)
+
+
+def _build_gateway_app(*args: Any, **kwargs: Any) -> Any:
+    from octopal.gateway.app import build_app
+
+    return build_app(*args, **kwargs)
+
+
+def _resolve_profile(settings: Settings) -> Any:
+    from octopal.infrastructure.providers.profile_resolver import resolve_litellm_profile
+
+    return resolve_litellm_profile(settings)
+
+
+def _get_whatsapp_bridge_controller() -> type[Any]:
+    from octopal.channels.whatsapp.bridge import WhatsAppBridgeController
+
+    return WhatsAppBridgeController
+
+
+def _get_whatsapp_bridge_error() -> type[Exception]:
+    from octopal.channels.whatsapp.bridge import WhatsAppBridgeError
+
+    return WhatsAppBridgeError
+
+
+def _get_whatsapp_runtime_class() -> type[Any]:
+    from octopal.channels.whatsapp.runtime import WhatsAppRuntime
+
+    return WhatsAppRuntime
+
+
+def _has_allowed_whatsapp_numbers(raw: str) -> bool:
+    from octopal.channels.whatsapp.ids import parse_allowed_whatsapp_numbers
+
+    return bool(parse_allowed_whatsapp_numbers(raw))
 
 
 def _init_logging(settings: Settings) -> None:
@@ -364,14 +401,15 @@ def start(
     async def run_all():
         selected_channel = normalize_user_channel(settings.user_channel)
         if selected_channel == "whatsapp":
+            WhatsAppRuntime = _get_whatsapp_runtime_class()
             whatsapp_runtime = WhatsAppRuntime(settings)
             octo = await whatsapp_runtime.start()
-            gateway_app = build_app(settings, octo)
+            gateway_app = _build_gateway_app(settings, octo)
             gateway_app.state.whatsapp_runtime = whatsapp_runtime
         else:
-            bot_instance = Bot(token=settings.telegram_bot_token)
+            bot_instance = _build_telegram_bot(settings.telegram_bot_token)
             _dp, octo = build_dispatcher(settings, bot_instance)
-            gateway_app = build_app(settings, octo)
+            gateway_app = _build_gateway_app(settings, octo)
         import uvicorn
         config = uvicorn.Config(gateway_app, host=settings.gateway_host, port=settings.gateway_port, log_level="info")
         server = uvicorn.Server(config)
@@ -385,6 +423,7 @@ def start(
             server.should_exit = True
             await gateway_task
             runtime = getattr(gateway_app.state, "whatsapp_runtime", None)
+            WhatsAppRuntime = _get_whatsapp_runtime_class()
             if isinstance(runtime, WhatsAppRuntime):
                 await runtime.stop()
 
@@ -944,13 +983,13 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
     header = Table.grid(padding=(0, 2))
     header.add_column(style="bold white")
     header.add_column()
-    resolved_profile = resolve_litellm_profile(settings)
+    resolved_profile = _resolve_profile(settings)
     provider = str(getattr(settings, "llm_provider", "litellm"))
     selected_channel = normalize_user_channel(settings.user_channel)
     if selected_channel == "whatsapp":
         profile_status = (
             "[bright_green]READY[/bright_green]"
-            if parse_allowed_whatsapp_numbers(settings.allowed_whatsapp_numbers)
+            if _has_allowed_whatsapp_numbers(settings.allowed_whatsapp_numbers)
             else "[bright_red]SETUP NEEDED[/bright_red]"
         )
     else:
@@ -994,7 +1033,7 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
 
     checks: list[str] = []
     if selected_channel == "whatsapp":
-        if not parse_allowed_whatsapp_numbers(settings.allowed_whatsapp_numbers):
+        if not _has_allowed_whatsapp_numbers(settings.allowed_whatsapp_numbers):
             checks.append("[bright_red]Set ALLOWED_WHATSAPP_NUMBERS for WhatsApp access[/bright_red]")
     else:
         if not settings.telegram_bot_token.strip():
@@ -1047,7 +1086,7 @@ def logs(follow: bool = typer.Option(False, "--follow", "-f")) -> None:
 def gateway() -> None:
     settings = load_settings()
     _maybe_enable_tailscale_serve(settings)
-    app_instance = build_app(settings)
+    app_instance = _build_gateway_app(settings)
     import uvicorn
 
     uvicorn.run(app_instance, host=settings.gateway_host, port=settings.gateway_port)
@@ -1080,6 +1119,7 @@ def build_worker_image(tag: str = "octopal-worker:latest") -> None:
 @whatsapp_app.command("install-bridge")
 def whatsapp_install_bridge() -> None:
     settings = load_settings()
+    WhatsAppBridgeController = _get_whatsapp_bridge_controller()
     bridge = WhatsAppBridgeController(settings)
     try:
         bridge.install_bridge()
@@ -1092,6 +1132,8 @@ def whatsapp_install_bridge() -> None:
 @whatsapp_app.command("link")
 def whatsapp_link(timeout_seconds: int = typer.Option(180, "--timeout", help="How long to wait for linking")) -> None:
     settings = load_settings()
+    WhatsAppBridgeController = _get_whatsapp_bridge_controller()
+    WhatsAppBridgeError = _get_whatsapp_bridge_error()
     bridge = WhatsAppBridgeController(settings)
     try:
         bridge.start(callback_url=None)
@@ -1130,6 +1172,7 @@ def whatsapp_link(timeout_seconds: int = typer.Option(180, "--timeout", help="Ho
 @whatsapp_app.command("status")
 def whatsapp_status() -> None:
     settings = load_settings()
+    WhatsAppBridgeController = _get_whatsapp_bridge_controller()
     bridge = WhatsAppBridgeController(settings)
     if not bridge.bridge_installed():
         console.print("[yellow]WhatsApp bridge dependencies are not installed.[/yellow]")
@@ -1152,6 +1195,7 @@ def whatsapp_status() -> None:
 @whatsapp_app.command("logout")
 def whatsapp_logout() -> None:
     settings = load_settings()
+    WhatsAppBridgeController = _get_whatsapp_bridge_controller()
     bridge = WhatsAppBridgeController(settings)
     try:
         bridge.start(callback_url=None)
