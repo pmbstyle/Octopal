@@ -1149,8 +1149,8 @@ def connector_auth(
         )
         raise typer.Exit(code=1)
 
-    current_client_id = str(instance.settings.get("client_id", "") or "")
-    current_client_secret = str(instance.settings.get("client_secret", "") or "")
+    current_client_id = str(instance.credentials.client_id or "")
+    current_client_secret = str(instance.credentials.client_secret or "")
     resolved_client_id = client_id or current_client_id or typer.prompt("Google client ID")
     resolved_client_secret = client_secret or current_client_secret or typer.prompt(
         "Google client secret",

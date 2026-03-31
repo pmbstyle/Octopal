@@ -26,7 +26,7 @@ def test_google_connector_status_rejects_unsupported_services() -> None:
     config = OctopalConfig()
     config.connectors.instances["google"] = ConnectorInstanceConfig(
         enabled=True,
-        settings={"enabled_services": ["gmail", "calendar"]},
+        enabled_services=["gmail", "calendar"],
     )
     manager = _build_manager(config)
     connector = manager.get_connector("google")
@@ -41,13 +41,9 @@ def test_google_connector_status_requires_reauth_for_newly_enabled_services() ->
     config = OctopalConfig()
     config.connectors.instances["google"] = ConnectorInstanceConfig(
         enabled=True,
-        settings={
-            "enabled_services": ["gmail"],
-            "authorized_services": [],
-            "client_id": "id",
-            "client_secret": "secret",
-            "refresh_token": "refresh",
-        },
+        enabled_services=["gmail"],
+        credentials={"client_id": "id", "client_secret": "secret"},
+        auth={"authorized_services": [], "refresh_token": "refresh"},
     )
     manager = _build_manager(config)
     connector = manager.get_connector("google")
@@ -63,7 +59,7 @@ def test_collect_connector_next_steps_prompts_for_auth_when_google_added() -> No
     current = OctopalConfig()
     current.connectors.instances["google"] = ConnectorInstanceConfig(
         enabled=True,
-        settings={"enabled_services": ["gmail"]},
+        enabled_services=["gmail"],
     )
 
     lines = _collect_connector_next_steps(current, previous)
@@ -77,13 +73,12 @@ def test_google_connector_disconnect_clears_auth_state_but_keeps_client_credenti
     config = OctopalConfig()
     config.connectors.instances["google"] = ConnectorInstanceConfig(
         enabled=True,
-        settings={
-            "enabled_services": ["gmail"],
+        enabled_services=["gmail"],
+        credentials={"client_id": "client-id", "client_secret": "client-secret"},
+        auth={
             "authorized_services": ["gmail"],
-            "client_id": "client-id",
-            "client_secret": "client-secret",
             "refresh_token": "refresh-token",
-            "token": "access-token",
+            "access_token": "access-token",
         },
     )
     manager = _build_manager(config)
@@ -92,9 +87,9 @@ def test_google_connector_disconnect_clears_auth_state_but_keeps_client_credenti
     result = asyncio.run(connector.disconnect())
 
     assert result["status"] == "success"
-    settings = config.connectors.instances["google"].settings
-    assert "refresh_token" not in settings
-    assert "token" not in settings
-    assert "authorized_services" not in settings
-    assert settings["client_id"] == "client-id"
-    assert settings["client_secret"] == "client-secret"
+    instance = config.connectors.instances["google"]
+    assert instance.auth.refresh_token is None
+    assert instance.auth.access_token is None
+    assert instance.auth.authorized_services == []
+    assert instance.credentials.client_id == "client-id"
+    assert instance.credentials.client_secret == "client-secret"

@@ -17,8 +17,8 @@ def test_connector_status_json_reports_google_needs_auth(tmp_path, monkeypatch) 
                     "instances": {
                         "google": {
                             "enabled": True,
-                            "settings": {
-                                "enabled_services": ["gmail"],
+                            "enabled_services": ["gmail"],
+                            "credentials": {
                                 "client_id": "client-id",
                                 "client_secret": "client-secret",
                             },
@@ -46,8 +46,8 @@ def test_connector_status_human_output_shows_next_action(tmp_path, monkeypatch) 
                     "instances": {
                         "google": {
                             "enabled": True,
-                            "settings": {
-                                "enabled_services": ["gmail"],
+                            "enabled_services": ["gmail"],
+                            "credentials": {
                                 "client_id": "client-id",
                                 "client_secret": "client-secret",
                             },
@@ -93,8 +93,8 @@ def test_connector_auth_success_uses_cli_flow(tmp_path, monkeypatch) -> None:
                     "instances": {
                         "google": {
                             "enabled": True,
-                            "settings": {
-                                "enabled_services": ["gmail"],
+                            "enabled_services": ["gmail"],
+                            "credentials": {
                                 "client_id": "client-id",
                                 "client_secret": "client-secret",
                             },
@@ -130,13 +130,15 @@ def test_connector_disconnect_clears_auth_state(tmp_path, monkeypatch) -> None:
                     "instances": {
                         "google": {
                             "enabled": True,
-                            "settings": {
-                                "enabled_services": ["gmail"],
+                            "enabled_services": ["gmail"],
+                            "credentials": {
                                 "client_id": "client-id",
                                 "client_secret": "client-secret",
+                            },
+                            "auth": {
                                 "authorized_services": ["gmail"],
                                 "refresh_token": "refresh-token",
-                                "token": "access-token",
+                                "access_token": "access-token",
                             },
                         }
                     }
@@ -153,8 +155,8 @@ def test_connector_disconnect_clears_auth_state(tmp_path, monkeypatch) -> None:
     assert "disconnected" in result.stdout
 
     payload = json.loads(config_path.read_text(encoding="utf-8"))
-    settings = payload["connectors"]["instances"]["google"]["settings"]
-    assert "refresh_token" not in settings
-    assert "token" not in settings
-    assert "authorized_services" not in settings
-    assert settings["client_id"] == "client-id"
+    instance = payload["connectors"]["instances"]["google"]
+    assert instance["auth"]["refresh_token"] is None
+    assert instance["auth"]["access_token"] is None
+    assert instance["auth"]["authorized_services"] == []
+    assert instance["credentials"]["client_id"] == "client-id"

@@ -33,10 +33,7 @@ class GoogleConnector(Connector):
         config = self._get_config()
         if not config:
             return []
-        raw_services = config.settings.get("enabled_services", list(self._SUPPORTED_SERVICES))
-        if not isinstance(raw_services, list):
-            return []
-        enabled = [str(service).strip().lower() for service in raw_services if str(service).strip()]
+        enabled = [str(service).strip().lower() for service in config.enabled_services if str(service).strip()]
         deduped: list[str] = []
         for service in enabled:
             if service not in deduped:
@@ -47,10 +44,11 @@ class GoogleConnector(Connector):
         config = self._get_config()
         if not config:
             return []
-        raw_services = config.settings.get("authorized_services", [])
-        if not isinstance(raw_services, list):
-            return []
-        return [str(service).strip().lower() for service in raw_services if str(service).strip()]
+        return [
+            str(service).strip().lower()
+            for service in config.auth.authorized_services
+            if str(service).strip()
+        ]
 
     def _unsupported_enabled_services(self) -> list[str]:
         supported = set(self.supported_services())
@@ -65,7 +63,6 @@ class GoogleConnector(Connector):
         if not config or not config.enabled:
             return {"status": "disabled"}
 
-        settings = config.settings
         enabled_services = self._get_enabled_services()
         unsupported_services = self._unsupported_enabled_services()
         if unsupported_services:
@@ -87,7 +84,7 @@ class GoogleConnector(Connector):
                 "supported_services": self.supported_services(),
             }
 
-        if not settings.get("client_id") or not settings.get("client_secret"):
+        if not config.credentials.client_id or not config.credentials.client_secret:
             return {
                 "status": "not_configured",
                 "message": "Missing client_id or client_secret",
@@ -95,7 +92,7 @@ class GoogleConnector(Connector):
                 "supported_services": self.supported_services(),
             }
 
-        if not settings.get("refresh_token"):
+        if not config.auth.refresh_token:
             return {
                 "status": "needs_auth",
                 "message": "Connector configured but needs CLI authorization.",
@@ -136,10 +133,11 @@ class GoogleConnector(Connector):
                 "Google connector is disabled. Re-run `octopal configure` to enable it before authorizing."
             )
 
-        allowed_keys = {"client_id", "client_secret"}
         for key, value in settings.items():
-            if key in allowed_keys:
-                config.settings[key] = value
+            if key == "client_id":
+                config.credentials.client_id = str(value) if value is not None else None
+            elif key == "client_secret":
+                config.credentials.client_secret = str(value) if value is not None else None
         self.manager.save_config()
 
     async def authorize(self) -> dict[str, Any]:
@@ -160,9 +158,8 @@ class GoogleConnector(Connector):
         if not config.enabled:
             return {"error": "Google connector is disabled. Run `octopal configure` to enable it first."}
 
-        settings = config.settings
-        client_id = settings.get("client_id")
-        client_secret = settings.get("client_secret")
+        client_id = config.credentials.client_id
+        client_secret = config.credentials.client_secret
 
         if not client_id or not client_secret:
             return {"error": "Missing client_id or client_secret in Google connector settings."}
@@ -203,9 +200,10 @@ class GoogleConnector(Connector):
                 prompt="consent",
             )
 
-            settings["refresh_token"] = credentials.refresh_token
-            settings["token"] = credentials.token
-            settings["authorized_services"] = self._get_enabled_services()
+            config.auth.refresh_token = credentials.refresh_token
+            config.auth.access_token = credentials.token
+            config.auth.authorized_services = self._get_enabled_services()
+            config.auth.last_error = None
             self.manager.save_config()
 
             if self.manager.mcp_manager is not None:
@@ -231,7 +229,6 @@ class GoogleConnector(Connector):
         if not config or not config.enabled:
             return
 
-        settings = config.settings
         enabled_services = self._get_enabled_services()
         if "gmail" not in enabled_services:
             return
@@ -239,9 +236,9 @@ class GoogleConnector(Connector):
         from octopal.infrastructure.mcp.manager import MCPServerConfig
 
         common_env = {
-            "GOOGLE_CLIENT_ID": settings.get("client_id"),
-            "GOOGLE_CLIENT_SECRET": settings.get("client_secret"),
-            "GOOGLE_REFRESH_TOKEN": settings.get("refresh_token"),
+            "GOOGLE_CLIENT_ID": config.credentials.client_id,
+            "GOOGLE_CLIENT_SECRET": config.credentials.client_secret,
+            "GOOGLE_REFRESH_TOKEN": config.auth.refresh_token,
         }
 
         if "gmail" in enabled_services:
@@ -268,12 +265,13 @@ class GoogleConnector(Connector):
                 except Exception:
                     logger.warning("Failed to disconnect MCP server for Google connector", server_id=server_id, exc_info=True)
 
-        settings = config.settings
-        for key in ("refresh_token", "token", "authorized_services"):
-            settings.pop(key, None)
+        config.auth.refresh_token = None
+        config.auth.access_token = None
+        config.auth.authorized_services = []
+        config.auth.last_error = None
         if forget_credentials:
-            for key in ("client_id", "client_secret"):
-                settings.pop(key, None)
+            config.credentials.client_id = None
+            config.credentials.client_secret = None
 
         self.manager.save_config()
 

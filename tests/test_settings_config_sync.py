@@ -54,3 +54,39 @@ def test_load_settings_allows_config_json_to_clear_legacy_env_values(tmp_path, m
 
     assert settings.telegram_bot_token == ""
     assert settings.allowed_telegram_chat_ids == ""
+
+
+def test_load_settings_migrates_legacy_connector_settings_shape(tmp_path, monkeypatch) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "connectors": {
+                    "instances": {
+                        "google": {
+                            "enabled": True,
+                            "settings": {
+                                "enabled_services": ["gmail"],
+                                "client_id": "legacy-client-id",
+                                "client_secret": "legacy-client-secret",
+                                "authorized_services": ["gmail"],
+                                "refresh_token": "legacy-refresh-token",
+                                "token": "legacy-access-token",
+                            },
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+    google = settings.connectors.instances["google"]
+
+    assert google.enabled_services == ["gmail"]
+    assert google.credentials.client_id == "legacy-client-id"
+    assert google.credentials.client_secret == "legacy-client-secret"
+    assert google.auth.authorized_services == ["gmail"]
+    assert google.auth.refresh_token == "legacy-refresh-token"
+    assert google.auth.access_token == "legacy-access-token"

@@ -634,9 +634,7 @@ def _configure_connectors(config: OctopalConfig, prompter) -> None:
                 WizardSelectOption(value="gmail", label="Gmail"),
             ]
 
-            current_google_services = config.connectors.instances[name].settings.get(
-                "enabled_services", ["gmail"]
-            )
+            current_google_services = config.connectors.instances[name].enabled_services or ["gmail"]
             current_google_services = [
                 service for service in current_google_services if service in {"gmail"}
             ] or ["gmail"]
@@ -648,7 +646,7 @@ def _configure_connectors(config: OctopalConfig, prompter) -> None:
                     options=google_services,
                 )
             )
-            config.connectors.instances[name].settings["enabled_services"] = selected_google
+            config.connectors.instances[name].enabled_services = selected_google
 
 
 def _build_sections(config: OctopalConfig, prompter) -> list[WizardSection]:
@@ -809,20 +807,18 @@ def _enabled_services(config: OctopalConfig, connector_name: str) -> list[str]:
     instance = config.connectors.instances.get(connector_name)
     if not instance or not instance.enabled:
         return []
-    raw_services = instance.settings.get("enabled_services", [])
-    if not isinstance(raw_services, list):
-        return []
-    return [str(service).strip().lower() for service in raw_services if str(service).strip()]
+    return [str(service).strip().lower() for service in instance.enabled_services if str(service).strip()]
 
 
 def _authorized_services(config: OctopalConfig, connector_name: str) -> list[str]:
     instance = config.connectors.instances.get(connector_name)
     if not instance:
         return []
-    raw_services = instance.settings.get("authorized_services", [])
-    if not isinstance(raw_services, list):
-        return []
-    return [str(service).strip().lower() for service in raw_services if str(service).strip()]
+    return [
+        str(service).strip().lower()
+        for service in instance.auth.authorized_services
+        if str(service).strip()
+    ]
 
 
 def _collect_connector_next_steps(config: OctopalConfig, previous_config: OctopalConfig | None = None) -> list[str]:
@@ -834,7 +830,7 @@ def _collect_connector_next_steps(config: OctopalConfig, previous_config: Octopa
         current_services = set(_enabled_services(config, "google"))
         previous_services = set(_enabled_services(previous_config, "google"))
         authorized_services = set(_authorized_services(config, "google"))
-        has_refresh_token = bool(google.settings.get("refresh_token"))
+        has_refresh_token = bool(google.auth.refresh_token)
         previous_google = previous_config.connectors.instances.get("google")
 
         needs_auth = not has_refresh_token or not current_services.issubset(authorized_services)
