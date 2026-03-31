@@ -56,6 +56,7 @@ workers_app = typer.Typer(add_completion=False)
 audit_app = typer.Typer(add_completion=False)
 memory_app = typer.Typer(add_completion=False)
 config_app = typer.Typer(add_completion=False)
+connector_app = typer.Typer(add_completion=False)
 whatsapp_app = typer.Typer(add_completion=False)
 tools_app = typer.Typer(add_completion=False)
 skill_app = typer.Typer(add_completion=False)
@@ -1057,6 +1058,93 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
     console.print()
 
 
+def _build_connector_manager(settings: Settings):
+    from octopal.infrastructure.connectors.manager import ConnectorManager
+
+    return ConnectorManager(
+        config=settings.connectors,
+        mcp_manager=None,
+        octo_config=settings.config_obj,
+    )
+
+
+@connector_app.command("status")
+def connector_status(json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON.")) -> None:
+    """Show connector status and any required next action."""
+    settings = load_settings()
+    manager = _build_connector_manager(settings)
+    statuses = asyncio.run(manager.get_all_statuses())
+
+    if json_output:
+        console.print(json.dumps({"connectors": statuses}, ensure_ascii=False, indent=2))
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, header_style="bold bright_cyan")
+    table.add_column("Connector", style="white")
+    table.add_column("Status", style="white")
+    table.add_column("Services", style="dim")
+    table.add_column("Message", style="dim", width=60)
+
+    for name in sorted(statuses):
+        status = statuses[name]
+        services = ", ".join(status.get("services", []) or []) or "-"
+        table.add_row(
+            name,
+            str(status.get("status", "unknown")),
+            services,
+            str(status.get("message", "")),
+        )
+
+    console.print(table)
+
+
+@connector_app.command("auth")
+def connector_auth(
+    name: str = typer.Argument(..., help="Connector name to authorize."),
+    client_id: str | None = typer.Option(None, "--client-id", help="OAuth client ID to use."),
+    client_secret: str | None = typer.Option(None, "--client-secret", help="OAuth client secret to use."),
+) -> None:
+    """Authorize a configured connector via CLI."""
+    settings = load_settings()
+    manager = _build_connector_manager(settings)
+    connector = manager.get_connector(name)
+    if connector is None:
+        console.print(f"[bold red]Unknown connector:[/bold red] {name}")
+        raise typer.Exit(code=1)
+
+    instance = settings.connectors.instances.get(name)
+    if instance is None or not instance.enabled:
+        console.print(
+            f"[bold yellow]{name} is not enabled.[/bold yellow] Run [magenta]octopal configure[/magenta] first."
+        )
+        raise typer.Exit(code=1)
+
+    current_client_id = str(instance.settings.get("client_id", "") or "")
+    current_client_secret = str(instance.settings.get("client_secret", "") or "")
+    resolved_client_id = client_id or current_client_id or typer.prompt("Google client ID")
+    resolved_client_secret = client_secret or current_client_secret or typer.prompt(
+        "Google client secret",
+        hide_input=True,
+    )
+
+    asyncio.run(
+        connector.configure(
+            {
+                "client_id": resolved_client_id,
+                "client_secret": resolved_client_secret,
+            }
+        )
+    )
+
+    result = asyncio.run(connector.authorize())
+    if result.get("status") != "success":
+        console.print(f"[bold red]Authorization failed:[/bold red] {result.get('error', 'unknown error')}")
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold green][V] {result['message']}[/bold green]")
+    console.print("Run [magenta]octopal connector status[/magenta] to confirm readiness.")
+
+
 @app.command()
 def logs(follow: bool = typer.Option(False, "--follow", "-f")) -> None:
     settings = load_settings()
@@ -1570,6 +1658,7 @@ app.add_typer(workers_app, name="workers")
 app.add_typer(audit_app, name="audit")
 app.add_typer(memory_app, name="memory")
 app.add_typer(config_app, name="config")
+app.add_typer(connector_app, name="connector")
 app.add_typer(whatsapp_app, name="whatsapp")
 app.add_typer(tools_app, name="tools")
 app.add_typer(skill_app, name="skill")

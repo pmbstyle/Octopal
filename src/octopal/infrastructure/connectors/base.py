@@ -22,11 +22,11 @@ class Connector(ABC):
         pass
 
     @abstractmethod
-    async def setup(self) -> dict[str, Any]:
-        """Start the setup/auth process. Returns info for the user (e.g., auth URL)."""
+    async def authorize(self) -> dict[str, Any]:
+        """Run an authorization flow for an already-enabled connector."""
         pass
 
     @abstractmethod
-    async def complete_setup(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Complete the setup/auth process with data (e.g., auth code)."""
+    async def start(self) -> None:
+        """Start any runtime integrations needed by the connector."""
         pass

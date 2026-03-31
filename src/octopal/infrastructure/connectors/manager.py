@@ -14,13 +14,21 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 class ConnectorManager:
-    def __init__(self, config: ConnectorsConfig, mcp_manager: MCPManager, octo_config: OctopalConfig):
+    def __init__(
+        self,
+        config: ConnectorsConfig,
+        mcp_manager: MCPManager | None,
+        octo_config: OctopalConfig,
+    ):
         self.config = config
         self.mcp_manager = mcp_manager
         self.octo_config = octo_config
         self.connectors = {
             "google": GoogleConnector(self)
         }
+
+    def get_connector(self, name: str):
+        return self.connectors.get(name)
 
     def save_config(self) -> None:
         """Save the overall Octopal config."""
@@ -40,5 +48,4 @@ class ConnectorManager:
                 status = await self.connectors[name].get_status()
                 if status["status"] == "ready":
                     logger.info("Starting connector", name=name)
-                    # For Google, starting means ensuring MCP servers are registered
-                    await self.connectors[name]._register_mcp_server()
+                    await self.connectors[name].start()
