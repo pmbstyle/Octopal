@@ -29,6 +29,9 @@ class GoogleConnector(Connector):
     def supported_services(self) -> list[str]:
         return list(self._SUPPORTED_SERVICES)
 
+    def managed_server_ids(self) -> list[str]:
+        return list(self._MCP_SERVER_IDS)
+
     def _get_enabled_services(self) -> list[str]:
         config = self._get_config()
         if not config:

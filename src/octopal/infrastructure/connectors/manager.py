@@ -48,10 +48,38 @@ class ConnectorManager:
         return statuses
 
     async def load_and_start_all(self) -> None:
-        """Start all enabled connectors."""
-        for name, config in self.config.instances.items():
-            if config.enabled and name in self.connectors:
-                status = await self.connectors[name].get_status()
-                if status["status"] == "ready":
-                    logger.info("Starting connector", name=name)
-                    await self.connectors[name].start()
+        """Reconcile runtime-managed integrations for all connectors."""
+        for name in self.connectors:
+            await self.reconcile_connector_runtime(name)
+
+    async def reconcile_connector_runtime(self, name: str) -> None:
+        connector = self.get_connector(name)
+        if connector is None:
+            return
+
+        status = await connector.get_status()
+        if status.get("status") == "ready":
+            logger.info("Starting connector", name=name)
+            await connector.start()
+            return
+
+        logger.info(
+            "Connector not ready; disconnecting managed runtime integrations",
+            name=name,
+            status=status.get("status"),
+        )
+        await self._disconnect_managed_servers(connector)
+
+    async def _disconnect_managed_servers(self, connector) -> None:
+        if self.mcp_manager is None:
+            return
+        for server_id in connector.managed_server_ids():
+            try:
+                await self.mcp_manager.disconnect_server(server_id, intentional=True)
+            except Exception:
+                logger.warning(
+                    "Failed to disconnect managed MCP server for connector",
+                    connector=connector.name,
+                    server_id=server_id,
+                    exc_info=True,
+                )

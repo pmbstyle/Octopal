@@ -16,6 +16,7 @@ import structlog
 
 from octopal.browser.manager import get_browser_manager
 from octopal.channels.telegram.approvals import ApprovalManager
+from octopal.infrastructure.connectors.manager import ConnectorManager
 from octopal.infrastructure.logging import correlation_id_var
 from octopal.infrastructure.mcp.manager import MCPManager
 from octopal.infrastructure.providers.base import InferenceProvider

@@ -35,3 +35,8 @@ class Connector(ABC):
     async def disconnect(self, *, forget_credentials: bool = False) -> dict[str, Any]:
         """Disconnect the connector, clear auth state, and stop any active integrations."""
         pass
+
+    @abstractmethod
+    def managed_server_ids(self) -> list[str]:
+        """Return MCP server ids owned by this connector."""
+        pass
