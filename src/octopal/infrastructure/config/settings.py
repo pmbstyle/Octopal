@@ -8,7 +8,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from octopal.channels import DEFAULT_USER_CHANNEL
-from octopal.infrastructure.config.models import OctopalConfig
+from octopal.infrastructure.config.models import ConnectorsConfig, OctopalConfig
 
 
 class Settings(BaseSettings):
@@ -101,6 +101,9 @@ class Settings(BaseSettings):
 
     heartbeat_interval_seconds: int = Field(900, alias="OCTOPAL_HEARTBEAT_INTERVAL_SECONDS")
     user_message_grace_seconds: float = Field(5.0, alias="OCTOPAL_USER_MESSAGE_GRACE_SECONDS")
+
+    # Connectors
+    connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
 
     # Comma-separated list of Telegram chat IDs allowed to interact with the octo
     # Get your chat ID by messaging @userinfobot on Telegram
@@ -265,6 +268,7 @@ def load_config() -> OctopalConfig:
     config.debug_prompts = temp_settings.debug_prompts
     config.heartbeat_interval_seconds = temp_settings.heartbeat_interval_seconds
     config.user_message_grace_seconds = temp_settings.user_message_grace_seconds
+    config.connectors = temp_settings.connectors
 
     return config
 
@@ -375,6 +379,7 @@ def _sync_settings_from_config(settings: Settings, config: OctopalConfig) -> Non
     updates["debug_prompts"] = config.debug_prompts
     updates["heartbeat_interval_seconds"] = config.heartbeat_interval_seconds
     updates["user_message_grace_seconds"] = config.user_message_grace_seconds
+    updates["connectors"] = config.connectors
 
     # Apply all updates
     settings.__dict__.update(updates)

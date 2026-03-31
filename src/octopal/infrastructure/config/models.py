@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -81,6 +82,15 @@ class SearchConfig(BaseModel):
     firecrawl_api_key: str | None = None
 
 
+class ConnectorInstanceConfig(BaseModel):
+    enabled: bool = False
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConnectorsConfig(BaseModel):
+    instances: dict[str, ConnectorInstanceConfig] = Field(default_factory=dict)
+
+
 class OctopalConfig(BaseModel):
     user_channel: str = DEFAULT_USER_CHANNEL
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
@@ -99,6 +109,7 @@ class OctopalConfig(BaseModel):
     workers: WorkerRuntimeConfig = Field(default_factory=WorkerRuntimeConfig)
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
+    connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
 
     log_level: str = "INFO"
     debug_prompts: bool = False

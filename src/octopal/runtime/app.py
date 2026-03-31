@@ -58,6 +58,15 @@ def build_octo(settings: Settings) -> Octo:
         embeddings=embeddings,
     )
     scheduler = SchedulerService(store=store, workspace_dir=settings.workspace_dir)
+
+    from octopal.infrastructure.connectors.manager import ConnectorManager
+
+    connector_manager = ConnectorManager(
+        config=settings.connectors,
+        mcp_manager=mcp_manager,
+        octo_config=settings.config_obj,
+    )
+
     octo = Octo(
         provider=provider,
         store=store,
@@ -68,6 +77,7 @@ def build_octo(settings: Settings) -> Octo:
         canon=canon,
         scheduler=scheduler,
         mcp_manager=mcp_manager,
+        connector_manager=connector_manager,
     )
     runtime.octo = octo
     return octo
