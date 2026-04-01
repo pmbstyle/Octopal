@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import webbrowser
 from contextlib import contextmanager
 from typing import Any
@@ -373,8 +374,8 @@ class GoogleConnector(Connector):
             gmail_cfg = MCPServerConfig(
                 id="google-gmail",
                 name="Gmail Connector",
-                command="npx",
-                args=["-y", "@chinchillaenterprises/mcp-gmail"],
+                command=sys.executable,
+                args=["-m", "octopal.mcp_servers.gmail"],
                 env=common_env,
                 transport="stdio"
             )
