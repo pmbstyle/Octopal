@@ -55,3 +55,4 @@ config.json
 /src/octopal/cli/wizard/__pycache__
 /src/octopal/infrastructure/connectors/__pycache__
 /src/octopal/tools/connectors/__pycache__
+/src/octopal/mcp_servers/__pycache__
