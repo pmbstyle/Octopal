@@ -359,7 +359,7 @@ Connectors are the integration layer between Octopal and external services.
 
 Currently available `Google` connector with `Gmail`(read-only).
 
-See [docs/connectos.md](docs/connectos.md) for more info.
+See [docs/connectors.md](docs/connectors.md) for more info.
 
 ## Troubleshooting
 
