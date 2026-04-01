@@ -265,11 +265,11 @@ Octopal works from a specified directory and has no access to your system compon
 
 ### 🧠 Delegation-driven architecture
 
-The Octo, which holds all system context and sensitive data, never communicates with the outside world on its own.
+Octo, which holds all system context and sensitive data, never communicates with the outside world on its own.
 Instead, the Octo delegates tasks to workers with limited context and predefined tool/skill sets.
 Workers can spawn subworkers for multi-step tasks. Workers can only return response of their tasks or question/error responses. 
 
-- the Octo delegates external operations to workers, which ensures context isolation, enhances security, and provides async task execution
+- Octo delegates external operations to workers, which ensures context isolation, enhances security, and provides async task execution
 - workers execute in an isolated environment, which gets deleted after each execution
 - workers can act as orchestrators and create sub-workers for multi-tasking
 - workers operate with a predefined set of tools, MCP, and skills in their config as well as `max_thinking_steps` and `execution_timeout`
@@ -287,7 +287,7 @@ Workers can spawn subworkers for multi-step tasks. Workers can only return respo
 
 ### 📃 Multilayer memory system
 
-The Octo operates with a local vector database to store communication history and file-based context:
+Octo operates with a local vector database to store communication history and file-based context:
 
 - **MEMORY.md** – working memory and durable context; important facts, current state, and notes the system may need across sessions
 - **memory/canon/** – curated long-term knowledge that has been reviewed and promoted into trusted reference material
@@ -352,6 +352,14 @@ Octopal supports workspace-local skill bundles under `workspace/skills/<skill-id
 - auto-verifies imported scripts and auto-prepares isolated envs during install/update when possible
 
 See [docs/skills.md](docs/skills.md) for the current format and behavior.
+
+### 🛜 Connectors (experimental)
+
+Connectors are the integration layer between Octopal and external services.
+
+Currently available `Google` connector with `Gmail`(read-only).
+
+See [docs/connectos.md](docs/connectos.md) for more info.
 
 ## Troubleshooting
 
