@@ -6,6 +6,12 @@
   <strong>SECURE MULTI-AGENT EXECUTION RUNTIME</strong>
 </p>
 
+<p align="center">
+   <a href="https://img.shields.io/github/last-commit/pmbstyle/Octopal?svg=true"><img src="https://img.shields.io/github/last-commit/pmbstyle/Octopal?svg=true"></a>
+   <a href="LICENSE"><img src="https://img.shields.io/github/license/pmbstyle/Octopal?svg=true"></a>
+   <a href="https://deepwiki.com/pmbstyle/Octopal"><img src="https://deepwiki.com/badge.svg"></a>
+</p>
+
 Octopal is a local AI runtime that executes autonomous agents in isolated environments.
 
 It acts as a persistent operator that plans work, spawns specialized workers, and runs tasks on your behalf — without exposing your system to risk.
@@ -14,7 +20,14 @@ The **Octo** is the long-running coordinator: it holds memory, plans work, choos
 **Workers** are short-lived specialists with bounded context, strict permissions, and isolated execution.
 
 This architecture enforces a hard boundary between reasoning and execution:
-the Octo never performs external actions directly — all side effects happen inside controlled worker environments.
+Octo never performs external actions directly — all side effects happen inside controlled worker environments.
+
+## Table of contents
+
+- 🪛 [What it can do](#-what-it-can-do) 
+- 🚀 [Quick start](#-quick-start) 
+- ✨ [Key features](#-key-features)
+
 
 ## 🔒 Secure by Default Execution
 
