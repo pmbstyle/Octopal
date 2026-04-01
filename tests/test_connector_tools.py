@@ -77,6 +77,7 @@ def test_catalog_includes_first_class_calendar_tools_when_mcp_manager_is_present
     assert "calendar_create_event" in names
     assert "calendar_update_event" in names
     assert "calendar_delete_event" in names
+    assert "calendar_freebusy" in names
 
 
 def test_gmail_connector_tool_proxies_and_parses_json_payload() -> None:
@@ -127,3 +128,41 @@ def test_calendar_connector_tool_proxies_and_parses_json_payload() -> None:
 
     assert payload["events"][0]["id"] == "evt-1"
     assert payload["calendar_id"] == "primary"
+
+
+def test_calendar_freebusy_tool_proxies_and_parses_json_payload() -> None:
+    class _Text:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class _Result:
+        def __init__(self, text: str) -> None:
+            self.content = [_Text(text)]
+
+    class _Manager:
+        async def call_tool(self, server_id, tool_name, args, allow_name_fallback=False):
+            assert server_id == "google-calendar"
+            assert tool_name == "freebusy"
+            assert args == {
+                "calendar_ids": ["primary"],
+                "time_min": "2026-04-02T00:00:00Z",
+                "time_max": "2026-04-03T00:00:00Z",
+            }
+            assert allow_name_fallback is True
+            return _Result(
+                '{"time_min":"2026-04-02T00:00:00Z","time_max":"2026-04-03T00:00:00Z","calendars":{"primary":{"busy":[{"start":"2026-04-02T14:00:00Z","end":"2026-04-02T15:00:00Z"}],"errors":[]}}}'
+            )
+
+    tools = {tool.name: tool for tool in get_calendar_connector_tools(_Manager())}
+    payload = asyncio.run(
+        tools["calendar_freebusy"].handler(
+            {
+                "calendar_ids": ["primary"],
+                "time_min": "2026-04-02T00:00:00Z",
+                "time_max": "2026-04-03T00:00:00Z",
+            },
+            {},
+        )
+    )
+
+    assert payload["calendars"]["primary"]["busy"][0]["start"] == "2026-04-02T14:00:00Z"

@@ -23,6 +23,7 @@ What it can do today:
 - create an event
 - update an event
 - delete an event
+- run free/busy lookup for one or more calendars
 
 What it does not do yet:
 - send email
@@ -30,7 +31,6 @@ What it does not do yet:
 - mark messages read or unread
 - move messages between labels/folders
 - download attachment contents
-- free/busy lookup
 - attendee response management
 
 Setup guide:

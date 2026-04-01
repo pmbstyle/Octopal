@@ -146,6 +146,13 @@ def _build_event_patch_body(
     return body
 
 
+def _normalize_busy_slot(slot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "start": slot.get("start"),
+        "end": slot.get("end"),
+    }
+
+
 class CalendarApiClient:
     def __init__(self) -> None:
         self._credentials = self._load_credentials()
@@ -343,11 +350,44 @@ class CalendarApiClient:
         await self._request("DELETE", f"/calendars/{calendar_id}/events/{event_id}")
         return {"ok": True, "calendar_id": calendar_id, "event_id": event_id, "status": "deleted"}
 
+    async def freebusy(
+        self,
+        *,
+        calendar_ids: list[str],
+        time_min: str,
+        time_max: str,
+        time_zone: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "items": [{"id": calendar_id} for calendar_id in calendar_ids if str(calendar_id).strip()],
+        }
+        if time_zone:
+            body["timeZone"] = time_zone
+
+        payload = await self._request("POST", "/freeBusy", json_body=body)
+        calendars = payload.get("calendars") or {}
+        normalized_calendars = {
+            calendar_id: {
+                "busy": [_normalize_busy_slot(slot) for slot in ((calendar_payload or {}).get("busy") or [])],
+                "errors": (calendar_payload or {}).get("errors") or [],
+            }
+            for calendar_id, calendar_payload in calendars.items()
+        }
+        return {
+            "time_min": payload.get("timeMin", time_min),
+            "time_max": payload.get("timeMax", time_max),
+            "groups": payload.get("groups") or {},
+            "calendars": normalized_calendars,
+        }
+
 
 mcp = FastMCP(
     name="Octopal Google Calendar",
     instructions=(
-        "Use these tools to inspect, create, update, and delete events in the connected Google Calendar account. "
+        "Use these tools to inspect, create, update, and delete events in the connected Google Calendar account, "
+        "including free/busy lookups for one or more calendars. "
         "Prefer listing calendars or events before fetching a single event when context is missing."
     ),
     log_level="ERROR",
@@ -469,6 +509,22 @@ async def update_event(
 async def delete_event(event_id: str, calendar_id: str = "primary") -> dict[str, Any]:
     """Delete a calendar event."""
     return await _client().delete_event(calendar_id=calendar_id, event_id=event_id)
+
+
+@mcp.tool(name="freebusy")
+async def freebusy(
+    calendar_ids: list[str],
+    time_min: str,
+    time_max: str,
+    time_zone: str | None = None,
+) -> dict[str, Any]:
+    """Return busy windows for one or more calendars in a time range."""
+    return await _client().freebusy(
+        calendar_ids=calendar_ids,
+        time_min=time_min,
+        time_max=time_max,
+        time_zone=time_zone,
+    )
 
 
 def main() -> None:

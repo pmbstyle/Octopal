@@ -244,4 +244,22 @@ def get_calendar_connector_tools(mcp_manager: Any = None) -> list[ToolSpec]:
             fallback_manager=mcp_manager,
             capabilities=("calendar_write", "connector_use"),
         ),
+        _calendar_tool(
+            name="calendar_freebusy",
+            remote_tool_name="freebusy",
+            description="Return busy windows for one or more Google Calendars in a time range.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "calendar_ids": {"type": "array", "items": {"type": "string"}},
+                    "time_min": {"type": "string"},
+                    "time_max": {"type": "string"},
+                    "time_zone": {"type": "string"},
+                },
+                "required": ["calendar_ids", "time_min", "time_max"],
+                "additionalProperties": False,
+            },
+            fallback_manager=mcp_manager,
+            capabilities=("calendar_read", "connector_use"),
+        ),
     ]
