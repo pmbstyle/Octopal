@@ -31,6 +31,7 @@ from octopal.tools.browser.actions import (
     browser_wait_for,
     browser_workflow,
 )
+from octopal.tools.connectors.gmail import get_gmail_connector_tools
 from octopal.tools.connectors.status import get_connector_status_tools
 from octopal.tools.filesystem.download import download_file
 from octopal.tools.filesystem.files import fs_delete, fs_list, fs_move, fs_read, fs_write
@@ -1123,6 +1124,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
     tools.extend(get_registered_skill_tools())
     tools.extend(get_worker_tools())
     tools.extend(get_connector_status_tools())
+    tools.extend(get_gmail_connector_tools(mcp_manager))
     tools.extend(_get_mcp_management_tools())
     if mcp_manager:
         mcp_tools = mcp_manager.get_all_tools()
