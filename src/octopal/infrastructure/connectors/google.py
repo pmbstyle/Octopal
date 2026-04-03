@@ -29,7 +29,7 @@ def _oauthlib_insecure_transport_for_localhost():
 
 
 class GoogleConnector(Connector):
-    _SUPPORTED_SERVICES = ("gmail", "calendar")
+    _SUPPORTED_SERVICES = ("gmail", "calendar", "drive")
 
     def __init__(self, manager: Any):
         self.manager = manager
@@ -37,10 +37,12 @@ class GoogleConnector(Connector):
         self._service_scopes = {
             "gmail": "https://www.googleapis.com/auth/gmail.modify",
             "calendar": "https://www.googleapis.com/auth/calendar",
+            "drive": "https://www.googleapis.com/auth/drive",
         }
         self._service_server_ids = {
             "gmail": "google-gmail",
             "calendar": "google-calendar",
+            "drive": "google-drive",
         }
 
     @property
@@ -401,6 +403,21 @@ class GoogleConnector(Connector):
             )
             await self.manager.mcp_manager.connect_server(calendar_cfg)
 
+        if "drive" in enabled_services:
+            drive_cfg = MCPServerConfig(
+                id=self._service_server_ids["drive"],
+                name="Google Drive Connector",
+                command=sys.executable,
+                args=["-m", "octopal.mcp_servers.drive"],
+                env={
+                    "GOOGLE_DRIVE_CLIENT_ID": config.credentials.client_id,
+                    "GOOGLE_DRIVE_CLIENT_SECRET": config.credentials.client_secret,
+                    "GOOGLE_DRIVE_REFRESH_TOKEN": config.auth.refresh_token,
+                },
+                transport="stdio",
+            )
+            await self.manager.mcp_manager.connect_server(drive_cfg)
+
     async def disconnect(self, *, forget_credentials: bool = False) -> dict[str, Any]:
         """Disconnect Gmail integration and clear authorization state."""
         config = self._get_config()
@@ -408,7 +425,7 @@ class GoogleConnector(Connector):
             return {"status": "noop", "message": "Google connector is not configured."}
 
         if self.manager.mcp_manager is not None:
-            for server_id in self._MCP_SERVER_IDS:
+            for server_id in self.managed_server_ids():
                 try:
                     await self.manager.mcp_manager.disconnect_server(server_id, intentional=True)
                 except Exception:

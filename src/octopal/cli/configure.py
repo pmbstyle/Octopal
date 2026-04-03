@@ -633,11 +633,12 @@ def _configure_connectors(config: OctopalConfig, prompter) -> None:
             google_services = [
                 WizardSelectOption(value="gmail", label="Gmail"),
                 WizardSelectOption(value="calendar", label="Calendar"),
+                WizardSelectOption(value="drive", label="Drive"),
             ]
 
             current_google_services = config.connectors.instances[name].enabled_services or ["gmail"]
             current_google_services = [
-                service for service in current_google_services if service in {"gmail", "calendar"}
+                service for service in current_google_services if service in {"gmail", "calendar", "drive"}
             ] or ["gmail"]
 
             selected_google = prompter.multiselect(

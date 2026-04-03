@@ -25,11 +25,11 @@ def test_google_connector_configure_requires_cli_enabled_connector() -> None:
         asyncio.run(connector.configure({"client_id": "id", "client_secret": "secret"}))
 
 
-def test_google_connector_status_rejects_unsupported_services() -> None:
+def test_google_connector_status_rejects_unknown_services() -> None:
     config = OctopalConfig()
     config.connectors.instances["google"] = ConnectorInstanceConfig(
         enabled=True,
-        enabled_services=["gmail", "drive"],
+        enabled_services=["gmail", "not-real"],
     )
     manager = _build_manager(config)
     connector = manager.get_connector("google")
@@ -37,7 +37,7 @@ def test_google_connector_status_rejects_unsupported_services() -> None:
     status = asyncio.run(connector.get_status())
 
     assert status["status"] == "unsupported_service_configuration"
-    assert "drive" in status["message"]
+    assert "not-real" in status["message"]
 
 
 def test_google_connector_status_accepts_calendar_service() -> None:
@@ -55,6 +55,23 @@ def test_google_connector_status_accepts_calendar_service() -> None:
 
     assert status["status"] == "ready"
     assert status["services"] == ["calendar"]
+
+
+def test_google_connector_status_accepts_drive_service() -> None:
+    config = OctopalConfig()
+    config.connectors.instances["google"] = ConnectorInstanceConfig(
+        enabled=True,
+        enabled_services=["drive"],
+        credentials={"client_id": "id", "client_secret": "secret"},
+        auth={"authorized_services": ["drive"], "refresh_token": "refresh"},
+    )
+    manager = _build_manager(config)
+    connector = manager.get_connector("google")
+
+    status = asyncio.run(connector.get_status())
+
+    assert status["status"] == "ready"
+    assert status["services"] == ["drive"]
 
 
 def test_google_connector_status_requires_reauth_for_newly_enabled_services() -> None:
@@ -175,6 +192,36 @@ def test_connector_manager_reconciles_ready_google_calendar_connector_into_runni
     assert mcp.disconnected == []
 
 
+def test_connector_manager_reconciles_ready_google_drive_connector_into_running_mcp() -> None:
+    config = OctopalConfig()
+    config.connectors.instances["google"] = ConnectorInstanceConfig(
+        enabled=True,
+        enabled_services=["drive"],
+        credentials={"client_id": "client-id", "client_secret": "client-secret"},
+        auth={"authorized_services": ["drive"], "refresh_token": "refresh-token"},
+    )
+
+    class _MCP:
+        def __init__(self) -> None:
+            self.connected: list[str] = []
+            self.disconnected: list[str] = []
+
+        async def connect_server(self, mcp_config):
+            self.connected.append(mcp_config.id)
+            return []
+
+        async def disconnect_server(self, server_id: str, *, intentional: bool = True):
+            self.disconnected.append(server_id)
+
+    mcp = _MCP()
+    manager = ConnectorManager(config=config.connectors, mcp_manager=mcp, octo_config=config)
+
+    asyncio.run(manager.load_and_start_all())
+
+    assert mcp.connected == ["google-drive"]
+    assert mcp.disconnected == []
+
+
 def test_connector_manager_uses_internal_gmail_mcp_server_and_env_names() -> None:
     config = OctopalConfig()
     config.connectors.instances["google"] = ConnectorInstanceConfig(
@@ -241,6 +288,40 @@ def test_connector_manager_uses_internal_calendar_mcp_server_and_env_names() -> 
     assert calendar_cfg.env["GOOGLE_CALENDAR_CLIENT_ID"] == "client-id"
     assert calendar_cfg.env["GOOGLE_CALENDAR_CLIENT_SECRET"] == "client-secret"
     assert calendar_cfg.env["GOOGLE_CALENDAR_REFRESH_TOKEN"] == "refresh-token"
+
+
+def test_connector_manager_uses_internal_drive_mcp_server_and_env_names() -> None:
+    config = OctopalConfig()
+    config.connectors.instances["google"] = ConnectorInstanceConfig(
+        enabled=True,
+        enabled_services=["drive"],
+        credentials={"client_id": "client-id", "client_secret": "client-secret"},
+        auth={"authorized_services": ["drive"], "refresh_token": "refresh-token"},
+    )
+
+    class _MCP:
+        def __init__(self) -> None:
+            self.configs = []
+
+        async def connect_server(self, mcp_config):
+            self.configs.append(mcp_config)
+            return []
+
+        async def disconnect_server(self, server_id: str, *, intentional: bool = True):
+            return None
+
+    mcp = _MCP()
+    manager = ConnectorManager(config=config.connectors, mcp_manager=mcp, octo_config=config)
+
+    asyncio.run(manager.load_and_start_all())
+
+    assert len(mcp.configs) == 1
+    drive_cfg = mcp.configs[0]
+    assert drive_cfg.command == sys.executable
+    assert drive_cfg.args == ["-m", "octopal.mcp_servers.drive"]
+    assert drive_cfg.env["GOOGLE_DRIVE_CLIENT_ID"] == "client-id"
+    assert drive_cfg.env["GOOGLE_DRIVE_CLIENT_SECRET"] == "client-secret"
+    assert drive_cfg.env["GOOGLE_DRIVE_REFRESH_TOKEN"] == "refresh-token"
 
 
 def test_connector_manager_continues_startup_when_ready_google_connector_fails_to_start() -> None:
