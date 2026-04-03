@@ -79,6 +79,7 @@ class _PendingWorkerFollowupBatch:
     texts: list[str]
     task: asyncio.Task | None = None
     loop: asyncio.AbstractEventLoop | None = None
+    created_during_active_turn: bool = False
 
 
 def _build_worker_result_timeout_followup(result: WorkerResult) -> str:
@@ -470,6 +471,27 @@ def _schedule_worker_followup_flush(octo: Octo, chat_id: int, correlation_id: st
     batch.task = asyncio.create_task(_flush_worker_followup_batch(octo, chat_id, correlation_id))
 
 
+def _discard_worker_followup_batch(
+    chat_id: int,
+    correlation_id: str | None,
+    *,
+    only_if_created_during_active_turn: bool = False,
+) -> bool:
+    if not correlation_id:
+        return False
+    batch_key = (chat_id, correlation_id)
+    batch = _WORKER_FOLLOWUP_BATCHES.get(batch_key)
+    if batch is None:
+        return False
+    if only_if_created_during_active_turn and not batch.created_during_active_turn:
+        return False
+    task = batch.task
+    if task and not task.done():
+        task.cancel()
+    _WORKER_FOLLOWUP_BATCHES.pop(batch_key, None)
+    return True
+
+
 async def _enqueue_batched_worker_followup(
     octo: Octo,
     chat_id: int,
@@ -493,6 +515,8 @@ async def _enqueue_batched_worker_followup(
         batch = _PendingWorkerFollowupBatch(texts=[], loop=loop)
         _WORKER_FOLLOWUP_BATCHES[batch_key] = batch
     batch.texts.append(text)
+    if octo.has_active_user_turn(correlation_id):
+        batch.created_during_active_turn = True
     _schedule_worker_followup_flush(octo, chat_id, correlation_id)
 
 
@@ -683,6 +707,7 @@ class Octo:
     _watch_escalation_streak_by_chat: dict[int, int] | None = None
     _self_queue_by_chat: dict[int, list[dict[str, Any]]] | None = None
     _last_opportunities_by_chat: dict[int, list[dict[str, Any]]] | None = None
+    _active_user_turns_by_correlation: dict[str, Any] | None = None
 
     def __post_init__(self):
         if self._recent_tasks is None:
@@ -717,6 +742,8 @@ class Octo:
             self._pending_conversational_closure_by_correlation = {}
         if self._suppressed_followups_by_correlation is None:
             self._suppressed_followups_by_correlation = {}
+        if self._active_user_turns_by_correlation is None:
+            self._active_user_turns_by_correlation = {}
         if self._no_progress_turns_by_chat is None:
             self._no_progress_turns_by_chat = {}
         if self._progress_revision_by_chat is None:
@@ -1201,6 +1228,31 @@ class Octo:
             self._suppressed_followups_by_correlation = suppressed
         suppressed[correlation_id] = utc_now()
 
+    def mark_user_turn_active(self, correlation_id: str | None) -> None:
+        if not correlation_id:
+            return
+        active = self._active_user_turns_by_correlation
+        if active is None:
+            active = {}
+            self._active_user_turns_by_correlation = active
+        active[correlation_id] = utc_now()
+
+    def mark_user_turn_inactive(self, correlation_id: str | None) -> None:
+        if not correlation_id:
+            return
+        active = self._active_user_turns_by_correlation
+        if active is None:
+            return
+        active.pop(correlation_id, None)
+
+    def has_active_user_turn(self, correlation_id: str | None) -> bool:
+        if not correlation_id:
+            return False
+        active = self._active_user_turns_by_correlation
+        if active is None:
+            return False
+        return correlation_id in active
+
     def should_suppress_turn_followups(self, correlation_id: str | None) -> bool:
         if not correlation_id:
             return False
@@ -1254,6 +1306,8 @@ class Octo:
         if not correlation_id:
             return True
         return (
+            not self.has_active_user_turn(correlation_id)
+            and
             not self.has_active_workers_for_correlation(correlation_id)
             and not self.has_pending_internal_results_for_correlation(correlation_id)
         )
@@ -1643,11 +1697,13 @@ class Octo:
             )
         correlation_token = None
         correlation_id = correlation_id_var.get()
+        wants_followup = False
         if not correlation_id:
             correlation_id = f"turn-{uuid4()}"
             correlation_token = correlation_id_var.set(correlation_id)
 
         try:
+            self.mark_user_turn_active(correlation_id)
             if callable(approval_requester):
                 self._approval_requesters[chat_id] = approval_requester
             logger.info("Handling message", chat_id=chat_id, is_ws=is_ws, has_images=bool(images))
@@ -1752,8 +1808,17 @@ class Octo:
                 delivery_mode=delivery.mode,
             )
         finally:
+            self.mark_user_turn_inactive(correlation_id)
             if track_progress:
                 self.clear_suppressed_turn_followups(correlation_id)
+            if wants_followup:
+                _schedule_worker_followup_flush(self, chat_id, correlation_id)
+            else:
+                _discard_worker_followup_batch(
+                    chat_id,
+                    correlation_id,
+                    only_if_created_during_active_turn=True,
+                )
             if correlation_token is not None:
                 correlation_id_var.reset(correlation_token)
 

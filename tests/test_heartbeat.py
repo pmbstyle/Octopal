@@ -506,6 +506,103 @@ async def test_batched_worker_followups_wait_for_pending_internal_results(monkey
     assert sent_messages == [(321, "Первый апдейт.\n\nВторой апдейт.")]
 
 
+@pytest.mark.asyncio
+async def test_worker_followup_created_during_active_turn_is_dropped_without_followup_marker(monkeypatch):
+    monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
+    octo_core._WORKER_FOLLOWUP_BATCHES.clear()
+
+    sent_messages = []
+
+    class DummyMemory:
+        async def add_message(self, role, text, metadata):
+            return None
+
+    async def _send(chat_id, text):
+        sent_messages.append((chat_id, text))
+
+    async def _route_or_reply(*args, **kwargs):
+        await asyncio.sleep(0.02)
+        return "Готово."
+
+    async def _bootstrap_context(*args, **kwargs):
+        return SimpleNamespace(content="", hash="", files=[])
+
+    monkeypatch.setattr(octo_core, "route_or_reply", _route_or_reply)
+    monkeypatch.setattr(octo_core, "build_bootstrap_context_prompt", _bootstrap_context)
+
+    octo = Octo(
+        approvals=None,
+        memory=DummyMemory(),
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+        internal_send=_send,
+    )
+
+    token = octo_core.correlation_id_var.set("turn-test")
+    try:
+        task = asyncio.create_task(octo.handle_message("test", 123))
+        await asyncio.sleep(0.005)
+        await octo_core._enqueue_batched_worker_followup(octo, 123, "turn-test", "Фоновый итог.")
+        await task
+    finally:
+        octo_core.correlation_id_var.reset(token)
+    await asyncio.sleep(0.03)
+
+    assert sent_messages == []
+    assert octo_core._WORKER_FOLLOWUP_BATCHES == {}
+
+
+@pytest.mark.asyncio
+async def test_worker_followup_created_during_active_turn_flushes_after_followup_marker(monkeypatch):
+    monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
+    octo_core._WORKER_FOLLOWUP_BATCHES.clear()
+
+    sent_messages = []
+
+    class DummyMemory:
+        async def add_message(self, role, text, metadata):
+            return None
+
+    async def _send(chat_id, text):
+        sent_messages.append((chat_id, text))
+
+    async def _route_or_reply(*args, **kwargs):
+        await asyncio.sleep(0.02)
+        return "Жду результат воркера.\nFOLLOWUP_REQUIRED"
+
+    async def _bootstrap_context(*args, **kwargs):
+        return SimpleNamespace(content="", hash="", files=[])
+
+    monkeypatch.setattr(octo_core, "route_or_reply", _route_or_reply)
+    monkeypatch.setattr(octo_core, "build_bootstrap_context_prompt", _bootstrap_context)
+
+    octo = Octo(
+        approvals=None,
+        memory=DummyMemory(),
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+        internal_send=_send,
+    )
+
+    token = octo_core.correlation_id_var.set("turn-test")
+    try:
+        task = asyncio.create_task(octo.handle_message("test", 123))
+        await asyncio.sleep(0.005)
+        await octo_core._enqueue_batched_worker_followup(octo, 123, "turn-test", "Фоновый итог.")
+        await task
+    finally:
+        octo_core.correlation_id_var.reset(token)
+    await asyncio.sleep(0.03)
+
+    assert sent_messages == [(123, "Фоновый итог.")]
+
+
 def test_octo_does_not_have_web_fetch():
     from octopal.runtime.octo.router import _get_octo_tools
     class DummyOcto:
