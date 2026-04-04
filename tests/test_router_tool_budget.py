@@ -5,8 +5,10 @@ import asyncio
 from octopal.infrastructure.providers.base import Message
 from octopal.runtime.octo.router import (
     _budget_tool_specs,
+    _expand_active_tool_specs_from_catalog_result,
     _finalize_response,
     _recover_textual_tool_call,
+    route_or_reply,
     _sanitize_messages_for_complete,
     _shrink_tool_specs_for_retry,
 )
@@ -37,6 +39,39 @@ def test_shrink_retry_keeps_start_worker() -> None:
     shrunk = _shrink_tool_specs_for_retry(all_tools)
     names = {spec.name for spec in shrunk}
     assert "start_worker" in names
+
+
+def test_catalog_result_expands_active_tool_specs() -> None:
+    active = [
+        ToolSpec(
+            name="tool_catalog_search",
+            description="catalog",
+            parameters={"type": "object", "properties": {}},
+            permission="self_control",
+            handler=lambda args, ctx: "{}",
+        )
+    ]
+    hidden = ToolSpec(
+        name="hidden_tool",
+        description="hidden",
+        parameters={"type": "object", "properties": {}},
+        permission="self_control",
+        handler=lambda args, ctx: {"ok": True},
+    )
+
+    updated, expanded = _expand_active_tool_specs_from_catalog_result(
+        {
+            "results": [
+                {"name": "hidden_tool", "active_now": False},
+                {"name": "tool_catalog_search", "active_now": True},
+            ]
+        },
+        active_tool_specs=active,
+        ctx={"all_tool_specs": active + [hidden]},
+    )
+
+    assert expanded == ["hidden_tool"]
+    assert {spec.name for spec in updated} == {"tool_catalog_search", "hidden_tool"}
 
 
 def test_route_falls_back_when_tool_run_ends_with_empty_response(monkeypatch) -> None:
@@ -571,6 +606,130 @@ def test_finalize_response_preserves_control_token_without_rewrite() -> None:
             internal_followup=True,
         )
         assert result == "NO_USER_RESPONSE"
+
+    asyncio.run(scenario())
+
+
+def test_route_can_expand_toolset_after_catalog_search(monkeypatch) -> None:
+    hidden_tool = ToolSpec(
+        name="hidden_tool",
+        description="A hidden tool revealed by catalog search.",
+        parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        permission="self_control",
+        handler=lambda args, ctx: {"ok": True, "used": "hidden_tool"},
+    )
+
+    catalog_tool = ToolSpec(
+        name="tool_catalog_search",
+        description="catalog",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        permission="self_control",
+        handler=lambda args, ctx: '{"status":"ok","results":[{"name":"hidden_tool","active_now":false}]}',
+    )
+
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.tool_snapshots: list[list[str]] = []
+            self.calls = 0
+
+        async def complete(self, messages, **kwargs):
+            raise AssertionError("plain completion should not be used in this scenario")
+
+        async def complete_stream(self, messages, *, on_partial, **kwargs):
+            raise AssertionError("streaming should not be used in this scenario")
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            names = [tool["function"]["name"] for tool in tools]
+            self.tool_snapshots.append(names)
+            self.calls += 1
+            if self.calls == 1:
+                assert "tool_catalog_search" in names
+                assert "hidden_tool" not in names
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "tool_catalog_search",
+                                "arguments": '{"query":"hidden tool"}',
+                            },
+                        }
+                    ],
+                }
+            if self.calls == 2:
+                assert "hidden_tool" in names
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-2",
+                            "type": "function",
+                            "function": {"name": "hidden_tool", "arguments": "{}"},
+                        }
+                    ],
+                }
+            return {"content": "Expanded tool worked.", "tool_calls": []}
+
+    class DummyMemory:
+        async def add_message(self, role, content, metadata=None):
+            return None
+
+    class DummyOcto:
+        store = object()
+        canon = object()
+        internal_progress_send = None
+        is_ws_active = False
+
+        async def set_typing(self, chat_id: int, active: bool) -> None:
+            return None
+
+        async def set_thinking(self, active: bool) -> None:
+            return None
+
+        def peek_context_wakeup(self, chat_id: int) -> str:
+            return ""
+
+    async def fake_build_octo_prompt(**kwargs):
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def fake_build_plan(provider, messages, has_tools):
+        return None
+
+    def fake_get_octo_tools(octo, chat_id):
+        active_tools = [catalog_tool]
+        all_tools = [catalog_tool, hidden_tool]
+        return active_tools, {
+            "octo": octo,
+            "chat_id": chat_id,
+            "active_tool_specs": active_tools,
+            "all_tool_specs": all_tools,
+        }
+
+    import octopal.runtime.octo.router as router
+
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(router, "_build_plan", fake_build_plan)
+    monkeypatch.setattr(router, "_get_octo_tools", fake_get_octo_tools)
+
+    async def scenario() -> None:
+        provider = DummyProvider()
+        response = await route_or_reply(
+            DummyOcto(),
+            provider,
+            DummyMemory(),
+            "use the hidden tool",
+            123,
+            "",
+        )
+        assert response == "Expanded tool worked."
+        assert len(provider.tool_snapshots) == 3
+        assert "hidden_tool" in provider.tool_snapshots[1]
 
     asyncio.run(scenario())
 
