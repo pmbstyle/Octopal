@@ -22,6 +22,7 @@ from octopal.runtime.octo.router import (
 )
 from octopal.runtime.workers.contracts import WorkerResult
 from octopal.utils import (
+    extract_heartbeat_user_visible_message,
     has_no_user_response_suffix,
     is_heartbeat_ok,
     looks_like_textual_tool_invocation,
@@ -64,6 +65,16 @@ def test_resolve_user_delivery_classifies_control_and_visible_text():
     visible = resolve_user_delivery("Готово, вот итог.")
     assert visible.mode == DeliveryMode.IMMEDIATE
     assert visible.text == "Готово, вот итог."
+
+
+def test_extract_heartbeat_user_visible_message_requires_explicit_wrapper():
+    assert extract_heartbeat_user_visible_message("<user_visible>Утренний брифинг готов.</user_visible>") == (
+        "Утренний брифинг готов."
+    )
+    assert extract_heartbeat_user_visible_message("Worker still running. Yielding.") is None
+    assert extract_heartbeat_user_visible_message(
+        "Ладно, canonical memory не подходит для файлов за пределами canon."
+    ) is None
 
 
 def test_resolve_worker_followup_delivery_uses_deferred_mode_when_suppressed():
@@ -424,7 +435,7 @@ async def test_background_delivery_keeps_user_visible_heartbeat_reply_and_record
             memory_messages.append((role, text, metadata))
 
     async def _route_or_reply(*args, **kwargs):
-        return "Утренний брифинг готов."
+        return "<user_visible>Утренний брифинг готов.</user_visible>"
 
     async def _bootstrap_context(*args, **kwargs):
         return SimpleNamespace(content="", hash="", files=[])
@@ -459,6 +470,91 @@ async def test_background_delivery_keeps_user_visible_heartbeat_reply_and_record
         and metadata.get("background_delivery") is True
         for role, text, metadata in memory_messages
     )
+
+
+@pytest.mark.asyncio
+async def test_background_delivery_suppresses_low_signal_heartbeat_update(monkeypatch):
+    memory_messages = []
+
+    class DummyMemory:
+        async def add_message(self, role, text, metadata):
+            memory_messages.append((role, text, metadata))
+
+    async def _route_or_reply(*args, **kwargs):
+        return "Worker still running. Yielding."
+
+    async def _bootstrap_context(*args, **kwargs):
+        return SimpleNamespace(content="", hash="", files=[])
+
+    monkeypatch.setattr(octo_core, "route_or_reply", _route_or_reply)
+    monkeypatch.setattr(octo_core, "build_bootstrap_context_prompt", _bootstrap_context)
+
+    octo = Octo(
+        approvals=None,
+        memory=DummyMemory(),
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+    )
+
+    reply = await octo.handle_message(
+        "heartbeat task",
+        123,
+        persist_to_memory=False,
+        track_progress=False,
+        include_wakeup=False,
+        background_delivery=True,
+    )
+
+    assert reply.delivery_mode == DeliveryMode.SILENT
+    assert reply.immediate == "HEARTBEAT_OK"
+    assert not any(role == "assistant" for role, _text, _metadata in memory_messages)
+
+
+@pytest.mark.asyncio
+async def test_background_delivery_suppresses_unwrapped_internal_heartbeat_text(monkeypatch):
+    memory_messages = []
+
+    class DummyMemory:
+        async def add_message(self, role, text, metadata):
+            memory_messages.append((role, text, metadata))
+
+    async def _route_or_reply(*args, **kwargs):
+        return (
+            "Ладно, canonical memory не подходит для файлов за пределами canon. "
+            "Мне нужно использовать tools для записи в research/."
+        )
+
+    async def _bootstrap_context(*args, **kwargs):
+        return SimpleNamespace(content="", hash="", files=[])
+
+    monkeypatch.setattr(octo_core, "route_or_reply", _route_or_reply)
+    monkeypatch.setattr(octo_core, "build_bootstrap_context_prompt", _bootstrap_context)
+
+    octo = Octo(
+        approvals=None,
+        memory=DummyMemory(),
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+    )
+
+    reply = await octo.handle_message(
+        "heartbeat task",
+        123,
+        persist_to_memory=False,
+        track_progress=False,
+        include_wakeup=False,
+        background_delivery=True,
+    )
+
+    assert reply.delivery_mode == DeliveryMode.SILENT
+    assert reply.immediate == "HEARTBEAT_OK"
+    assert not any(role == "assistant" for role, _text, _metadata in memory_messages)
 
 
 @pytest.mark.asyncio

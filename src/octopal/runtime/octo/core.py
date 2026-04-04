@@ -52,6 +52,7 @@ from octopal.runtime.scheduler.service import SchedulerService
 from octopal.runtime.workers.contracts import TaskRequest, WorkerResult
 from octopal.runtime.workers.runtime import WorkerRuntime
 from octopal.utils import (
+    extract_heartbeat_user_visible_message,
     extract_reaction_and_strip,
     has_no_user_response_suffix,
     is_control_response,
@@ -1755,9 +1756,9 @@ class Octo:
             reply_text, wants_followup = _extract_followup_required_marker(reply_text)
             if not track_progress:
                 wants_followup = False
-                background_decision = resolve_user_delivery(reply_text)
-                if background_delivery and background_decision.user_visible:
-                    reply_text = background_decision.text
+                explicit_background_text = extract_heartbeat_user_visible_message(reply_text)
+                if background_delivery and explicit_background_text:
+                    reply_text = explicit_background_text
                 else:
                     reply_text = _coerce_control_plane_reply(reply_text)
             logger.info("Octo response ready")

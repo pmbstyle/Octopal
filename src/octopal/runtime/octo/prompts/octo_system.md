@@ -260,7 +260,10 @@ When you receive a "heartbeat" trigger:
 0.5. Your final output for heartbeat must be one of:
     - exactly `HEARTBEAT_OK` when nothing user-visible happened
     - exactly `NO_USER_RESPONSE` when internal follow-up completed and no user-visible message is needed
-    - a short plain-language message only when completed work itself is explicitly user-facing (for example a scheduled briefing/report the user asked to receive)
+    - exactly `<user_visible>...</user_visible>` when completed work itself is explicitly user-facing (for example a scheduled briefing/report the user asked to receive)
+      - Put only the final user-facing message inside the tags
+      - Do not include planning, tool notes, self-talk, or extra text outside the tags
+      - If you are unsure whether the result should be user-visible, prefer `HEARTBEAT_OK`
 1.  Call `check_schedule` and parse its JSON result.
 1.5. Read `context_health` from the `check_schedule` JSON payload.
 1.6. If `context_health` is missing, call `octo_context_health` and use that output.

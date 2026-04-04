@@ -286,6 +286,27 @@ def looks_like_textual_tool_invocation(text: str) -> bool:
     )
 
 
+_HEARTBEAT_USER_VISIBLE_OPEN = "<user_visible>"
+_HEARTBEAT_USER_VISIBLE_CLOSE = "</user_visible>"
+
+
+def extract_heartbeat_user_visible_message(text: str) -> str | None:
+    """Extract an explicitly marked user-visible heartbeat message."""
+    value = sanitize_user_facing_text(text or "").strip()
+    if not value:
+        return None
+    normalized = value.casefold()
+    open_tag = _HEARTBEAT_USER_VISIBLE_OPEN.casefold()
+    close_tag = _HEARTBEAT_USER_VISIBLE_CLOSE.casefold()
+    if not normalized.startswith(open_tag) or not normalized.endswith(close_tag):
+        return None
+
+    inner = value[len(_HEARTBEAT_USER_VISIBLE_OPEN) :]
+    inner = inner[: len(inner) - len(_HEARTBEAT_USER_VISIBLE_CLOSE)]
+    cleaned = sanitize_user_facing_text(inner).strip()
+    return cleaned or None
+
+
 def should_suppress_user_delivery(text: str) -> bool:
     """Guard rail for outbound channels: suppress only explicit control/system payloads."""
     value = sanitize_user_facing_text(text or "")
