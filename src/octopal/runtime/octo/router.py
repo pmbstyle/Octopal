@@ -43,6 +43,13 @@ _MAX_PLAN_STEPS = 10
 _MAX_VERIFY_CONTEXT_CHARS = 20000
 _DEFAULT_MAX_TOOL_COUNT = 64
 _MIN_TOOL_COUNT_ON_OVERFLOW = 12
+_MANDATORY_OCTO_TOOL_NAMES = {
+    "fs_list",
+    "fs_read",
+    "fs_write",
+    "fs_move",
+    "fs_delete",
+}
 _PRIORITY_TOOL_NAMES = {
     "octo_context_reset",
     "octo_context_health",
@@ -78,6 +85,12 @@ _ALWAYS_INCLUDE_TOOL_NAMES = {
     "get_worker_result",
     "get_worker_output_path",
     "stop_worker",
+    # Octo must always be able to inspect and mutate its workspace.
+    "fs_list",
+    "fs_read",
+    "fs_write",
+    "fs_move",
+    "fs_delete",
 }
 _TEXTUAL_TOOL_NAME_RE = re.compile(r"^(?:mcp__[\w-]+__)?[a-z][a-z0-9_]{1,63}$", re.IGNORECASE)
 _TEXTUAL_TOOL_PREVIEW_RE = re.compile(
@@ -726,12 +739,24 @@ def _get_octo_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec], dict[str, 
         profile_name=os.getenv("OCTOPAL_OCTO_TOOL_PROFILE"),
         policy_pipeline_steps=policy_steps,
     )
-    tool_specs = list(resolution_report.available_tools)
+    tool_specs = _ensure_mandatory_octo_tools(
+        list(resolution_report.available_tools),
+        all_tools,
+    )
     max_tools = _env_int("OCTOPAL_OCTO_MAX_TOOL_COUNT", _DEFAULT_MAX_TOOL_COUNT, minimum=8)
     tool_specs = _budget_tool_specs(tool_specs, max_count=max_tools)
     ctx["tool_resolution_report"] = resolution_report
     ctx["all_tool_specs"] = all_tools
     return tool_specs, ctx
+
+
+def _ensure_mandatory_octo_tools(active_tools: list[ToolSpec], all_tools: list[ToolSpec]) -> list[ToolSpec]:
+    by_name = {str(spec.name): spec for spec in active_tools}
+    for spec in all_tools:
+        name = str(spec.name)
+        if name in _MANDATORY_OCTO_TOOL_NAMES and name not in by_name:
+            by_name[name] = spec
+    return list(by_name.values())
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:

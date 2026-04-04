@@ -666,3 +666,16 @@ def test_octo_does_not_have_web_fetch():
     # Sanity check: verify some other tools ARE there
     assert "start_worker" in tool_names
     assert "fs_read" in tool_names
+
+
+def test_octo_keeps_filesystem_tools_when_research_profile_enabled(monkeypatch):
+    from octopal.runtime.octo.router import _get_octo_tools
+
+    class DummyOcto:
+        store = None
+
+    monkeypatch.setenv("OCTOPAL_OCTO_TOOL_PROFILE", "research")
+    tool_specs, _ = _get_octo_tools(DummyOcto(), 0)
+    tool_names = {spec.name for spec in tool_specs}
+
+    assert {"fs_list", "fs_read", "fs_write", "fs_move", "fs_delete"} <= tool_names
