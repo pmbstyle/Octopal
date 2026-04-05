@@ -53,6 +53,147 @@ from octopal.utils import utc_now
 logger = structlog.get_logger(__name__)
 
 
+def _tool_catalog_search(args, ctx) -> str:
+    query = str((args or {}).get("query", "") or "").strip().lower()
+    category_filter = str((args or {}).get("category", "") or "").strip().lower()
+    capability_filter = str((args or {}).get("capability", "") or "").strip().lower()
+    limit = max(1, min(int((args or {}).get("limit", 12) or 12), 50))
+
+    report = ctx.get("tool_resolution_report")
+    if report is not None and hasattr(report, "available_tools"):
+        candidates = list(report.available_tools)
+    else:
+        candidates = list(ctx.get("all_tool_specs") or [])
+
+    active_names = {
+        str(getattr(spec, "name", "") or "").strip().lower()
+        for spec in (ctx.get("active_tool_specs") or [])
+    }
+
+    scored: list[tuple[int, ToolSpec]] = []
+    for spec in candidates:
+        if str(spec.name).strip().lower() == "tool_catalog_search":
+            continue
+
+        metadata = getattr(spec, "metadata", None)
+        category = str(getattr(metadata, "category", "") or "").strip().lower()
+        capabilities = tuple(getattr(metadata, "capabilities", ()) or ())
+        profile_tags = tuple(getattr(metadata, "profile_tags", ()) or ())
+        if category_filter and category != category_filter:
+            continue
+        if capability_filter and capability_filter not in capabilities:
+            continue
+
+        score = _tool_catalog_search_score(
+            spec,
+            query=query,
+            category=category,
+            capabilities=capabilities,
+            profile_tags=profile_tags,
+        )
+        if query and score <= 0:
+            continue
+        scored.append((score, spec))
+
+    scored.sort(
+        key=lambda item: (
+            -item[0],
+            0 if str(getattr(item[1], "name", "") or "").strip().lower() not in active_names else 1,
+            str(getattr(item[1], "name", "") or ""),
+        )
+    )
+
+    items = []
+    for score, spec in scored[:limit]:
+        metadata = getattr(spec, "metadata", None)
+        params = spec.parameters if isinstance(spec.parameters, dict) else {}
+        properties = params.get("properties") if isinstance(params, dict) else {}
+        required = params.get("required") if isinstance(params, dict) else []
+        if not isinstance(properties, dict):
+            properties = {}
+        if not isinstance(required, list):
+            required = []
+
+        items.append(
+            {
+                "name": spec.name,
+                "description": spec.description,
+                "category": str(getattr(metadata, "category", "") or "misc"),
+                "risk": str(getattr(metadata, "risk", "") or "safe"),
+                "capabilities": list(getattr(metadata, "capabilities", ()) or ()),
+                "profile_tags": list(getattr(metadata, "profile_tags", ()) or ()),
+                "required_arguments": [str(item) for item in required if str(item).strip()],
+                "argument_names": sorted(str(key) for key in properties.keys()),
+                "active_now": str(spec.name).strip().lower() in active_names,
+                "score": score,
+            }
+        )
+
+    return json.dumps(
+        {
+            "status": "ok",
+            "query": query or None,
+            "category": category_filter or None,
+            "capability": capability_filter or None,
+            "count": len(items),
+            "results": items,
+            "hint": (
+                "If the needed tool is not active right now, use this catalog result to decide what tool family you need next."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _tool_catalog_search_score(
+    spec: ToolSpec,
+    *,
+    query: str,
+    category: str,
+    capabilities: tuple[str, ...],
+    profile_tags: tuple[str, ...],
+) -> int:
+    if not query:
+        return 1
+
+    name = str(getattr(spec, "name", "") or "").strip().lower()
+    description = str(getattr(spec, "description", "") or "").strip().lower()
+    query_terms = [term for term in query.replace("-", "_").split() if term]
+    if not query_terms:
+        query_terms = [query]
+
+    score = 0
+    for term in query_terms:
+        if name == term:
+            score += 120
+        elif name.startswith(term):
+            score += 80
+        elif term in name:
+            score += 55
+
+        if category == term:
+            score += 35
+        elif term and term in category:
+            score += 20
+
+        if term in description:
+            score += 12
+
+        for capability in capabilities:
+            if capability == term:
+                score += 30
+            elif term in capability:
+                score += 16
+
+        for tag in profile_tags:
+            if tag == term:
+                score += 18
+            elif term in tag:
+                score += 10
+
+    return score
+
+
 def get_tools(mcp_manager=None) -> list[ToolSpec]:
     tools = [
         ToolSpec(
@@ -145,6 +286,39 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             permission="self_control",
             handler=_tool_octo_context_health,
             is_async=True,
+        ),
+        ToolSpec(
+            name="tool_catalog_search",
+            description=(
+                "Search the full catalog of available Octo tools, including tools that may not be active in the current "
+                "tool budget. Use this when the visible toolset seems insufficient for the task."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search text such as gmail, calendar, worker, drive, file, or schedule.",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optional category filter such as connectors, browser, workers, or filesystem.",
+                    },
+                    "capability": {
+                        "type": "string",
+                        "description": "Optional capability filter such as gmail_read or connector_use.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "Maximum number of matches to return.",
+                    },
+                },
+                "additionalProperties": False,
+            },
+            permission="self_control",
+            handler=_tool_catalog_search,
         ),
         ToolSpec(
             name="octo_opportunity_scan",

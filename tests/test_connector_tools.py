@@ -5,11 +5,13 @@ import json
 
 from octopal.infrastructure.config.models import ConnectorInstanceConfig, OctopalConfig
 from octopal.infrastructure.connectors.manager import ConnectorManager
+from octopal.runtime.octo.router import _budget_tool_specs
 from octopal.tools.catalog import get_tools
 from octopal.tools.connectors.calendar import get_calendar_connector_tools
 from octopal.tools.connectors.drive import get_drive_connector_tools
 from octopal.tools.connectors.gmail import get_gmail_connector_tools
 from octopal.tools.connectors.status import connector_status_read
+from octopal.tools.registry import ToolSpec
 
 
 def test_catalog_includes_read_only_connector_status_tool() -> None:
@@ -64,6 +66,30 @@ def test_catalog_includes_first_class_gmail_tools_when_mcp_manager_is_present() 
     assert "gmail_list_messages" in names
     assert "gmail_search_messages" in names
     assert "gmail_get_message" in names
+
+
+def test_octo_budget_keeps_connector_alias_tools() -> None:
+    class _Manager:
+        def get_all_tools(self):
+            return [
+                ToolSpec(
+                    name=f"mcp_demo_tool_{index}",
+                    description="demo",
+                    parameters={"type": "object"},
+                    permission="mcp_exec",
+                    handler=lambda _args, _ctx: "ok",
+                    is_async=True,
+                )
+                for index in range(40)
+            ]
+
+    tools = get_tools(mcp_manager=_Manager())
+    active = _budget_tool_specs(tools, max_count=64)
+    names = {tool.name for tool in active}
+
+    assert "gmail_list_messages" in names
+    assert "gmail_search_messages" in names
+    assert "gmail_get_unread_count" in names
 
 
 def test_catalog_includes_first_class_calendar_tools_when_mcp_manager_is_present() -> None:

@@ -43,6 +43,7 @@ _MAX_PLAN_STEPS = 10
 _MAX_VERIFY_CONTEXT_CHARS = 20000
 _DEFAULT_MAX_TOOL_COUNT = 64
 _MIN_TOOL_COUNT_ON_OVERFLOW = 12
+_CATALOG_TOOL_EXPANSION_LIMIT = 12
 _MANDATORY_OCTO_TOOL_NAMES = {
     "fs_list",
     "fs_read",
@@ -53,6 +54,7 @@ _MANDATORY_OCTO_TOOL_NAMES = {
 _PRIORITY_TOOL_NAMES = {
     "octo_context_reset",
     "octo_context_health",
+    "tool_catalog_search",
     "octo_experiment_log",
     "check_schedule",
     "start_worker",
@@ -69,6 +71,7 @@ _ALWAYS_INCLUDE_TOOL_NAMES = {
     "octo_context_health",
     "check_schedule",
     "scheduler_status",
+    "tool_catalog_search",
     # Scheduler control loop
     "list_schedule",
     "schedule_task",
@@ -392,6 +395,25 @@ async def route_or_reply(
 
                     for call in tool_calls:
                         tool_result, tool_meta = await _handle_octo_tool_call(call, active_tool_specs, ctx)
+                        expanded_names: list[str] = []
+                        if str(call.get("function", {}).get("name") or "") == "tool_catalog_search":
+                            active_tool_specs, expanded_names = _expand_active_tool_specs_from_catalog_result(
+                                tool_result,
+                                active_tool_specs=active_tool_specs,
+                                ctx=ctx,
+                            )
+                            tools = [spec.to_openai_tool() for spec in active_tool_specs]
+                            if expanded_names:
+                                messages.append(
+                                    Message(
+                                        role="system",
+                                        content=(
+                                            "Tool catalog expansion complete. The following tools are now active for this turn:\n"
+                                            + "\n".join(f"- {name}" for name in expanded_names)
+                                            + "\nUse them directly if they fit the task."
+                                        ),
+                                    )
+                                )
                         tool_result_text = render_tool_result_for_llm(tool_result).text
                         loop_state = _record_octo_tool_call(
                             tool_call_history,
@@ -746,6 +768,7 @@ def _get_octo_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec], dict[str, 
     )
     max_tools = _env_int("OCTOPAL_OCTO_MAX_TOOL_COUNT", _DEFAULT_MAX_TOOL_COUNT, minimum=8)
     tool_specs = _budget_tool_specs(tool_specs, max_count=max_tools)
+    ctx["active_tool_specs"] = tool_specs
     ctx["tool_resolution_report"] = resolution_report
     ctx["all_tool_specs"] = all_tools
     return tool_specs, ctx
@@ -825,7 +848,21 @@ def _is_transient_provider_error(exc: Exception) -> bool:
 
 def _tool_priority(spec: ToolSpec) -> tuple[int, str]:
     name = str(getattr(spec, "name", "") or "")
-    return (0 if name in _PRIORITY_TOOL_NAMES else 1, name)
+    if name in _PRIORITY_TOOL_NAMES:
+        return (0, name)
+    if _is_connector_tool(spec):
+        return (1, name)
+    return (2, name)
+
+
+def _is_connector_tool(spec: ToolSpec) -> bool:
+    metadata = getattr(spec, "metadata", None)
+    category = str(getattr(metadata, "category", "") or "").strip().lower()
+    if category == "connectors":
+        return True
+
+    name = str(getattr(spec, "name", "") or "").strip().lower()
+    return name.startswith(("gmail_", "calendar_", "drive_", "connector_"))
 
 
 def _budget_tool_specs(tool_specs: list[ToolSpec], *, max_count: int) -> list[ToolSpec]:
@@ -856,6 +893,52 @@ def _shrink_tool_specs_for_retry(tool_specs: list[ToolSpec]) -> list[ToolSpec]:
         return tool_specs
     reduced = max(_MIN_TOOL_COUNT_ON_OVERFLOW, int(len(tool_specs) * 0.7))
     return _budget_tool_specs(tool_specs, max_count=reduced)
+
+
+def _expand_active_tool_specs_from_catalog_result(
+    tool_result: Any,
+    *,
+    active_tool_specs: list[ToolSpec],
+    ctx: dict[str, object],
+) -> tuple[list[ToolSpec], list[str]]:
+    payload = tool_result if isinstance(tool_result, dict) else {}
+    if isinstance(tool_result, str):
+        try:
+            parsed = json.loads(tool_result)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            payload = parsed
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list) or not results:
+        return active_tool_specs, []
+
+    all_specs = list(ctx.get("all_tool_specs") or [])
+    by_name = {str(getattr(spec, "name", "") or ""): spec for spec in all_specs}
+    selected = list(active_tool_specs)
+    selected_names = {str(getattr(spec, "name", "") or "") for spec in selected}
+
+    expanded_names: list[str] = []
+    for item in results:
+        if len(expanded_names) >= _CATALOG_TOOL_EXPANSION_LIMIT:
+            break
+        if not isinstance(item, dict):
+            continue
+        if bool(item.get("active_now")):
+            continue
+        name = str(item.get("name", "") or "").strip()
+        if not name or name in selected_names:
+            continue
+        spec = by_name.get(name)
+        if spec is None:
+            continue
+        selected.append(spec)
+        selected_names.add(name)
+        expanded_names.append(name)
+
+    if expanded_names:
+        ctx["active_tool_specs"] = selected
+    return selected, expanded_names
 
 
 async def _handle_octo_tool_call(

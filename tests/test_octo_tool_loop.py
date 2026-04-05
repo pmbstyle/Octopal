@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from octopal.runtime.octo.router import (
     _build_octo_tool_policy_summary,
     _handle_octo_tool_call,
+    _budget_tool_specs,
     _record_octo_tool_call,
 )
 from octopal.tools.diagnostics import resolve_tool_diagnostics
+from octopal.tools.catalog import get_tools
 from octopal.tools.metadata import ToolMetadata
 from octopal.tools.registry import ToolSpec
 
@@ -137,3 +141,65 @@ def test_build_octo_tool_policy_summary_counts_risk_classes() -> None:
     assert "Tool policy contract:" in summary
     assert "active_safe=1" in summary
     assert "blocked_dangerous=1" in summary
+
+
+@pytest.mark.asyncio
+async def test_tool_catalog_search_can_find_available_tool_outside_active_budget() -> None:
+    class _Manager:
+        def get_all_tools(self):
+            return [
+                ToolSpec(
+                    name=f"mcp_demo_tool_{index}",
+                    description="demo",
+                    parameters={"type": "object"},
+                    permission="mcp_exec",
+                    handler=lambda _args, _ctx: "ok",
+                    is_async=True,
+                )
+                for index in range(40)
+            ]
+
+    all_tools = get_tools(mcp_manager=_Manager())
+    report = resolve_tool_diagnostics(
+        all_tools,
+        permissions={
+            "filesystem_read": True,
+            "filesystem_write": True,
+            "worker_manage": True,
+            "llm_subtask": True,
+            "canon_manage": True,
+            "network": True,
+            "exec": True,
+            "service_read": True,
+            "service_control": True,
+            "deploy_control": True,
+            "db_admin": True,
+            "security_audit": True,
+            "self_control": True,
+            "mcp_exec": True,
+            "skill_use": True,
+            "skill_exec": True,
+            "skill_manage": True,
+        },
+    )
+    active_tools = _budget_tool_specs(list(report.available_tools), max_count=64)
+    active_names = {spec.name for spec in active_tools}
+    assert "mcp_demo_tool_39" not in active_names
+
+    catalog_tool = next(spec for spec in active_tools if spec.name == "tool_catalog_search")
+    result = catalog_tool.handler(
+        {"query": "mcp_demo_tool_39", "limit": 5},
+        {
+            "tool_resolution_report": report,
+            "all_tool_specs": all_tools,
+            "active_tool_specs": active_tools,
+        },
+    )
+
+    payload = json.loads(result)
+    names = {item["name"] for item in payload["results"]}
+
+    assert payload["status"] == "ok"
+    assert "mcp_demo_tool_39" in names
+    match = next(item for item in payload["results"] if item["name"] == "mcp_demo_tool_39")
+    assert match["active_now"] is False
