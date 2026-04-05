@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import time
+import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -152,7 +153,12 @@ class WhatsAppBridgeController:
         return self._request(
             "POST",
             "/send-file",
-            json={"to": to, "path": file_path, "caption": caption or ""},
+            json={
+                "to": to,
+                "path": file_path,
+                "caption": caption or "",
+                "kind": self._detect_media_kind(file_path),
+            },
         )
 
     def send_reaction(
@@ -243,3 +249,17 @@ class WhatsAppBridgeController:
         if not match:
             return None
         return int(match.group("major"))
+
+    @staticmethod
+    def _detect_media_kind(file_path: str) -> str:
+        mime_type, _ = mimetypes.guess_type(file_path)
+        suffix = Path(file_path).suffix.lower()
+        if suffix == ".gif" or mime_type == "image/gif":
+            return "document"
+        if mime_type and mime_type.lower().startswith("image/"):
+            return "image"
+        if mime_type and mime_type.lower().startswith("video/"):
+            return "video"
+        if mime_type and mime_type.lower().startswith("audio/"):
+            return "audio"
+        return "document"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import mimetypes
 import os
 import re
 import time
@@ -467,11 +468,55 @@ async def _send_message_safe(bot: Bot, chat_id: int, text: str, reply_to_message
 
 async def _send_file_safe(bot: Bot, chat_id: int, file_path: str, caption: str | None = None) -> None:
     clean_caption = sanitize_user_facing_text(strip_reaction_tags(caption or "")) or None
+    input_file = FSInputFile(file_path)
+    media_kind = _detect_telegram_media_kind(file_path)
+    if media_kind == "image":
+        await bot.send_photo(
+            chat_id,
+            photo=input_file,
+            caption=clean_caption,
+        )
+        return
+    if media_kind == "animation":
+        await bot.send_animation(
+            chat_id,
+            animation=input_file,
+            caption=clean_caption,
+        )
+        return
+    if media_kind == "video":
+        await bot.send_video(
+            chat_id,
+            video=input_file,
+            caption=clean_caption,
+        )
+        return
+    if media_kind == "audio":
+        await bot.send_audio(
+            chat_id,
+            audio=input_file,
+            caption=clean_caption,
+        )
+        return
     await bot.send_document(
         chat_id,
-        document=FSInputFile(file_path),
+        document=input_file,
         caption=clean_caption,
     )
+
+
+def _detect_telegram_media_kind(file_path: str) -> str:
+    mime_type, _ = mimetypes.guess_type(file_path)
+    suffix = Path(file_path).suffix.lower()
+    if suffix == ".gif" or mime_type == "image/gif":
+        return "animation"
+    if mime_type and mime_type.lower().startswith("image/"):
+        return "image"
+    if mime_type and mime_type.lower().startswith("video/"):
+        return "video"
+    if mime_type and mime_type.lower().startswith("audio/"):
+        return "audio"
+    return "document"
 
 
 async def _enqueue_send(bot: Bot, chat_id: int, text: str, reply_to_message_id: int | None = None) -> None:

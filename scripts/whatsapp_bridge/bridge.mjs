@@ -46,6 +46,9 @@ let linked = false;
 let selfId = "";
 let reconnectTimer = null;
 const outboundMessageIds = new Set();
+const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".bmp"]);
+const videoExtensions = new Set([".mp4", ".mov", ".m4v", ".webm"]);
+const audioExtensions = new Set([".mp3", ".m4a", ".aac", ".ogg", ".wav", ".opus"]);
 
 async function ensureAuthDir() {
   await fs.mkdir(authDir, { recursive: true });
@@ -83,6 +86,38 @@ function rememberOutboundMessageId(id) {
   if (typeof timer.unref === "function") {
     timer.unref();
   }
+}
+
+function isImagePath(filePath) {
+  const extension = path.extname(String(filePath || "")).toLowerCase();
+  return imageExtensions.has(extension);
+}
+
+function isVideoPath(filePath) {
+  const extension = path.extname(String(filePath || "")).toLowerCase();
+  return videoExtensions.has(extension);
+}
+
+function isAudioPath(filePath) {
+  const extension = path.extname(String(filePath || "")).toLowerCase();
+  return audioExtensions.has(extension);
+}
+
+function detectMediaKind(kind, filePath) {
+  const explicitKind = String(kind || "").trim().toLowerCase();
+  if (explicitKind) {
+    return explicitKind;
+  }
+  if (isImagePath(filePath)) {
+    return "image";
+  }
+  if (isVideoPath(filePath)) {
+    return "video";
+  }
+  if (isAudioPath(filePath)) {
+    return "audio";
+  }
+  return "document";
 }
 
 async function postInbound(payload) {
@@ -299,6 +334,7 @@ const server = http.createServer(async (req, res) => {
     const to = normalizeDirectJid(payload.to || "");
     const filePath = String(payload.path || "").trim();
     const caption = String(payload.caption || "").trim();
+    const kind = String(payload.kind || "").trim();
     if (!sock || !to || !filePath) {
       return await jsonResponse(res, 400, { ok: false, error: "missing_to_or_path" });
     }
@@ -311,11 +347,31 @@ const server = http.createServer(async (req, res) => {
     } catch {
       return await jsonResponse(res, 400, { ok: false, error: "file_not_found" });
     }
-    const result = await sock.sendMessage(to, {
-      document: { url: absolutePath },
-      fileName: path.basename(absolutePath),
-      caption,
-    });
+    const mediaKind = detectMediaKind(kind, absolutePath);
+    const mediaPayload =
+      mediaKind === "image"
+        ? {
+            image: { url: absolutePath },
+            caption,
+          }
+        : mediaKind === "video"
+          ? {
+              video: { url: absolutePath },
+              caption,
+            }
+          : mediaKind === "audio"
+            ? {
+                audio: { url: absolutePath },
+              }
+            : {
+                document: { url: absolutePath },
+                fileName: path.basename(absolutePath),
+                caption,
+              };
+    const result = await sock.sendMessage(to, mediaPayload);
+    if (mediaKind === "audio" && caption) {
+      await sock.sendMessage(to, { text: caption });
+    }
     rememberOutboundMessageId(result?.key?.id);
     return await jsonResponse(res, 200, { ok: true, to, path: absolutePath });
   }
