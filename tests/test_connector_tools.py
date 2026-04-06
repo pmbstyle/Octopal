@@ -69,7 +69,7 @@ def test_catalog_includes_first_class_gmail_tools_when_mcp_manager_is_present() 
     assert "gmail_get_message" in names
 
 
-def test_octo_budget_keeps_connector_alias_tools() -> None:
+def test_octo_budget_keeps_system_baseline_tools() -> None:
     class _Manager:
         def get_all_tools(self):
             return [
@@ -88,9 +88,15 @@ def test_octo_budget_keeps_connector_alias_tools() -> None:
     active = _budget_tool_specs(tools, max_count=64)
     names = {tool.name for tool in active}
 
-    assert "gmail_list_messages" in names
-    assert "gmail_search_messages" in names
-    assert "gmail_get_unread_count" in names
+    assert "octo_context_health" in names
+    assert "check_schedule" in names
+    assert "tool_catalog_search" in names
+    assert "list_workers" in names
+    assert "start_worker" in names
+    assert "get_worker_status" in names
+    assert "list_active_workers" in names
+    assert "get_worker_result" in names
+    assert "stop_worker" in names
 
 
 def test_catalog_includes_first_class_calendar_tools_when_mcp_manager_is_present() -> None:

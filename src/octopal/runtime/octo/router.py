@@ -45,19 +45,20 @@ _DEFAULT_MAX_TOOL_COUNT = 64
 _MIN_TOOL_COUNT_ON_OVERFLOW = 12
 _CATALOG_TOOL_EXPANSION_LIMIT = 12
 _MANDATORY_OCTO_TOOL_NAMES = {
+    "octo_context_health",
+    "check_schedule",
+    "tool_catalog_search",
+    "list_workers",
+    "start_worker",
+    "get_worker_status",
+    "list_active_workers",
+    "get_worker_result",
+    "stop_worker",
     "fs_list",
     "fs_read",
     "fs_write",
     "fs_move",
     "fs_delete",
-    # Connector baseline discovery tools
-    "connector_status",
-    "gmail_list_messages",
-    "gmail_search_messages",
-    "gmail_get_unread_count",
-    "calendar_list_events",
-    "drive_list_files",
-    "github_list_repositories",
 }
 _PRIORITY_TOOL_NAMES = {
     "octo_context_reset",
@@ -103,14 +104,6 @@ _ALWAYS_INCLUDE_TOOL_NAMES = {
     "fs_write",
     "fs_move",
     "fs_delete",
-    # Connector baseline discovery tools
-    "connector_status",
-    "gmail_list_messages",
-    "gmail_search_messages",
-    "gmail_get_unread_count",
-    "calendar_list_events",
-    "drive_list_files",
-    "github_list_repositories",
 }
 _TEXTUAL_TOOL_NAME_RE = re.compile(r"^(?:mcp__[\w-]+__)?[a-z][a-z0-9_]{1,63}$", re.IGNORECASE)
 _TEXTUAL_TOOL_PREVIEW_RE = re.compile(
