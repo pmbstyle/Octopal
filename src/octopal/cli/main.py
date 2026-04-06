@@ -1087,11 +1087,11 @@ def _connector_disconnect_message(name: str, *, forget_credentials: bool) -> str
     if forget_credentials:
         return (
             f"[bold yellow]{name} disconnected.[/bold yellow] "
-            "Stored client credentials were removed."
+            "Stored credentials were removed."
         )
     return (
         f"[bold yellow]{name} disconnected.[/bold yellow] "
-        "Stored client credentials were kept so you can re-authorize later."
+        "Stored credentials were kept so you can re-authorize later."
     )
 
 
@@ -1119,6 +1119,18 @@ def _print_google_headless_auth_help(auth_url: str) -> None:
     console.print("After approval, Google will redirect to a localhost URL in your browser.")
     console.print("That page may fail to load on your computer or VPS, and that is expected.")
     console.print("Copy the full URL from your browser address bar and paste it back here.")
+    console.print()
+
+
+def _print_github_auth_setup_help() -> None:
+    console.print()
+    console.print("[bold]GitHub token setup[/bold]")
+    console.print("You need a GitHub personal access token for the account Octopal should use.")
+    console.print("Fine-grained tokens are preferred when they cover the repositories you want.")
+    console.print("  1. Open [cyan]https://github.com/settings/personal-access-tokens[/cyan]")
+    console.print("  2. Create a fine-grained token or a classic token if your setup needs it")
+    console.print("  3. Grant read access to repository metadata, issues, and pull requests as needed")
+    console.print("  4. Paste the token here when prompted")
     console.print()
 
 
@@ -1160,6 +1172,7 @@ def connector_auth(
     name: str = typer.Argument(..., help="Connector name to authorize."),
     client_id: str | None = typer.Option(None, "--client-id", help="OAuth client ID to use."),
     client_secret: str | None = typer.Option(None, "--client-secret", help="OAuth client secret to use."),
+    token: str | None = typer.Option(None, "--token", help="Access token to use for token-based connectors."),
 ) -> None:
     """Authorize a configured connector via CLI."""
     settings = load_settings()
@@ -1178,22 +1191,28 @@ def connector_auth(
 
     if name == "google":
         _print_google_auth_setup_help()
-    resolved_client_id = client_id or typer.prompt(
-        "Your Google OAuth Desktop App client ID"
-    )
-    resolved_client_secret = client_secret or typer.prompt(
-        "Your Google OAuth Desktop App client secret",
-        hide_input=True,
-    )
-
-    asyncio.run(
-        connector.configure(
-            {
-                "client_id": resolved_client_id,
-                "client_secret": resolved_client_secret,
-            }
+        resolved_client_id = client_id or typer.prompt(
+            "Your Google OAuth Desktop App client ID"
         )
-    )
+        resolved_client_secret = client_secret or typer.prompt(
+            "Your Google OAuth Desktop App client secret",
+            hide_input=True,
+        )
+        asyncio.run(
+            connector.configure(
+                {
+                    "client_id": resolved_client_id,
+                    "client_secret": resolved_client_secret,
+                }
+            )
+        )
+    elif name == "github":
+        _print_github_auth_setup_help()
+        resolved_token = token or typer.prompt(
+            "Your GitHub personal access token",
+            hide_input=True,
+        )
+        asyncio.run(connector.configure({"token": resolved_token}))
 
     result = asyncio.run(connector.authorize())
     if result.get("status") == "manual_required" and name == "google":

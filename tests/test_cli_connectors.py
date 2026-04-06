@@ -75,6 +75,15 @@ def test_connector_next_action_maps_needs_auth_to_auth_command() -> None:
     assert action == "run `octopal connector auth google`"
 
 
+def test_connector_next_action_maps_github_needs_auth_to_auth_command() -> None:
+    action = _connector_next_action(
+        "github",
+        {"status": "needs_auth"},
+    )
+
+    assert action == "run `octopal connector auth github`"
+
+
 def test_connector_auth_requires_enabled_connector(tmp_path, monkeypatch) -> None:
     (tmp_path / "config.json").write_text(json.dumps({}), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -306,3 +315,38 @@ def test_connector_disconnect_clears_auth_state(tmp_path, monkeypatch) -> None:
     assert instance["auth"]["access_token"] is None
     assert instance["auth"]["authorized_services"] == []
     assert instance["credentials"]["client_id"] == "client-id"
+
+
+def test_connector_auth_success_uses_github_cli_flow(tmp_path, monkeypatch) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "connectors": {
+                    "instances": {
+                        "github": {
+                            "enabled": True,
+                            "enabled_services": ["repos"],
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("octopal.cli.main.typer.prompt", lambda *args, **kwargs: "ghp_test")
+
+    async def fake_authorize(self):
+        config = self._get_config()
+        assert config.auth.access_token == "ghp_test"
+        return {"status": "success", "message": "GitHub connector authorized for repos."}
+
+    monkeypatch.setattr(
+        "octopal.infrastructure.connectors.github.GitHubConnector.authorize",
+        fake_authorize,
+    )
+
+    result = runner.invoke(app, ["connector", "auth", "github"])
+
+    assert result.exit_code == 0
+    assert "authorized for repos" in result.stdout

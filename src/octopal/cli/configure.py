@@ -589,7 +589,8 @@ def _configure_connectors(config: OctopalConfig, prompter) -> None:
         "Connectors (experimental)",
         [
             "Connectors allow Octo to link with external services through explicit CLI setup.",
-            "Google connector support currently covers Gmail and Calendar.",
+            "Google connector support covers Gmail, Calendar, and Drive.",
+            "GitHub connector support covers repositories, issues, and pull requests.",
             "After saving, Octopal will tell you which CLI command to run next for authorization.",
         ],
     )
@@ -599,6 +600,11 @@ def _configure_connectors(config: OctopalConfig, prompter) -> None:
             value="google",
             label="Google",
             hint="Integrate with Gmail and Google Calendar. More Google services can land on the same connector flow later.",
+        ),
+        WizardSelectOption(
+            value="github",
+            label="GitHub",
+            hint="Inspect repositories, issues, and pull requests with a personal access token.",
         ),
     ]
 
@@ -649,6 +655,26 @@ def _configure_connectors(config: OctopalConfig, prompter) -> None:
                 )
             )
             config.connectors.instances[name].enabled_services = selected_google
+        if name == "github" and is_enabled:
+            github_services = [
+                WizardSelectOption(value="repos", label="Repositories"),
+                WizardSelectOption(value="issues", label="Issues"),
+                WizardSelectOption(value="pull_requests", label="Pull Requests"),
+            ]
+
+            current_github_services = config.connectors.instances[name].enabled_services or ["repos"]
+            current_github_services = [
+                service for service in current_github_services if service in {"repos", "issues", "pull_requests"}
+            ] or ["repos"]
+
+            selected_github = prompter.multiselect(
+                WizardMultiSelectParams(
+                    message="Select specific GitHub services to enable",
+                    initial_values=current_github_services,
+                    options=github_services,
+                )
+            )
+            config.connectors.instances[name].enabled_services = selected_github
 
 
 def _build_sections(config: OctopalConfig, prompter) -> list[WizardSection]:
@@ -842,6 +868,29 @@ def _collect_connector_next_steps(config: OctopalConfig, previous_config: Octopa
         if needs_auth or services_added or newly_enabled:
             lines.append(
                 "  [magenta]octopal connector auth google[/magenta] - Authorize Google for the enabled services."
+            )
+            lines.append(
+                "  [magenta]octopal connector status[/magenta] - Verify connector status after authorization."
+            )
+            lines.append(
+                "  [magenta]octopal restart[/magenta] - Reload Octopal after connector authorization."
+            )
+
+    github = config.connectors.instances.get("github")
+    if github and github.enabled:
+        current_services = set(_enabled_services(config, "github"))
+        previous_services = set(_enabled_services(previous_config, "github"))
+        authorized_services = set(_authorized_services(config, "github"))
+        has_token = bool(github.auth.access_token)
+        previous_github = previous_config.connectors.instances.get("github")
+
+        needs_auth = not has_token or not current_services.issubset(authorized_services)
+        services_added = sorted(current_services - previous_services)
+        newly_enabled = previous_github is None or not previous_github.enabled
+
+        if needs_auth or services_added or newly_enabled:
+            lines.append(
+                "  [magenta]octopal connector auth github[/magenta] - Authorize GitHub for the enabled services."
             )
             lines.append(
                 "  [magenta]octopal connector status[/magenta] - Verify connector status after authorization."

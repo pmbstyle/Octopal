@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from octopal.infrastructure.config.models import ConnectorsConfig
+from octopal.infrastructure.connectors.github import GitHubConnector
 from octopal.infrastructure.connectors.google import GoogleConnector
 
 if TYPE_CHECKING:
@@ -24,7 +25,8 @@ class ConnectorManager:
         self.mcp_manager = mcp_manager
         self.octo_config = octo_config
         self.connectors = {
-            "google": GoogleConnector(self)
+            "github": GitHubConnector(self),
+            "google": GoogleConnector(self),
         }
 
     def get_connector(self, name: str):

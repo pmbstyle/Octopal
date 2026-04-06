@@ -25,6 +25,15 @@ def test_google_connector_configure_requires_cli_enabled_connector() -> None:
         asyncio.run(connector.configure({"client_id": "id", "client_secret": "secret"}))
 
 
+def test_github_connector_configure_requires_cli_enabled_connector() -> None:
+    config = OctopalConfig()
+    manager = _build_manager(config)
+    connector = manager.get_connector("github")
+
+    with pytest.raises(RuntimeError, match="not enabled"):
+        asyncio.run(connector.configure({"token": "ghp_test"}))
+
+
 def test_google_connector_status_rejects_unknown_services() -> None:
     config = OctopalConfig()
     config.connectors.instances["google"] = ConnectorInstanceConfig(
@@ -106,6 +115,53 @@ def test_collect_connector_next_steps_prompts_for_auth_when_google_added() -> No
     assert any("octopal restart" in line for line in lines)
 
 
+def test_collect_connector_next_steps_prompts_for_auth_when_github_added() -> None:
+    previous = OctopalConfig()
+    current = OctopalConfig()
+    current.connectors.instances["github"] = ConnectorInstanceConfig(
+        enabled=True,
+        enabled_services=["repos"],
+    )
+
+    lines = _collect_connector_next_steps(current, previous)
+
+    assert any("octopal connector auth github" in line for line in lines)
+    assert any("octopal connector status" in line for line in lines)
+    assert any("octopal restart" in line for line in lines)
+
+
+def test_github_connector_status_accepts_repo_service() -> None:
+    config = OctopalConfig()
+    config.connectors.instances["github"] = ConnectorInstanceConfig(
+        enabled=True,
+        enabled_services=["repos"],
+        auth={"authorized_services": ["repos"], "access_token": "ghp_test"},
+    )
+    manager = _build_manager(config)
+    connector = manager.get_connector("github")
+
+    status = asyncio.run(connector.get_status())
+
+    assert status["status"] == "ready"
+    assert status["services"] == ["repos"]
+
+
+def test_github_connector_status_requires_reauth_for_newly_enabled_services() -> None:
+    config = OctopalConfig()
+    config.connectors.instances["github"] = ConnectorInstanceConfig(
+        enabled=True,
+        enabled_services=["repos", "issues"],
+        auth={"authorized_services": ["repos"], "access_token": "ghp_test"},
+    )
+    manager = _build_manager(config)
+    connector = manager.get_connector("github")
+
+    status = asyncio.run(connector.get_status())
+
+    assert status["status"] == "needs_reauth"
+    assert "issues" in status["message"]
+
+
 def test_google_connector_disconnect_clears_auth_state_but_keeps_client_credentials() -> None:
     config = OctopalConfig()
     config.connectors.instances["google"] = ConnectorInstanceConfig(
@@ -130,6 +186,88 @@ def test_google_connector_disconnect_clears_auth_state_but_keeps_client_credenti
     assert instance.auth.authorized_services == []
     assert instance.credentials.client_id == "client-id"
     assert instance.credentials.client_secret == "client-secret"
+
+
+def test_github_connector_disconnect_clears_access_token() -> None:
+    config = OctopalConfig()
+    config.connectors.instances["github"] = ConnectorInstanceConfig(
+        enabled=True,
+        enabled_services=["repos"],
+        auth={
+            "authorized_services": ["repos"],
+            "access_token": "ghp_test",
+        },
+    )
+    manager = _build_manager(config)
+    connector = manager.get_connector("github")
+
+    result = asyncio.run(connector.disconnect())
+
+    assert result["status"] == "success"
+    instance = config.connectors.instances["github"]
+    assert instance.auth.access_token is None
+    assert instance.auth.authorized_services == []
+
+
+def test_connector_manager_reconciles_ready_github_connector_into_running_mcp() -> None:
+    config = OctopalConfig()
+    config.connectors.instances["github"] = ConnectorInstanceConfig(
+        enabled=True,
+        enabled_services=["repos"],
+        auth={"authorized_services": ["repos"], "access_token": "ghp_test"},
+    )
+
+    class _MCP:
+        def __init__(self) -> None:
+            self.connected: list[str] = []
+            self.disconnected: list[str] = []
+
+        async def connect_server(self, mcp_config):
+            self.connected.append(mcp_config.id)
+            return []
+
+        async def disconnect_server(self, server_id: str, *, intentional: bool = True):
+            self.disconnected.append(server_id)
+
+    mcp = _MCP()
+    manager = ConnectorManager(config=config.connectors, mcp_manager=mcp, octo_config=config)
+
+    asyncio.run(manager.load_and_start_all())
+
+    assert mcp.connected == ["github-core"]
+    assert mcp.disconnected == []
+
+
+def test_connector_manager_uses_internal_github_mcp_server_and_env_names() -> None:
+    config = OctopalConfig()
+    config.connectors.instances["github"] = ConnectorInstanceConfig(
+        enabled=True,
+        enabled_services=["repos", "issues"],
+        auth={"authorized_services": ["repos", "issues"], "access_token": "ghp_test"},
+    )
+
+    class _MCP:
+        def __init__(self) -> None:
+            self.configs = []
+
+        async def connect_server(self, mcp_config):
+            self.configs.append(mcp_config)
+            return []
+
+        async def disconnect_server(self, server_id: str, *, intentional: bool = True):
+            return None
+
+    mcp = _MCP()
+    manager = ConnectorManager(config=config.connectors, mcp_manager=mcp, octo_config=config)
+
+    asyncio.run(manager.load_and_start_all())
+
+    assert len(mcp.configs) == 1
+    github_cfg = mcp.configs[0]
+    assert github_cfg.command == sys.executable
+    assert github_cfg.args == ["-m", "octopal.mcp_servers.github"]
+    assert github_cfg.env["GITHUB_TOKEN"] == "ghp_test"
+    assert github_cfg.env["GITHUB_ENABLED_SERVICES"] == "repos,issues"
 
 
 def test_connector_manager_reconciles_ready_google_connector_into_running_mcp() -> None:

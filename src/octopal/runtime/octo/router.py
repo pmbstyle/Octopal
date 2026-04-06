@@ -45,6 +45,15 @@ _DEFAULT_MAX_TOOL_COUNT = 64
 _MIN_TOOL_COUNT_ON_OVERFLOW = 12
 _CATALOG_TOOL_EXPANSION_LIMIT = 12
 _MANDATORY_OCTO_TOOL_NAMES = {
+    "octo_context_health",
+    "check_schedule",
+    "tool_catalog_search",
+    "list_workers",
+    "start_worker",
+    "get_worker_status",
+    "list_active_workers",
+    "get_worker_result",
+    "stop_worker",
     "fs_list",
     "fs_read",
     "fs_write",

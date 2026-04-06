@@ -196,6 +196,88 @@ def test_runtime_ensures_configured_mcp_before_launch(tmp_path: Path) -> None:
     assert spec.mcp_tools[0]["server_id"] == "demo"
 
 
+def test_runtime_includes_connector_alias_tools_for_workers(tmp_path: Path) -> None:
+    template = WorkerTemplateRecord(
+        id="worker",
+        name="Worker",
+        description="Test worker",
+        system_prompt="Do work",
+        available_tools=["github_list_repositories"],
+        required_permissions=["network"],
+        model=None,
+        max_thinking_steps=3,
+        default_timeout_seconds=30,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    class _Store:
+        def get_worker_template(self, worker_id: str):
+            return template
+
+    class _Policy:
+        def grant_capabilities(self, capabilities):
+            return [Capability(type="network", scope="worker")]
+
+    class _MCP:
+        def __init__(self) -> None:
+            self.sessions = {"github-core": object()}
+            self.ensure_calls: list[object] = []
+
+        async def ensure_configured_servers_connected(self, server_ids=None):
+            self.ensure_calls.append(server_ids)
+            return {"github-core": "connected"}
+
+        def get_all_tools(self):
+            return []
+
+    mcp_manager = _MCP()
+    runtime = WorkerRuntime(
+        store=_Store(),
+        policy=_Policy(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        mcp_manager=mcp_manager,
+        settings=Settings(),
+    )
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run(spec, approval_requester=None):
+        captured["spec"] = spec
+        return WorkerResult(summary="ok")
+
+    runtime.run = _fake_run  # type: ignore[method-assign]
+
+    request = TaskRequest(worker_id="worker", task="inspect repos")
+    asyncio.run(runtime.run_task(request))
+
+    spec = captured["spec"]
+    assert "github_list_repositories" in spec.available_tools
+    assert spec.mcp_tools == [
+        {
+            "name": "github_list_repositories",
+            "description": "List repositories visible to the connected GitHub account.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "visibility": {"type": "string"},
+                    "affiliation": {"type": "string"},
+                    "sort": {"type": "string"},
+                    "direction": {"type": "string"},
+                    "per_page": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "page": {"type": "integer", "minimum": 1},
+                },
+                "additionalProperties": False,
+            },
+            "permission": "mcp_exec",
+            "is_async": True,
+            "server_id": "github-core",
+            "remote_tool_name": "list_repositories",
+        }
+    ]
+
+
 def test_runtime_launch_env_includes_workspace_dir(tmp_path: Path) -> None:
     template = WorkerTemplateRecord(
         id="worker",

@@ -35,6 +35,7 @@ from octopal.tools.browser.actions import (
 from octopal.tools.connectors.calendar import get_calendar_connector_tools
 from octopal.tools.connectors.drive import get_drive_connector_tools
 from octopal.tools.connectors.gmail import get_gmail_connector_tools
+from octopal.tools.connectors.github import get_github_connector_tools
 from octopal.tools.connectors.status import get_connector_status_tools
 from octopal.tools.filesystem.download import download_file
 from octopal.tools.filesystem.files import fs_delete, fs_list, fs_move, fs_read, fs_write
@@ -51,6 +52,114 @@ from octopal.tools.workers.management import get_worker_tools
 from octopal.utils import utc_now
 
 logger = structlog.get_logger(__name__)
+
+
+def _resolve_mcp_manager(ctx: dict[str, Any], fallback: Any) -> Any:
+    octo = (ctx or {}).get("octo")
+    if octo is not None and getattr(octo, "mcp_manager", None) is not None:
+        return octo.mcp_manager
+    return fallback
+
+
+async def _tool_github_review_bundle(args, ctx) -> str:
+    manager = _resolve_mcp_manager(ctx, ctx.get("mcp_manager"))
+    if manager is None:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": "GitHub review bundle is unavailable because no MCP manager is active.",
+            },
+            ensure_ascii=False,
+        )
+
+    owner = str((args or {}).get("owner", "") or "").strip()
+    repo = str((args or {}).get("repo", "") or "").strip()
+    pull_number = int((args or {}).get("pull_number", 0) or 0)
+    file_limit = max(1, min(int((args or {}).get("file_limit", 100) or 100), 100))
+    commit_limit = max(1, min(int((args or {}).get("commit_limit", 100) or 100), 100))
+    review_limit = max(1, min(int((args or {}).get("review_limit", 100) or 100), 100))
+    comment_limit = max(1, min(int((args or {}).get("comment_limit", 100) or 100), 100))
+    include_commit_comments = bool((args or {}).get("include_commit_comments", True))
+
+    if not owner or not repo or pull_number <= 0:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": "owner, repo, and pull_number are required.",
+            },
+            ensure_ascii=False,
+        )
+
+    async def _call(tool_name: str, tool_args: dict[str, Any]) -> Any:
+        result = await manager.call_tool(
+            "github-core",
+            tool_name,
+            tool_args,
+            allow_name_fallback=True,
+        )
+        content_items = getattr(result, "content", None)
+        if not content_items:
+            return result
+        if len(content_items) == 1:
+            text = getattr(content_items[0], "text", None)
+            if isinstance(text, str):
+                return json.loads(text)
+        normalized: list[Any] = []
+        for item in content_items:
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                normalized.append(json.loads(text))
+            else:
+                normalized.append(item.model_dump() if hasattr(item, "model_dump") else str(item))
+        return normalized
+
+    base_args = {"owner": owner, "repo": repo, "pull_number": pull_number}
+    pr_payload, readiness_payload, reviews_payload, review_comments_payload, files_payload, commits_payload, convo_payload = await asyncio.gather(
+        _call("get_pull_request", base_args),
+        _call("get_pull_merge_readiness", base_args),
+        _call("list_pull_reviews", {**base_args, "per_page": review_limit}),
+        _call("list_pull_review_comments", {**base_args, "per_page": comment_limit}),
+        _call("list_pull_files", {**base_args, "per_page": file_limit}),
+        _call("list_pull_commits", {**base_args, "per_page": commit_limit}),
+        _call("list_issue_comments", {"owner": owner, "repo": repo, "issue_number": pull_number, "per_page": comment_limit}),
+    )
+
+    commit_comments: dict[str, Any] = {}
+    if include_commit_comments:
+        commits = (commits_payload or {}).get("commits") or []
+        for commit in commits[:commit_limit]:
+            sha = str((commit or {}).get("sha", "") or "").strip()
+            if not sha:
+                continue
+            try:
+                commit_comments[sha] = await _call(
+                    "list_commit_comments",
+                    {"owner": owner, "repo": repo, "commit_sha": sha, "per_page": comment_limit},
+                )
+            except Exception as exc:
+                commit_comments[sha] = {"status": "error", "message": str(exc)}
+
+    payload = {
+        "status": "ok",
+        "owner": owner,
+        "repo": repo,
+        "pull_number": pull_number,
+        "pull_request": pr_payload,
+        "merge_readiness": (readiness_payload or {}).get("merge_readiness"),
+        "review_summary": (readiness_payload or {}).get("review_summary"),
+        "conversation_comments": (convo_payload or {}).get("comments", []),
+        "reviews": (reviews_payload or {}).get("reviews", []),
+        "review_comments": (review_comments_payload or {}).get("comments", []),
+        "files": (files_payload or {}).get("files", []),
+        "commits": (commits_payload or {}).get("commits", []),
+        "commit_comments": commit_comments,
+        "hints": [
+            "Use files.patch and review_comments together when drafting code review feedback.",
+            "Use merge_readiness.blocking_reviews and requested_reviewers to understand review state before commenting.",
+            "Conversation comments are issue comments on the PR thread; inline code feedback lives in review_comments.",
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _tool_catalog_search(args, ctx) -> str:
@@ -319,6 +428,31 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             },
             permission="self_control",
             handler=_tool_catalog_search,
+        ),
+        ToolSpec(
+            name="github_review_bundle",
+            description=(
+                "Collect a pull request review bundle from the GitHub connector: PR metadata, merge readiness, "
+                "reviews, review comments, changed files, commits, and commit comments."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "owner": {"type": "string"},
+                    "repo": {"type": "string"},
+                    "pull_number": {"type": "integer", "minimum": 1},
+                    "file_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "commit_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "review_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "comment_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "include_commit_comments": {"type": "boolean"},
+                },
+                "required": ["owner", "repo", "pull_number"],
+                "additionalProperties": False,
+            },
+            permission="mcp_exec",
+            handler=_tool_github_review_bundle,
+            is_async=True,
         ),
         ToolSpec(
             name="octo_opportunity_scan",
@@ -1333,6 +1467,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
     tools.extend(get_calendar_connector_tools(mcp_manager))
     tools.extend(get_drive_connector_tools(mcp_manager))
     tools.extend(get_gmail_connector_tools(mcp_manager))
+    tools.extend(get_github_connector_tools(mcp_manager))
     tools.extend(_get_mcp_management_tools())
     if mcp_manager:
         mcp_tools = mcp_manager.get_all_tools()

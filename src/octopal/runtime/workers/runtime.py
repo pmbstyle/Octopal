@@ -123,32 +123,36 @@ class WorkerRuntime:
         mcp_tools_data = []
         known_server_ids = list(self.mcp_manager.sessions.keys()) if self.mcp_manager else []
 
-        # 1. Add explicitly requested MCP tools
+        # 1. Add explicitly requested MCP-backed tools, including connector aliases.
         for tool_name in requested_tool_names:
-            if tool_name.startswith("mcp_"):
-                # Find the tool spec
-                spec_found = next((t for t in all_tools if t.name == tool_name), None)
-                if spec_found:
-                    server_id = getattr(spec_found, "server_id", None)
-                    remote_tool_name = getattr(spec_found, "remote_tool_name", None)
-                    if not server_id or not remote_tool_name:
-                        server_id, remote_tool_name = _extract_mcp_tool_identity(
-                            spec_found.name, known_server_ids
-                        )
-                    mcp_tools_data.append(
-                        {
-                            "name": spec_found.name,
-                            "description": spec_found.description,
-                            "parameters": spec_found.parameters,
-                            "permission": spec_found.permission,
-                            "is_async": spec_found.is_async,
-                            "server_id": server_id,
-                            "remote_tool_name": remote_tool_name,
-                        }
-                    )
+            # Find the tool spec
+            spec_found = next((t for t in all_tools if t.name == tool_name), None)
+            if spec_found is None:
+                continue
+
+            server_id = getattr(spec_found, "server_id", None)
+            remote_tool_name = getattr(spec_found, "remote_tool_name", None)
+            if (not server_id or not remote_tool_name) and str(tool_name).startswith("mcp_"):
+                server_id, remote_tool_name = _extract_mcp_tool_identity(
+                    spec_found.name, known_server_ids
+                )
+            if not server_id or not remote_tool_name:
+                continue
+
+            mcp_tools_data.append(
+                {
+                    "name": spec_found.name,
+                    "description": spec_found.description,
+                    "parameters": spec_found.parameters,
+                    "permission": spec_found.permission,
+                    "is_async": spec_found.is_async,
+                    "server_id": server_id,
+                    "remote_tool_name": remote_tool_name,
+                }
+            )
 
         # Global MCP tools are intentionally NOT auto-injected.
-        # Workers only receive MCP tools explicitly listed in task_request/tools or template available_tools.
+        # Workers only receive MCP-backed tools explicitly listed in task_request/tools or template available_tools.
 
         # Resolve worker LLM configuration
         llm_config = self._resolve_worker_llm_config(template, task_request)
