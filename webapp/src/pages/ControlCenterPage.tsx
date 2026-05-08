@@ -374,26 +374,6 @@ function RealtimeGraph({ points }: { points: MetricPoint[] }) {
   );
 }
 
-function SignalStat({
-  label,
-  value,
-  toneClass = "text-white",
-  helper,
-}: {
-  label: string;
-  value: string;
-  toneClass?: string;
-  helper?: string;
-}) {
-  return (
-    <div className="rounded-[22px] border border-white/6 bg-black/20 p-4">
-      <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-dim)]">{label}</p>
-      <p className={`mt-3 text-2xl font-semibold tracking-[-0.03em] ${toneClass}`}>{value}</p>
-      {helper ? <p className="mt-1 text-xs text-[var(--text-muted)]">{helper}</p> : null}
-    </div>
-  );
-}
-
 export function ControlCenterPage() {
   const { filters } = useOutletContext<AppShellOutletContext>();
   const [bundle, setBundle] = useState<SnapshotBundle | null>(null);
@@ -472,7 +452,6 @@ export function ControlCenterPage() {
   }, [filters.environment, filters.service, filters.token, filters.windowMinutes]);
 
   const workers = (((bundle?.workers.workers as { recent?: WorkerRow[] })?.recent ?? []).slice(0, 16));
-  const health = (bundle?.overview.health as { status?: string; summary?: string; reasons?: string[] }) ?? {};
   const octoNode = (bundle?.octo.octo as Record<string, unknown>) ?? {};
   const octoHealth = (bundle?.octo.health as { summary?: string; reasons?: string[] }) ?? {};
   const octoQueues = (bundle?.octo.queues as Record<string, unknown>) ?? {};
@@ -505,10 +484,6 @@ export function ControlCenterPage() {
   const octoSubline =
     currentOctoStep?.detail ??
     ((octoHealth.reasons ?? []).join(" • ") || "No recent orchestration steps in the visible log window.");
-  const runningWorkers = asNumber((bundle?.workers.workers as Record<string, unknown>)?.running);
-  const queueDepth = asNumber((bundle?.overview.kpis as Record<string, { value?: unknown }>)?.queue_depth?.value);
-  const octoBacklog = followupTasks + internalTasks + controlPending + channelQueueDepth;
-  const degradedSignals = logs.filter((entry) => ["warning", "error", "critical"].includes(String(entry.level ?? "").toLowerCase())).length;
 
   if (loading) {
     return <Card className="border-white/6 bg-[var(--surface-panel)] py-0"><CardContent className="p-8 text-[var(--text-muted)]">Loading live operations view...</CardContent></Card>;
@@ -524,67 +499,6 @@ export function ControlCenterPage() {
 
   return (
     <div className="grid gap-6">
-      <section className="rounded-xl border border-white/6 bg-[var(--surface-panel)] px-5 py-5 shadow-[0_24px_80px_rgba(0,0,0,0.26)] md:px-6 md:py-6">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-dim)]">Control deck</p>
-          <h2 className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-white">{health.summary ?? "Runtime status"}</h2>
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-[var(--text-muted)]">
-            {(health.reasons ?? []).join(" | ") || "No active degradation reasons."}
-          </p>
-
-          <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <SignalStat
-              label="Health"
-              value={String(health.status ?? "unknown").toUpperCase()}
-              toneClass={tone(health.status)}
-              helper="Overall gateway snapshot"
-            />
-            <SignalStat
-              label="Workers live"
-              value={String(runningWorkers)}
-              toneClass="text-cyan-300"
-              helper={`${workers.length} recent worker runs`}
-            />
-            <SignalStat
-              label="System queue"
-              value={String(queueDepth)}
-              toneClass="text-amber-300"
-              helper="Queued work across the runtime"
-            />
-            <SignalStat
-              label="Octo backlog"
-              value={String(octoBacklog)}
-              toneClass="text-emerald-300"
-              helper="Follow-ups, internal, control, and channel pressure"
-            />
-          </div>
-
-          <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,0.9fr)_minmax(0,0.75fr)]">
-            <div className="rounded-[22px] border border-white/6 bg-black/20 p-4">
-              <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-dim)]">Now</p>
-              <p className="mt-3 text-sm font-medium text-white">{octoHeadline}</p>
-              <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">{octoSubline}</p>
-            </div>
-            <div className="rounded-[22px] border border-white/6 bg-black/20 p-4">
-              <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-dim)]">State</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Badge variant="outline" className={`rounded-full ${statusPill(health.status)}`}>
-                  {String(health.status ?? "unknown")}
-                </Badge>
-                <Badge variant="outline" className="rounded-full border-white/10 bg-white/[0.04] text-[var(--text-muted)]">
-                  Updated {formatLocalDateTime(bundle?.overview.generated_at)}
-                </Badge>
-              </div>
-            </div>
-            <div className="rounded-[22px] border border-white/6 bg-black/20 p-4">
-              <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-dim)]">Noise floor</p>
-              <p className="mt-3 text-2xl font-semibold tracking-[-0.03em] text-rose-300">{degradedSignals}</p>
-              <p className="mt-1 text-xs text-[var(--text-muted)]">Warning and error log lines in the current visible window.</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_360px] xl:items-stretch">
         <div className="flex flex-col">
           <RealtimeGraph points={history} />
