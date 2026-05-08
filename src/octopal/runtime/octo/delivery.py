@@ -5,7 +5,10 @@ from enum import StrEnum
 
 from octopal.runtime.scheduler.service import normalize_notify_user_policy
 from octopal.runtime.workers.contracts import WorkerResult
-from octopal.utils import should_suppress_user_delivery
+from octopal.utils import (
+    sanitize_user_facing_text_preserving_reaction,
+    should_suppress_user_delivery,
+)
 
 
 class DeliveryMode(StrEnum):
@@ -31,7 +34,7 @@ def resolve_user_delivery(
     *,
     followup_required: bool = False,
 ) -> DeliveryDecision:
-    value = str(text or "")
+    value = sanitize_user_facing_text_preserving_reaction(str(text or ""))
     if should_suppress_user_delivery(value):
         return DeliveryDecision(
             mode=DeliveryMode.SILENT,

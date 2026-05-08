@@ -42,7 +42,11 @@ def test_octo_passes_approval_requester_to_runtime(monkeypatch) -> None:
         bot = None
 
     class DummyMemory:
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, str, dict]] = []
+
         async def add_message(self, role: str, text: str, metadata: dict):
+            self.messages.append((role, text, metadata))
             return None
 
     async def fake_bootstrap_context(store, chat_id: int):
@@ -111,7 +115,11 @@ def test_octo_does_not_forward_worker_model_override(monkeypatch) -> None:
         bot = None
 
     class DummyMemory:
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, str, dict]] = []
+
         async def add_message(self, role: str, text: str, metadata: dict):
+            self.messages.append((role, text, metadata))
             return None
 
     async def fake_bootstrap_context(store, chat_id: int):
@@ -259,7 +267,11 @@ def test_octo_handle_message_preserves_react_tag_for_channels(monkeypatch) -> No
         bot = None
 
     class DummyMemory:
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, str, dict]] = []
+
         async def add_message(self, role: str, text: str, metadata: dict):
+            self.messages.append((role, text, metadata))
             return None
 
     class DummyStore:
@@ -293,13 +305,14 @@ def test_octo_handle_message_preserves_react_tag_for_channels(monkeypatch) -> No
     monkeypatch.setattr(octo_core, "build_bootstrap_context_prompt", fake_bootstrap_context)
     monkeypatch.setattr(octo_core, "route_or_reply", fake_route_or_reply)
 
+    memory = DummyMemory()
     octo = Octo(
         provider=object(),
         store=DummyStore(),
         policy=object(),
         runtime=object(),
         approvals=DummyApprovals(),
-        memory=DummyMemory(),
+        memory=memory,
         canon=object(),
     )
 
@@ -307,6 +320,8 @@ def test_octo_handle_message_preserves_react_tag_for_channels(monkeypatch) -> No
         reply = await octo.handle_message("hello", 123)
         assert reply.immediate == "<react>✅</react> All done."
         assert reply.reaction == "✅"
+        assistant_messages = [text for role, text, _metadata in memory.messages if role == "assistant"]
+        assert assistant_messages == ["<react>✅</react> All done."]
 
     asyncio.run(scenario())
 

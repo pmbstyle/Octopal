@@ -90,10 +90,41 @@ def test_resolve_user_delivery_classifies_control_and_visible_text():
     assert visible.text == "Готово, вот итог."
 
 
+def test_resolve_user_delivery_extracts_user_visible_block_from_noisy_reply():
+    raw = (
+        "The worker result has limited output keys and the briefing text isn't directly accessible.\n\n"
+        "<user_visible>\n"
+        "Утренний брифинг готов.\n"
+        "</user_visible>"
+    )
+    visible = resolve_user_delivery(raw)
+    assert visible.mode == DeliveryMode.IMMEDIATE
+    assert visible.text == "Утренний брифинг готов."
+
+
+def test_resolve_user_delivery_ignores_user_visible_inside_hidden_blocks():
+    raw = (
+        "<think><user_visible>internal note</user_visible></think>\n"
+        "<tool_result><user_visible>tool payload</user_visible></tool_result>\n"
+        "<user_visible>Показать это.</user_visible>"
+    )
+    visible = resolve_user_delivery(raw)
+    assert visible.mode == DeliveryMode.IMMEDIATE
+    assert visible.text == "Показать это."
+
+
+def test_extract_heartbeat_user_visible_message_ignores_hidden_wrapper():
+    raw = "<think><user_visible>internal note</user_visible></think>"
+    assert extract_heartbeat_user_visible_message(raw) is None
+
+
 def test_extract_heartbeat_user_visible_message_requires_explicit_wrapper():
     assert extract_heartbeat_user_visible_message("<user_visible>Утренний брифинг готов.</user_visible>") == (
         "Утренний брифинг готов."
     )
+    assert extract_heartbeat_user_visible_message(
+        "Internal notes.\n<user_visible>Показать только это.</user_visible>"
+    ) == "Показать только это."
     assert extract_heartbeat_user_visible_message("Worker still running. Yielding.") is None
     assert extract_heartbeat_user_visible_message(
         "Ладно, canonical memory не подходит для файлов за пределами canon."

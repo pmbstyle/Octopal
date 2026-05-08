@@ -822,6 +822,53 @@ async def test_octo_run_scheduler_tick_once_uses_bounded_scheduler_route(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_octo_run_scheduler_tick_once_delivers_user_visible_scheduler_output(monkeypatch):
+    sent_messages = []
+
+    async def _route_scheduler_tick(octo, chat_id=0, *, max_tasks=10):
+        return "Internal note.\n<user_visible>Планировщик нашел важное обновление.</user_visible>"
+
+    async def _dispatch_due_scheduled_tasks_once(self, *, chat_id=0, max_tasks=10):
+        return {
+            "due_count": 0,
+            "attempted": 0,
+            "started": 0,
+            "completed": 0,
+            "duplicates": 0,
+            "rejected_by_policy": 0,
+            "policy_reasons": {},
+            "errors": 0,
+        }
+
+    async def _send_scheduler_control_update(octo, chat_id, task_id, text):
+        sent_messages.append((chat_id, task_id, text))
+
+    monkeypatch.setattr(octo_core, "route_scheduler_tick", _route_scheduler_tick)
+    monkeypatch.setattr(
+        octo_core.Octo,
+        "_dispatch_due_scheduled_tasks_once",
+        _dispatch_due_scheduled_tasks_once,
+    )
+    monkeypatch.setattr(octo_core, "_send_scheduler_control_update", _send_scheduler_control_update)
+
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=Path(".")),
+        scheduler=SchedulerService(store=_StoreStub(), workspace_dir=Path(".")),
+    )
+    octo._scheduled_delivery_chat_ids = [777]
+
+    await octo._run_scheduler_tick_once(max_tasks=7)
+
+    assert sent_messages == [(777, None, "Планировщик нашел важное обновление.")]
+
+
+@pytest.mark.asyncio
 async def test_octo_dispatch_due_scheduled_tasks_starts_dispatchable_workers(monkeypatch):
     started_calls = []
     scheduler = SchedulerService(

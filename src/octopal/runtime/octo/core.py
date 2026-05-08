@@ -303,10 +303,11 @@ def _coerce_control_plane_reply(text: str) -> str:
 
 async def _normalize_heartbeat_delivery_reply(provider: InferenceProvider | None, text: str) -> str:
     """Normalize heartbeat output to the explicit delivery contract."""
-    value = normalize_plain_text(text or "")
-    explicit = extract_heartbeat_user_visible_message(value)
+    raw_value = str(text or "")
+    explicit = extract_heartbeat_user_visible_message(raw_value)
     if explicit:
         return explicit
+    value = normalize_plain_text(raw_value)
     if is_control_response(value) or has_no_user_response_suffix(value):
         return _coerce_control_plane_reply(value)
     if provider is None:
@@ -361,10 +362,11 @@ def _looks_like_scheduled_octo_control_route_block(text: str) -> bool:
 
 
 def _coerce_scheduled_octo_control_reply(text: str) -> str:
-    value = normalize_plain_text(text or "")
-    explicit = extract_heartbeat_user_visible_message(value)
+    raw_value = str(text or "")
+    explicit = extract_heartbeat_user_visible_message(raw_value)
     if explicit:
         return explicit
+    value = normalize_plain_text(raw_value)
     normalized_upper = value.strip().upper()
     if normalized_upper == _SCHEDULED_OCTO_CONTROL_DONE:
         return _SCHEDULED_OCTO_CONTROL_DONE
@@ -379,10 +381,11 @@ async def _normalize_scheduled_octo_control_reply(
     provider: InferenceProvider | None,
     text: str,
 ) -> str:
-    value = normalize_plain_text(text or "")
-    explicit = extract_heartbeat_user_visible_message(value)
+    raw_value = str(text or "")
+    explicit = extract_heartbeat_user_visible_message(raw_value)
     if explicit:
         return explicit
+    value = normalize_plain_text(raw_value)
     normalized_upper = value.strip().upper()
     if normalized_upper == _SCHEDULED_OCTO_CONTROL_DONE:
         return _SCHEDULED_OCTO_CONTROL_DONE
@@ -1964,6 +1967,35 @@ class Octo:
                 )
                 return
 
+            delivery = resolve_user_delivery(normalized)
+            trace_metadata.update(
+                {
+                    "delivery_mode": delivery.mode,
+                    "user_visible": delivery.user_visible,
+                    "suppressed_reason": delivery.reason,
+                }
+            )
+            user_visible_sent = False
+            if delivery.user_visible:
+                delivery_chat_id, delivery_target_source = self._resolve_scheduler_delivery_chat_id(
+                    requested_chat_id=chat_id,
+                )
+                trace_metadata["delivery_target_source"] = delivery_target_source
+                if delivery_chat_id is not None:
+                    await _send_scheduler_control_update(
+                        self,
+                        delivery_chat_id,
+                        None,
+                        delivery.text,
+                    )
+                    user_visible_sent = True
+                    trace_metadata["delivery_chat_id"] = delivery_chat_id
+                else:
+                    logger.warning(
+                        "Scheduler tick produced user-visible text without delivery target",
+                        result_preview=safe_preview(delivery.text, limit=160),
+                    )
+
             self._publish_scheduler_metrics(
                 running=True,
                 last_tick_status="decision_ready",
@@ -1975,12 +2007,14 @@ class Octo:
                 "status": "decision_ready",
                 "due_count": due_count,
                 "result_preview": safe_preview(normalized, limit=160),
+                "user_visible_sent": user_visible_sent,
                 "dispatch": dispatch_summary,
             }
             logger.info(
                 "Scheduler tick produced decision",
                 due_count=due_count,
                 dispatch=dispatch_summary,
+                user_visible_sent=user_visible_sent,
                 result_preview=safe_preview(normalized, limit=160),
             )
         except Exception as exc:
@@ -2213,6 +2247,26 @@ class Octo:
         if explicit is not None:
             return explicit, "task_metadata"
 
+        requested = _coerce_positive_chat_id(requested_chat_id)
+        if requested is not None:
+            return requested, "request_context"
+
+        configured = [
+            chat_id
+            for item in (self._scheduled_delivery_chat_ids or [])
+            if (chat_id := _coerce_positive_chat_id(item)) is not None
+        ]
+        unique_configured = list(dict.fromkeys(configured))
+        if len(unique_configured) == 1:
+            return unique_configured[0], "single_configured_recipient"
+
+        return None, "missing_delivery_target"
+
+    def _resolve_scheduler_delivery_chat_id(
+        self,
+        *,
+        requested_chat_id: int = 0,
+    ) -> tuple[int | None, str]:
         requested = _coerce_positive_chat_id(requested_chat_id)
         if requested is not None:
             return requested, "request_context"
@@ -3992,10 +4046,6 @@ class Octo:
                             runtime_settings,
                         )
             logger.info("Octo response ready")
-            if persist_to_memory:
-                await self.memory.add_message(
-                    "assistant", reply_text, {"chat_id": chat_id, "heartbeat": not track_progress}
-                )
             if track_progress:
                 reply_norm = _normalize_compact(reply_text)
                 prior_reply = self._last_reply_norm_by_chat.get(chat_id, "")
@@ -4039,6 +4089,15 @@ class Octo:
                     {
                         "chat_id": chat_id,
                         "background_delivery": True,
+                        "heartbeat": not track_progress,
+                    },
+                )
+            elif persist_to_memory and delivery.user_visible:
+                await self.memory.add_message(
+                    "assistant",
+                    delivery.text,
+                    {
+                        "chat_id": chat_id,
                         "heartbeat": not track_progress,
                     },
                 )

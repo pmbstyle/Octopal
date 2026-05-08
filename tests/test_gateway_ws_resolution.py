@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from octopal.gateway.ws import _build_ws_file_payload, _resolve_ws_chat_id, register_ws_routes
+from octopal.gateway.ws import (
+    WsApprovalManager,
+    _ActiveWsSession,
+    _build_ws_file_payload,
+    _handle_message,
+    _resolve_ws_chat_id,
+    register_ws_routes,
+)
 from octopal.runtime.octo.core import OctoReply
 
 
@@ -104,3 +113,39 @@ def test_websocket_message_is_delivered_as_client_expects() -> None:
         assert ws.receive_json() == {"type": "workers_snapshot", "workers": []}
         ws.send_json({"type": "message", "text": "hello"})
         assert ws.receive_json() == {"type": "message", "text": "Hi from Octo"}
+
+
+@pytest.mark.asyncio
+async def test_websocket_message_handler_serializes_octo_turns() -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.sent: list[dict] = []
+
+        async def send_json(self, payload: dict) -> None:
+            self.sent.append(payload)
+
+    class DummyOcto:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs) -> OctoReply:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return OctoReply(immediate=f"reply:{text}", followup=None, followup_required=False)
+
+    socket = FakeSocket()
+    session = _ActiveWsSession(connection_id="test", socket=socket)  # type: ignore[arg-type]
+    approvals = WsApprovalManager(send=lambda payload: None)
+    octo = DummyOcto()
+    lock = asyncio.Lock()
+
+    await asyncio.gather(
+        _handle_message(session, octo, approvals, {"type": "message", "text": "one"}, 42, lock),
+        _handle_message(session, octo, approvals, {"type": "message", "text": "two"}, 42, lock),
+    )
+
+    assert octo.max_active == 1
+    assert [payload["text"] for payload in socket.sent] == ["reply:one", "reply:two"]

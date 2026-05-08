@@ -11,6 +11,10 @@ _TEXTUAL_TOOL_PREVIEW_RE = re.compile(
     re.IGNORECASE,
 )
 _REACT_TAG_RE = re.compile(r"<\s*react\s*>(.*?)<\s*/\s*react\s*>", re.IGNORECASE | re.DOTALL)
+_USER_VISIBLE_BLOCK_RE = re.compile(
+    r"<\s*user_visible\s*>(.*?)<\s*/\s*user_visible\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _THINK_TAG_RE = re.compile(r"</?think>", re.IGNORECASE)
 _TOOL_TAG_RE = re.compile(r"</?(?:tool_call|tool_code|tool_result|step|plan|thought).*?>", re.IGNORECASE)
@@ -144,6 +148,20 @@ def escape_html(text: str) -> str:
     )
 
 
+def _strip_hidden_reasoning_and_tool_blocks(text: str) -> str:
+    cleaned = _THINK_BLOCK_RE.sub("", text)
+    cleaned = _TOOL_CALL_BLOCK_RE.sub("", cleaned)
+    cleaned = _TOOL_RESULT_LINE_RE.sub("", cleaned)
+    return cleaned
+
+
+def _strip_reasoning_and_tool_traces(text: str) -> str:
+    cleaned = _strip_hidden_reasoning_and_tool_blocks(text)
+    cleaned = _THINK_TAG_RE.sub("", cleaned)
+    cleaned = _TOOL_TAG_RE.sub("", cleaned)
+    return cleaned
+
+
 def sanitize_user_facing_text(text: str) -> str:
     """Remove explicit reasoning/tool traces while preserving normal plain text."""
     if not text:
@@ -154,11 +172,11 @@ def sanitize_user_facing_text(text: str) -> str:
         return ""
 
     cleaned = value.replace("\r\n", "\n").replace("\r", "\n")
-    cleaned = _THINK_BLOCK_RE.sub("", cleaned)
-    cleaned = _THINK_TAG_RE.sub("", cleaned)
-    cleaned = _TOOL_CALL_BLOCK_RE.sub("", cleaned)
-    cleaned = _TOOL_TAG_RE.sub("", cleaned)
-    cleaned = _TOOL_RESULT_LINE_RE.sub("", cleaned)
+    cleaned = _strip_hidden_reasoning_and_tool_blocks(cleaned)
+    explicit_user_visible = _extract_user_visible_block_text(cleaned)
+    if explicit_user_visible is not None:
+        cleaned = explicit_user_visible
+    cleaned = _strip_reasoning_and_tool_traces(cleaned)
 
     cleaned = cleaned.strip()
     if not cleaned:
@@ -305,8 +323,33 @@ _HEARTBEAT_USER_VISIBLE_OPEN = "<user_visible>"
 _HEARTBEAT_USER_VISIBLE_CLOSE = "</user_visible>"
 
 
+def _extract_user_visible_block_text(text: str) -> str | None:
+    matches = [
+        (match.group(1) or "").strip()
+        for match in _USER_VISIBLE_BLOCK_RE.finditer(text or "")
+    ]
+    visible_parts = [part for part in matches if part]
+    if not visible_parts:
+        return None
+    return "\n\n".join(visible_parts).strip()
+
+
+def extract_user_visible_message(text: str) -> str | None:
+    """Extract and sanitize text explicitly marked as user-visible anywhere in a reply."""
+    visible_source = _strip_hidden_reasoning_and_tool_blocks(text or "")
+    explicit = _extract_user_visible_block_text(visible_source)
+    if explicit is None:
+        return None
+    cleaned = sanitize_user_facing_text(explicit).strip()
+    return cleaned or None
+
+
 def extract_heartbeat_user_visible_message(text: str) -> str | None:
     """Extract an explicitly marked user-visible heartbeat message."""
+    explicit = extract_user_visible_message(text or "")
+    if explicit:
+        return explicit
+
     value = sanitize_user_facing_text(text or "").strip()
     if not value:
         return None

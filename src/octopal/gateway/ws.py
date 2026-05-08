@@ -294,6 +294,7 @@ def register_ws_routes(app: FastAPI) -> None:
         )
 
         approvals = WsApprovalManager(send=lambda payload: _ws_send_json(session, payload, event_name="approval_request"))
+        message_lock = asyncio.Lock()
         tasks: set[asyncio.Task] = set()
 
         try:
@@ -308,7 +309,9 @@ def register_ws_routes(app: FastAPI) -> None:
                     if isinstance(payload_chat_id, int) and payload_chat_id > 0:
                         chat_id = payload_chat_id
 
-                    task = asyncio.create_task(_handle_message(session, octo, approvals, message, chat_id))
+                    task = asyncio.create_task(
+                        _handle_message(session, octo, approvals, message, chat_id, message_lock)
+                    )
                     tasks.add(task)
                     task.add_done_callback(lambda t: tasks.discard(t))
                     continue
@@ -341,15 +344,17 @@ async def _handle_message(
     approvals: WsApprovalManager,
     payload: dict[str, Any],
     chat_id: int,
+    message_lock: asyncio.Lock,
 ) -> None:
     text = str(payload.get("text", ""))
     try:
-        response = await octo.handle_message(
-            text,
-            chat_id,
-            approval_requester=approvals.request_approval,
-            is_ws=True,
-        )
+        async with message_lock:
+            response = await octo.handle_message(
+                text,
+                chat_id,
+                approval_requester=approvals.request_approval,
+                is_ws=True,
+            )
     except Exception as exc:
         logger.exception("Octo failed to handle WS message")
         response = f"Error: {exc}"

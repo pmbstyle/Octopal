@@ -12,6 +12,7 @@ from octopal.runtime.octo.router import (
     _get_octo_tools,
     _get_scheduler_tools,
     _get_worker_followup_tools,
+    _normalize_worker_followup_reply,
     _recover_textual_tool_call,
     _sanitize_messages_for_complete,
     _shrink_tool_specs_for_retry,
@@ -364,6 +365,31 @@ def test_worker_followup_route_skips_planner_and_uses_narrow_tools(monkeypatch) 
         assert octo.thinking_states == [True, False]
 
     asyncio.run(scenario())
+
+
+def test_normalize_worker_followup_reply_uses_structured_user_response() -> None:
+    raw = """
+    {
+      "user_response": "Брифинг готов.",
+      "no_user_response": false,
+      "actions_taken": [{"type": "get_worker_output_path", "summary": "checked output"}],
+      "reason": "worker completed"
+    }
+    """
+    assert _normalize_worker_followup_reply(raw) == "Брифинг готов."
+
+
+def test_normalize_worker_followup_reply_strips_noisy_user_visible_wrapper() -> None:
+    raw = (
+        "I checked internal worker state and should only show the marked part.\n\n"
+        "<user_visible>Брифинг готов.</user_visible>"
+    )
+    assert _normalize_worker_followup_reply(raw) == "Брифинг готов."
+
+
+def test_normalize_worker_followup_reply_suppresses_structured_no_response() -> None:
+    raw = '{"user_response": null, "no_user_response": true, "actions_taken": [], "reason": "saved memory"}'
+    assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
 
 
 def test_build_worker_result_payload_keeps_preview_text_for_large_output() -> None:

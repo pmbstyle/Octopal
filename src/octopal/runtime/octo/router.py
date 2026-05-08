@@ -1152,8 +1152,17 @@ async def route_worker_results_back_to_octo(
         "If a payload includes `instruction_request`, its `request_id` and `worker_id` are the values "
         "to pass to `answer_worker_instruction`.\n"
         "If there are knowledge_proposals, review them and use `manage_canon` to save them if valid.\n"
-        "If a user-facing response is required now, provide it in plain text.\n"
-        "If no user-facing response is needed, return exactly: NO_USER_RESPONSE"
+        "Return JSON only, with this shape:\n"
+        "{\n"
+        '  "user_response": string|null,\n'
+        '  "no_user_response": boolean,\n'
+        '  "actions_taken": [{"type": string, "summary": string}],\n'
+        '  "reason": string\n'
+        "}\n"
+        "`user_response` may contain any useful user-facing answer, including markdown, questions, "
+        "or durable file references. It must not contain hidden reasoning, tool notes, transport/debug/auth "
+        "text, or <user_visible> wrappers. If no user-facing response is needed, set "
+        "`no_user_response` to true and `user_response` to null."
     )
 
     await octo.set_thinking(True)
@@ -1186,7 +1195,7 @@ async def route_worker_results_back_to_octo(
                     "Worker-result follow-up path rules:\n"
                     "- Keep this turn cheap, bounded, and deterministic.\n"
                     "- Use tools only if they are clearly necessary to inspect a specific worker result detail.\n"
-                    "- Return either one user-facing response or exactly NO_USER_RESPONSE.\n"
+                    "- Return JSON only using the worker follow-up contract from the user message.\n"
                 ),
             )
         )
@@ -1202,9 +1211,36 @@ async def route_worker_results_back_to_octo(
             images=None,
             allow_tool_catalog_expansion=False,
         )
-        return normalize_plain_text(reply_text)
+        return _normalize_worker_followup_reply(reply_text)
     finally:
         await octo.set_thinking(False)
+
+
+def _normalize_worker_followup_reply(raw: str) -> str:
+    value = normalize_plain_text(raw or "")
+    if not value:
+        return "NO_USER_RESPONSE"
+    if should_suppress_user_delivery(value):
+        return "NO_USER_RESPONSE"
+
+    payload = _extract_json_object(value)
+    if isinstance(payload, dict):
+        response = payload.get("user_response")
+        if response is None:
+            response = payload.get("response")
+        if response is None:
+            response = payload.get("message")
+        response_text = sanitize_user_facing_text_preserving_reaction(str(response or ""))
+        if response_text and not should_suppress_user_delivery(response_text):
+            return response_text
+        if bool(payload.get("no_user_response")):
+            return "NO_USER_RESPONSE"
+        return "NO_USER_RESPONSE"
+
+    cleaned = sanitize_user_facing_text_preserving_reaction(value)
+    if should_suppress_user_delivery(cleaned):
+        return "NO_USER_RESPONSE"
+    return cleaned
 
 
 def _normalize_worker_result_entry(
