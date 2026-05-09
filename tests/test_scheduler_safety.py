@@ -789,8 +789,205 @@ async def test_route_proactive_tick_uses_queue_allowlist_and_skips_planner(monke
     assert calls == {"control_prompt": 1, "complete_route": 1}
     assert "octo_opportunity_scan" in captured_tool_names
     assert "octo_self_queue_add" in captured_tool_names
+    assert "execute_self_queue_item" in captured_tool_names
     assert "octo_self_queue_take" in captured_tool_names
     assert "start_worker" not in captured_tool_names
+
+
+@pytest.mark.asyncio
+async def test_execute_self_queue_item_blocks_items_without_worker_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(octo_core, "_workspace_dir", lambda: tmp_path)
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=tmp_path),
+        scheduler=SchedulerService(store=_StoreStub(), workspace_dir=tmp_path),
+    )
+    added = await octo.add_self_queue_item(
+        123,
+        {
+            "title": "Repair stale task",
+            "task": "Inspect blocked scheduled task and propose a repair.",
+            "dedupe_key": "repair:stale",
+        },
+    )
+
+    result = await octo.execute_self_queue_item(123, {"task_id": added["item"]["task_id"]})
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "missing_worker_id"
+    queue = await octo.get_self_queue(123)
+    assert queue[0]["status"] == "blocked"
+    assert queue[0]["blocked_reason"] == "missing_worker_id"
+
+
+@pytest.mark.asyncio
+async def test_execute_self_queue_item_dry_run_does_not_block_missing_worker_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(octo_core, "_workspace_dir", lambda: tmp_path)
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=tmp_path),
+        scheduler=SchedulerService(store=_StoreStub(), workspace_dir=tmp_path),
+    )
+    added = await octo.add_self_queue_item(
+        123,
+        {
+            "title": "Repair stale task",
+            "task": "Inspect blocked scheduled task and propose a repair.",
+            "dedupe_key": "repair:stale",
+        },
+    )
+
+    result = await octo.execute_self_queue_item(
+        123,
+        {"task_id": added["item"]["task_id"], "dry_run": True},
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["would_block_reason"] == "missing_worker_id"
+    queue = await octo.get_self_queue(123)
+    assert queue[0]["status"] == "pending"
+    assert "blocked_reason" not in queue[0]
+
+
+@pytest.mark.asyncio
+async def test_execute_self_queue_item_blocks_high_risk_items(tmp_path, monkeypatch):
+    monkeypatch.setattr(octo_core, "_workspace_dir", lambda: tmp_path)
+    launches = []
+
+    async def _start_worker_async(self, **kwargs):
+        launches.append(kwargs)
+        return {"status": "started", "run_id": "run-123", "worker_id": "run-123"}
+
+    monkeypatch.setattr(octo_core.Octo, "_start_worker_async", _start_worker_async)
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=tmp_path),
+        scheduler=SchedulerService(store=_StoreStub(), workspace_dir=tmp_path),
+    )
+    added = await octo.add_self_queue_item(
+        123,
+        {
+            "title": "Do risky repair",
+            "task": "Apply a risky repair without asking.",
+            "worker_id": "repair_worker",
+            "risk": "high",
+        },
+    )
+
+    result = await octo.execute_self_queue_item(123, {"task_id": added["item"]["task_id"]})
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "high_risk_requires_user_input"
+    assert launches == []
+    queue = await octo.get_self_queue(123)
+    assert queue[0]["status"] == "blocked"
+    assert queue[0]["blocked_reason"] == "high_risk_requires_user_input"
+
+
+@pytest.mark.asyncio
+async def test_execute_self_queue_item_starts_worker_and_marks_running(tmp_path, monkeypatch):
+    monkeypatch.setattr(octo_core, "_workspace_dir", lambda: tmp_path)
+    launches = []
+
+    async def _start_worker_async(self, **kwargs):
+        launches.append(kwargs)
+        return {"status": "started", "run_id": "run-123", "worker_id": "run-123"}
+
+    monkeypatch.setattr(octo_core.Octo, "_start_worker_async", _start_worker_async)
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=tmp_path),
+        scheduler=SchedulerService(store=_StoreStub(), workspace_dir=tmp_path),
+    )
+    added = await octo.add_self_queue_item(
+        123,
+        {
+            "title": "Run safe diagnostic",
+            "task": "Inspect scheduler state and report repair options.",
+            "worker_id": "diagnostic_worker",
+            "inputs": {"scope": "scheduler"},
+            "risk": "low",
+            "dedupe_key": "diagnostic:scheduler",
+        },
+    )
+
+    result = await octo.execute_self_queue_item(123, {"task_id": added["item"]["task_id"]})
+
+    assert result["status"] == "started"
+    assert result["run_id"] == "run-123"
+    assert result["followup_required"] is True
+    assert launches == [
+        {
+            "worker_id": "diagnostic_worker",
+            "task": "Inspect scheduler state and report repair options.",
+            "chat_id": 123,
+            "inputs": {"scope": "scheduler"},
+            "tools": None,
+            "model": None,
+            "timeout_seconds": None,
+            "scheduled_task_id": None,
+        }
+    ]
+    queue = await octo.get_self_queue(123)
+    assert queue[0]["status"] == "running"
+    assert queue[0]["run_id"] == "run-123"
+
+
+@pytest.mark.asyncio
+async def test_add_self_queue_item_dedupes_active_items(tmp_path, monkeypatch):
+    monkeypatch.setattr(octo_core, "_workspace_dir", lambda: tmp_path)
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=tmp_path),
+        scheduler=SchedulerService(store=_StoreStub(), workspace_dir=tmp_path),
+    )
+
+    first = await octo.add_self_queue_item(
+        123,
+        {
+            "title": "Run safe diagnostic",
+            "task": "Inspect scheduler state.",
+            "dedupe_key": "diagnostic:scheduler",
+        },
+    )
+    duplicate = await octo.add_self_queue_item(
+        123,
+        {
+            "title": "Run safe diagnostic again",
+            "task": "Inspect scheduler state again.",
+            "dedupe_key": "diagnostic:scheduler",
+        },
+    )
+
+    assert first["status"] == "ok"
+    assert duplicate["status"] == "duplicate"
+    queue = await octo.get_self_queue(123)
+    assert len(queue) == 1
 
 
 @pytest.mark.asyncio

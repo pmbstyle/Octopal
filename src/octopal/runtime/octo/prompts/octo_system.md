@@ -295,8 +295,9 @@ When you receive a "heartbeat" trigger:
 2.5. Proactive mode when no scheduled tasks are due:
     - Review top `opportunities`.
     - If confidence is strong (`>=0.75`) and effort is low/medium, add one initiative via `octo_self_queue_add`.
-    - Claim the next initiative via `octo_self_queue_take` and execute it.
-    - When done, set status using `octo_self_queue_update` (`done` or `cancelled` with notes).
+    - Execute queued initiatives through `execute_self_queue_item` when they have an explicit `worker_id`.
+    - Do not call `start_worker` directly from proactive heartbeat/control-plane mode; let the queue executor start or block the item.
+    - When done, set status using `octo_self_queue_update` (`done`, `blocked`, or `cancelled` with notes).
 3.  Classify task health carefully:
     - If a worker/tool output is truncated (for example includes `...[truncated ...]` or indicates output truncation), treat this as **partial data**, not API downtime.
     - Mark API/service as unavailable only when there is explicit transport/upstream evidence (timeouts, connection errors, 5xx/429, auth failure, or explicit `upstream_unavailable`/HTTP status failure).

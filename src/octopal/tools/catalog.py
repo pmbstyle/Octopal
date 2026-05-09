@@ -489,12 +489,34 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
                     "source": {"type": "string"},
                     "notes": {"type": "string"},
+                    "worker_id": {"type": "string"},
+                    "inputs": {"type": "object"},
+                    "risk": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "dedupe_key": {"type": "string"},
                 },
                 "required": ["title", "task"],
                 "additionalProperties": False,
             },
             permission="self_control",
             handler=_tool_octo_self_queue_add,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="execute_self_queue_item",
+            description=(
+                "Execute one Octo self-queue item through the runtime-owned executor. "
+                "Starts a worker only when the item has an explicit worker_id; otherwise marks it blocked."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "dry_run": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+            },
+            permission="self_control",
+            handler=_tool_execute_self_queue_item,
             is_async=True,
         ),
         ToolSpec(
@@ -520,7 +542,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
-                    "status": {"type": "string", "enum": ["pending", "claimed", "done", "cancelled"]},
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "claimed", "running", "blocked", "done", "cancelled"],
+                    },
                     "notes": {"type": "string"},
                 },
                 "required": ["task_id", "status"],
@@ -2234,6 +2259,15 @@ async def _tool_octo_self_queue_add(args, ctx) -> str:
     if octo is None or not hasattr(octo, "add_self_queue_item"):
         return json.dumps({"status": "error", "message": "octo self queue is unavailable"}, ensure_ascii=False)
     payload = await octo.add_self_queue_item(chat_id, args or {})
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def _tool_execute_self_queue_item(args, ctx) -> str:
+    octo = ctx.get("octo")
+    chat_id = int(ctx.get("chat_id", 0) or 0)
+    if octo is None or not hasattr(octo, "execute_self_queue_item"):
+        return json.dumps({"status": "error", "message": "octo self queue executor is unavailable"}, ensure_ascii=False)
+    payload = await octo.execute_self_queue_item(chat_id, args or {})
     return json.dumps(payload, ensure_ascii=False)
 
 

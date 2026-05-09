@@ -3257,7 +3257,25 @@ class Octo:
             return {"status": "error", "message": "title and task are required"}
         priority = max(1, min(5, int((args or {}).get("priority", 3) or 3)))
         source = str((args or {}).get("source", "octo") or "octo").strip()[:64]
+        dedupe_key = str((args or {}).get("dedupe_key", "") or "").strip()[:160]
         queue = self._self_queue_by_chat.setdefault(chat_id, [])
+        if dedupe_key:
+            for existing in queue:
+                if str(existing.get("dedupe_key", "") or "") != dedupe_key:
+                    continue
+                if str(existing.get("status", "pending")) in {"pending", "claimed", "running"}:
+                    return {
+                        "status": "duplicate",
+                        "item": dict(existing),
+                        "queue_size": len(queue),
+                    }
+        inputs = (args or {}).get("inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
+        worker_id = str((args or {}).get("worker_id", "") or "").strip()
+        risk = str((args or {}).get("risk", "low") or "low").strip().lower()
+        if risk not in {"low", "medium", "high"}:
+            risk = "low"
         item = {
             "task_id": str(uuid4()),
             "title": title,
@@ -3268,7 +3286,13 @@ class Octo:
             "created_at": utc_now().isoformat(),
             "updated_at": utc_now().isoformat(),
             "notes": str((args or {}).get("notes", "") or "").strip(),
+            "risk": risk,
+            "inputs": inputs,
         }
+        if worker_id:
+            item["worker_id"] = worker_id
+        if dedupe_key:
+            item["dedupe_key"] = dedupe_key
         queue.append(item)
         queue.sort(key=lambda i: (-int(i.get("priority", 3)), str(i.get("created_at", ""))))
         await asyncio.to_thread(_persist_self_queue, _workspace_dir(), chat_id, queue)
@@ -3289,7 +3313,7 @@ class Octo:
         await self._ensure_self_queue_loaded(chat_id)
         task_id = str((args or {}).get("task_id", "") or "").strip()
         new_status = str((args or {}).get("status", "") or "").strip().lower()
-        if not task_id or new_status not in {"pending", "claimed", "done", "cancelled"}:
+        if not task_id or new_status not in {"pending", "claimed", "running", "blocked", "done", "cancelled"}:
             return {"status": "error", "message": "task_id and valid status are required"}
         queue = self._self_queue_by_chat.setdefault(chat_id, [])
         for item in queue:
@@ -3301,6 +3325,130 @@ class Octo:
                 await asyncio.to_thread(_persist_self_queue, _workspace_dir(), chat_id, queue)
                 return {"status": "ok", "item": dict(item)}
         return {"status": "not_found", "task_id": task_id}
+
+    async def execute_self_queue_item(self, chat_id: int, args: dict[str, Any]) -> dict[str, Any]:
+        await self._ensure_self_queue_loaded(chat_id)
+        task_id = str((args or {}).get("task_id", "") or "").strip()
+        dry_run = bool((args or {}).get("dry_run", False))
+        queue = self._self_queue_by_chat.setdefault(chat_id, [])
+
+        item: dict[str, Any] | None = None
+        for candidate in queue:
+            if task_id and str(candidate.get("task_id", "") or "") != task_id:
+                continue
+            if task_id or str(candidate.get("status", "pending")) in {"pending", "claimed"}:
+                item = candidate
+                break
+        if item is None:
+            return {"status": "empty" if not task_id else "not_found", "task_id": task_id or None}
+
+        item_status = str(item.get("status", "pending") or "pending").strip().lower()
+        if item_status not in {"pending", "claimed"}:
+            return {
+                "status": "blocked",
+                "reason": f"self-queue item is not executable from status={item_status}",
+                "item": dict(item),
+            }
+
+        worker_id = str(item.get("worker_id", "") or "").strip()
+        risk = str(item.get("risk", "low") or "low").strip().lower()
+        if dry_run:
+            payload = {
+                "status": "dry_run",
+                "task_id": item.get("task_id"),
+                "worker_id": worker_id or None,
+                "risk": risk,
+                "task": item.get("task"),
+                "item": dict(item),
+            }
+            if not worker_id:
+                payload["would_block_reason"] = "missing_worker_id"
+            elif risk == "high":
+                payload["would_block_reason"] = "high_risk_requires_user_input"
+            return payload
+
+        if not worker_id:
+            item["status"] = "blocked"
+            item["blocked_reason"] = "missing_worker_id"
+            item["updated_at"] = utc_now().isoformat()
+            await asyncio.to_thread(_persist_self_queue, _workspace_dir(), chat_id, queue)
+            return {
+                "status": "blocked",
+                "reason": "missing_worker_id",
+                "item": dict(item),
+            }
+
+        if risk == "high":
+            item["status"] = "blocked"
+            item["blocked_reason"] = "high_risk_requires_user_input"
+            item["updated_at"] = utc_now().isoformat()
+            await asyncio.to_thread(_persist_self_queue, _workspace_dir(), chat_id, queue)
+            return {
+                "status": "blocked",
+                "reason": "high_risk_requires_user_input",
+                "item": dict(item),
+            }
+
+        task_text = str(item.get("task", "") or "").strip()
+        inputs = item.get("inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
+        item["status"] = "claimed"
+        item["updated_at"] = utc_now().isoformat()
+        await asyncio.to_thread(_persist_self_queue, _workspace_dir(), chat_id, queue)
+
+        try:
+            launch = await self._start_worker_async(
+                worker_id=worker_id,
+                task=task_text,
+                chat_id=chat_id,
+                inputs=inputs,
+                tools=None,
+                model=None,
+                timeout_seconds=None,
+                scheduled_task_id=None,
+            )
+        except Exception as exc:
+            item["status"] = "blocked"
+            item["blocked_reason"] = str(exc)
+            item["updated_at"] = utc_now().isoformat()
+            await asyncio.to_thread(_persist_self_queue, _workspace_dir(), chat_id, queue)
+            return {
+                "status": "error",
+                "reason": "worker_launch_failed",
+                "error": str(exc),
+                "item": dict(item),
+            }
+
+        launch_status = str(launch.get("status", "") or "").strip().lower()
+        if launch_status == "started":
+            run_id = str(launch.get("run_id") or launch.get("worker_id") or "").strip()
+            item["status"] = "running"
+            item["run_id"] = run_id
+            item["started_at"] = utc_now().isoformat()
+            item["updated_at"] = utc_now().isoformat()
+            await asyncio.to_thread(_persist_self_queue, _workspace_dir(), chat_id, queue)
+            return {
+                "status": "started",
+                "task_id": item.get("task_id"),
+                "worker_template_id": worker_id,
+                "worker_id": run_id,
+                "run_id": run_id,
+                "followup_required": True,
+                "next_best_action": "wait_for_worker_progress",
+                "item": dict(item),
+            }
+
+        item["status"] = "blocked"
+        item["blocked_reason"] = launch_status or "worker_not_started"
+        item["updated_at"] = utc_now().isoformat()
+        await asyncio.to_thread(_persist_self_queue, _workspace_dir(), chat_id, queue)
+        return {
+            "status": "blocked",
+            "reason": item["blocked_reason"],
+            "launch": launch,
+            "item": dict(item),
+        }
 
     async def scan_opportunities(self, chat_id: int, limit: int = 3) -> dict[str, Any]:
         health = await self.get_context_health_snapshot(chat_id)
