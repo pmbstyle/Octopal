@@ -814,6 +814,7 @@ async def _complete_route_with_tools(
         max_attempts = 10
         vision_tool_fallback_used = False
         structured_followup_required = False
+        unbacked_action_retry_used = False
 
         for _ in range(max_attempts):
             try:
@@ -1098,6 +1099,34 @@ async def _complete_route_with_tools(
                 continue
 
             if content_raw:
+                if (
+                    not had_tool_calls
+                    and not unbacked_action_retry_used
+                    and await _needs_action_or_blocked_retry(
+                        provider=provider,
+                        messages=messages,
+                        candidate=str(content_raw),
+                    )
+                ):
+                    unbacked_action_retry_used = True
+                    logger.warning(
+                        "Assistant response requires concrete action state; forcing action-or-blocked retry",
+                        preview=str(content_raw)[:200],
+                    )
+                    messages.append(Message(role="assistant", content=str(content_raw)))
+                    messages.append(
+                        Message(
+                            role="system",
+                            content=(
+                                "Your previous answer was classified as requiring concrete runtime action state, "
+                                "but this turn has not used any tool, started a worker, queued a task, or changed "
+                                "runtime state. Continue this same turn now: call the appropriate tool, add/execute "
+                                "a self-queue item, or rewrite the response as a clear blocked/clarifying answer. "
+                                "Do not describe future work unless this turn creates a concrete runtime action."
+                            ),
+                        )
+                    )
+                    continue
                 logger.debug("Octo output", output=content_raw)
                 return await _finalize_response(
                     provider=provider,
@@ -2667,6 +2696,51 @@ def _sanitize_control_plane_contract_text(text: str) -> str:
     )
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned
+
+
+async def _needs_action_or_blocked_retry(
+    *,
+    provider: InferenceProvider,
+    messages: list[Message | dict[str, Any]],
+    candidate: str,
+) -> bool:
+    if not normalize_plain_text(candidate or "") or should_suppress_user_delivery(candidate):
+        return False
+    prompt = (
+        "Classify whether the draft assistant response is safe to deliver as the final answer for this turn.\n"
+        "Return JSON only with this shape:\n"
+        '{"verdict":"final|requires_runtime_action_state","confidence":0.0,"reason":"short"}\n'
+        "Use requires_runtime_action_state only when the draft tells the user that work will be done, is being done, "
+        "or will be followed up later, while the evidence contains no completed tool call, worker launch, queued task, "
+        "schedule change, or explicit blocked/clarifying answer. Use final for direct answers, questions, refusal/blocked "
+        "answers, status summaries grounded in evidence, and normal conversational replies. Do not classify from keywords; "
+        "judge the speech act and whether runtime state already supports it.\n\n"
+        "<EVIDENCE>\n"
+        f"{_messages_to_text(messages)}\n"
+        "</EVIDENCE>\n\n"
+        "<DRAFT_RESPONSE>\n"
+        f"{candidate}\n"
+        "</DRAFT_RESPONSE>"
+    )
+    try:
+        raw = await _complete_text(
+            provider,
+            [Message(role="system", content=prompt)],
+            context="action_state_verifier",
+        )
+    except Exception:
+        logger.debug("Action-state verifier skipped due to provider error", exc_info=True)
+        return False
+
+    payload = _extract_json_object(raw)
+    if not isinstance(payload, dict):
+        return False
+    verdict = str(payload.get("verdict") or "").strip().lower()
+    try:
+        confidence = float(payload.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return verdict == "requires_runtime_action_state" and confidence >= 0.55
 
 
 async def _verify_final_response(

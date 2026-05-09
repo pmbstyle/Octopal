@@ -809,6 +809,109 @@ def test_route_retries_image_message_with_saved_file_paths(monkeypatch, tmp_path
     asyncio.run(scenario())
 
 
+def test_route_retries_unbacked_action_commitment_with_tools(monkeypatch) -> None:
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.retry_prompt_seen = False
+            self.verifier_seen = False
+
+        async def complete(self, messages, **kwargs):
+            self.verifier_seen = any(
+                "Classify whether the draft assistant response is safe to deliver" in str(message.get("content", ""))
+                for message in messages
+            )
+            assert self.verifier_seen
+            return '{"verdict":"requires_runtime_action_state","confidence":0.91,"reason":"draft needs action state"}'
+
+        async def complete_stream(self, messages, *, on_partial, **kwargs):
+            raise AssertionError("streaming should not be used in this test")
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {"content": "Проверю это сейчас.", "tool_calls": []}
+            if self.calls == 2:
+                self.retry_prompt_seen = any(
+                    "previous answer was classified as requiring concrete runtime action state"
+                    in str(getattr(message, "content", ""))
+                    for message in messages
+                )
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "dummy_tool", "arguments": "{}"},
+                        }
+                    ],
+                }
+            return {"content": "Проверила: ok.", "tool_calls": []}
+
+    class DummyMemory:
+        async def add_message(self, role, content, metadata=None):
+            return None
+
+    class DummyOcto:
+        store = object()
+        canon = object()
+        internal_progress_send = None
+        is_ws_active = False
+
+        async def set_typing(self, chat_id: int, active: bool) -> None:
+            return None
+
+        async def set_thinking(self, active: bool) -> None:
+            return None
+
+        def peek_context_wakeup(self, chat_id: int) -> str:
+            return ""
+
+    async def fake_build_octo_prompt(**kwargs):
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def fake_build_plan(provider, messages, has_tools):
+        return None
+
+    def fake_get_octo_tools(octo, chat_id):
+        def dummy_tool(args, ctx):
+            return {"status": "ok"}
+
+        return [
+            ToolSpec(
+                name="dummy_tool",
+                description="dummy",
+                parameters={"type": "object", "properties": {}, "additionalProperties": False},
+                permission="exec",
+                handler=dummy_tool,
+            )
+        ], {"octo": octo, "chat_id": chat_id}
+
+    import octopal.runtime.octo.router as router
+
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(router, "_build_plan", fake_build_plan)
+    monkeypatch.setattr(router, "_get_octo_tools", fake_get_octo_tools)
+
+    async def scenario() -> None:
+        provider = DummyProvider()
+        response = await router.route_or_reply(
+            DummyOcto(),
+            provider,
+            DummyMemory(),
+            "проверь статус",
+            123,
+            "",
+        )
+        assert response == "Проверила: ok."
+        assert provider.calls == 3
+        assert provider.verifier_seen is True
+        assert provider.retry_prompt_seen is True
+
+    asyncio.run(scenario())
+
+
 def test_route_retries_with_fewer_tools_after_invalid_tool_payload(monkeypatch) -> None:
     class DummyProvider:
         def __init__(self) -> None:
