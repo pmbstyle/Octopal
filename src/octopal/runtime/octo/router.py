@@ -171,6 +171,17 @@ _SCHEDULER_ALLOWED_TOOL_NAMES = {
     "list_workers",
     "list_active_workers",
 }
+_PROACTIVE_ALLOWED_TOOL_NAMES = {
+    "check_schedule",
+    "scheduler_status",
+    "octo_context_health",
+    "gateway_status",
+    "octo_opportunity_scan",
+    "octo_self_queue_add",
+    "octo_self_queue_list",
+    "octo_self_queue_take",
+    "octo_self_queue_update",
+}
 _SCHEDULED_OCTO_CONTROL_ALLOWED_TOOL_NAMES = _SCHEDULER_ALLOWED_TOOL_NAMES | {
     "octo_context_reset",
     "octo_memchain_status",
@@ -612,6 +623,90 @@ async def route_scheduler_tick(
             preserve_user_visible_wrapper=True,
         )
         return reply_text.strip()
+    finally:
+        await octo.set_thinking(False)
+
+
+async def route_proactive_tick(
+    octo: Any,
+    chat_id: int = 0,
+    *,
+    reason: str = "scheduler_idle",
+) -> str:
+    """Run a bounded proactive control-plane turn that may only manage initiative queue state."""
+    await octo.set_thinking(True)
+    try:
+        octo_tools, ctx = _get_proactive_tools(octo, chat_id)
+        resolution_report = ctx.get("tool_resolution_report")
+        available_count = len(getattr(resolution_report, "available_tools", ()) or ())
+        deferred_count = max(0, available_count - len(octo_tools))
+        logger.info(
+            "Proactive tick tools fetched",
+            route_mode=RouteMode.PROACTIVE.value,
+            active_tool_count=len(octo_tools),
+            available_tool_count=available_count,
+            deferred_tool_count=deferred_count,
+            mcp_refresh_attempted=bool(ctx.get("mcp_refresh_attempted")),
+            reason=reason,
+        )
+        tool_policy_summary = _build_octo_tool_policy_summary(
+            octo_tools,
+            ctx.get("tool_resolution_report"),
+        )
+        proactive_tick_text = await _build_proactive_tick_input(
+            octo,
+            chat_id=chat_id,
+            reason=reason,
+        )
+        messages = await build_control_plane_prompt(
+            user_text=proactive_tick_text,
+            chat_id=chat_id,
+            tool_policy_summary=tool_policy_summary,
+            reflection=getattr(octo, "reflection", None),
+            mode_label="proactive",
+            mode_rules=(
+                "Proactive route rules:\n"
+                "- Keep this turn bounded to initiative discovery and self-queue maintenance.\n"
+                "- You may add, claim, cancel, or mark self-queue items only when the payload supports it.\n"
+                "- Do not start workers, schedule recurring tasks, use filesystem tools, use network/MCP tools, "
+                "or perform external side effects from this route.\n"
+                "- Prefer queueing one concrete low-risk initiative over claiming work you cannot execute here.\n"
+                "- Return JSON only using the proactive decision contract."
+            ),
+        )
+        messages.append(
+            Message(
+                role="system",
+                content=(
+                    "Return JSON only with this shape:\n"
+                    "{\n"
+                    '  "decision": "noop|queue|claim|blocked",\n'
+                    '  "confidence": 0.0,\n'
+                    '  "risk": "low|medium|high",\n'
+                    '  "requires_user_input": false,\n'
+                    '  "selected_item_id": string|null,\n'
+                    '  "queued_item_id": string|null,\n'
+                    '  "reason": string\n'
+                    "}\n"
+                    "Use decision=queue only after a successful octo_self_queue_add call. "
+                    "Use decision=claim only after a successful octo_self_queue_take call. "
+                    "Use decision=noop when confidence is below threshold or there is already pending work."
+                ),
+            )
+        )
+        _log_system_prompt(messages, "proactive")
+        reply_text = await _complete_route_with_tools(
+            octo=octo,
+            provider=octo.provider,
+            messages=messages,
+            tool_specs=octo_tools,
+            ctx=ctx,
+            internal_followup=True,
+            user_text=proactive_tick_text,
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+        return _normalize_proactive_reply(reply_text)
     finally:
         await octo.set_thinking(False)
 
@@ -1247,6 +1342,37 @@ def _normalize_worker_followup_reply(raw: str) -> str:
     return cleaned
 
 
+def _normalize_proactive_reply(raw: str) -> str:
+    value = normalize_plain_text(raw or "")
+    if not value or should_suppress_user_delivery(value):
+        return "NO_USER_RESPONSE"
+    payload = _extract_json_object(value)
+    if not isinstance(payload, dict):
+        return "NO_USER_RESPONSE"
+
+    decision = str(payload.get("decision", "noop") or "noop").strip().lower()
+    if decision not in {"noop", "queue", "claim", "blocked"}:
+        decision = "noop"
+    risk = str(payload.get("risk", "low") or "low").strip().lower()
+    if risk not in {"low", "medium", "high"}:
+        risk = "low"
+    try:
+        confidence = float(payload.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))
+    normalized = {
+        "decision": decision,
+        "confidence": confidence,
+        "risk": risk,
+        "requires_user_input": bool(payload.get("requires_user_input")),
+        "selected_item_id": payload.get("selected_item_id") or None,
+        "queued_item_id": payload.get("queued_item_id") or None,
+        "reason": str(payload.get("reason", "") or "").strip()[:500],
+    }
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+
+
 def _normalize_worker_result_entry(
     item: tuple[str, WorkerResult] | tuple[str, str, WorkerResult],
 ) -> tuple[str, str, WorkerResult]:
@@ -1570,6 +1696,15 @@ def _get_scheduler_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec], dict[
     )
 
 
+def _get_proactive_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec], dict[str, object]]:
+    return _get_control_plane_tools(
+        octo,
+        chat_id,
+        allowed_tool_names=_PROACTIVE_ALLOWED_TOOL_NAMES,
+        policy_label="octo.proactive_allowlist",
+    )
+
+
 def _get_scheduled_octo_control_tools(
     octo: Any, chat_id: int
 ) -> tuple[list[ToolSpec], dict[str, object]]:
@@ -1685,6 +1820,47 @@ def _build_scheduler_tick_input(octo: Any, *, max_tasks: int = 10) -> str:
         "Scheduler tick snapshot:\n"
         f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n"
         "Decide whether scheduler state is idle, needs quiet follow-up, or merits a user-visible update."
+    )
+
+
+async def _build_proactive_tick_input(octo: Any, *, chat_id: int, reason: str) -> str:
+    opportunity_snapshot: dict[str, Any] | None = None
+    self_queue: list[dict[str, Any]] | None = None
+    if hasattr(octo, "scan_opportunities"):
+        try:
+            maybe = octo.scan_opportunities(chat_id, limit=3)
+            opportunity_snapshot = await maybe if asyncio.iscoroutine(maybe) else maybe
+        except Exception:
+            logger.debug("Failed to build proactive opportunity snapshot", exc_info=True)
+            opportunity_snapshot = None
+    if hasattr(octo, "get_self_queue"):
+        try:
+            maybe = octo.get_self_queue(chat_id)
+            self_queue = await maybe if asyncio.iscoroutine(maybe) else maybe
+        except Exception:
+            logger.debug("Failed to build proactive self-queue snapshot", exc_info=True)
+            self_queue = None
+
+    pending_count = 0
+    if isinstance(self_queue, list):
+        pending_count = sum(1 for item in self_queue if str(item.get("status", "pending")) == "pending")
+
+    payload = {
+        "reason": reason,
+        "chat_id": chat_id,
+        "queue_mode": "queue_only",
+        "confidence_threshold": 0.75,
+        "pending_self_queue_items": pending_count,
+        "opportunities": opportunity_snapshot,
+        "self_queue": self_queue,
+    }
+    return (
+        "Proactive tick snapshot:\n"
+        f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n"
+        "If there is already pending self-queue work, prefer decision=noop. "
+        "If the best opportunity is confidence >= 0.75, low/medium risk, and no pending work exists, "
+        "use octo_self_queue_add to queue exactly one concrete initiative. "
+        "Do not execute the initiative in this route."
     )
 
 

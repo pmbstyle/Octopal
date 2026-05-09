@@ -723,6 +723,77 @@ async def test_route_scheduler_tick_uses_control_plane_prompt_and_skips_planner(
 
 
 @pytest.mark.asyncio
+async def test_route_proactive_tick_uses_queue_allowlist_and_skips_planner(monkeypatch):
+    calls = {"control_prompt": 0, "complete_route": 0}
+    captured_tool_names: set[str] = set()
+
+    class DummyOcto:
+        provider = object()
+        reflection = None
+        mcp_manager = None
+
+        async def set_thinking(self, value):
+            return None
+
+        async def scan_opportunities(self, chat_id: int, limit: int = 3):
+            return {
+                "status": "ok",
+                "chat_id": chat_id,
+                "opportunities": [
+                    {
+                        "title": "Repair blocked task",
+                        "confidence": 0.82,
+                        "risk": "low",
+                        "next_action": "Queue one repair task.",
+                    }
+                ],
+            }
+
+        async def get_self_queue(self, chat_id: int):
+            return []
+
+    async def _build_control_plane_prompt(**kwargs):
+        calls["control_prompt"] += 1
+        assert kwargs["mode_label"] == "proactive"
+        assert "queue_only" in kwargs["user_text"]
+        return [octo_router.Message(role="system", content="proactive control plane")]
+
+    async def _complete_route_with_tools(**kwargs):
+        calls["complete_route"] += 1
+        captured_tool_names.update(spec.name for spec in kwargs["tool_specs"])
+        return json.dumps(
+            {
+                "decision": "noop",
+                "confidence": 0.2,
+                "risk": "low",
+                "requires_user_input": False,
+                "reason": "Already has enough context; no queue mutation needed.",
+            }
+        )
+
+    def _build_octo_prompt_should_not_run(*args, **kwargs):
+        raise AssertionError("build_octo_prompt should not run for proactive route")
+
+    def _build_plan_should_not_run(*args, **kwargs):
+        raise AssertionError("_build_plan should not run for proactive route")
+
+    monkeypatch.setattr(octo_router, "build_control_plane_prompt", _build_control_plane_prompt)
+    monkeypatch.setattr(octo_router, "_complete_route_with_tools", _complete_route_with_tools)
+    monkeypatch.setattr(octo_router, "build_octo_prompt", _build_octo_prompt_should_not_run)
+    monkeypatch.setattr(octo_router, "_build_plan", _build_plan_should_not_run)
+
+    result = await octo_router.route_proactive_tick(DummyOcto(), chat_id=123)
+    payload = json.loads(result)
+
+    assert payload["decision"] == "noop"
+    assert calls == {"control_prompt": 1, "complete_route": 1}
+    assert "octo_opportunity_scan" in captured_tool_names
+    assert "octo_self_queue_add" in captured_tool_names
+    assert "octo_self_queue_take" in captured_tool_names
+    assert "start_worker" not in captured_tool_names
+
+
+@pytest.mark.asyncio
 async def test_route_scheduled_octo_control_uses_control_plane_prompt_and_skips_planner(monkeypatch):
     calls = {"control_prompt": 0, "complete_route": 0}
 
@@ -775,6 +846,7 @@ async def test_route_scheduled_octo_control_uses_control_plane_prompt_and_skips_
 @pytest.mark.asyncio
 async def test_octo_run_scheduler_tick_once_uses_bounded_scheduler_route(monkeypatch):
     calls = {"scheduler_tick": 0, "dispatch": 0}
+    monkeypatch.setattr(octo_core, "_PROACTIVE_TICK_ENABLED", False)
 
     async def _route_scheduler_tick(octo, chat_id=0, *, max_tasks=10):
         calls["scheduler_tick"] += 1
@@ -822,8 +894,61 @@ async def test_octo_run_scheduler_tick_once_uses_bounded_scheduler_route(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_octo_run_scheduler_tick_once_runs_proactive_after_idle_dispatch(monkeypatch):
+    calls = {"scheduler_tick": 0, "dispatch": 0, "proactive": 0}
+    monkeypatch.setattr(octo_core, "_PROACTIVE_TICK_ENABLED", True)
+    monkeypatch.setattr(octo_core, "_PROACTIVE_TICK_MIN_INTERVAL_SECONDS", 0.0)
+
+    async def _route_scheduler_tick(octo, chat_id=0, *, max_tasks=10):
+        calls["scheduler_tick"] += 1
+        return "SCHEDULER_IDLE"
+
+    async def _route_proactive_tick(octo, chat_id=0, *, reason="scheduler_idle"):
+        calls["proactive"] += 1
+        assert reason == "scheduler_idle:SCHEDULER_IDLE"
+        return json.dumps({"decision": "queue", "confidence": 0.8, "risk": "low"})
+
+    async def _dispatch_due_scheduled_tasks_once(self, *, chat_id=0, max_tasks=10):
+        calls["dispatch"] += 1
+        return {
+            "due_count": 0,
+            "attempted": 0,
+            "started": 0,
+            "completed": 0,
+            "duplicates": 0,
+            "rejected_by_policy": 0,
+            "policy_reasons": {},
+            "errors": 0,
+        }
+
+    monkeypatch.setattr(octo_core, "route_scheduler_tick", _route_scheduler_tick)
+    monkeypatch.setattr(octo_core, "route_proactive_tick", _route_proactive_tick)
+    monkeypatch.setattr(
+        octo_core.Octo,
+        "_dispatch_due_scheduled_tasks_once",
+        _dispatch_due_scheduled_tasks_once,
+    )
+
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=Path(".")),
+        scheduler=SchedulerService(store=_StoreStub(), workspace_dir=Path(".")),
+    )
+
+    await octo._run_scheduler_tick_once(max_tasks=7)
+
+    assert calls == {"scheduler_tick": 1, "dispatch": 1, "proactive": 1}
+
+
+@pytest.mark.asyncio
 async def test_octo_run_scheduler_tick_once_delivers_user_visible_scheduler_output(monkeypatch):
     sent_messages = []
+    monkeypatch.setattr(octo_core, "_PROACTIVE_TICK_ENABLED", False)
 
     async def _route_scheduler_tick(octo, chat_id=0, *, max_tasks=10):
         return "Internal note.\n<user_visible>Планировщик нашел важное обновление.</user_visible>"
@@ -871,6 +996,7 @@ async def test_octo_run_scheduler_tick_once_delivers_user_visible_scheduler_outp
 @pytest.mark.asyncio
 async def test_octo_run_scheduler_tick_once_suppresses_idle_text_with_control_suffix(monkeypatch):
     sent_messages = []
+    monkeypatch.setattr(octo_core, "_PROACTIVE_TICK_ENABLED", False)
 
     async def _route_scheduler_tick(octo, chat_id=0, *, max_tasks=10):
         return "No due tasks. Next task runs at 01:40 UTC. Nothing to act on.\n\nSCHEDULER_IDLE"

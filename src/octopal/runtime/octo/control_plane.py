@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class RouteMode(str, Enum):
+class RouteMode(StrEnum):
     CONVERSATION = "conversation"
     HEARTBEAT = "heartbeat"
     SCHEDULER = "scheduler"
+    PROACTIVE = "proactive"
     WORKER_FOLLOWUP = "worker_followup"
     INTERNAL_MAINTENANCE = "internal_maintenance"
 

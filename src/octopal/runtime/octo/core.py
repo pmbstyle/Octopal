@@ -68,6 +68,7 @@ from octopal.runtime.octo.router import (
     route_heartbeat,
     route_internal_maintenance,
     route_or_reply,
+    route_proactive_tick,
     route_scheduled_octo_control,
     route_scheduler_tick,
     route_worker_results_back_to_octo,
@@ -463,6 +464,13 @@ def _env_float(name: str, default: float, *, minimum: float = 0.0, maximum: floa
     return min(maximum, max(minimum, value))
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 _WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS = float(
     _env_int(
         "OCTOPAL_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS",
@@ -495,6 +503,10 @@ _SCHEDULED_OCTO_CONTROL_BACKOFF_SECONDS = float(
         1800,
         minimum=0,
     )
+)
+_PROACTIVE_TICK_ENABLED = _env_flag("OCTOPAL_PROACTIVE_TICK_ENABLED", True)
+_PROACTIVE_TICK_MIN_INTERVAL_SECONDS = float(
+    _env_int("OCTOPAL_PROACTIVE_TICK_MIN_INTERVAL_SECONDS", 21600, minimum=0)
 )
 
 
@@ -1551,6 +1563,7 @@ class Octo:
     _watch_escalation_streak_by_chat: dict[int, int] | None = None
     _self_queue_by_chat: dict[int, list[dict[str, Any]]] | None = None
     _last_opportunities_by_chat: dict[int, list[dict[str, Any]]] | None = None
+    _last_proactive_tick_at_by_chat: dict[int, datetime] | None = None
     _active_user_turns_by_correlation: dict[str, Any] | None = None
 
     def __post_init__(self):
@@ -1614,6 +1627,8 @@ class Octo:
             self._self_queue_by_chat = {}
         if self._last_opportunities_by_chat is None:
             self._last_opportunities_by_chat = {}
+        if self._last_proactive_tick_at_by_chat is None:
+            self._last_proactive_tick_at_by_chat = {}
         if self._spawn_limits is None:
             max_depth = _env_int("OCTOPAL_WORKER_MAX_SPAWN_DEPTH", 2, minimum=0)
             max_total = _env_int("OCTOPAL_WORKER_MAX_CHILDREN_TOTAL", 20, minimum=1)
@@ -1958,6 +1973,18 @@ class Octo:
             )
             self._scheduler_metric_counters = counters
             if normalized_upper in {"", "SCHEDULER_IDLE", "NO_USER_RESPONSE"}:
+                proactive_result = await self._maybe_run_proactive_tick_once(
+                    chat_id=chat_id,
+                    dispatch_summary=dispatch_summary,
+                    scheduler_result=normalized_upper or "EMPTY",
+                )
+                if proactive_result is not None:
+                    trace_metadata.update(
+                        {
+                            "proactive_status": proactive_result.get("status"),
+                            "proactive_reason": proactive_result.get("reason"),
+                        }
+                    )
                 self._publish_scheduler_metrics(
                     running=True,
                     last_tick_status="idle",
@@ -1969,12 +1996,14 @@ class Octo:
                     "status": "idle",
                     "due_count": due_count,
                     "dispatch": dispatch_summary,
+                    "proactive": proactive_result,
                 }
                 logger.debug(
                     "Scheduler tick complete",
                     due_count=due_count,
                     dispatch=dispatch_summary,
                     result=normalized_upper or "EMPTY",
+                    proactive=proactive_result,
                 )
                 return
 
@@ -2099,6 +2128,67 @@ class Octo:
                 output=trace_output,
                 metadata=trace_metadata,
             )
+
+    async def _maybe_run_proactive_tick_once(
+        self,
+        *,
+        chat_id: int,
+        dispatch_summary: dict[str, Any],
+        scheduler_result: str,
+    ) -> dict[str, Any] | None:
+        if not _PROACTIVE_TICK_ENABLED:
+            return {"status": "skipped", "reason": "disabled"}
+
+        due_count = int(dispatch_summary.get("due_count") or 0)
+        started = int(dispatch_summary.get("started") or 0)
+        errors = int(dispatch_summary.get("errors") or 0)
+        rejected = int(dispatch_summary.get("rejected_by_policy") or 0)
+        if due_count or started or errors or rejected:
+            return {
+                "status": "skipped",
+                "reason": "scheduler_not_idle",
+                "due_count": due_count,
+                "started": started,
+                "errors": errors,
+                "rejected_by_policy": rejected,
+            }
+
+        now = utc_now()
+        last_run_at = (self._last_proactive_tick_at_by_chat or {}).get(chat_id)
+        if last_run_at is not None and _PROACTIVE_TICK_MIN_INTERVAL_SECONDS > 0:
+            try:
+                elapsed = (now - last_run_at).total_seconds()
+            except Exception:
+                elapsed = _PROACTIVE_TICK_MIN_INTERVAL_SECONDS
+            if elapsed < _PROACTIVE_TICK_MIN_INTERVAL_SECONDS:
+                return {
+                    "status": "skipped",
+                    "reason": "cooldown",
+                    "elapsed_seconds": round(elapsed, 2),
+                    "min_interval_seconds": _PROACTIVE_TICK_MIN_INTERVAL_SECONDS,
+                }
+
+        if self._last_proactive_tick_at_by_chat is None:
+            self._last_proactive_tick_at_by_chat = {}
+        self._last_proactive_tick_at_by_chat[chat_id] = now
+        try:
+            result = await route_proactive_tick(
+                self,
+                chat_id=chat_id,
+                reason=f"scheduler_idle:{scheduler_result}",
+            )
+        except Exception as exc:
+            logger.warning("Proactive tick failed", chat_id=chat_id, error=str(exc), exc_info=True)
+            return {
+                "status": "error",
+                "reason": "proactive_tick_failed",
+                "error": str(exc),
+            }
+        return {
+            "status": "ran",
+            "reason": "scheduler_idle",
+            "result_preview": safe_preview(str(result or ""), limit=240),
+        }
 
     async def _periodic_scheduler_tick(self, interval_seconds: int, *, max_tasks: int = 10) -> None:
         while True:
