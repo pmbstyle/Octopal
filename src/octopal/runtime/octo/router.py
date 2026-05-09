@@ -609,8 +609,9 @@ async def route_scheduler_tick(
             user_text=scheduler_tick_text,
             images=None,
             allow_tool_catalog_expansion=False,
+            preserve_user_visible_wrapper=True,
         )
-        return normalize_plain_text(reply_text)
+        return reply_text.strip()
     finally:
         await octo.set_thinking(False)
 
@@ -689,6 +690,7 @@ async def _complete_route_with_tools(
     images: list[str] | None,
     on_plain_partial: Callable[[str], Awaitable[None]] | None = None,
     allow_tool_catalog_expansion: bool,
+    preserve_user_visible_wrapper: bool = False,
 ) -> str:
     tool_capable = getattr(provider, "complete_with_tools", None)
     trace_ctx = get_current_trace_context()
@@ -1054,6 +1056,7 @@ async def _complete_route_with_tools(
                 messages=messages,
                 response_text=final_resp,
                 internal_followup=internal_followup,
+                preserve_user_visible_wrapper=preserve_user_visible_wrapper,
             )
 
         if last_error and _looks_like_tool_error(last_error):
@@ -1091,6 +1094,7 @@ async def _complete_route_with_tools(
         messages=messages,
         response_text=response_raw,
         internal_followup=internal_followup,
+        preserve_user_visible_wrapper=preserve_user_visible_wrapper,
     )
 
 
@@ -2413,8 +2417,13 @@ async def _finalize_response(
     response_text: str,
     *,
     internal_followup: bool,
+    preserve_user_visible_wrapper: bool = False,
 ) -> str:
-    cleaned = sanitize_user_facing_text_preserving_reaction(response_text or "")
+    cleaned = (
+        _sanitize_control_plane_contract_text(response_text or "")
+        if preserve_user_visible_wrapper
+        else sanitize_user_facing_text_preserving_reaction(response_text or "")
+    )
     if not cleaned:
         return cleaned
     _, cleaned_visible_text = extract_reaction_and_strip(cleaned)
@@ -2446,6 +2455,34 @@ async def _finalize_response(
         if rewritten and not looks_like_textual_tool_invocation(rewritten_visible_text):
             return rewritten
         return "NO_USER_RESPONSE"
+    return cleaned
+
+
+def _sanitize_control_plane_contract_text(text: str) -> str:
+    """Strip hidden/tool traces while preserving explicit control-plane wrappers."""
+    if not text:
+        return ""
+    cleaned = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(
+        r"<(tool_call|tool_code|tool_result).*?>.*?</\1>",
+        "",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    cleaned = re.sub(
+        r"(?:^|\n)\s*Tool result \([^)]+\):\s*(?:\{.*?\}|\[.*?\]|.+?)(?=\n|$)",
+        "",
+        cleaned,
+        flags=re.DOTALL,
+    )
+    cleaned = re.sub(
+        r"</?(?:tool_call|tool_code|tool_result|step|plan|thought).*?>",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned
 
 

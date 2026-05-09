@@ -301,6 +301,15 @@ def _coerce_control_plane_reply(text: str) -> str:
     return "HEARTBEAT_OK"
 
 
+def _has_scheduler_idle_suffix(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    trimmed = re.sub(r"[^\w]+$", "", value).strip()
+    normalized = re.sub(r"[\s_-]+", "", trimmed).upper()
+    return normalized.endswith("SCHEDULERIDLE")
+
+
 async def _normalize_heartbeat_delivery_reply(provider: InferenceProvider | None, text: str) -> str:
     """Normalize heartbeat output to the explicit delivery contract."""
     raw_value = str(text or "")
@@ -1906,7 +1915,9 @@ class Octo:
         trace_output: dict[str, Any] | None = None
         try:
             result = await route_scheduler_tick(self, chat_id=chat_id, max_tasks=max_tasks)
-            normalized = normalize_plain_text(result)
+            raw_result = str(result or "")
+            user_visible_text = extract_heartbeat_user_visible_message(raw_result)
+            normalized = normalize_plain_text(raw_result)
             normalized_upper = normalized.strip().upper()
             dispatch_summary = await self._dispatch_due_scheduled_tasks_once(
                 chat_id=chat_id,
@@ -1967,7 +1978,46 @@ class Octo:
                 )
                 return
 
-            delivery = resolve_user_delivery(normalized)
+            if not user_visible_text:
+                suppressed_reason = "control_or_missing_user_visible_wrapper"
+                status = (
+                    "idle"
+                    if _has_scheduler_idle_suffix(normalized)
+                    or has_no_user_response_suffix(normalized)
+                    else "decision_ready"
+                )
+                trace_metadata.update(
+                    {
+                        "delivery_mode": DeliveryMode.SILENT,
+                        "user_visible": False,
+                        "suppressed_reason": suppressed_reason,
+                    }
+                )
+                self._publish_scheduler_metrics(
+                    running=True,
+                    last_tick_status=status,
+                    due_count=due_count,
+                    result_preview=safe_preview(normalized, limit=160),
+                    dispatch_summary=dispatch_summary,
+                )
+                trace_output = {
+                    "status": status,
+                    "due_count": due_count,
+                    "result_preview": safe_preview(normalized, limit=160),
+                    "user_visible_sent": False,
+                    "suppressed_reason": suppressed_reason,
+                    "dispatch": dispatch_summary,
+                }
+                logger.info(
+                    "Scheduler tick produced non-user-visible decision",
+                    due_count=due_count,
+                    dispatch=dispatch_summary,
+                    suppressed_reason=suppressed_reason,
+                    result_preview=safe_preview(normalized, limit=160),
+                )
+                return
+
+            delivery = resolve_user_delivery(user_visible_text)
             trace_metadata.update(
                 {
                     "delivery_mode": delivery.mode,
