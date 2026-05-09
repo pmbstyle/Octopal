@@ -991,6 +991,154 @@ async def test_add_self_queue_item_dedupes_active_items(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scan_opportunities_includes_blocked_scheduled_task_worker_candidate(tmp_path, monkeypatch):
+    monkeypatch.setattr(octo_core, "_workspace_dir", lambda: tmp_path)
+    store = _StoreStub(
+        tasks=[
+            {
+                "id": "weather_digest",
+                "name": "Weather Digest",
+                "frequency": "Every 30 minutes",
+                "task_text": "Fetch weather and summarize it.",
+                "description": "Needs external access.",
+                "worker_id": None,
+                "inputs_json": None,
+                "metadata_json": json.dumps(
+                    {
+                        "notify_user": "never",
+                        "execution_mode": "octo_control",
+                        "blocked_reason": "blocked_by_route",
+                        "suggested_execution_mode": "worker",
+                    }
+                ),
+                "enabled": 1,
+                "last_run_at": None,
+            }
+        ]
+    )
+    octo = Octo(
+        provider=object(),
+        store=store,
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=tmp_path),
+        scheduler=SchedulerService(store=store, workspace_dir=tmp_path),
+    )
+
+    async def _health(chat_id: int):
+        return {"context_health": "OK"}
+
+    octo.get_context_health_snapshot = _health
+
+    result = await octo.scan_opportunities(123, limit=5)
+
+    card = result["opportunities"][0]
+    assert card["kind"] == "scheduled_task_repair"
+    assert card["dedupe_key"] == "scheduled-task:weather_digest:suggested-worker"
+    assert card["suggested_worker_id"] == "ops_sre"
+    assert card["risk"] == "medium"
+    assert card["inputs"] == {
+        "scheduled_task_id": "weather_digest",
+        "blocked_reason": "blocked_by_route",
+        "suggested_execution_mode": "worker",
+    }
+
+
+@pytest.mark.asyncio
+async def test_scan_opportunities_skips_scheduled_candidate_when_queue_has_active_dedupe(tmp_path, monkeypatch):
+    monkeypatch.setattr(octo_core, "_workspace_dir", lambda: tmp_path)
+    store = _StoreStub(
+        tasks=[
+            {
+                "id": "weather_digest",
+                "name": "Weather Digest",
+                "frequency": "Every 30 minutes",
+                "task_text": "Fetch weather and summarize it.",
+                "description": "Needs external access.",
+                "worker_id": None,
+                "inputs_json": None,
+                "metadata_json": json.dumps(
+                    {
+                        "notify_user": "never",
+                        "execution_mode": "octo_control",
+                        "blocked_reason": "blocked_by_route",
+                        "suggested_execution_mode": "worker",
+                    }
+                ),
+                "enabled": 1,
+                "last_run_at": None,
+            }
+        ]
+    )
+    octo = Octo(
+        provider=object(),
+        store=store,
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=tmp_path),
+        scheduler=SchedulerService(store=store, workspace_dir=tmp_path),
+    )
+
+    async def _health(chat_id: int):
+        return {"context_health": "OK"}
+
+    octo.get_context_health_snapshot = _health
+    await octo.add_self_queue_item(
+        123,
+        {
+            "title": "Already queued",
+            "task": "Inspect scheduled task.",
+            "dedupe_key": "scheduled-task:weather_digest:suggested-worker",
+        },
+    )
+
+    result = await octo.scan_opportunities(123, limit=5)
+
+    assert all(item["kind"] != "scheduled_task_repair" for item in result["opportunities"])
+
+
+@pytest.mark.asyncio
+async def test_scan_opportunities_includes_stale_claimed_self_queue_item(tmp_path, monkeypatch):
+    monkeypatch.setattr(octo_core, "_workspace_dir", lambda: tmp_path)
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=tmp_path),
+        scheduler=SchedulerService(store=_StoreStub(), workspace_dir=tmp_path),
+    )
+
+    async def _health(chat_id: int):
+        return {"context_health": "OK"}
+
+    octo.get_context_health_snapshot = _health
+    added = await octo.add_self_queue_item(
+        123,
+        {
+            "title": "Half claimed task",
+            "task": "Finish stale work.",
+        },
+    )
+    queue = octo._self_queue_by_chat[123]
+    queue[0]["status"] = "claimed"
+    queue[0]["updated_at"] = (utc_now() - timedelta(hours=7)).isoformat()
+
+    result = await octo.scan_opportunities(123, limit=5)
+
+    card = result["opportunities"][0]
+    assert card["kind"] == "self_queue_recovery"
+    assert card["dedupe_key"] == f"self-queue:{added['item']['task_id']}:stale-claimed"
+    assert card["risk"] == "low"
+
+
+@pytest.mark.asyncio
 async def test_route_scheduled_octo_control_uses_control_plane_prompt_and_skips_planner(monkeypatch):
     calls = {"control_prompt": 0, "complete_route": 0}
 
