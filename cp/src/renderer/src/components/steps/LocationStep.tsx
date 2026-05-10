@@ -24,7 +24,7 @@ export function LocationStep({
         <Field label="" invalid={!!errors.installDir}>
           <Input {...form.register("installDir")} placeholder="C:\\Octopal" />
         </Field>
-        <Button className="pb-1" type="button" variant="secondary" onClick={onChooseInstallDir}>
+        <Button className="choose-folder-button" type="button" variant="secondary" onClick={onChooseInstallDir}>
           <FolderOpen data-icon="inline-start" />
           {copy("chooseFolder")}
         </Button>
