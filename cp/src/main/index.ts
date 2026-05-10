@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, type OpenDialogOptions } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell, type OpenDialogOptions } from "electron";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { access, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -727,6 +727,24 @@ function resolveBrandIcon(): string | undefined {
   return undefined;
 }
 
+function isExternalUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return ["http:", "https:", "tg:"].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
+function openExternalUrl(url: string): boolean {
+  if (!isExternalUrl(url)) {
+    return false;
+  }
+
+  void shell.openExternal(url);
+  return true;
+}
+
 function createWindow(): void {
   const icon = resolveBrandIcon();
   const mainWindow = new BrowserWindow({
@@ -746,6 +764,17 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: false,
     },
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openExternalUrl(url);
+    return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (url !== mainWindow.webContents.getURL() && openExternalUrl(url)) {
+      event.preventDefault();
+    }
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {

@@ -658,15 +658,152 @@ p {
 }
 
 .field {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.field-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .field-label {
   color: var(--muted-strong);
   font-size: 13px;
   font-weight: 700;
+}
+
+.field-help-wrap {
+  position: relative;
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  pointer-events: none;
+}
+
+.field-help-button {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-strong);
+  pointer-events: auto;
+}
+
+.field-help-button:hover,
+.field-help-button[aria-expanded="true"] {
+  background: transparent;
+  color: var(--primary);
+}
+
+.field-help-button:focus-visible,
+.field-help-close:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  outline-offset: 2px;
+}
+
+.field-help-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.field-help-popup-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(5, 8, 14, 0.44);
+  backdrop-filter: blur(14px);
+}
+
+.field-help-popup {
+  display: grid;
+  width: min(460px, 100%);
+  max-height: min(620px, calc(100vh - 56px));
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--primary) 32%, var(--border));
+  border-radius: 18px;
+  background: var(--surface-strong);
+  box-shadow: var(--shadow);
+  color: var(--foreground);
+}
+
+.field-help-popup-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.field-help-popup-head h2 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.field-help-popup-body {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px 18px;
+  overflow: auto;
+}
+
+.field-help-close {
+  display: grid;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted-strong);
+}
+
+.field-help-close:hover {
+  border-color: color-mix(in srgb, var(--primary) 44%, var(--border));
+  color: var(--primary);
+}
+
+.field-help-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+.field-help-copy {
+  display: block;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.field-help-link {
+  color: color-mix(in srgb, var(--primary) 78%, var(--foreground));
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.field-help-link:hover {
+  color: var(--primary);
+  text-decoration: underline;
 }
 
 .field-hint {
