@@ -38,14 +38,50 @@ export function SearchStep({
       </div>
       {values.searchProvider === "brave" ? (
         <motion.div className="single-field reveal-form" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-          <Field label={copy("braveKey")} hint={isExistingSecret(values.braveApiKey) ? copy("configured") : copy("required")} invalid={!!errors.braveApiKey}>
+          <Field
+            label={copy("braveKey")}
+            hint={isExistingSecret(values.braveApiKey) ? copy("configured") : copy("required")}
+            invalid={!!errors.braveApiKey}
+            help={{
+              title: copy("braveKeyHelpTitle"),
+              body: [
+                <>
+                  {copy("braveKeyHelpBody1Prefix")}{" "}
+                  <a className="field-help-link" href="https://api-dashboard.search.brave.com/app/keys" target="_blank" rel="noreferrer">
+                    {copy("braveKeyHelpLink")}
+                  </a>
+                  {copy("braveKeyHelpBody1Suffix")}
+                </>,
+                copy("braveKeyHelpBody2"),
+              ],
+              closeLabel: copy("closeHelp"),
+            }}
+          >
             <Input {...form.register("braveApiKey")} type="password" />
           </Field>
         </motion.div>
       ) : null}
       {values.searchProvider === "firecrawl" ? (
         <motion.div className="single-field reveal-form" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-          <Field label={copy("firecrawlKey")} hint={isExistingSecret(values.firecrawlApiKey) ? copy("configured") : copy("required")} invalid={!!errors.firecrawlApiKey}>
+          <Field
+            label={copy("firecrawlKey")}
+            hint={isExistingSecret(values.firecrawlApiKey) ? copy("configured") : copy("required")}
+            invalid={!!errors.firecrawlApiKey}
+            help={{
+              title: copy("firecrawlKeyHelpTitle"),
+              body: [
+                <>
+                  {copy("firecrawlKeyHelpBody1Prefix")}{" "}
+                  <a className="field-help-link" href="https://www.firecrawl.dev/app/api-keys" target="_blank" rel="noreferrer">
+                    {copy("firecrawlKeyHelpLink")}
+                  </a>
+                  {copy("firecrawlKeyHelpBody1Suffix")}
+                </>,
+                copy("firecrawlKeyHelpBody2"),
+              ],
+              closeLabel: copy("closeHelp"),
+            }}
+          >
             <Input {...form.register("firecrawlApiKey")} type="password" />
           </Field>
         </motion.div>

@@ -92,6 +92,36 @@ export function ConnectorsStep({
 }) {
   const googleStatus = statusFor(connectorStatus, "google");
   const githubStatus = statusFor(connectorStatus, "github");
+  const googleCredentialsHelp = {
+    title: copy("googleCredentialsHelpTitle"),
+    body: [
+      <>
+        {copy("googleCredentialsHelpBody1Prefix")}{" "}
+        <a className="field-help-link" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">
+          {copy("googleCredentialsHelpLink")}
+        </a>
+        {copy("googleCredentialsHelpBody1Suffix")}
+      </>,
+      copy("googleCredentialsHelpBody2"),
+      copy("googleCredentialsHelpBody3"),
+    ],
+    closeLabel: copy("closeHelp"),
+  };
+  const githubTokenHelp = {
+    title: copy("githubTokenHelpTitle"),
+    body: [
+      <>
+        {copy("githubTokenHelpBody1Prefix")}{" "}
+        <a className="field-help-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">
+          {copy("githubTokenHelpLink")}
+        </a>
+        {copy("githubTokenHelpBody1Suffix")}
+      </>,
+      copy("githubTokenHelpBody2"),
+      copy("githubTokenHelpBody3"),
+    ],
+    closeLabel: copy("closeHelp"),
+  };
 
   return (
     <StepSection body={copy("connectorsBody")}>
@@ -140,13 +170,14 @@ export function ConnectorsStep({
             ))}
           </div>
           <div className="connector-form">
-            <Field label={copy("googleClientId")} invalid={!!errors.googleClientId}>
+            <Field label={copy("googleClientId")} invalid={!!errors.googleClientId} help={googleCredentialsHelp}>
               <Input {...form.register("googleClientId")} />
             </Field>
             <Field
               label={copy("googleClientSecret")}
               hint={isExistingSecret(values.googleClientSecret) ? copy("configured") : copy("required")}
               invalid={!!errors.googleClientSecret}
+              help={googleCredentialsHelp}
             >
               <Input {...form.register("googleClientSecret")} type="password" />
             </Field>
@@ -187,6 +218,7 @@ export function ConnectorsStep({
               label={copy("githubToken")}
               hint={isExistingSecret(values.githubToken) ? copy("configured") : copy("required")}
               invalid={!!errors.githubToken}
+              help={githubTokenHelp}
             >
               <Input {...form.register("githubToken")} type="password" />
             </Field>

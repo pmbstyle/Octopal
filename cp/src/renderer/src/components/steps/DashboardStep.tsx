@@ -59,7 +59,15 @@ export function DashboardStep({
               type="number"
             />
           </Field>
-          <Field label={copy("dashboardToken")} hint={isExistingSecret(values.dashboardToken) ? copy("configured") : copy("recommended")}>
+          <Field
+            label={copy("dashboardToken")}
+            hint={isExistingSecret(values.dashboardToken) ? copy("configured") : copy("recommended")}
+            help={{
+              title: copy("dashboardTokenHelpTitle"),
+              body: [copy("dashboardTokenHelpBody1"), copy("dashboardTokenHelpBody2"), copy("dashboardTokenHelpBody3")],
+              closeLabel: copy("closeHelp"),
+            }}
+          >
             <div className="input-action-row">
               <Input {...form.register("dashboardToken")} type={tokenVisible && !tokenIsConfiguredSecret ? "text" : "password"} />
               <Button
