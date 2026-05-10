@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>AI AGENT THAT DON'T GET YOUR MACHINE COMPROMISED</strong>
+  <strong>A safer personal AI operator that can actually get work done.</strong>
 </p>
 
 <p align="center">
@@ -13,136 +13,40 @@
    <a href="https://deepwiki.com/pmbstyle/Octopal"><img src="https://deepwiki.com/badge.svg"></a>
 </p>
 
-Octopal is a local multi-agent runtime for autonomous execution without giving a single long-lived process unrestricted access to your machine.
+Octopal is a local AI agent platform for people who want broad, real-world automation with a design that makes powerful actions safer and easier to predict.
 
-It is built around a hard split between coordination and execution:
+It lives in Telegram or WhatsApp; remembers long-running context; schedules recurring work; uses tools, MCP servers, skills, browser/search, files, and connectors; and sends hands-on work to short-lived agents instead of letting one always-on process both know everything about you and touch everything on your machine.
 
-- **Octo** is the coordinator. It holds memory, user context, policy, and decides what should happen next.
-- **Workers** do the side effects. They run tools, touch files, browse the web, and return results to Octo.
+If you like the promise of projects like OpenClaw, Hermes Agent, and NanoClaw, but want an isolation-first default with a stronger coordinator/worker boundary, Octopal is built for that exact taste.
 
-That separation is the point. In many agent setups, the same process that sees your secrets also executes shell commands and follows untrusted content. Octopal keeps those concerns apart.
+<p align="center">
+   <img alt="Octopal dashboard" src="https://github.com/user-attachments/assets/55360901-a319-4c8c-932b-df3c519da375" />
+</p>
 
-By default, workers use the Docker launcher and get their own disposable runtime plus a private scratch workspace.
+## Why Octopal Exists
 
-## Table of contents
+Personal AI agents are finally useful enough to keep running.
 
-- 🧭 [Why I Built Octopal](#-why-i-built-octopal)
-- 🔒 [Security model](#-security-model)
-- 🪛 [What it can do](#-what-it-can-do) 
-- 🚀 [Quick start](#-quick-start)
-  - 💻 [Install on a Desktop (beta)](#-install-on-a-desktop-beta)
-  - ☁️ [Install on a Server](#%EF%B8%8F-install-on-a-server)
-  - ⚒️ [Manual installation](#%EF%B8%8F-manual-setup)
-- ✨ [Key features](#-key-features)
+That is exactly why their design has to be careful.
 
+An always-on agent reads messages, remembers preferences, opens web pages, runs tools, touches files, and follows instructions from places you do not fully control. A malicious web page, poisoned document, unsafe script, or compromised skill should not get the same trust boundary as the assistant that knows your private context.
 
-## 🧭 Why I Built Octopal
+Octopal's core idea is simple:
 
-Projects like OpenClaw, Hermes Agent, and NanoClaw show that people want agents that actually do things, not just answer questions.
+- **Octo thinks.** It holds memory, policy, user context, and the long-running conversation.
+- **Workers act.** They receive scoped tasks, limited context, explicit permissions, and disposable execution environments.
+- **You choose what gets shared.** When a task needs files, you give access to the specific places it should use. It does not start with your whole workspace in its hands.
+- **Hands-on work happens in a separate place by default.** Octopal normally runs risky actions in a disposable container; direct host execution is only a fallback when containers are unavailable.
 
-That is the part I agree with. I love smart agentic systems.
+So the pitch is not "AI can do anything." The pitch is better:
 
-What I did not like in many agent setups was the default trust model: the same agent that can see your memory, instructions, and secrets can often also walk outside your system and take unrestricted actions.
+**give the agent real hands, but do not hand it your whole house.**
 
-It will be exposed to many kinds of attacks, such as prompt injection, unsafe scripts, skills, and websites whose sole purpose is to attack AI agents and gain control over them. After the original OpenClaw release, the web became a much more dangerous place for AI agents.
+## Quick Start
 
-This can lead to sensitive data exposure, identity theft, system compromise, and generally produce a lot of issues. 
+### Desktop App
 
-Octopal tries to make that simpler and safer to reason about.
-
-- Octo is the brain that plans and decides
-- Workers do the risky part: tools, shell, files, web, and external actions
-- Workers use Docker by default, so they do not start with full access to your machine
-- If a worker needs files from your main workspace, you share only the paths it actually needs
-
-Why this is better in practice:
-
-- **easier to trust**, because the agent doing the work is not automatically sitting on top of your whole machine
-- **easier to understand**, because there is a clear line between thinking and acting
-- **easier to control**, because file access is shared deliberately instead of being wide open by default
-
-OpenClaw and Hermes Agent both support sandboxed/containerized execution, but their documented defaults still allow host-side execution in common setups. Octopal takes the opposite approach: isolation first, host-style execution only as a fallback.
-
-NanoClaw goes in a different direction and keeps the whole system much smaller. That is a good trade if you want the leanest possible setup. Octopal is broader on purpose: memory, worker templates, channels, MCP, skills, recurring tasks, and a private gateway/dashboard all live in one runtime.
-
-## 🔒 Security Model
-
-Octopal is designed so the coordinator keeps the sensitive context and workers handle execution.
-
-- Docker is the default worker runtime
-- Workers keep their own private scratch workspace by default
-- Sharing files from Octo's main workspace requires explicit `allowed_paths`
-- Dashboard and dashboard APIs can be protected with a token and exposed remotely through Tailscale
-
-### Why Docker workers
-
-Docker is not here just for packaging. In Octopal, it is the default execution boundary.
-
-Workers routinely touch untrusted inputs: web pages, external APIs, generated code, shell commands, and third-party tools. Running that work in a disposable container is a stronger default than letting the same long-lived process that holds your memory and policy also execute everything directly on the host.
-
-It also makes the runtime easier to reason about across macOS, Linux, and Windows: the worker environment is explicit, rebuildable, and separate from your main Octo process.
-
-## 🪛 What It Can Do
-
-- Run as a persistent AI operator over Telegram or WhatsApp
-- Plan work and delegate tasks to specialized workers
-- Execute filesystem, web, browser, shell, and MCP tools under policy controls
-- Create and reuse worker templates, MCP server connections, and `SKILL.md`-based skills
-- Maintain persistent memory, canon, and user/system identity files
-- Monitor context health and trigger structured context resets when needed
-- Keep Octo prompts smaller with deferred tool loading and compact bootstrap context
-- Schedule recurring tasks and background routines
-- Expose a private gateway and dashboard for status, workers, and system visibility
-- A set of canonical memory files shapes the system environment
-
-See [docs/context_tool_loading.md](docs/context_tool_loading.md) for the current context and tool-loading strategy.
-
-
-```
-User
-   │
-Channels (Telegram / WhatsApp / WS)
-   │
- Octo
-   │
- Worker Pool
-   │
- Tools / MCP / Skills
-   │
- External Systems
-```
-
-**Example workflows:**
-
-Example1:
-
-User:
-"Research the latest Gemini model and write a summary."
-
-Octo:
-1. Spawns Web Researcher
-2. Researcher fetches sources and writes a summary
-3. Researcher returns only a summary to Octo and terminates; its environment gets deleted
-4. Octo stores canon entry
-5. Result returned to the user
-
-Example2:
-
-Octo:
-1. I want to read comments under my Moltbook post
-2. Spawns Moltbook Orchestrator
-3. Moltbook Orchestrator spawns Moltboot Client worker to read comments
-4. Moltbook Client returns comments to Moltbook Orchestrator, client's instance gets deleted 
-5. Moltbook Orchestrator returns comments to Octo and pauses, waiting for the next instructions
-6. Octo decides to reply to one comment
-7. Moltbook Orchestrator spawns Moltbook Client to publish a comment reply and returns the final summary
-8. All workers finish, and their environments get removed
-
-## 🚀 Quick Start
-
-### 💻 Install on a Desktop (beta)
-
-👉 **[Download the latest release](https://github.com/pmbstyle/Octopal/releases/latest)**
+Download the latest desktop build from the [Octopal releases page](https://github.com/pmbstyle/Octopal/releases/latest).
 
 <!-- STABLE_DOWNLOADS -->
 | Platform | Download |
@@ -152,122 +56,175 @@ Octo:
 | **Linux** | [Octopal-Desktop-2026.5.5-linux-x86_64.AppImage](https://github.com/pmbstyle/Octopal/releases/download/v2026.05.05/Octopal-Desktop-2026.5.5-linux-x86_64.AppImage) |
 <!-- STABLE_DOWNLOADS_END -->
 
-<img alt="Octopal Desktop" src="https://github.com/user-attachments/assets/a995f7ab-28a6-45ee-b63a-2a7c45dedd3b" />
+<p align="center">
+   <img alt="Octopal Desktop" src="https://github.com/user-attachments/assets/a995f7ab-28a6-45ee-b63a-2a7c45dedd3b" />
+</p>
 
+### Server Install
 
-### ☁️ Install on a Server
-
-macOS/Linux:
+macOS / Linux:
 
 ```bash
 curl -fsSL https://octopal.ca/octopal.sh | bash
 ```
 
-Windows:
+Windows PowerShell:
 
 ```powershell
 irm https://octopal.ca/octopal.ps1 | iex
 ```
 
-Complete configuration in CLI. You can always change the configuration using `uv run octopal configure` command.
-
-**Optional: WhatsApp setup**
-
-After you configure your WhatsApp number in the config link Octopal as a new device
+Then configure and start:
 
 ```bash
-uv run octopal whatsapp link
-```
-
-**Open the web dashboard**
-
-After bootstrap, start Octopal and then open the dashboard in your browser:
-
-```bash
+uv run octopal configure
 uv run octopal start
 ```
 
-Open [http://127.0.0.1:8001/dashboard](http://127.0.0.1:8001/dashboard) (change to Tailscale IP for remote access)
+Open the dashboard:
 
-If you enabled dashboard protection during `octopal configure`, use the `gateway.dashboard_token` value from `config.json` when the dashboard or dashboard API asks for it.
-
-If the page says the dashboard is unavailable, build and enable the web app first:
-
-```bash
-cd webapp
-npm run build
+```text
+http://127.0.0.1:8000/dashboard
 ```
 
-Then enable the dashboard bundle in `config.json` by setting `"gateway": { "webapp_enabled": true }` and start Octopal again.
+If you enabled dashboard protection, use the `gateway.dashboard_token` value from `config.json`.
 
-<img alt="Octopal dashboard" src="https://github.com/user-attachments/assets/55360901-a319-4c8c-932b-df3c519da375" />
-
-
-### ⚒️ Manual setup
-
-If you do not want the bootstrap script, use the manual path below.
+### Manual Install
 
 ```bash
 git clone https://github.com/pmbstyle/Octopal.git
 cd Octopal
 uv sync
 uv run octopal configure
+uv run octopal start
 ```
 
-Alternative without `uv`:
+Without `uv`:
 
 ```bash
 python -m venv .venv
+
 # Windows
 .venv\Scripts\activate
-# macOS/Linux
+
+# macOS / Linux
 source .venv/bin/activate
+
 pip install -e .
+octopal configure
+octopal start
 ```
 
-Then run:
+## What You Can Use It For
 
-```bash
-uv run octopal configure
+| Use case | What Octopal does |
+|:--|:--|
+| Personal operator | Runs from Telegram, WhatsApp, or a private WebSocket/dashboard client. |
+| Research | Delegates browsing, fetching, synthesis, and source-heavy work to workers. |
+| Coding and repo work | Uses code workers, test runners, repo researchers, release managers, and bug investigators. |
+| Recurring routines | Schedules background reports, checks, reminders, and operational tasks. |
+| Memory-heavy work | Keeps conversation history, canon, user preferences, identity files, and durable project context. |
+| Tool orchestration | Uses MCP servers, skills, shell, filesystem, web, browser/search, and connectors under policy controls. |
+| Private operations | Exposes a token-protected dashboard and optional Tailscale access instead of requiring public ports. |
+
+Example:
+
+```text
+You:
+Research the latest Gemini model changes and tell me what matters for our agent stack.
+
+Octo:
+1. Spawns a web researcher with scoped tools.
+2. The researcher gathers sources and writes a compact summary.
+3. Octo stores the durable takeaways in memory.
+4. You get the answer without keeping a browser/tool worker alive forever.
 ```
 
-`configure` creates or updates `config.json` and bootstraps workspace files if missing.
+Another example:
 
-**Configuration model**
+```text
+You:
+Every Friday, review the repo history, summarize what changed, and flag README drift.
 
-`config.json` is the configuration file.
-
-- `uv run octopal configure` writes the structured config there.
-
-**Start**
-
-```bash
-# background mode
-uv run octopal start
-
-# foreground mode
-uv run octopal start --foreground
+Octo:
+1. Creates a scheduled task.
+2. Runs a repo-focused worker on the schedule.
+3. Sends the report back through your chosen channel.
+4. Keeps the routine visible in the dashboard.
 ```
 
-**Core Commands**
+## How It Compares
 
-```bash
-uv run octopal start
-uv run octopal stop
-uv run octopal restart
-uv run octopal status
-uv run octopal update
+Octopal lives in the same neighborhood as OpenClaw, Hermes Agent, NanoClaw, OpenHands, and other autonomous agent runtimes. The difference is the default posture.
+
+| Project style | Strong idea | Tradeoff Octopal is designed around |
+|:--|:--|:--|
+| OpenClaw-style personal assistants | Broad channel coverage, always-on local assistant, polished ecosystem. | Octopal makes Docker workers and scoped execution the default mental model instead of treating host execution as the comfortable path. |
+| Hermes-style self-improving agents | Strong memory, skills, model/provider flexibility, and a clear "agent that learns you" story. | Octopal focuses on separating the thinking loop from the side-effect loop, so sensitive memory and risky tools do not have to live in the same execution boundary. |
+| NanoClaw-style minimal agents | Small, understandable, container-first design. | Octopal chooses a larger integrated runtime: dashboard, channels, worker templates, MCP, skills, memory, connectors, scheduled tasks, and operational controls in one place. |
+| Coding-agent sandboxes | Great for repo work and software tasks. | Octopal is meant to be a persistent personal/operator runtime, not only an IDE-adjacent coding agent. |
+
+If you want the smallest possible codebase, NanoClaw may feel cleaner. If you want the broadest social surface, OpenClaw is impressive. If you want a memory-and-skills-first agent, Hermes has a strong pitch.
+
+Octopal is for the person who wants an always-reachable AI operator with a serious execution boundary, visible operations, and enough built-in runtime to trust it with real ongoing work.
+
+## Architecture
+
+```text
+User
+  |
+Channels: Telegram / WhatsApp / WebSocket
+  |
+Octo coordinator
+  |
+Worker pool
+  |
+Tools / MCP / Skills / Connectors
+  |
+External systems
 ```
 
-**Docker Worker Launcher**
+Octo is the long-lived coordinator. It owns the conversation, memory, policy, routing, and high-level decisions.
 
-Docker workers are the default and recommended runtime. You can build the worker image up front:
+Workers are the execution layer. They run tools, touch files, browse, call MCP servers, use skills, and return structured results, questions, or errors. Workers can also spawn subworkers for multi-step tasks when their policy allows it.
+
+Prebuilt worker templates include:
+
+- Web Researcher
+- Web Fetcher
+- Data Analyst
+- Code Worker
+- Writer
+- DevOps / Release Manager
+- Security Auditor
+- Test Runner
+- System Self-Controller
+- DB Maintainer
+- Repo Researcher
+- Bug Investigator
+
+## Security Model
+
+Octopal is designed around a coordinator/worker split:
+
+- Docker is the default worker launcher.
+- Workers get their own scratch workspace.
+- Access to Octo's main workspace is explicit through `allowed_paths`.
+- Worker environments are disposable.
+- Dashboard and gateway APIs can be protected with a token.
+- Tailscale integration can expose the dashboard privately without opening public ports.
+
+Docker is not just packaging here. It is the default execution boundary for work that may touch untrusted inputs: websites, generated code, third-party scripts, documents, shell commands, and tool outputs.
+
+If Docker CLI or the Docker daemon is unavailable, or the worker image cannot be built, Octopal can temporarily fall back to `same_env` and surface the reason in `octopal status` and the dashboard. That fallback exists so the system remains usable; it is not the recommended security posture.
+
+Build the worker image manually when needed:
 
 ```bash
 uv run octopal build-worker-image --tag octopal-worker:latest
 ```
 
-Then set in `config.json`:
+Configure the launcher:
 
 ```json
 {
@@ -278,170 +235,193 @@ Then set in `config.json`:
 }
 ```
 
-Restart Octopal after config changes.
+Restart after config changes:
 
 ```bash
 uv run octopal restart
 ```
 
-If Docker CLI and the Docker daemon are available but the configured worker image is missing, Octopal will try to build it automatically on startup. If Docker is unavailable or the automatic build fails, Octopal will temporarily fall back to `same_env` and surface the reason in `octopal status` and the dashboard.
+See [docs/worker_isolation.md](docs/worker_isolation.md) for the detailed worker isolation model.
 
-Workers keep their own scratch workspace by default. To share files from Octo's main workspace with a worker, pass explicit `allowed_paths`; if `allowed_paths` is omitted, the worker does not get broad workspace access.
+## Memory That Feels Useful
 
+Octopal keeps memory in layers so the assistant can stay personal without turning every prompt into a junk drawer:
 
-## ✨ Key Features
-
-### 💻 Local and Cloud deployment
-
-Octopal can work from any environment that supports Python execution.
-Fast and simple bootstrap onboarding helps you to start using Octopal right away.
-
-- deploy on your local PC (Linux, Windows, MacOS)
-- deploy on a VPS
-- deploy in Docker
-
-Octopal works from a specified directory and has no access to your system components.
-
-### 🧠 Delegation-driven architecture
-
-Octo, which holds all system context and sensitive data, never communicates with the outside world on its own.
-Instead, the Octo delegates tasks to workers with limited context and predefined tool/skill sets.
-Workers can spawn subworkers for multi-step tasks. Workers can only return response of their tasks or question/error responses. 
-
-- Octo delegates external operations to workers, which ensures context isolation, enhances security, and provides async task execution
-- workers execute in an isolated environment, which gets deleted after each execution
-- workers can act as orchestrators and create sub-workers for multi-tasking
-- workers operate with a predefined set of tools, MCP, and skills in their config as well as `max_thinking_steps` and `execution_timeout`
-- the Octo can create new workers for a specific task (ex. use a skill to work with an external resource)
-- Prebuilt worker templates include:
-  - Web Researcher
-  - Web Fetcher
-  - Data Analyst
-  - Code Worker
-  - Writer
-  - DevOps / Release Manager
-  - Security Auditor
-  - Test Runner
-  - System Self-Controller
-  - DB Maintainer
-  - Repo Researcher
-  - Bug Investigator
-
-### 📃 Multilayer memory system
-
-Octo operates with a local vector database to store communication history and file-based context:
-
-- **MEMORY.md** – working memory and durable context; important facts, current state, and notes the system may need across sessions
-- **memory/canon/** – curated long-term knowledge that has been reviewed and promoted into trusted reference material
-- **USER.md** – user profile, preferences, habits, and interaction style
-- **SOUL.md** – system identity, values, tone, and core behavioral principles
-- **HEARTBEAT.md** – recurring duties, monitoring loops, schedules, and background obligations
+- `MEMORY.md` keeps working memory and durable notes.
+- `memory/canon/` stores reviewed long-term knowledge.
+- `USER.md` stores user preferences and interaction style.
+- `SOUL.md` stores assistant identity, tone, and behavioral principles.
+- `HEARTBEAT.md` stores recurring duties, monitoring loops, and background obligations.
 
 See [docs/memory.md](docs/memory.md).
 
-### 🤖 Multi-channel user communication
+## Channels And Dashboard
 
-Octopal supports:
-- Telegram (Botfather)
-- WhatsApp (Dedicated or personal numbers)
-- WS API gateway (Build or bring your own client)
+Octopal can talk through:
 
-Communication channels, by default, provide full support of functions like:
-- text communication
-- image attachments
-- message reactions
-- 5s grace window for user messages:
+- Telegram
+- WhatsApp
+- WebSocket gateway for custom clients
 
-  You can send a followback message before the Octo executes it - this helps to prevent typos, wrong commands, etc.
+Channels support text, image/file attachments, reactions where supported, and a short grace window so follow-up messages can be folded into the same turn before Octo starts executing.
 
-### ⚙️ Web dashboard
+The dashboard gives you a live operational surface:
 
-The Dashboard provides a real-time, comprehensive view of the system's state, active workers, and communication logs. It is built as a modern Vite + React web application.
+- Octo status and gateway health
+- active workers and worker history
+- communication logs
+- dashboard actions
+- token-based access protection
+- optional Tailscale-aware private access
 
-- **Secure by default:** Built-in token-based authentication and optional Tailscale integration.
-- **Real-time updates:** Uses WebSockets for live streaming of agent thoughts and tool executions.
-- **Terminal mode:** Access a live view directly from your CLI via `octopal dashboard --watch`.
+Run:
 
-### 🔒 Remote Access & Security (Tailscale)
+```bash
+uv run octopal dashboard --watch
+```
 
-Octopal features first-class integration with **Tailscale** to provide secure remote access without opening ports or configuring complex firewalls:
+or open:
 
-- **Automatic Tunneling:** If Tailscale is installed, Octopal can automatically run `tailscale serve` to expose the gateway to your private tailnet.
-- **IP-Based Authorization:** The WebSocket and Dashboard APIs automatically verify that incoming connections originate from trusted Tailscale nodes or your local machine.
-- **Easy Configuration:** Managed via `config.json` in the `gateway` section.
+```text
+http://127.0.0.1:8000/dashboard
+```
+
+If the dashboard bundle is missing:
+
+```bash
+cd webapp
+npm install
+npm run build
+```
+
+Then set:
 
 ```json
 {
   "gateway": {
-    "tailscale_auto_serve": true,
-    "tailscale_ips": "100.x.y.z,100.a.b.c"
+    "webapp_enabled": true
   }
 }
 ```
 
-### 🧩 Skills and skill bundles
+## Skills And Connectors
 
 Octopal supports workspace-local skill bundles under `workspace/skills/<skill-id>/`.
 
-- auto-discovers `SKILL.md` bundles
-- keeps `skills/registry.json` as a compatibility layer
-- supports optional `scripts/`, `references/`, and `assets/`
-- exposes readiness checks for required binaries and env vars
-- runs bundled scripts through a dedicated safe runner instead of raw shell
-- can install external skills with ClawHub-style commands like `uv run octopal skill install <publisher>/<skill-pack>`
-- also accepts direct `SKILL.md` URLs and local bundle paths
-- supports installer lifecycle commands: `skill install`, `skill list`, `skill update`, `skill trust`, `skill untrust`, `skill remove`
-- shows both local workspace skills and installer-managed skills in `skill list`
-- requires isolated per-skill runtime envs for Python and JS/TS script-backed skills
-- auto-verifies imported scripts and auto-prepares isolated envs during install/update when possible
+Skills can include:
 
-See [docs/skills.md](docs/skills.md) for the current format and behavior.
+- `SKILL.md` instructions
+- scripts
+- references
+- assets
+- readiness checks
+- isolated Python or JS/TS runtime environments
 
-### 🛜 Connectors (experimental)
+Common commands:
 
-Connectors are the integration layer between Octopal and external services. Octopal will operate with selected services on your behalf.
+```bash
+uv run octopal skill list
+uv run octopal skill install <publisher>/<skill-pack>
+uv run octopal skill update <skill-id>
+uv run octopal skill trust <skill-id>
+uv run octopal skill remove <skill-id>
+```
 
-- **Google Connector**
+See [docs/skills.md](docs/skills.md).
 
-   <img src="https://www.gstatic.com/images/branding/productlogos/gmail_2020q4/v11/192px.svg" height="60"> <img src="https://www.gstatic.com/images/branding/productlogos/calendar_2020q4/v13/192px.svg" height="60"> <img src="https://www.gstatic.com/images/branding/productlogos/drive_2020q4/v10/192px.svg" height="60">
+Connectors are the integration layer for external services. The current connector surface includes Google services and GitHub-oriented workflows, with more integration work happening around the runtime.
 
-   Gmail | Google Calendar | Google Drive
+See [docs/connectors.md](docs/connectors.md).
 
-- **GitHub Connector**
-  
-  <img src="https://octopal.ca/github.png" height="60">
+## Core Commands
 
-See [docs/connectors.md](docs/connectors.md) for more info.
+```bash
+uv run octopal configure
+uv run octopal start
+uv run octopal start --foreground
+uv run octopal stop
+uv run octopal restart
+uv run octopal status
+uv run octopal update
+uv run octopal logs --follow
+```
+
+WhatsApp setup:
+
+```bash
+uv run octopal whatsapp install-bridge
+uv run octopal whatsapp link
+uv run octopal whatsapp status
+```
+
+Worker templates:
+
+```bash
+uv run octopal sync-worker-templates --overwrite
+```
+
+Memory maintenance:
+
+```bash
+uv run octopal memory stats
+uv run octopal memory cleanup --dry-run
+```
+
+## Development
+
+```bash
+uv sync
+uv run pytest
+uv run ruff check .
+uv run black --check .
+uv run mypy src
+```
+
+Build the dashboard manually:
+
+```bash
+cd webapp
+npm install
+npm run build
+```
+
+GitHub releases use date-based versions in `src/octopal/_version.py` and tags like `vYYYY.MM.DD` or `vYYYY.MM.DD.N`.
 
 ## Troubleshooting
 
 ### Telegram bot starts but does not reply
 
-- Verify `telegram.bot_token` in `config.json`
-- Verify your chat ID is listed in `telegram.allowed_chat_ids`
-- Check `uv run octopal status` and `uv run octopal logs --follow`
+- Verify `telegram.bot_token` in `config.json`.
+- Verify your chat ID is listed in `telegram.allowed_chat_ids`.
+- Check `uv run octopal status`.
+- Tail logs with `uv run octopal logs --follow`.
 
-### WhatsApp is selected, but not receiving messages
+### WhatsApp is selected but messages do not arrive
 
-- Verify `user_channel` is set to `whatsapp` in `config.json`
-- Verify your phone number is listed in `whatsapp.allowed_numbers`
-- Run `uv run octopal whatsapp install-bridge`
-- Run `uv run octopal whatsapp link`
-- Start Octopal again and check `uv run octopal whatsapp status`
+- Verify `user_channel` is set to `whatsapp` in `config.json`.
+- Verify your phone number is listed in `whatsapp.allowed_numbers`.
+- Run `uv run octopal whatsapp install-bridge`.
+- Run `uv run octopal whatsapp link`.
+- Start Octopal again and check `uv run octopal whatsapp status`.
 
 ### LLM errors
 
-- Run `uv run octopal configure` and pick the provider you want to use.
-- In your config file, check `llm.provider_id`, `llm.model`, and `llm.api_key` in `config.json`.
+- Run `uv run octopal configure` and pick the provider you want.
+- Check `llm.provider_id`, `llm.model`, `llm.api_key`, and `llm.api_base` in `config.json`.
 
-### Web search/fetch issues
+### Web search or fetch issues
 
-Add the preferred search engine API key in your `config.json`
+Add the preferred search provider key in `config.json`:
 
 ```json
-"search": {
+{
+  "search": {
     "brave_api_key": null,
     "firecrawl_api_key": null
-},
+  }
+}
 ```
 
+## License
+
+MIT. See [LICENSE](LICENSE).
