@@ -128,6 +128,10 @@ from octopal.runtime.octo.router import (
 )
 from octopal.runtime.octo.runtime_config import _env_flag, _env_int
 from octopal.runtime.octo.runtime_config import _env_float as _env_float
+from octopal.runtime.octo.scheduler_helpers import (
+    _coerce_positive_chat_id,
+    _empty_scheduler_metric_counters,
+)
 from octopal.runtime.octo.self_queue import (
     _build_opportunity_card,
     _load_self_queue,
@@ -142,6 +146,7 @@ from octopal.runtime.octo.worker_records import (
     _serialize_worker_record,
 )
 from octopal.runtime.octo.worker_timeouts import _resolve_worker_timeout_seconds
+from octopal.runtime.octo.workspace_paths import _workspace_dir
 from octopal.runtime.policy.engine import PolicyEngine
 from octopal.runtime.scheduler.service import (
     SCHEDULED_TASK_BLOCKED_REASON_KEY,
@@ -248,26 +253,6 @@ def _publish_runtime_metrics(thinking_count: int = 0) -> None:
             "thinking_count": thinking_count,
         },
     )
-
-
-def _empty_scheduler_metric_counters() -> dict[str, int]:
-    return {
-        "ticks_total": 0,
-        "failures_total": 0,
-        "started_total": 0,
-        "completed_total": 0,
-        "duplicates_total": 0,
-        "rejected_by_policy_total": 0,
-        "errors_total": 0,
-    }
-
-
-def _coerce_positive_chat_id(value: Any) -> int | None:
-    try:
-        chat_id = int(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-    return chat_id if chat_id > 0 else None
 
 
 async def _followup_worker(chat_id: int, queue: asyncio.Queue) -> None:
@@ -4426,7 +4411,3 @@ class Octo:
             await sender(chat_id, event, payload or {})
         except Exception:
             logger.debug("Worker event emit failed", exc_info=True)
-
-
-def _workspace_dir() -> Path:
-    return Path(os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace")).resolve()
