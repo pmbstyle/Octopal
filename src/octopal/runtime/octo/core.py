@@ -50,6 +50,18 @@ from octopal.runtime.octo.background_tracing import (
     _finish_background_trace_context,
     _start_background_trace_context,
 )
+from octopal.runtime.octo.context_health import (
+    _RESET_CONFIDENCE_MIN,
+    _RESET_CONFIRM_THRESHOLD,
+    _RESET_SOON_THRESHOLDS,
+    _WATCH_THRESHOLDS,
+    _coerce_float,
+    _coerce_int,
+    _is_progress_reply,
+    _is_reset_soon_severe,
+    _watch_conditions,
+)
+from octopal.runtime.octo.context_reset import _normalize_compact as _normalize_compact
 from octopal.runtime.octo.context_reset import (
     build_restart_resume_message as _build_restart_resume_message,
 )
@@ -114,6 +126,8 @@ from octopal.runtime.octo.router import (
     route_worker_results_back_to_octo,
     should_force_worker_followup,
 )
+from octopal.runtime.octo.runtime_config import _env_flag, _env_int
+from octopal.runtime.octo.runtime_config import _env_float as _env_float
 from octopal.runtime.octo.self_queue import (
     _build_opportunity_card,
     _load_self_queue,
@@ -177,37 +191,6 @@ _QUEUE_IDLE_TIMEOUT_SECONDS = 300.0
 # Worker-result follow-up can include multiple provider retries and a fallback
 # pass through Octo, so it needs a wider budget than a single LLM request.
 _WORKER_RESULT_ROUTING_TIMEOUT_SECONDS = 900.0
-_RESET_CONFIRM_THRESHOLD = 2
-_RESET_CONFIDENCE_MIN = 0.7
-
-
-def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return default
-    return max(minimum, value)
-
-
-def _env_float(name: str, default: float, *, minimum: float = 0.0, maximum: float = 1.0) -> float:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return default
-    return min(maximum, max(minimum, value))
-
-
-def _env_flag(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 _WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS = float(
@@ -248,41 +231,6 @@ _PROACTIVE_TICK_MIN_INTERVAL_SECONDS = float(
     _env_int("OCTOPAL_PROACTIVE_TICK_MIN_INTERVAL_SECONDS", 21600, minimum=0)
 )
 
-
-_WATCH_THRESHOLDS = {
-    "context_size_estimate": _env_int("OCTOPAL_CONTEXT_WATCH_SIZE", 150000, minimum=5000),
-    "repetition_score": _env_float(
-        "OCTOPAL_CONTEXT_WATCH_REPETITION", 0.65, minimum=0.0, maximum=1.0
-    ),
-    "error_streak": _env_int("OCTOPAL_CONTEXT_WATCH_ERROR_STREAK", 3, minimum=1),
-    "no_progress_turns": _env_int("OCTOPAL_CONTEXT_WATCH_NO_PROGRESS", 4, minimum=1),
-}
-_RESET_SOON_THRESHOLDS = {
-    "context_size_estimate": _env_int("OCTOPAL_CONTEXT_RESET_SOON_SIZE", 250000, minimum=5000),
-    "repetition_score": _env_float(
-        "OCTOPAL_CONTEXT_RESET_SOON_REPETITION", 0.75, minimum=0.0, maximum=1.0
-    ),
-    "error_streak": _env_int("OCTOPAL_CONTEXT_RESET_SOON_ERROR_STREAK", 5, minimum=1),
-    "no_progress_turns": _env_int("OCTOPAL_CONTEXT_RESET_SOON_NO_PROGRESS", 7, minimum=1),
-}
-
-# Keep RESET_SOON at or above WATCH thresholds, even with custom env values.
-_RESET_SOON_THRESHOLDS["context_size_estimate"] = max(
-    int(_RESET_SOON_THRESHOLDS["context_size_estimate"]),
-    int(_WATCH_THRESHOLDS["context_size_estimate"]),
-)
-_RESET_SOON_THRESHOLDS["repetition_score"] = max(
-    float(_RESET_SOON_THRESHOLDS["repetition_score"]),
-    float(_WATCH_THRESHOLDS["repetition_score"]),
-)
-_RESET_SOON_THRESHOLDS["error_streak"] = max(
-    int(_RESET_SOON_THRESHOLDS["error_streak"]),
-    int(_WATCH_THRESHOLDS["error_streak"]),
-)
-_RESET_SOON_THRESHOLDS["no_progress_turns"] = max(
-    int(_RESET_SOON_THRESHOLDS["no_progress_turns"]),
-    int(_WATCH_THRESHOLDS["no_progress_turns"]),
-)
 
 def _publish_runtime_metrics(thinking_count: int = 0) -> None:
     update_component_gauges(
@@ -4594,79 +4542,6 @@ def _is_active_worker_status(status: Any) -> bool:
         "waiting_for_children",
         "awaiting_instruction",
     }
-
-
-def _coerce_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _coerce_int(value: Any, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
-    try:
-        result = int(value)
-    except Exception:
-        result = default
-    if minimum is not None:
-        result = max(minimum, result)
-    if maximum is not None:
-        result = min(maximum, result)
-    return result
-
-
-def _watch_conditions(
-    *,
-    context_size_estimate: int,
-    repetition_score: float,
-    error_streak: int,
-    no_progress_turns: int,
-) -> list[bool]:
-    return [
-        context_size_estimate >= int(_WATCH_THRESHOLDS["context_size_estimate"]),
-        repetition_score >= float(_WATCH_THRESHOLDS["repetition_score"]),
-        error_streak >= int(_WATCH_THRESHOLDS["error_streak"]),
-        no_progress_turns >= int(_WATCH_THRESHOLDS["no_progress_turns"]),
-    ]
-
-
-def _is_reset_soon_severe(
-    *,
-    context_size_estimate: int,
-    repetition_score: float,
-    error_streak: int,
-    no_progress_turns: int,
-) -> bool:
-    return (
-        context_size_estimate >= int(_RESET_SOON_THRESHOLDS["context_size_estimate"])
-        or repetition_score >= float(_RESET_SOON_THRESHOLDS["repetition_score"])
-        or error_streak >= int(_RESET_SOON_THRESHOLDS["error_streak"])
-        or no_progress_turns >= int(_RESET_SOON_THRESHOLDS["no_progress_turns"])
-    )
-
-
-def _normalize_compact(value: str) -> str:
-    lowered = (value or "").strip().lower()
-    lowered = re.sub(r"\s+", " ", lowered)
-    return lowered
-
-
-def _is_progress_reply(current_norm: str, prior_norm: str) -> bool:
-    if not current_norm:
-        return False
-    if current_norm == prior_norm:
-        return False
-    if len(current_norm) < 24:
-        return False
-    stalled_markers = (
-        "please try again",
-        "i cannot",
-        "i can't",
-        "unable to",
-        "still working on it",
-        "no update",
-    )
-    return not any(marker in current_norm for marker in stalled_markers)
 
 
 def _workspace_dir() -> Path:
