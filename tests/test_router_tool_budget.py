@@ -144,6 +144,13 @@ def test_worker_followup_tools_are_narrow(monkeypatch) -> None:
                 permission="filesystem_read",
                 handler=lambda args, ctx: {"ok": True},
             ),
+            ToolSpec(
+                name="fs_write",
+                description="fs write",
+                parameters={"type": "object", "properties": {}},
+                permission="filesystem_write",
+                handler=lambda args, ctx: {"ok": True},
+            ),
         ]
 
     class DummyOcto:
@@ -153,7 +160,7 @@ def test_worker_followup_tools_are_narrow(monkeypatch) -> None:
 
     tools, _ctx = _get_worker_followup_tools(DummyOcto(), 123)
 
-    assert {tool.name for tool in tools} == {"manage_canon", "get_worker_output_path"}
+    assert {tool.name for tool in tools} == {"manage_canon", "get_worker_output_path", "fs_write"}
 
 
 def test_control_plane_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -> None:
@@ -243,6 +250,13 @@ def test_worker_followup_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -
                 handler=lambda args, ctx: {"ok": True},
             ),
             ToolSpec(
+                name="fs_write",
+                description="fs write",
+                parameters={"type": "object", "properties": {}},
+                permission="filesystem_write",
+                handler=lambda args, ctx: {"ok": True},
+            ),
+            ToolSpec(
                 name="mcp_agentmail_list_inboxes",
                 description="dynamic mcp",
                 parameters={"type": "object", "properties": {}},
@@ -264,7 +278,7 @@ def test_worker_followup_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -
 
     assert calls == [None]
     assert ctx["mcp_refresh_attempted"] is False
-    assert {tool.name for tool in tools} == {"manage_canon", "get_worker_output_path"}
+    assert {tool.name for tool in tools} == {"manage_canon", "get_worker_output_path", "fs_write"}
 
 
 def test_worker_followup_route_skips_planner_and_uses_narrow_tools(monkeypatch) -> None:
@@ -327,6 +341,13 @@ def test_worker_followup_route_skips_planner_and_uses_narrow_tools(monkeypatch) 
                 permission="worker_manage",
                 handler=lambda args, ctx: {"ok": True},
             ),
+            ToolSpec(
+                name="fs_write",
+                description="fs write",
+                parameters={"type": "object", "properties": {}},
+                permission="filesystem_write",
+                handler=lambda args, ctx: {"ok": True},
+            ),
         ]
 
     async def fake_build_octo_prompt(**kwargs):
@@ -340,7 +361,9 @@ def test_worker_followup_route_skips_planner_and_uses_narrow_tools(monkeypatch) 
 
     monkeypatch.setattr(router, "get_tools", fake_get_tools)
     monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
-    monkeypatch.setattr(router, "build_bootstrap_context_prompt", fake_build_bootstrap_context_prompt)
+    monkeypatch.setattr(
+        router, "build_bootstrap_context_prompt", fake_build_bootstrap_context_prompt
+    )
     monkeypatch.setattr(router, "_build_plan", fake_build_plan)
 
     async def scenario() -> None:
@@ -364,7 +387,11 @@ def test_worker_followup_route_skips_planner_and_uses_narrow_tools(monkeypatch) 
         )
         assert response == "NO_USER_RESPONSE"
         assert len(octo.provider.tool_snapshots) == 1
-        assert set(octo.provider.tool_snapshots[0]) == {"get_worker_output_path", "manage_canon"}
+        assert set(octo.provider.tool_snapshots[0]) == {
+            "get_worker_output_path",
+            "manage_canon",
+            "fs_write",
+        }
         assert octo.thinking_states == [True, False]
 
     asyncio.run(scenario())
@@ -392,6 +419,24 @@ def test_normalize_worker_followup_reply_strips_noisy_user_visible_wrapper() -> 
 
 def test_normalize_worker_followup_reply_suppresses_structured_no_response() -> None:
     raw = '{"user_response": null, "no_user_response": true, "actions_taken": [], "reason": "saved memory"}'
+    assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
+
+
+def test_normalize_worker_followup_reply_suppresses_embedded_no_response_json() -> None:
+    raw = """
+    I should not expose this internal reasoning.
+
+    ```json
+    {
+      "user_response": null,
+      "no_user_response": true,
+      "actions_taken": [{"type": "canon_verify", "summary": "checked facts.md"}],
+      "reason": "internal bookkeeping only"
+    }
+    ```
+
+    More internal reasoning that should not reach the user.
+    """
     assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
 
 
@@ -504,7 +549,7 @@ def test_catalog_result_expands_only_exact_mcp_match() -> None:
                     "remote_name": "list_files",
                     "owner": "mcp",
                 },
-            ]
+            ],
         },
         active_tool_specs=active,
         ctx={"all_tool_specs": active + [exact, sibling]},
@@ -747,7 +792,9 @@ def test_route_retries_image_message_with_saved_file_paths(monkeypatch, tmp_path
         async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
             self.tool_calls += 1
             if self.tool_calls == 1:
-                raise RuntimeError("OpenAIException - Invalid API parameter. {'error': {'code': '1210'}}")
+                raise RuntimeError(
+                    "OpenAIException - Invalid API parameter. {'error': {'code': '1210'}}"
+                )
             self.last_retry_messages = messages
             return {"content": "I inspected the saved image path via tools.", "tool_calls": []}
 
@@ -821,7 +868,8 @@ def test_route_retries_unbacked_action_commitment_with_tools(monkeypatch) -> Non
 
         async def complete(self, messages, **kwargs):
             self.verifier_seen = any(
-                "Classify whether the draft assistant response is safe to deliver" in str(message.get("content", ""))
+                "Classify whether the draft assistant response is safe to deliver"
+                in str(message.get("content", ""))
                 for message in messages
             )
             assert self.verifier_seen
@@ -929,7 +977,9 @@ def test_route_retries_with_fewer_tools_after_invalid_tool_payload(monkeypatch) 
         async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
             self.tool_counts.append(len(tools))
             if len(tools) > 12:
-                raise RuntimeError("OpenAIException - Invalid API parameter. {'error': {'code': '1210'}}")
+                raise RuntimeError(
+                    "OpenAIException - Invalid API parameter. {'error': {'code': '1210'}}"
+                )
             return {"content": "Recovered after shrinking tool set.", "tool_calls": []}
 
     class DummyMemory:
@@ -1133,7 +1183,9 @@ def test_plain_completion_can_stream_for_websocket(monkeypatch) -> None:
         def peek_context_wakeup(self, chat_id: int) -> str:
             return ""
 
-        async def internal_progress_send(self, chat_id: int, state: str, text: str, meta: dict) -> None:
+        async def internal_progress_send(
+            self, chat_id: int, state: str, text: str, meta: dict
+        ) -> None:
             self.progress.append((state, text))
 
     async def fake_build_octo_prompt(**kwargs):
@@ -1219,7 +1271,9 @@ def test_sanitize_messages_keeps_tool_results_for_plain_fallback() -> None:
         ]
     )
 
-    tool_summary = next(msg for msg in sanitized if msg["role"] == "assistant" and "Tool result" in msg["content"])
+    tool_summary = next(
+        msg for msg in sanitized if msg["role"] == "assistant" and "Tool result" in msg["content"]
+    )
     assert "Tool result (check_schedule)" in tool_summary["content"]
     assert '"status": "ok"' in tool_summary["content"]
 
@@ -1227,7 +1281,9 @@ def test_sanitize_messages_keeps_tool_results_for_plain_fallback() -> None:
 def test_finalize_response_rewrites_bare_tool_name() -> None:
     class DummyProvider:
         async def complete(self, messages, **kwargs):
-            assert any("collapsed into a tool invocation" in str(m.get("content", "")) for m in messages)
+            assert any(
+                "collapsed into a tool invocation" in str(m.get("content", "")) for m in messages
+            )
             return "I checked the worker list and the system is ready."
 
     async def scenario() -> None:

@@ -158,6 +158,7 @@ _INITIAL_OCTO_TOOL_NAMES = _ALWAYS_INCLUDE_TOOL_NAMES | {
 }
 _WORKER_FOLLOWUP_ALLOWED_TOOL_NAMES = {
     "answer_worker_instruction",
+    "fs_write",
     "get_worker_output_path",
     "manage_canon",
 }
@@ -297,7 +298,9 @@ async def route_or_reply(
     routing_trace_status = "ok"
     routing_trace_output: dict[str, Any] | None = None
     route_mode_value = (
-        route_mode.value if isinstance(route_mode, RouteMode) else str(route_mode or "unknown").strip() or "unknown"
+        route_mode.value
+        if isinstance(route_mode, RouteMode)
+        else str(route_mode or "unknown").strip() or "unknown"
     )
     routing_trace_metadata: dict[str, Any] = {
         "internal_followup": internal_followup,
@@ -1287,6 +1290,11 @@ async def route_worker_results_back_to_octo(
         "- Synthesize across the payloads once; do not emit multiple overlapping summaries.\n"
         "- Do not start, stop, schedule, or orchestrate workers from this path.\n"
         "- Do not invent follow-up tool needs beyond the tools already exposed here.\n\n"
+        "If a worker was asked to write or save its result to a workspace path and it returned "
+        "the content instead, use `fs_write` to persist the content to the exact requested "
+        "workspace-relative path before deciding whether the user needs an update. Use `fs_write` "
+        "for ordinary workspace artifacts, generated reports, research notes, and draft files. "
+        "Use `manage_canon` only for durable canonical knowledge in the supported canon files.\n\n"
         "If any payload output is truncated and a payload includes `worker_id`, you may use "
         "`get_worker_output_path` for a specific dotted path lookup.\n"
         "If a payload includes `instruction_request`, its `request_id` and `worker_id` are the values "
@@ -1810,7 +1818,9 @@ def _get_static_mode_tool_candidates(allowed_tool_names: set[str]) -> list[ToolS
     """
 
     allowed = {str(name).strip().lower() for name in allowed_tool_names if str(name).strip()}
-    return [tool for tool in get_tools(mcp_manager=None) if str(tool.name).strip().lower() in allowed]
+    return [
+        tool for tool in get_tools(mcp_manager=None) if str(tool.name).strip().lower() in allowed
+    ]
 
 
 def _build_scheduler_tick_input(octo: Any, *, max_tasks: int = 10) -> str:
@@ -1884,7 +1894,9 @@ async def _build_proactive_tick_input(octo: Any, *, chat_id: int, reason: str) -
 
     pending_count = 0
     if isinstance(self_queue, list):
-        pending_count = sum(1 for item in self_queue if str(item.get("status", "pending")) == "pending")
+        pending_count = sum(
+            1 for item in self_queue if str(item.get("status", "pending")) == "pending"
+        )
 
     payload = {
         "reason": reason,
@@ -2596,6 +2608,11 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
         lines = stripped.splitlines()
         if len(lines) >= 3 and lines[-1].strip() == "```":
             candidates.append("\n".join(lines[1:-1]).strip())
+    for match in re.finditer(
+        r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.IGNORECASE | re.DOTALL
+    ):
+        candidates.append(match.group(1).strip())
+    candidates.extend(_iter_balanced_json_object_candidates(raw))
     for candidate in candidates:
         try:
             parsed = json.loads(candidate)
@@ -2604,6 +2621,39 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
         except Exception:
             continue
     return None
+
+
+def _iter_balanced_json_object_candidates(raw: str) -> list[str]:
+    candidates: list[str] = []
+    in_string = False
+    escape = False
+    depth = 0
+    start: int | None = None
+
+    for idx, char in enumerate(raw):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            if depth == 0:
+                start = idx
+            depth += 1
+            continue
+        if char == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                candidates.append(raw[start : idx + 1].strip())
+                start = None
+    return candidates
 
 
 def _normalize_plan_payload(payload: dict[str, Any], has_tools: bool) -> dict[str, Any] | None:
