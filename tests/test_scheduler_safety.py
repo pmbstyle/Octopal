@@ -459,6 +459,15 @@ def test_route_blocked_octo_control_stays_not_ready_after_backoff_expires(
     assert described[0]["due_now"] is False
 
 
+def test_scheduled_octo_control_route_block_marker_is_generic() -> None:
+    assert octo_core._looks_like_scheduled_octo_control_route_block(
+        "The task has no direct tools available in this bounded route."
+    )
+    assert not octo_core._looks_like_scheduled_octo_control_route_block(
+        "The task mentioned weather but completed successfully."
+    )
+
+
 def test_scheduler_sync_to_markdown_shows_suggested_execution_mode_for_blocked_tasks(tmp_path: Path) -> None:
     blocked_until = utc_now() + timedelta(minutes=30)
     store = _StoreStub(

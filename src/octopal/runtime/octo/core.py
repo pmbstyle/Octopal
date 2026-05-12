@@ -359,7 +359,7 @@ _SCHEDULED_OCTO_CONTROL_BLOCKED_MARKERS = (
     "requires external network access",
     "cannot be performed from the bounded",
     "no workers may be launched",
-    "no direct weather tools available",
+    "no direct tools available",
     "requires a worker",
 )
 
