@@ -9,7 +9,9 @@ from octopal.runtime.octo.router import (
     _expand_active_tool_specs_from_catalog_result,
     _finalize_response,
     _get_heartbeat_tools,
+    _get_internal_maintenance_tools,
     _get_octo_tools,
+    _get_scheduled_octo_control_tools,
     _get_scheduler_tools,
     _get_worker_followup_tools,
     _normalize_worker_followup_reply,
@@ -200,6 +202,34 @@ def test_control_plane_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -> 
                 handler=lambda args, ctx: {"ok": True},
             ),
             ToolSpec(
+                name="list_workers",
+                description="list workers",
+                parameters={"type": "object", "properties": {}},
+                permission="worker_manage",
+                handler=lambda args, ctx: {"ok": True},
+            ),
+            ToolSpec(
+                name="list_active_workers",
+                description="list active workers",
+                parameters={"type": "object", "properties": {}},
+                permission="worker_manage",
+                handler=lambda args, ctx: {"ok": True},
+            ),
+            ToolSpec(
+                name="manage_canon",
+                description="manage canon",
+                parameters={"type": "object", "properties": {}},
+                permission="canon_manage",
+                handler=lambda args, ctx: {"ok": True},
+            ),
+            ToolSpec(
+                name="search_canon",
+                description="search canon",
+                parameters={"type": "object", "properties": {}},
+                permission="canon_manage",
+                handler=lambda args, ctx: {"ok": True},
+            ),
+            ToolSpec(
                 name="mcp_agentmail_list_inboxes",
                 description="dynamic mcp",
                 parameters={"type": "object", "properties": {}},
@@ -219,12 +249,78 @@ def test_control_plane_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -> 
 
     heartbeat_tools, heartbeat_ctx = _get_heartbeat_tools(DummyOcto(), 123)
     scheduler_tools, scheduler_ctx = _get_scheduler_tools(DummyOcto(), 123)
+    scheduled_octo_control_tools, scheduled_octo_control_ctx = _get_scheduled_octo_control_tools(
+        DummyOcto(), 123
+    )
+    internal_maintenance_tools, internal_maintenance_ctx = _get_internal_maintenance_tools(
+        DummyOcto(), 123
+    )
 
-    assert calls == [None, None]
+    assert calls == [None, None, None, None]
     assert heartbeat_ctx["mcp_refresh_attempted"] is False
     assert scheduler_ctx["mcp_refresh_attempted"] is False
+    assert scheduled_octo_control_ctx["mcp_refresh_attempted"] is False
+    assert internal_maintenance_ctx["mcp_refresh_attempted"] is False
     assert "mcp_agentmail_list_inboxes" not in {tool.name for tool in heartbeat_tools}
     assert "mcp_agentmail_list_inboxes" not in {tool.name for tool in scheduler_tools}
+    assert "mcp_agentmail_list_inboxes" not in {
+        tool.name for tool in scheduled_octo_control_tools
+    }
+    assert "mcp_agentmail_list_inboxes" not in {
+        tool.name for tool in internal_maintenance_tools
+    }
+    assert {"list_workers", "list_active_workers"}.issubset(
+        {tool.name for tool in scheduler_tools}
+    )
+    assert {
+        "list_workers",
+        "list_active_workers",
+        "manage_canon",
+        "search_canon",
+    }.issubset({tool.name for tool in scheduled_octo_control_tools})
+    assert {"list_workers", "list_active_workers"}.issubset(
+        {tool.name for tool in internal_maintenance_tools}
+    )
+
+
+def test_bounded_route_allowlists_resolve_without_permission_blocks() -> None:
+    import octopal.runtime.octo.router as router
+
+    class DummyOcto:
+        mcp_manager = None
+
+    routes = [
+        (
+            "worker_followup",
+            router._get_worker_followup_tools,
+            router._WORKER_FOLLOWUP_ALLOWED_TOOL_NAMES,
+        ),
+        ("heartbeat", router._get_heartbeat_tools, router._HEARTBEAT_ALLOWED_TOOL_NAMES),
+        ("scheduler", router._get_scheduler_tools, router._SCHEDULER_ALLOWED_TOOL_NAMES),
+        ("proactive", router._get_proactive_tools, router._PROACTIVE_ALLOWED_TOOL_NAMES),
+        (
+            "scheduled_octo_control",
+            router._get_scheduled_octo_control_tools,
+            router._SCHEDULED_OCTO_CONTROL_ALLOWED_TOOL_NAMES,
+        ),
+        (
+            "internal_maintenance",
+            router._get_internal_maintenance_tools,
+            router._INTERNAL_MAINTENANCE_ALLOWED_TOOL_NAMES,
+        ),
+    ]
+
+    for route_name, tool_factory, allowed_names in routes:
+        tools, ctx = tool_factory(DummyOcto(), 0)
+        available_names = {tool.name for tool in tools}
+        assert set(allowed_names) <= available_names, route_name
+
+        blocked_allowed = {
+            tool.name: tool.reasons
+            for tool in ctx["tool_resolution_report"].blocked_tools
+            if tool.name in allowed_names
+        }
+        assert blocked_allowed == {}, route_name
 
 
 def test_worker_followup_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -> None:

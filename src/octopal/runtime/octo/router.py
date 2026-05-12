@@ -1784,8 +1784,10 @@ def _get_control_plane_tools(
     policy_label: str,
 ) -> tuple[list[ToolSpec], dict[str, object]]:
     perms = {
+        "canon_manage": True,
         "self_control": True,
         "service_read": True,
+        "worker_manage": True,
     }
     ctx = {"octo": octo, "chat_id": chat_id, "route_policy_label": policy_label}
     policy_steps = [
