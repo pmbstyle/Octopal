@@ -6,6 +6,7 @@ from octopal.infrastructure.providers.base import Message
 from octopal.runtime.octo.router import (
     _budget_tool_specs,
     _build_worker_result_payload,
+    _decode_and_save_images,
     _expand_active_tool_specs_from_catalog_result,
     _finalize_response,
     _get_heartbeat_tools,
@@ -943,6 +944,7 @@ def test_route_retries_image_message_with_saved_file_paths(monkeypatch, tmp_path
             123,
             "",
             images=["data:image/jpeg;base64,SGVsbG8="],
+            saved_file_paths=[str(tmp_path / "existing.jpg")],
         )
         assert response == "I inspected the saved image path via tools."
         assert provider.tool_calls == 2
@@ -950,9 +952,20 @@ def test_route_retries_image_message_with_saved_file_paths(monkeypatch, tmp_path
         last_message = provider.last_retry_messages[-1]
         assert last_message["role"] == "user"
         assert "saved locally for tool-based inspection" in last_message["content"]
-        assert str(tmp_path) in last_message["content"]
+        assert str(tmp_path / "existing.jpg") in last_message["content"]
 
     asyncio.run(scenario())
+
+
+def test_image_fallback_without_saved_paths_uses_channel_neutral_directory(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(tmp_path))
+
+    saved_paths = _decode_and_save_images(["data:image/jpeg;base64,SGVsbG8="])
+
+    assert len(saved_paths) == 1
+    saved_path = saved_paths[0]
+    assert "tmp/incoming_images" in saved_path.replace("\\", "/")
+    assert "telegram_images" not in saved_path.replace("\\", "/")
 
 
 def test_route_retries_unbacked_action_commitment_with_tools(monkeypatch) -> None:

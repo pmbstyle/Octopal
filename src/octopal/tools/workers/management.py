@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 from datetime import timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
 
 _WORKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
+_PATH_TOKEN_RE = re.compile(r"(?P<path>(?:[A-Za-z]:[\\/])?(?:[\w.@()+-]+[\\/])+[\w.@()+-]+)")
 _MAX_PARALLEL_BATCH = 10
 _WORKER_BLOCKED_TOOL_NAMES = {
     "send_file_to_user",
@@ -37,6 +39,26 @@ _ALLOWED_PATHS_GUIDANCE = (
     "and pass the smallest explicit set that will do the job. "
     "If the task only needs the worker's own scratch space, omit allowed_paths."
 )
+_IMAGE_TASK_TOKENS = {
+    "image",
+    "images",
+    "picture",
+    "pictures",
+    "photo",
+    "photos",
+    "screenshot",
+    "screenshots",
+    "vision",
+    "visual",
+}
+_IMAGE_CAPABILITY_TOKENS = {
+    "image",
+    "vision",
+    "visual",
+    "mcp_call",
+    "mcp_exec",
+    "analyze_image",
+}
 
 
 def get_worker_tools() -> list[ToolSpec]:
@@ -820,6 +842,12 @@ async def _start_worker_common(
         if policy_error:
             return policy_error
 
+    allowed_paths = (
+        args.get("allowed_paths")
+        if "allowed_paths" in args
+        else _infer_allowed_paths_from_task(task)
+    )
+
     launch = await octo._start_worker_async(
         worker_id=worker_id,
         task=task,
@@ -833,7 +861,7 @@ async def _start_worker_common(
         lineage_id=child_ctx["lineage_id"] if child_ctx else None,
         root_task_id=child_ctx["root_task_id"] if child_ctx else None,
         spawn_depth=(child_ctx["spawn_depth"] + 1) if child_ctx else 0,
-        allowed_paths=args.get("allowed_paths") if "allowed_paths" in args else None,
+        allowed_paths=allowed_paths,
     )
     status = str(launch.get("status", "started"))
     launched_worker_id = launch.get("worker_id")
@@ -936,7 +964,11 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
                 lineage_id=child_ctx["lineage_id"] if child_ctx else None,
                 root_task_id=child_ctx["root_task_id"] if child_ctx else None,
                 spawn_depth=(child_ctx["spawn_depth"] + 1) if child_ctx else 0,
-                allowed_paths=item.get("allowed_paths") if "allowed_paths" in item else None,
+                allowed_paths=(
+                    item.get("allowed_paths")
+                    if "allowed_paths" in item
+                    else _infer_allowed_paths_from_task(task_text)
+                ),
             )
 
         return {
@@ -1802,7 +1834,11 @@ def _resolve_worker_for_start(
             required_permissions=required_permissions,
         )
         if selection is None:
-            return "start_worker error: no worker templates are available for routing. Use create_worker_template or provide worker_id."
+            return (
+                "start_worker error: no worker template satisfies the requested task capabilities. "
+                "Use a worker with the required tools/permissions, call the tool directly from Octo, "
+                "or provide a more specific worker_id."
+            )
         template = selection["template"]
         return {
             "template": template,
@@ -1815,6 +1851,15 @@ def _resolve_worker_for_start(
     template = octo.store.get_worker_template(worker_id)
     if not template:
         return f"start_worker error: worker '{worker_id}' not found. Use list_workers to see available workers."
+    requirement_error = _validate_template_requirements(
+        template,
+        required_tools=required_tools,
+        required_permissions=required_permissions,
+        task=task,
+        error_prefix="start_worker error",
+    )
+    if requirement_error:
+        return requirement_error
     return {
         "template": template,
         "worker_id": worker_id,
@@ -1853,6 +1898,91 @@ def _normalize_tool_name_list(value: object) -> list[str]:
         seen.add(tool_name)
         normalized.append(tool_name)
     return normalized
+
+
+def _infer_allowed_paths_from_task(task: str) -> list[str] | None:
+    workspace = Path(os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace")).resolve()
+    inferred: list[str] = []
+    seen: set[str] = set()
+    for match in _PATH_TOKEN_RE.finditer(task or ""):
+        raw_path = match.group("path").strip().strip("`'\".,;:)")
+        if not raw_path:
+            continue
+        candidate = Path(raw_path)
+        if candidate.is_absolute():
+            try:
+                rel_path = candidate.resolve().relative_to(workspace)
+            except (OSError, ValueError):
+                continue
+        else:
+            rel_path = Path(raw_path)
+            candidate = workspace / rel_path
+            try:
+                candidate.resolve().relative_to(workspace)
+            except (OSError, ValueError):
+                continue
+        if not candidate.exists():
+            continue
+        rel = rel_path.as_posix()
+        if rel not in seen:
+            seen.add(rel)
+            inferred.append(rel)
+    return inferred or None
+
+
+def _task_mentions_image_analysis(task: str) -> bool:
+    tokens = _tokenize(task)
+    return bool(tokens & _IMAGE_TASK_TOKENS)
+
+
+def _template_supports_image_analysis(template: object) -> bool:
+    available_tools = {str(t).lower() for t in getattr(template, "available_tools", [])}
+    if available_tools & _IMAGE_CAPABILITY_TOKENS:
+        return True
+    descriptor = " ".join(
+        [
+            str(getattr(template, "id", "")),
+            str(getattr(template, "name", "")),
+            str(getattr(template, "description", "")),
+            str(getattr(template, "system_prompt", "")),
+        ]
+    ).lower()
+    return any(token in descriptor for token in ("image", "vision", "visual"))
+
+
+def _validate_template_requirements(
+    template: object,
+    *,
+    required_tools: list[str] | None,
+    required_permissions: list[str] | None,
+    task: str,
+    error_prefix: str,
+) -> str | None:
+    available_tools = {str(t).lower() for t in getattr(template, "available_tools", [])}
+    permissions = set(_normalize_worker_permissions(getattr(template, "required_permissions", [])))
+    missing_tools = [tool for tool in (required_tools or []) if tool.lower() not in available_tools]
+    missing_permissions = [
+        permission
+        for permission in _normalize_worker_permissions(required_permissions or [])
+        if permission not in permissions
+    ]
+    if missing_tools:
+        return (
+            f"{error_prefix}: worker '{getattr(template, 'id', '')}' does not provide required "
+            f"tool(s): {', '.join(missing_tools)}."
+        )
+    if missing_permissions:
+        return (
+            f"{error_prefix}: worker '{getattr(template, 'id', '')}' does not provide required "
+            f"permission(s): {', '.join(missing_permissions)}."
+        )
+    if _task_mentions_image_analysis(task) and not _template_supports_image_analysis(template):
+        return (
+            f"{error_prefix}: worker '{getattr(template, 'id', '')}' does not advertise image/vision "
+            "analysis capability. Use a vision-capable model/tool directly or a worker template with "
+            "image, vision, mcp_call, or mcp_exec support."
+        )
+    return None
 
 
 def _effective_template_tool_names(value: object) -> list[str]:
@@ -1905,6 +2035,15 @@ def _select_worker_template(
 
     best: dict[str, object] | None = None
     for template in templates:
+        if _validate_template_requirements(
+            template,
+            required_tools=required_tools,
+            required_permissions=required_permissions,
+            task=task,
+            error_prefix="start_worker error",
+        ):
+            continue
+
         score = 0.0
         reasons: list[str] = []
         descriptor = " ".join(
@@ -1929,17 +2068,11 @@ def _select_worker_template(
             if matched_tools:
                 score += matched_tools * 5.0
                 reasons.append(f"required_tools={matched_tools}/{len(required_tools)}")
-            else:
-                score -= 6.0
-                reasons.append("missing_required_tools")
         if required_permissions:
             matched_perms = sum(1 for p in required_permissions if p in permissions)
             if matched_perms:
                 score += matched_perms * 4.0
                 reasons.append(f"required_permissions={matched_perms}/{len(required_permissions)}")
-            else:
-                score -= 4.0
-                reasons.append("missing_required_permissions")
 
         if "web" in task_tokens and any("web" in t for t in available_tools):
             score += 3.0

@@ -51,6 +51,38 @@ _discard_worker_followup_batch = _followup_pipeline._discard_worker_followup_bat
 _schedule_worker_followup_flush = _followup_pipeline._schedule_worker_followup_flush
 
 
+def _build_user_memory_content(
+    text: str,
+    *,
+    images: list[str] | None = None,
+    saved_file_paths: list[str] | None = None,
+) -> str:
+    trimmed = (text or "").strip()
+    has_images = bool(images)
+    normalized_paths = [str(path).strip() for path in (saved_file_paths or []) if str(path).strip()]
+    if not has_images and not normalized_paths:
+        return trimmed
+
+    parts: list[str] = []
+    if trimmed:
+        parts.append(trimmed)
+    elif has_images:
+        parts.append("User uploaded image attachment(s).")
+    else:
+        parts.append("User uploaded file attachment(s).")
+
+    attachment_lines: list[str] = []
+    if has_images:
+        attachment_lines.append(f"- image_count={len(images or [])}")
+    if normalized_paths:
+        attachment_lines.append("- saved_file_paths:")
+        attachment_lines.extend(f"  - {path}" for path in normalized_paths)
+
+    if attachment_lines:
+        parts.append("Attachments received:\n" + "\n".join(attachment_lines))
+    return "\n\n".join(parts)
+
+
 def _core_callable(name: str, default: Callable[..., Any]) -> Callable[..., Any]:
     core_module = sys.modules.get("octopal.runtime.octo.core")
     if core_module is not None:
@@ -147,13 +179,21 @@ class OctoMessageRuntimeMixin:
             if not track_progress:
                 self.suppress_turn_followups(correlation_id)
             if persist_to_memory:
+                user_memory_content = _build_user_memory_content(
+                    text,
+                    images=images,
+                    saved_file_paths=saved_file_paths,
+                )
                 await self.memory.add_message(
                     "user",
-                    text,
+                    user_memory_content,
                     {
                         "chat_id": chat_id,
                         "has_images": bool(images),
+                        "has_files": bool(saved_file_paths),
+                        "saved_file_paths": list(saved_file_paths or []),
                         "heartbeat": not track_progress,
+                        "fact_candidate": False,
                     },
                 )
             bootstrap_context = None

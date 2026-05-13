@@ -63,7 +63,7 @@ _DEFAULT_MAX_TOOL_COUNT = 64
 _MIN_TOOL_COUNT_ON_OVERFLOW = 12
 _CATALOG_TOOL_EXPANSION_LIMIT = 12
 _CATALOG_MCP_TOOL_EXPANSION_LIMIT = 1
-_DEFAULT_INITIAL_OCTO_TOOL_COUNT = 39
+_DEFAULT_INITIAL_OCTO_TOOL_COUNT = 40
 _MANDATORY_OCTO_TOOL_NAMES = {
     "octo_restart_self",
     "octo_check_update",
@@ -103,6 +103,7 @@ _PRIORITY_TOOL_NAMES = {
     "worker_yield",
     "gateway_status",
     "mcp_discover",
+    "mcp_call",
     "manage_canon",
 }
 _ALWAYS_INCLUDE_TOOL_NAMES = {
@@ -140,6 +141,7 @@ _ALWAYS_INCLUDE_TOOL_NAMES = {
     "fs_write",
     "fs_move",
     "fs_delete",
+    "mcp_call",
 }
 _INITIAL_OCTO_TOOL_NAMES = _ALWAYS_INCLUDE_TOOL_NAMES | {
     "manage_canon",
@@ -261,6 +263,44 @@ def _build_saved_image_fallback_text(user_text: str, saved_paths: list[str]) -> 
         "Use any available filesystem, MCP, or image-analysis tools to inspect those files before answering. "
         "If no such tools are available, explain that clearly and ask the user for a brief description.]"
     )
+
+
+def _normalize_saved_file_paths(saved_file_paths: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for path in saved_file_paths or []:
+        value = str(path).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _decode_and_save_images(images: list[str]) -> list[str]:
+    saved_paths: list[str] = []
+    workspace_dir = Path(os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace")).resolve()
+    img_dir = workspace_dir / "tmp" / "incoming_images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    for img_data in images:
+        if "," in img_data:
+            header, b64_str = img_data.split(",", 1)
+            ext = ".jpg"
+            if "png" in header:
+                ext = ".png"
+            elif "webp" in header:
+                ext = ".webp"
+        else:
+            b64_str = img_data
+            ext = ".jpg"
+
+        file_name = f"img_{uuid.uuid4()}{ext}"
+        file_path = img_dir / file_name
+        with open(file_path, "wb") as f:
+            f.write(base64.b64decode(b64_str))
+        saved_paths.append(str(file_path))
+    return saved_paths
 
 
 async def _ensure_mcp_connected_for_routing(octo: Any) -> None:
@@ -428,6 +468,7 @@ async def route_or_reply(
             internal_followup=internal_followup,
             user_text=user_text,
             images=images,
+            saved_file_paths=saved_file_paths,
             on_plain_partial=partial_callback,
             allow_tool_catalog_expansion=True,
         )
@@ -513,6 +554,7 @@ async def route_heartbeat(
             internal_followup=False,
             user_text=user_text,
             images=None,
+            saved_file_paths=None,
             allow_tool_catalog_expansion=False,
         )
         return normalize_plain_text(reply_text)
@@ -570,6 +612,7 @@ async def route_internal_maintenance(
             internal_followup=False,
             user_text=user_text,
             images=None,
+            saved_file_paths=None,
             allow_tool_catalog_expansion=False,
         )
         return normalize_plain_text(reply_text)
@@ -627,6 +670,7 @@ async def route_scheduler_tick(
             internal_followup=False,
             user_text=scheduler_tick_text,
             images=None,
+            saved_file_paths=None,
             allow_tool_catalog_expansion=False,
             preserve_user_visible_wrapper=True,
         )
@@ -719,6 +763,7 @@ async def route_proactive_tick(
             internal_followup=True,
             user_text=proactive_tick_text,
             images=None,
+            saved_file_paths=None,
             allow_tool_catalog_expansion=False,
         )
         return _normalize_proactive_reply(reply_text)
@@ -781,6 +826,7 @@ async def route_scheduled_octo_control(
             internal_followup=False,
             user_text=scheduled_task_text,
             images=None,
+            saved_file_paths=None,
             allow_tool_catalog_expansion=False,
         )
         return normalize_plain_text(reply_text)
@@ -798,8 +844,9 @@ async def _complete_route_with_tools(
     internal_followup: bool,
     user_text: str,
     images: list[str] | None,
-    on_plain_partial: Callable[[str], Awaitable[None]] | None = None,
     allow_tool_catalog_expansion: bool,
+    saved_file_paths: list[str] | None = None,
+    on_plain_partial: Callable[[str], Awaitable[None]] | None = None,
     preserve_user_visible_wrapper: bool = False,
 ) -> str:
     tool_capable = getattr(provider, "complete_with_tools", None)
@@ -840,30 +887,9 @@ async def _complete_route_with_tools(
                         "Vision+Tools failed; attempting save-to-disk fallback", error=str(e)
                     )
                     try:
-                        saved_paths = []
-                        workspace_dir = Path(
-                            os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace")
-                        ).resolve()
-                        img_dir = workspace_dir / "tmp" / "telegram_images"
-                        img_dir.mkdir(parents=True, exist_ok=True)
-
-                        for _idx, img_data in enumerate(images):
-                            if "," in img_data:
-                                header, b64_str = img_data.split(",", 1)
-                                ext = ".jpg"
-                                if "png" in header:
-                                    ext = ".png"
-                                elif "webp" in header:
-                                    ext = ".webp"
-                            else:
-                                b64_str = img_data
-                                ext = ".jpg"
-
-                            file_name = f"img_{uuid.uuid4()}{ext}"
-                            file_path = img_dir / file_name
-                            with open(file_path, "wb") as f:
-                                f.write(base64.b64decode(b64_str))
-                            saved_paths.append(str(file_path))
+                        saved_paths = _normalize_saved_file_paths(saved_file_paths)
+                        if not saved_paths:
+                            saved_paths = _decode_and_save_images(images)
 
                         fallback_text = _build_saved_image_fallback_text(user_text, saved_paths)
 

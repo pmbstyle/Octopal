@@ -33,7 +33,8 @@ def test_build_octo_prompt_includes_saved_image_paths_in_user_text() -> None:
         first_block = user_message.content[0]
         assert first_block["type"] == "text"
         assert "/tmp/telegram_images/img_test.jpg" in first_block["text"]
-        assert "saved locally for tool-based inspection" in first_block["text"]
+        assert "also saved locally for continuity" in first_block["text"]
+        assert "If your current model can inspect image inputs" in first_block["text"]
 
     asyncio.run(scenario())
 

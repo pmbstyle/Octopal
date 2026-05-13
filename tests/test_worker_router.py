@@ -5,7 +5,11 @@ import json
 from datetime import UTC, datetime
 
 from octopal.infrastructure.store.models import WorkerTemplateRecord
-from octopal.tools.workers.management import _select_worker_template, _tool_start_worker
+from octopal.tools.workers.management import (
+    _infer_allowed_paths_from_task,
+    _select_worker_template,
+    _tool_start_worker,
+)
 
 
 def _template(
@@ -53,6 +57,31 @@ def test_select_worker_template_respects_required_tools() -> None:
     )
     assert selected is not None
     assert selected["template"].id == "web_researcher"
+
+
+def test_select_worker_template_rejects_missing_required_tools() -> None:
+    templates = [
+        _template("writer", "Writer", "Writes docs", ["fs_write"], ["filesystem_write"]),
+    ]
+    selected = _select_worker_template(
+        templates=templates,
+        task="Analyze an image using mcp_zai_analyze_image",
+        required_tools=["mcp_zai_analyze_image"],
+    )
+    assert selected is None
+
+
+def test_select_worker_template_requires_image_capability_for_image_tasks() -> None:
+    templates = [
+        _template("moltbook_orchestrator", "Presence Manager", "Sequential task manager", ["fs_read"], ["filesystem_read"]),
+        _template("vision_worker", "Vision Worker", "Analyzes images", ["mcp_call"], ["network", "filesystem_read"]),
+    ]
+    selected = _select_worker_template(
+        templates=templates,
+        task="Analyze the image at tmp/telegram_images/img.jpg",
+    )
+    assert selected is not None
+    assert selected["template"].id == "vision_worker"
 
 
 def test_start_worker_auto_routes_and_returns_router_metadata() -> None:
@@ -227,3 +256,49 @@ def test_start_worker_allows_subset_tool_override() -> None:
     assert result["next_best_action"] == "wait_for_worker_progress"
     assert octo.captured is not None
     assert octo.captured["tools"] == ["fs_read"]
+
+
+def test_start_worker_rejects_explicit_worker_without_image_capability() -> None:
+    templates = [
+        _template("coder", "Coder", "Handles code refactors and bugfixes", ["fs_read"], ["filesystem_read"]),
+    ]
+
+    class _Store:
+        def list_worker_templates(self):
+            return templates
+
+        def get_worker_template(self, worker_id: str):
+            for t in templates:
+                if t.id == worker_id:
+                    return t
+            return None
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+
+        async def _start_worker_async(self, **kwargs):
+            raise AssertionError("worker launch should have been rejected")
+
+    async def _scenario() -> str:
+        return await _tool_start_worker(
+            {
+                "task": "Analyze the image at tmp/telegram_images/img_test.jpg",
+                "worker_id": "coder",
+            },
+            {"octo": _Octo(), "chat_id": 123},
+        )
+
+    result = asyncio.run(_scenario())
+    assert "does not advertise image/vision analysis capability" in result
+
+
+def test_start_worker_infers_existing_workspace_paths(monkeypatch, tmp_path) -> None:
+    image_path = tmp_path / "tmp" / "telegram_images" / "img_test.jpg"
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(b"jpg")
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(tmp_path))
+
+    inferred = _infer_allowed_paths_from_task("Inspect tmp/telegram_images/img_test.jpg")
+
+    assert inferred == ["tmp/telegram_images/img_test.jpg"]

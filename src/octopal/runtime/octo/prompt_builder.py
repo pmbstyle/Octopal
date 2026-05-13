@@ -467,9 +467,10 @@ async def build_octo_prompt(
         if normalized_paths:
             path_lines = "\n".join(f"- {path}" for path in normalized_paths)
             text_segments.append(
-                "Image received and saved locally for tool-based inspection.\n"
+                "Image received and also saved locally for continuity and optional tool-based inspection.\n"
                 f"{path_lines}\n"
-                "If you need filesystem or vision tools, use these exact absolute paths."
+                "If your current model can inspect image inputs, use the image directly. "
+                "If direct vision is unavailable or later turns refer back to the image, use these exact paths."
             )
 
         text_content = "\n\n".join(segment for segment in text_segments if segment)
