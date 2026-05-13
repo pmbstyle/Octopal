@@ -683,8 +683,12 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     "description": {"type": "string", "description": "Brief description of the task purpose."},
                     "execution_mode": {
                         "type": "string",
-                        "enum": ["worker", "octo_control"],
-                        "description": "Execution mode for this scheduled task. Use worker for worker dispatch, or octo_control for future direct Octo control-plane tasks.",
+                        "enum": ["worker", "octo_task", "octo_control"],
+                        "description": (
+                            "Execution mode for this scheduled task. Use worker for worker dispatch, "
+                            "octo_task for a full autonomous Octo workspace task, or octo_control for "
+                            "bounded scheduler/control-plane maintenance."
+                        ),
                     },
                     "worker_id": {"type": "string", "description": "Specific worker template ID to use when execution_mode=worker."},
                     "inputs": {"type": "object", "description": "Optional: Inputs for the worker."},
@@ -720,7 +724,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             name="repair_scheduled_tasks",
             description=(
                 "Preview or apply safe repairs for scheduled tasks with known route-compatibility suggestions. "
-                "Proactive mode is guarded to existing-worker blocked_by_route repairs and cannot provide worker_id."
+                "Proactive mode is guarded to blocked_by_route repairs and cannot provide worker_id."
             ),
             parameters={
                 "type": "object",

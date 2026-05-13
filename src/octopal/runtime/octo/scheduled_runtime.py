@@ -21,6 +21,9 @@ from octopal.runtime.octo.delivery import DeliveryMode, resolve_user_delivery
 from octopal.runtime.octo.router import (
     route_scheduled_octo_control as _default_route_scheduled_octo_control,
 )
+from octopal.runtime.octo.router import (
+    route_scheduled_octo_task as _default_route_scheduled_octo_task,
+)
 from octopal.runtime.octo.runtime_config import _env_int
 from octopal.runtime.octo.scheduler_helpers import _coerce_positive_chat_id
 from octopal.runtime.scheduler.service import (
@@ -154,7 +157,10 @@ class OctoScheduledRuntimeMixin:
         else:
             metadata.pop(SCHEDULED_TASK_BLOCKED_REASON_KEY, None)
         if reason_value == "blocked_by_route":
-            metadata[SCHEDULED_TASK_SUGGESTED_EXECUTION_MODE_KEY] = "worker"
+            if str(task.get("worker_id") or "").strip():
+                metadata[SCHEDULED_TASK_SUGGESTED_EXECUTION_MODE_KEY] = "worker"
+            else:
+                metadata[SCHEDULED_TASK_SUGGESTED_EXECUTION_MODE_KEY] = "octo_task"
         elif blocked_until is None:
             metadata.pop(SCHEDULED_TASK_SUGGESTED_EXECUTION_MODE_KEY, None)
         try:
@@ -312,6 +318,25 @@ class OctoScheduledRuntimeMixin:
                 elif str(result.get("status") or "").strip().lower() == "failed":
                     summary["errors"] += 1
                 continue
+            if execution_mode == "octo_task":
+                summary["attempted"] += 1
+                try:
+                    result = await self._run_scheduled_octo_task_once(
+                        task=task,
+                        chat_id=dispatch_chat_id,
+                    )
+                except Exception:
+                    summary["errors"] += 1
+                    logger.exception(
+                        "Scheduled Octo task failed",
+                        task_id=task_id or None,
+                    )
+                    continue
+                if bool(result.get("completed")):
+                    summary["completed"] += 1
+                elif str(result.get("status") or "").strip().lower() == "failed":
+                    summary["errors"] += 1
+                continue
             if not worker_id or not task_text:
                 summary["rejected_by_policy"] += 1
                 reason = "missing_worker_id" if not worker_id else "missing_task_text"
@@ -459,6 +484,107 @@ class OctoScheduledRuntimeMixin:
             scheduler.mark_executed(task_id)
         logger.info(
             "Scheduled Octo control task completed",
+            task_id=task_id or None,
+            notify_user=notify_user,
+            chat_id=chat_id,
+            user_visible_sent=user_visible_sent,
+            delivery_mode=delivery.mode,
+        )
+        return {
+            "status": "completed",
+            "completed": True,
+            "user_visible_sent": user_visible_sent,
+            "delivery_mode": delivery.mode,
+        }
+
+    async def _run_scheduled_octo_task_once(
+        self,
+        *,
+        task: dict[str, Any],
+        chat_id: int = 0,
+    ) -> dict[str, Any]:
+        scheduler = self.scheduler
+        task_id = str(task.get("id") or "").strip()
+        notify_user = normalize_notify_user_policy(task.get("notify_user"))
+        route_scheduled_octo_task = _core_callable(
+            "route_scheduled_octo_task",
+            _default_route_scheduled_octo_task,
+        )
+        reply_text = await route_scheduled_octo_task(
+            self,
+            task,
+            chat_id=chat_id,
+        )
+        normalized_reply = await _normalize_scheduled_octo_control_reply(
+            self.provider,
+            reply_text,
+            bounded_control=False,
+        )
+        if normalized_reply == _SCHEDULED_OCTO_CONTROL_BLOCKED:
+            logger.warning(
+                "Scheduled Octo task reported blocked",
+                task_id=task_id or None,
+                chat_id=chat_id,
+                raw_reply_preview=safe_preview(reply_text, limit=200),
+            )
+            return {
+                "status": "failed",
+                "completed": False,
+                "reason": "blocked",
+            }
+        if normalized_reply == "NO_USER_RESPONSE":
+            logger.warning(
+                "Scheduled Octo task missing explicit completion signal",
+                task_id=task_id or None,
+                chat_id=chat_id,
+                raw_reply_preview=safe_preview(reply_text, limit=200),
+            )
+            return {
+                "status": "failed",
+                "completed": False,
+                "reason": "missing_completion_signal",
+            }
+        if normalized_reply == _SCHEDULED_OCTO_CONTROL_DONE:
+            if scheduler is not None and task_id:
+                scheduler.mark_executed(task_id)
+            logger.info(
+                "Scheduled Octo task completed silently",
+                task_id=task_id or None,
+                notify_user=notify_user,
+                chat_id=chat_id,
+            )
+            return {
+                "status": "completed",
+                "completed": True,
+                "user_visible_sent": False,
+                "delivery_mode": DeliveryMode.SILENT,
+            }
+
+        delivery = resolve_user_delivery(normalized_reply)
+        user_visible_sent = False
+        if delivery.user_visible and notify_user != "never":
+            send_scheduler_control_update = _core_callable(
+                "_send_scheduler_control_update",
+                _default_send_scheduler_control_update,
+            )
+            await send_scheduler_control_update(
+                self,
+                chat_id,
+                task_id or None,
+                delivery.text,
+            )
+            user_visible_sent = True
+        elif delivery.user_visible:
+            logger.info(
+                "Scheduled Octo task update suppressed by notify policy",
+                task_id=task_id or None,
+                notify_user=notify_user,
+                chat_id=chat_id,
+            )
+        if scheduler is not None and task_id:
+            scheduler.mark_executed(task_id)
+        logger.info(
+            "Scheduled Octo task completed",
             task_id=task_id or None,
             notify_user=notify_user,
             chat_id=chat_id,

@@ -113,6 +113,8 @@ def _coerce_scheduled_octo_control_reply(text: str) -> str:
 async def _normalize_scheduled_octo_control_reply(
     provider: InferenceProvider | None,
     text: str,
+    *,
+    bounded_control: bool = True,
 ) -> str:
     raw_value = str(text or "")
     explicit = extract_heartbeat_user_visible_message(raw_value)
@@ -129,15 +131,27 @@ async def _normalize_scheduled_octo_control_reply(
     if provider is None:
         return _coerce_scheduled_octo_control_reply(value)
 
+    if bounded_control:
+        blocked_rule = (
+            "Use SCHEDULED_TASK_BLOCKED when the task cannot complete from the bounded route "
+            "because it needs workers, external access, or unavailable tools."
+        )
+        rewrite_context = "scheduled Octo control"
+    else:
+        blocked_rule = (
+            "Use SCHEDULED_TASK_BLOCKED only when the task cannot complete even with the normal "
+            "scheduled Octo task toolset."
+        )
+        rewrite_context = "scheduled Octo task"
     rewrite_prompt = (
-        "Rewrite the draft scheduled Octo control reply into the strict completion contract.\n"
+        f"Rewrite the draft {rewrite_context} reply into the strict completion contract.\n"
         "Return exactly one of:\n"
         "- SCHEDULED_TASK_DONE\n"
         "- SCHEDULED_TASK_BLOCKED\n"
         "- NO_USER_RESPONSE\n"
         "- <user_visible>...</user_visible>\n"
         "Use SCHEDULED_TASK_DONE only if the task completed successfully with no user-visible update.\n"
-        "Use SCHEDULED_TASK_BLOCKED when the task cannot complete from the bounded route because it needs workers, external access, or unavailable tools.\n"
+        f"{blocked_rule}\n"
         "Use <user_visible> only for a concise completed user-facing update.\n"
         "Use NO_USER_RESPONSE if the task did not complete or there is no completion signal.\n"
         "Do not include any extra text outside the token or wrapper."

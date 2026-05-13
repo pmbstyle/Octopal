@@ -84,19 +84,34 @@ def _scheduler_opportunity_cards(
         if not task_id:
             continue
         suggested_mode = str(scheduled_task.get("suggested_execution_mode") or "").strip().lower()
-        if suggested_mode != "worker":
+        if suggested_mode not in {"worker", "octo_task"}:
             continue
-        dedupe_key = f"scheduled-task:{task_id}:suggested-worker"
+        worker_id = str(scheduled_task.get("worker_id") or "").strip()
+        if suggested_mode == "worker" and not worker_id:
+            continue
+        dedupe_key = f"scheduled-task:{task_id}:suggested-{suggested_mode}"
         if dedupe_key in active_dedupe_keys:
             continue
 
         name = str(scheduled_task.get("name") or task_id).strip()
-        worker_id = str(scheduled_task.get("worker_id") or "").strip() or "ops_sre"
         blocked_reason = str(
             scheduled_task.get("blocked_reason")
             or scheduled_task.get("dispatch_policy_reason")
-            or "suggested_execution_mode=worker"
+            or f"suggested_execution_mode={suggested_mode}"
         ).strip()
+        if suggested_mode == "worker":
+            task = (
+                f"Inspect scheduled task {task_id!r} ({name!r}) blocked from its current route. "
+                "Find the least-risk repair or migration path, verify whether worker execution is appropriate, "
+                "and report the exact recommended change."
+            )
+            suggested_worker_id = worker_id
+        else:
+            task = (
+                f"Repair scheduled task {task_id!r} ({name!r}) from its blocked control route "
+                "to the full scheduled Octo task execution mode, then verify it is dispatch-ready."
+            )
+            suggested_worker_id = None
         cards.append(
             _build_opportunity_card(
                 kind="scheduled_task_repair",
@@ -106,12 +121,8 @@ def _scheduler_opportunity_cards(
                 effort="medium",
                 confidence=0.88,
                 risk="medium",
-                suggested_worker_id=worker_id,
-                task=(
-                    f"Inspect scheduled task {task_id!r} ({name!r}) blocked from its current route. "
-                    "Find the least-risk repair or migration path, verify whether worker execution is appropriate, "
-                    "and report the exact recommended change."
-                ),
+                suggested_worker_id=suggested_worker_id,
+                task=task,
                 dedupe_key=dedupe_key,
                 inputs={
                     "scheduled_task_id": task_id,

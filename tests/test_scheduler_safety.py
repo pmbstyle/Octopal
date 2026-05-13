@@ -199,7 +199,22 @@ def test_schedule_task_rejects_worker_id_for_octo_control_mode(tmp_path: Path) -
     assert result == "schedule_task error: worker_id must be omitted when execution_mode=octo_control."
 
 
-def test_schedule_task_derives_legacy_octo_control_mode_without_worker_id(tmp_path: Path) -> None:
+def test_schedule_task_rejects_worker_id_for_octo_task_mode(tmp_path: Path) -> None:
+    scheduler = SchedulerService(store=_StoreStub(), workspace_dir=tmp_path)
+    result = _tool_schedule_task(
+        {
+            "name": "Digest",
+            "frequency": "Every 30 minutes",
+            "task": "Generate digest",
+            "execution_mode": "octo_task",
+            "worker_id": "writer",
+        },
+        {"octo": SimpleNamespace(scheduler=scheduler)},
+    )
+    assert result == "schedule_task error: worker_id must be omitted when execution_mode=octo_task."
+
+
+def test_schedule_task_derives_octo_task_mode_without_worker_id(tmp_path: Path) -> None:
     store = _StoreStub()
     scheduler = SchedulerService(store=store, workspace_dir=tmp_path)
     payload = json.loads(
@@ -214,13 +229,33 @@ def test_schedule_task_derives_legacy_octo_control_mode_without_worker_id(tmp_pa
     )
 
     assert payload["status"] == "scheduled"
-    assert payload["execution_mode"] == "octo_control"
-    assert payload["notify_user"] == "never"
+    assert payload["execution_mode"] == "octo_task"
+    assert payload["notify_user"] == "if_significant"
     assert store.last_upsert is not None
     assert store.last_upsert["metadata"] == {
-        "notify_user": "never",
-        "execution_mode": "octo_control",
+        "notify_user": "if_significant",
+        "execution_mode": "octo_task",
     }
+
+
+def test_schedule_task_accepts_octo_control_for_bounded_maintenance(tmp_path: Path) -> None:
+    store = _StoreStub()
+    scheduler = SchedulerService(store=store, workspace_dir=tmp_path)
+
+    payload = json.loads(
+        _tool_schedule_task(
+            {
+                "name": "Compact memory",
+                "frequency": "Every 30 minutes",
+                "task": "Compact memory",
+                "execution_mode": "octo_control",
+            },
+            {"octo": SimpleNamespace(scheduler=scheduler)},
+        )
+    )
+
+    assert payload["execution_mode"] == "octo_control"
+    assert payload["notify_user"] == "never"
 
 
 def test_check_schedule_returns_json_with_inputs(tmp_path: Path) -> None:
@@ -298,7 +333,7 @@ def test_scheduler_status_reports_due_and_next_run_preview(tmp_path: Path) -> No
     assert payload["tasks"][0]["execution_mode"] == "worker"
     assert payload["tasks"][0]["dispatch_ready"] is True
     assert payload["tasks"][0]["suggested_execution_mode"] is None
-    assert payload["tasks"][1]["execution_mode"] == "octo_control"
+    assert payload["tasks"][1]["execution_mode"] == "octo_task"
     assert payload["tasks"][1]["dispatch_ready"] is True
     assert payload["tasks"][1]["dispatch_policy_reason"] is None
     assert payload["tasks"][1]["suggested_execution_mode"] is None
@@ -329,7 +364,7 @@ def test_scheduler_sync_to_markdown_includes_dispatch_readiness(tmp_path: Path) 
     scheduler.sync_to_markdown()
 
     heartbeat = (tmp_path / "HEARTBEAT.md").read_text(encoding="utf-8")
-    assert "**Execution mode**: octo_control" in heartbeat
+    assert "**Execution mode**: octo_task" in heartbeat
     assert "**Dispatch**: ready" in heartbeat
 
 
@@ -382,7 +417,7 @@ def test_describe_tasks_marks_blocked_octo_control_backoff(tmp_path: Path) -> No
     assert described[0]["dispatch_policy_reason"] == "blocked_by_route"
     assert described[0]["blocked_until"] == blocked_until.isoformat()
     assert described[0]["blocked_reason"] == "blocked_by_route"
-    assert described[0]["suggested_execution_mode"] == "worker"
+    assert described[0]["suggested_execution_mode"] == "octo_task"
     assert described[0]["due_now"] is False
 
 
@@ -455,7 +490,7 @@ def test_route_blocked_octo_control_stays_not_ready_after_backoff_expires(
     assert scheduler.get_actionable_tasks() == []
     assert described[0]["dispatch_ready"] is False
     assert described[0]["dispatch_policy_reason"] == "blocked_by_route"
-    assert described[0]["suggested_execution_mode"] == "worker"
+    assert described[0]["suggested_execution_mode"] == "octo_task"
     assert described[0]["due_now"] is False
 
 
@@ -498,7 +533,7 @@ def test_scheduler_sync_to_markdown_shows_suggested_execution_mode_for_blocked_t
     scheduler.sync_to_markdown()
 
     heartbeat = (tmp_path / "HEARTBEAT.md").read_text(encoding="utf-8")
-    assert "**Suggested execution mode**: worker" in heartbeat
+    assert "**Suggested execution mode**: octo_task" in heartbeat
 
 
 def test_scheduler_status_reports_suggested_execution_mode_for_blocked_tasks(tmp_path: Path) -> None:
@@ -534,7 +569,7 @@ def test_scheduler_status_reports_suggested_execution_mode_for_blocked_tasks(tmp
     assert payload["tasks"][0]["execution_mode"] == "octo_control"
     assert payload["tasks"][0]["dispatch_ready"] is False
     assert payload["tasks"][0]["dispatch_policy_reason"] == "blocked_by_route"
-    assert payload["tasks"][0]["suggested_execution_mode"] == "worker"
+    assert payload["tasks"][0]["suggested_execution_mode"] == "octo_task"
     assert payload["due_count"] == 0
     assert any("suggested execution mode" in hint for hint in payload["hints"])
 
@@ -574,10 +609,60 @@ def test_repair_scheduled_tasks_previews_candidates_without_applying(tmp_path: P
     assert payload["candidate_count"] == 1
     assert payload["applied_count"] == 0
     assert payload["candidates"][0]["task_id"] == "weather_check"
-    assert payload["candidates"][0]["suggested_execution_mode"] == "worker"
-    assert payload["candidates"][0]["can_apply"] is False
-    assert payload["candidates"][0]["skip_reason"] == "missing_worker_id"
+    assert payload["candidates"][0]["suggested_execution_mode"] == "octo_task"
+    assert payload["candidates"][0]["can_apply"] is True
+    assert "skip_reason" not in payload["candidates"][0]
     assert store.last_upsert is None
+
+
+def test_repair_scheduled_tasks_applies_octo_task_migration(tmp_path: Path) -> None:
+    blocked_until = utc_now() + timedelta(minutes=30)
+    store = _StoreStub(
+        tasks=[
+            {
+                "id": "draft_write",
+                "name": "Draft Write",
+                "description": "Write a draft",
+                "frequency": "Every 30 minutes",
+                "worker_id": None,
+                "task_text": "Write a draft to memory/draft.md",
+                "inputs_json": "{}",
+                "metadata_json": json.dumps(
+                    {
+                        "notify_user": "never",
+                        "execution_mode": "octo_control",
+                        "blocked_until": blocked_until.isoformat(),
+                        "blocked_reason": "blocked_by_route",
+                        "suggested_execution_mode": "worker",
+                    }
+                ),
+                "last_run_at": None,
+                "enabled": 1,
+            }
+        ]
+    )
+    scheduler = SchedulerService(store=store, workspace_dir=tmp_path)
+
+    payload = json.loads(
+        _tool_repair_scheduled_tasks(
+            {"apply": True, "task_ids": ["draft_write"]},
+            {"octo": SimpleNamespace(scheduler=scheduler)},
+        )
+    )
+
+    assert payload["status"] == "applied"
+    assert payload["applied"][0] == {
+        "task_id": "draft_write",
+        "name": "Draft Write",
+        "execution_mode": "octo_task",
+        "worker_id": None,
+    }
+    assert store.last_upsert is not None
+    assert store.last_upsert["worker_id"] is None
+    assert store.last_upsert["metadata"] == {
+        "notify_user": "never",
+        "execution_mode": "octo_task",
+    }
 
 
 def test_repair_scheduled_tasks_applies_worker_migration_with_valid_worker_id(tmp_path: Path) -> None:
@@ -590,7 +675,7 @@ def test_repair_scheduled_tasks_applies_worker_migration_with_valid_worker_id(tm
                 "name": "Weather Check",
                 "description": "Check weather",
                 "frequency": "Every 30 minutes",
-                "worker_id": None,
+                "worker_id": "weather_worker",
                 "task_text": "Check the weather",
                 "inputs_json": "{}",
                 "metadata_json": json.dumps(
@@ -611,7 +696,7 @@ def test_repair_scheduled_tasks_applies_worker_migration_with_valid_worker_id(tm
 
     payload = json.loads(
         _tool_repair_scheduled_tasks(
-            {"apply": True, "task_ids": ["weather_check"], "worker_id": "weather_worker"},
+            {"apply": True, "task_ids": ["weather_check"]},
             {"octo": SimpleNamespace(scheduler=scheduler)},
         )
     )
@@ -1160,7 +1245,10 @@ async def test_add_self_queue_item_dedupes_active_items(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scan_opportunities_includes_blocked_scheduled_task_worker_candidate(tmp_path, monkeypatch):
+async def test_scan_opportunities_includes_blocked_scheduled_task_octo_task_candidate(
+    tmp_path,
+    monkeypatch,
+):
     monkeypatch.setattr(octo_core, "_workspace_dir", lambda: tmp_path)
     store = _StoreStub(
         tasks=[
@@ -1205,13 +1293,13 @@ async def test_scan_opportunities_includes_blocked_scheduled_task_worker_candida
 
     card = result["opportunities"][0]
     assert card["kind"] == "scheduled_task_repair"
-    assert card["dedupe_key"] == "scheduled-task:weather_digest:suggested-worker"
-    assert card["suggested_worker_id"] == "ops_sre"
+    assert card["dedupe_key"] == "scheduled-task:weather_digest:suggested-octo_task"
+    assert "suggested_worker_id" not in card
     assert card["risk"] == "medium"
     assert card["inputs"] == {
         "scheduled_task_id": "weather_digest",
         "blocked_reason": "blocked_by_route",
-        "suggested_execution_mode": "worker",
+        "suggested_execution_mode": "octo_task",
     }
 
 
@@ -1261,7 +1349,7 @@ async def test_scan_opportunities_skips_scheduled_candidate_when_queue_has_activ
         {
             "title": "Already queued",
             "task": "Inspect scheduled task.",
-            "dedupe_key": "scheduled-task:weather_digest:suggested-worker",
+            "dedupe_key": "scheduled-task:weather_digest:suggested-octo_task",
         },
     )
 
@@ -1355,6 +1443,57 @@ async def test_route_scheduled_octo_control_uses_control_plane_prompt_and_skips_
 
     assert result == "SCHEDULED_TASK_DONE"
     assert calls == {"control_prompt": 1, "complete_route": 1}
+
+
+@pytest.mark.asyncio
+async def test_route_scheduled_octo_task_uses_full_conversation_route(monkeypatch):
+    calls = {"bootstrap": 0, "route": 0}
+
+    class DummyOcto:
+        provider = object()
+        memory = object()
+        store = object()
+
+    task = {
+        "id": "draft_write",
+        "name": "Draft Write",
+        "frequency": "Every 30 minutes",
+        "execution_mode": "octo_task",
+        "notify_user": "never",
+        "task_text": "Write a draft to memory/draft.md",
+        "inputs": {"path": "memory/draft.md"},
+    }
+
+    async def _build_bootstrap_context_prompt(store, chat_id):
+        calls["bootstrap"] += 1
+        assert chat_id == 123
+        return SimpleNamespace(content="<workspace>full context</workspace>")
+
+    async def _route_or_reply(octo, provider, memory, user_text, chat_id, bootstrap_context, **kwargs):
+        calls["route"] += 1
+        assert "full autonomous workspace task" in user_text
+        assert "memory/draft.md" in user_text
+        assert bootstrap_context == "<workspace>full context</workspace>"
+        assert kwargs["show_typing"] is False
+        assert kwargs["internal_followup"] is True
+        assert kwargs["route_mode"] == octo_router.RouteMode.CONVERSATION
+        return "SCHEDULED_TASK_DONE"
+
+    async def _build_control_plane_prompt_should_not_run(**kwargs):
+        raise AssertionError("control-plane prompt should not run for octo_task")
+
+    monkeypatch.setattr(octo_router, "build_bootstrap_context_prompt", _build_bootstrap_context_prompt)
+    monkeypatch.setattr(octo_router, "route_or_reply", _route_or_reply)
+    monkeypatch.setattr(
+        octo_router,
+        "build_control_plane_prompt",
+        _build_control_plane_prompt_should_not_run,
+    )
+
+    result = await octo_router.route_scheduled_octo_task(DummyOcto(), task, chat_id=123)
+
+    assert result == "SCHEDULED_TASK_DONE"
+    assert calls == {"bootstrap": 1, "route": 1}
 
 
 @pytest.mark.asyncio
@@ -1796,7 +1935,9 @@ async def test_octo_dispatch_due_scheduled_tasks_runs_octo_control_tasks(monkeyp
                     "worker_id": None,
                     "task_text": "Compact memory",
                     "inputs_json": "{}",
-                    "metadata_json": json.dumps({"notify_user": "never"}),
+                    "metadata_json": json.dumps(
+                        {"notify_user": "never", "execution_mode": "octo_control"}
+                    ),
                     "last_run_at": None,
                     "enabled": 1,
                 }
@@ -1847,6 +1988,69 @@ async def test_octo_dispatch_due_scheduled_tasks_runs_octo_control_tasks(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_octo_dispatch_due_scheduled_tasks_runs_full_octo_tasks(monkeypatch):
+    scheduler = SchedulerService(
+        store=_StoreStub(
+            tasks=[
+                {
+                    "id": "draft_write",
+                    "name": "Draft Write",
+                    "description": "Write a draft",
+                    "frequency": "Every 30 minutes",
+                    "worker_id": None,
+                    "task_text": "Write a draft to memory/draft.md",
+                    "inputs_json": "{}",
+                    "metadata_json": json.dumps(
+                        {"notify_user": "never", "execution_mode": "octo_task"}
+                    ),
+                    "last_run_at": None,
+                    "enabled": 1,
+                }
+            ]
+        ),
+        workspace_dir=Path("."),
+    )
+    route_calls: list[dict] = []
+
+    async def _start_worker_async(self, **kwargs):
+        raise AssertionError("_start_worker_async should not be called directly for octo_task tasks")
+
+    async def _route_scheduled_octo_task(octo, task, *, chat_id=0):
+        route_calls.append({"task": task, "chat_id": chat_id})
+        return "SCHEDULED_TASK_DONE"
+
+    monkeypatch.setattr(octo_core.Octo, "_start_worker_async", _start_worker_async)
+    monkeypatch.setattr(octo_router, "route_scheduled_octo_task", _route_scheduled_octo_task)
+    monkeypatch.setattr(octo_core, "route_scheduled_octo_task", _route_scheduled_octo_task)
+
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=Path(".")),
+        scheduler=scheduler,
+    )
+
+    summary = await octo._dispatch_due_scheduled_tasks_once(chat_id=0, max_tasks=5)
+
+    assert summary == {
+        "due_count": 1,
+        "attempted": 1,
+        "started": 0,
+        "completed": 1,
+        "duplicates": 0,
+        "rejected_by_policy": 0,
+        "policy_reasons": {},
+        "errors": 0,
+    }
+    assert route_calls and route_calls[0]["task"]["id"] == "draft_write"
+    assert scheduler.store.marked_task_ids == ["draft_write"]
+
+
+@pytest.mark.asyncio
 async def test_octo_dispatch_due_scheduled_tasks_requires_explicit_octo_control_completion_signal(monkeypatch):
     scheduler = SchedulerService(
         store=_StoreStub(
@@ -1859,7 +2063,9 @@ async def test_octo_dispatch_due_scheduled_tasks_requires_explicit_octo_control_
                     "worker_id": None,
                     "task_text": "Compact memory",
                     "inputs_json": "{}",
-                    "metadata_json": json.dumps({"notify_user": "never"}),
+                    "metadata_json": json.dumps(
+                        {"notify_user": "never", "execution_mode": "octo_control"}
+                    ),
                     "last_run_at": None,
                     "enabled": 1,
                 }
@@ -1921,7 +2127,9 @@ async def test_octo_dispatch_due_scheduled_tasks_backs_off_blocked_octo_control_
                 "worker_id": None,
                 "task_text": "Check the weather",
                 "inputs_json": "{}",
-                "metadata_json": json.dumps({"notify_user": "never"}),
+                "metadata_json": json.dumps(
+                    {"notify_user": "never", "execution_mode": "octo_control"}
+                ),
                 "last_run_at": None,
                 "enabled": 1,
             }
@@ -1984,7 +2192,7 @@ async def test_octo_dispatch_due_scheduled_tasks_backs_off_blocked_octo_control_
     assert isinstance(metadata, dict)
     assert metadata["blocked_reason"] == "blocked_by_route"
     assert "blocked_until" in metadata
-    assert metadata["suggested_execution_mode"] == "worker"
+    assert metadata["suggested_execution_mode"] == "octo_task"
 
 
 @pytest.mark.asyncio
@@ -2137,7 +2345,9 @@ async def test_octo_control_if_significant_is_treated_as_never_for_delivery(monk
                     "worker_id": None,
                     "task_text": "Send daily digest",
                     "inputs_json": "{}",
-                    "metadata_json": json.dumps({"notify_user": "if_significant"}),
+                    "metadata_json": json.dumps(
+                        {"notify_user": "if_significant", "execution_mode": "octo_control"}
+                    ),
                     "last_run_at": None,
                     "enabled": 1,
                 }

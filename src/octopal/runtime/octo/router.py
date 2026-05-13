@@ -173,6 +173,7 @@ _HEARTBEAT_ALLOWED_TOOL_NAMES = {
 _SCHEDULER_ALLOWED_TOOL_NAMES = {
     "check_schedule",
     "scheduler_status",
+    "repair_scheduled_tasks",
     "octo_context_health",
     "list_workers",
     "list_active_workers",
@@ -656,6 +657,8 @@ async def route_scheduler_tick(
                 "Scheduler route rules:\n"
                 "- Keep this turn operational and bounded.\n"
                 "- You may inspect schedule state and worker availability.\n"
+                "- You may apply safe scheduled-task route repairs with repair_scheduled_tasks(apply=true) "
+                "when the candidate is unambiguous.\n"
                 "- Do not dispatch workers directly from this route.\n"
                 "- Return one of: SCHEDULER_IDLE, NO_USER_RESPONSE, or <user_visible>...</user_visible>."
             ),
@@ -721,8 +724,8 @@ async def route_proactive_tick(
                 "- Keep this turn bounded to initiative discovery and self-queue maintenance.\n"
                 "- You may add, claim, execute, cancel, or mark self-queue items only when the payload supports it.\n"
                 "- You may preview scheduled-task repair candidates with repair_scheduled_tasks(apply=false).\n"
-                "- You may apply scheduled-task repairs only for an unambiguous blocked_by_route -> worker repair "
-                "where the task already has a valid worker_id; never provide worker_id from this route.\n"
+                "- You may apply scheduled-task repairs only for unambiguous blocked_by_route candidates. "
+                "For worker repairs the task must already have a valid worker_id; never provide worker_id from this route.\n"
                 "- Do not start workers directly, schedule recurring tasks, use filesystem tools, use network/MCP tools, "
                 "or perform external side effects from this route.\n"
                 "- Use execute_self_queue_item only for an existing low/medium-risk queue item with an explicit worker_id; "
@@ -832,6 +835,31 @@ async def route_scheduled_octo_control(
         return normalize_plain_text(reply_text)
     finally:
         await octo.set_thinking(False)
+
+
+async def route_scheduled_octo_task(
+    octo: Any,
+    task: dict[str, Any],
+    *,
+    chat_id: int = 0,
+) -> str:
+    """Run a scheduled task as a full Octo workspace task with normal tools and context."""
+    task_text = _build_scheduled_octo_task_input(task)
+    bootstrap_context = await build_bootstrap_context_prompt(octo.store, chat_id)
+    return await route_or_reply(
+        octo,
+        octo.provider,
+        octo.memory,
+        task_text,
+        chat_id,
+        bootstrap_context.content,
+        internal_followup=True,
+        show_typing=False,
+        images=None,
+        saved_file_paths=None,
+        include_wakeup=False,
+        route_mode=RouteMode.CONVERSATION,
+    )
 
 
 async def _complete_route_with_tools(
@@ -1880,6 +1908,11 @@ def _build_scheduler_tick_input(octo: Any, *, max_tasks: int = 10) -> str:
                 "worker_id": task.get("worker_id"),
                 "frequency": task.get("frequency"),
                 "notify_user": task.get("notify_user"),
+                "execution_mode": task.get("execution_mode"),
+                "dispatch_ready": task.get("dispatch_ready"),
+                "dispatch_policy_reason": task.get("dispatch_policy_reason"),
+                "blocked_reason": task.get("blocked_reason"),
+                "suggested_execution_mode": task.get("suggested_execution_mode"),
                 "task_text": task.get("task_text"),
             }
             for task in due_tasks[: max(1, int(max_tasks))]
@@ -1891,6 +1924,11 @@ def _build_scheduler_tick_input(octo: Any, *, max_tasks: int = 10) -> str:
                 "due_now": bool(task.get("due_now")),
                 "next_run_at": task.get("next_run_at"),
                 "notify_user": task.get("notify_user"),
+                "execution_mode": task.get("execution_mode"),
+                "dispatch_ready": task.get("dispatch_ready"),
+                "dispatch_policy_reason": task.get("dispatch_policy_reason"),
+                "blocked_reason": task.get("blocked_reason"),
+                "suggested_execution_mode": task.get("suggested_execution_mode"),
             }
             for task in preview_tasks
         ],
@@ -1940,8 +1978,8 @@ async def _build_proactive_tick_input(octo: Any, *, chat_id: int, reason: str) -
         f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n"
         "If there is already pending self-queue work with an explicit worker_id, you may use execute_self_queue_item. "
         "If pending work lacks a worker_id, prefer decision=blocked or noop. "
-        "If an opportunity kind is scheduled_task_repair and the task already has worker_id, you may preview "
-        "repair_scheduled_tasks and apply it only when the candidate is safe. "
+        "If an opportunity kind is scheduled_task_repair, you may preview repair_scheduled_tasks and apply it "
+        "only when the candidate is safe. Worker repairs require an existing worker_id. "
         "If the best opportunity is confidence >= 0.75, low/medium risk, and no pending work exists, "
         "use octo_self_queue_add to queue exactly one concrete initiative. "
         "Do not call start_worker directly from this route."
@@ -1964,6 +2002,33 @@ def _build_scheduled_octo_control_input(task: dict[str, Any]) -> str:
         "Run this scheduled Octo control task:\n"
         f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n"
         "Complete the task in a bounded way and return only the strict control-plane delivery result."
+    )
+
+
+def _build_scheduled_octo_task_input(task: dict[str, Any]) -> str:
+    payload = {
+        "task_id": task.get("id"),
+        "name": task.get("name"),
+        "frequency": task.get("frequency"),
+        "execution_mode": task.get("execution_mode"),
+        "notify_user": task.get("notify_user"),
+        "description": task.get("description"),
+        "task_text": task.get("task_text"),
+        "inputs": task.get("inputs") if isinstance(task.get("inputs"), dict) else {},
+        "last_run_at": task.get("last_run_at"),
+    }
+    return (
+        "Run this scheduled Octo task as a full autonomous workspace task:\n"
+        f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n\n"
+        "Use the normal tools, workspace context, memory, filesystem, MCP, web, and workers as needed. "
+        "Complete the task end-to-end before returning a completion signal. "
+        "If you create or update a file, verify it exists before finishing. "
+        "Do not treat this as a bounded control-plane route.\n\n"
+        "When the task is complete, return exactly one of:\n"
+        "- SCHEDULED_TASK_DONE if it completed successfully and no user-facing update is needed.\n"
+        "- <user_visible>...</user_visible> if it completed and the user should receive a concise update.\n"
+        "- NO_USER_RESPONSE only if the task intentionally produced no change.\n"
+        "Return SCHEDULED_TASK_BLOCKED only if the task truly cannot be completed even with the full Octo toolset."
     )
 
 
