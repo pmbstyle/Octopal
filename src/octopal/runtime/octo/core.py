@@ -5,7 +5,6 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -54,9 +53,6 @@ from octopal.runtime.octo.context_health import (
     _is_progress_reply,
 )
 from octopal.runtime.octo.context_reset import _normalize_compact as _normalize_compact
-from octopal.runtime.octo.context_reset import (
-    build_restart_resume_message as _build_restart_resume_message,
-)
 from octopal.runtime.octo.context_runtime import OctoContextRuntimeMixin
 from octopal.runtime.octo.control_plane import (
     RouteMode,
@@ -78,9 +74,9 @@ from octopal.runtime.octo.prompt_builder import (
 from octopal.runtime.octo.reply import OctoReply
 from octopal.runtime.octo.router import (
     route_heartbeat,
-    route_internal_maintenance,
     route_or_reply,
 )
+from octopal.runtime.octo.router import route_internal_maintenance as route_internal_maintenance
 from octopal.runtime.octo.router import route_proactive_tick as route_proactive_tick
 from octopal.runtime.octo.router import route_scheduled_octo_control as route_scheduled_octo_control
 from octopal.runtime.octo.router import route_scheduler_tick as route_scheduler_tick
@@ -88,12 +84,12 @@ from octopal.runtime.octo.runtime_config import _env_flag, _env_int
 from octopal.runtime.octo.runtime_config import _env_float as _env_float
 from octopal.runtime.octo.scheduled_runtime import OctoScheduledRuntimeMixin
 from octopal.runtime.octo.scheduler_helpers import (
-    _coerce_positive_chat_id,
     _empty_scheduler_metric_counters,
 )
 from octopal.runtime.octo.scheduler_runtime import OctoSchedulerRuntimeMixin
 from octopal.runtime.octo.self_lifecycle import OctoSelfLifecycleMixin
 from octopal.runtime.octo.self_queue import OctoSelfQueueMixin
+from octopal.runtime.octo.startup_runtime import OctoStartupRuntimeMixin
 from octopal.runtime.octo.turn_state import OctoTurnStateMixin
 from octopal.runtime.octo.worker_dispatch import OctoWorkerDispatchMixin
 from octopal.runtime.octo.worker_registry import OctoWorkerRegistryMixin
@@ -105,10 +101,6 @@ from octopal.runtime.scheduler.service import (
 from octopal.runtime.self_control import (
     check_update_status as check_update_status,
 )
-from octopal.runtime.self_control import (
-    mark_restart_resume_consumed,
-    read_pending_restart_resume,
-)
 from octopal.runtime.state import update_last_internal_heartbeat
 from octopal.runtime.workers.contracts import (
     WorkerInstructionRequest,
@@ -119,7 +111,6 @@ from octopal.runtime.workers.runtime import WorkerRuntime
 from octopal.utils import (
     extract_reaction_and_strip,
     sanitize_user_facing_text_preserving_reaction,
-    should_suppress_user_delivery,
     utc_now,
 )
 
@@ -194,6 +185,7 @@ class Octo(
     OctoContextRuntimeMixin,
     OctoScheduledRuntimeMixin,
     OctoOutputRuntimeMixin,
+    OctoStartupRuntimeMixin,
 ):
     provider: InferenceProvider
     store: Store
@@ -395,94 +387,6 @@ class Octo(
         stale_keys = [key for key, seen_at in self._recent_tasks.items() if seen_at < cutoff]
         for key in stale_keys:
             self._recent_tasks.pop(key, None)
-
-    async def initialize_system(self, bot=None, allowed_chat_ids: list[int] | None = None) -> None:
-        system_chat_id = 0
-        logger.info("Octo waking up")
-        self.start_background_tasks()
-
-        # Load and connect MCP servers
-        if self.mcp_manager:
-            await self.mcp_manager.load_and_connect_all()
-
-        # Load and start connectors
-        if self.connector_manager:
-            await self.connector_manager.load_and_start_all()
-
-        restart_resume = None
-        runtime_settings = getattr(getattr(self, "runtime", None), "settings", None)
-        if runtime_settings is not None:
-            restart_resume = await asyncio.to_thread(
-                read_pending_restart_resume,
-                Path(runtime_settings.state_dir),
-            )
-            if restart_resume and restart_resume.get("consumed_at"):
-                restart_resume = None
-
-        wake_up_prompt = (
-            "You are waking up. Inspect runtime health and available workers internally. "
-            "Use only bounded control-plane tools if needed, but never output a tool name or tool syntax as your final answer. "
-            "Then produce a short friendly startup status message for the user in plain language."
-        )
-        if restart_resume:
-            wake_up_prompt += "\n\n" + _build_restart_resume_message(restart_resume)
-        original_send = self.internal_send
-        chat_ids = [
-            chat_id
-            for item in (allowed_chat_ids or [])
-            if (chat_id := _coerce_positive_chat_id(item)) is not None
-        ]
-        self._scheduled_delivery_chat_ids = list(chat_ids)
-        if chat_ids and (bot or callable(original_send)):
-            logger.info("Octo will send initialization message", count=len(chat_ids))
-            logger.debug("Allowed chat_ids", chat_ids=chat_ids)
-
-            async def send_to_allowed_chats(chat_id, text):
-                for target_chat_id in chat_ids:
-                    try:
-                        if callable(original_send):
-                            # Reuse the active channel send pipeline when one is attached.
-                            await original_send(target_chat_id, text)
-                        else:
-                            await bot.send_message(chat_id=target_chat_id, text=text)
-                        logger.debug("Sent initialization message", chat_id=target_chat_id)
-                    except Exception as e:
-                        logger.warning("Failed to send to chat_id", chat_id=target_chat_id, error=e)
-
-            self.internal_send = send_to_allowed_chats
-        else:
-            logger.warning(
-                "No allowed user channel recipients configured; octo will not send ready message."
-            )
-            self.internal_send = None
-        try:
-            result = await route_internal_maintenance(
-                self,
-                system_chat_id,
-                wake_up_prompt,
-            )
-            if should_suppress_user_delivery(result):
-                result = "Octo is online. Initialization is complete and I am ready for your tasks."
-            logger.info(
-                "Octo wake up complete", result_preview=f"{result[:60]}..." if result else "empty"
-            )
-
-            # Send the Octo's own response to allowed chats if configured.
-            if result and self.internal_send and chat_ids:
-                try:
-                    await self.internal_send(system_chat_id, result)
-                    logger.info("Octo initialization response sent")
-                except Exception as e:
-                    logger.warning("Failed to send octo initialization response", error=e)
-            if restart_resume and runtime_settings is not None:
-                await asyncio.to_thread(
-                    mark_restart_resume_consumed,
-                    Path(runtime_settings.state_dir),
-                )
-        except Exception:
-            logger.exception("Octo failed to complete wake-up task")
-        finally:
-            self.internal_send = original_send
 
     async def handle_worker_instruction_request(
         self,
