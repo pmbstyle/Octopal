@@ -18,7 +18,7 @@ _EVERY_MINUTES_RE = re.compile(r"^every\s+(\d+)\s+minutes?$", re.IGNORECASE)
 _EVERY_HOURS_RE = re.compile(r"^every\s+(\d+)\s+hours?$", re.IGNORECASE)
 _DAILY_AT_RE = re.compile(r"^daily\s+at\s+(\d{1,2}):(\d{2})$", re.IGNORECASE)
 _NOTIFY_USER_POLICIES = {"never", "if_significant", "always"}
-_EXECUTION_MODES = {"worker", "octo_control"}
+_EXECUTION_MODES = {"worker", "octo_control", "octo_task"}
 SCHEDULED_TASK_DELIVERY_CHAT_ID_KEY = "delivery_chat_id"
 SCHEDULED_TASK_TARGET_CHAT_ID_KEY = "target_chat_id"
 SCHEDULED_TASK_BLOCKED_UNTIL_KEY = "blocked_until"
@@ -40,8 +40,14 @@ def normalize_execution_mode(
     worker_id: str | None = None,
 ) -> str:
     value = str(execution_mode or "").strip().lower()
+    aliases = {
+        "octo": "octo_task",
+        "octo_self": "octo_task",
+        "self": "octo_task",
+    }
+    value = aliases.get(value, value)
     if not value:
-        return "worker" if str(worker_id or "").strip() else "octo_control"
+        return "worker" if str(worker_id or "").strip() else "octo_task"
     if value not in _EXECUTION_MODES:
         allowed = ", ".join(sorted(_EXECUTION_MODES))
         raise ValueError(f"execution_mode must be one of: {allowed}.")
@@ -100,8 +106,10 @@ class SchedulerService:
             normalized_notify_user = "never"
         if normalized_execution_mode == "worker" and not worker_id_value:
             raise ValueError("worker_id is required when execution_mode=worker.")
-        if normalized_execution_mode == "octo_control" and worker_id_value:
-            raise ValueError("worker_id must be omitted when execution_mode=octo_control.")
+        if normalized_execution_mode in {"octo_control", "octo_task"} and worker_id_value:
+            raise ValueError(
+                f"worker_id must be omitted when execution_mode={normalized_execution_mode}."
+            )
         task_id = self._generate_id(name)
         self.store.upsert_scheduled_task(
             task_id=task_id,
@@ -163,6 +171,8 @@ class SchedulerService:
                 elif get_worker_template(self.workspace_dir, resolved_worker_id) is None:
                     can_apply = False
                     skip_reason = skip_reason or "unknown_worker_id"
+            elif suggested_mode == "octo_task":
+                resolved_worker_id = None
             candidate = {
                 "task_id": task_id,
                 "name": task.get("name"),
@@ -441,11 +451,11 @@ class SchedulerService:
         blocked_reason = str(metadata.get(SCHEDULED_TASK_BLOCKED_REASON_KEY) or "").strip() or None
         suggested_execution_mode = parse_scheduled_task_suggested_execution_mode(metadata)
         if (
-            suggested_execution_mode is None
-            and normalized["execution_mode"] == "octo_control"
+            normalized["execution_mode"] == "octo_control"
             and blocked_reason == "blocked_by_route"
+            and not str(normalized.get("worker_id") or "").strip()
         ):
-            suggested_execution_mode = "worker"
+            suggested_execution_mode = "octo_task"
         normalized["blocked_until"] = blocked_until.isoformat() if blocked_until is not None else None
         normalized["blocked_reason"] = blocked_reason
         normalized["suggested_execution_mode"] = suggested_execution_mode
@@ -457,7 +467,10 @@ class SchedulerService:
     def _dispatch_readiness(self, task: dict[str, Any]) -> tuple[bool, str | None]:
         execution_mode = str(task.get("execution_mode") or "").strip().lower()
         suggested_execution_mode = str(task.get("suggested_execution_mode") or "").strip().lower()
-        if execution_mode == "octo_control" and suggested_execution_mode == "worker":
+        if execution_mode == "octo_control" and suggested_execution_mode in {
+            "worker",
+            "octo_task",
+        }:
             return False, str(task.get("blocked_reason") or "").strip() or "blocked_by_route"
         blocked_until_value = str(task.get("blocked_until") or "").strip()
         if blocked_until_value:
@@ -467,7 +480,7 @@ class SchedulerService:
                 blocked_until = None
             if blocked_until is not None and blocked_until.tzinfo is not None and blocked_until > utc_now():
                 return False, str(task.get("blocked_reason") or "").strip() or "blocked_by_route_backoff"
-        if execution_mode == "octo_control":
+        if execution_mode in {"octo_control", "octo_task"}:
             task_text = str(task.get("task_text") or "").strip()
             if not task_text:
                 return False, "missing_task_text"

@@ -58,6 +58,7 @@ from octopal.runtime.octo.router import route_internal_maintenance as route_inte
 from octopal.runtime.octo.router import route_or_reply as route_or_reply
 from octopal.runtime.octo.router import route_proactive_tick as route_proactive_tick
 from octopal.runtime.octo.router import route_scheduled_octo_control as route_scheduled_octo_control
+from octopal.runtime.octo.router import route_scheduled_octo_task as route_scheduled_octo_task
 from octopal.runtime.octo.router import route_scheduler_tick as route_scheduler_tick
 from octopal.runtime.octo.runtime_config import _env_flag, _env_int
 from octopal.runtime.octo.scheduled_runtime import OctoScheduledRuntimeMixin
