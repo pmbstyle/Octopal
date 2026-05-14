@@ -23,6 +23,7 @@ from octopal.runtime.scheduler.service import (
     normalize_notify_user_policy,
 )
 from octopal.runtime.state import is_pid_running, read_status
+from octopal.runtime.workers.allowed_paths import normalize_allowed_paths
 from octopal.tools.browser.actions import (
     browser_click,
     browser_close,
@@ -692,6 +693,16 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     },
                     "worker_id": {"type": "string", "description": "Specific worker template ID to use when execution_mode=worker."},
                     "inputs": {"type": "object", "description": "Optional: Inputs for the worker."},
+                    "allowed_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "For execution_mode=worker only: workspace-relative files or directories "
+                            "from Octo's main workspace that the scheduled worker must read or write. "
+                            "Use the smallest explicit set needed; omit this for octo_task and "
+                            "octo_control schedules."
+                        ),
+                    },
                     "notify_user": {
                         "type": "string",
                         "enum": ["never", "if_significant", "always"],
@@ -1874,6 +1885,7 @@ def _tool_schedule_task(args, ctx) -> str:
             description=args.get("description"),
             worker_id=args.get("worker_id"),
             inputs=args.get("inputs"),
+            allowed_paths=args.get("allowed_paths"),
             notify_user=args.get("notify_user"),
             execution_mode=args.get("execution_mode"),
         )
@@ -1887,6 +1899,10 @@ def _tool_schedule_task(args, ctx) -> str:
     notify_user = normalize_notify_user_policy(args.get("notify_user"))
     if execution_mode == "octo_control" and notify_user == "if_significant":
         notify_user = "never"
+    allowed_paths = normalize_allowed_paths(
+        args.get("allowed_paths"),
+        workspace_dir=ctx["octo"].scheduler.workspace_dir,
+    )
 
     return json.dumps(
         {
@@ -1896,6 +1912,7 @@ def _tool_schedule_task(args, ctx) -> str:
             "frequency": args["frequency"],
             "execution_mode": execution_mode,
             "notify_user": notify_user,
+            "allowed_paths": allowed_paths or [],
         },
         ensure_ascii=False,
     )

@@ -35,6 +35,10 @@ from octopal.runtime.scheduler.service import (
     normalize_notify_user_policy,
     parse_scheduled_task_blocked_until,
 )
+from octopal.runtime.workers.allowed_paths import (
+    infer_allowed_paths_from_task,
+    normalize_allowed_paths,
+)
 from octopal.utils import utc_now
 
 logger = structlog.get_logger(__name__)
@@ -72,6 +76,39 @@ def _scheduled_octo_control_backoff_seconds() -> float:
             _DEFAULT_SCHEDULED_OCTO_CONTROL_BACKOFF_SECONDS,
         )
     )
+
+
+def _scheduled_workspace_dir(octo: Any) -> Any:
+    scheduler = getattr(octo, "scheduler", None)
+    workspace_dir = getattr(scheduler, "workspace_dir", None)
+    if workspace_dir is not None:
+        return workspace_dir
+    canon = getattr(octo, "canon", None)
+    return getattr(canon, "workspace_dir", None)
+
+
+def _scheduled_task_allowed_paths(
+    octo: Any,
+    task: dict[str, Any],
+    *,
+    task_text: str,
+    inputs: dict[str, Any],
+) -> list[str] | None:
+    workspace_dir = _scheduled_workspace_dir(octo)
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    explicit = normalize_allowed_paths(
+        metadata.get("allowed_paths") if isinstance(metadata, dict) else None,
+        workspace_dir=workspace_dir,
+    )
+    if explicit:
+        return explicit
+    explicit = normalize_allowed_paths(
+        inputs.get("allowed_paths"),
+        workspace_dir=workspace_dir,
+    )
+    if explicit:
+        return explicit
+    return infer_allowed_paths_from_task(task_text, workspace_dir=workspace_dir)
 
 
 class OctoScheduledRuntimeMixin:
@@ -354,6 +391,12 @@ class OctoScheduledRuntimeMixin:
 
             summary["attempted"] += 1
             try:
+                allowed_paths = _scheduled_task_allowed_paths(
+                    self,
+                    task,
+                    task_text=task_text,
+                    inputs=inputs,
+                )
                 result = await self._start_worker_async(
                     worker_id=worker_id,
                     task=task_text,
@@ -362,6 +405,7 @@ class OctoScheduledRuntimeMixin:
                     tools=None,
                     model=None,
                     timeout_seconds=None,
+                    allowed_paths=allowed_paths,
                     scheduled_task_id=task_id or None,
                 )
             except Exception:

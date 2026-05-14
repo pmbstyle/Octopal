@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import re
 from datetime import timedelta
 from pathlib import Path
@@ -13,6 +12,9 @@ from octopal.runtime.worker_result_payloads import (
     SYNTHESIZE_WORKER_OUTPUT_CONTEXT_BUDGET,
     summarize_worker_output_for_context,
 )
+from octopal.runtime.workers.allowed_paths import (
+    infer_allowed_paths_from_task as _infer_allowed_paths_from_task,
+)
 from octopal.tools.registry import ToolSpec
 from octopal.utils import utc_now
 
@@ -21,7 +23,6 @@ if TYPE_CHECKING:
 
 _WORKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
-_PATH_TOKEN_RE = re.compile(r"(?P<path>(?:[A-Za-z]:[\\/])?(?:[\w.@()+-]+[\\/])+[\w.@()+-]+)")
 _MAX_PARALLEL_BATCH = 10
 _WORKER_BLOCKED_TOOL_NAMES = {
     "send_file_to_user",
@@ -1898,36 +1899,6 @@ def _normalize_tool_name_list(value: object) -> list[str]:
         seen.add(tool_name)
         normalized.append(tool_name)
     return normalized
-
-
-def _infer_allowed_paths_from_task(task: str) -> list[str] | None:
-    workspace = Path(os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace")).resolve()
-    inferred: list[str] = []
-    seen: set[str] = set()
-    for match in _PATH_TOKEN_RE.finditer(task or ""):
-        raw_path = match.group("path").strip().strip("`'\".,;:)")
-        if not raw_path:
-            continue
-        candidate = Path(raw_path)
-        if candidate.is_absolute():
-            try:
-                rel_path = candidate.resolve().relative_to(workspace)
-            except (OSError, ValueError):
-                continue
-        else:
-            rel_path = Path(raw_path)
-            candidate = workspace / rel_path
-            try:
-                candidate.resolve().relative_to(workspace)
-            except (OSError, ValueError):
-                continue
-        if not candidate.exists():
-            continue
-        rel = rel_path.as_posix()
-        if rel not in seen:
-            seen.add(rel)
-            inferred.append(rel)
-    return inferred or None
 
 
 def _task_mentions_image_analysis(task: str) -> bool:

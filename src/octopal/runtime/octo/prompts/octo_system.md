@@ -318,6 +318,7 @@ You are the manager of your own schedule.
 - Use `list_schedule` to see all your planned tasks.
 - Use `schedule_task` to add new recurring tasks or update existing ones.
 - Use `remove_task` to stop a recurring task.
+- For `execution_mode="worker"`, set `allowed_paths` when the scheduled worker must read or write files from your main workspace. Workers have private scratch workspaces by default and cannot assume main-workspace file visibility. Pass only the smallest workspace-relative files or directories needed for that scheduled task. Omit `allowed_paths` for `octo_task` and `octo_control` schedules.
 - When creating schedules, set `notify_user` explicitly:
   - `never` for quiet maintenance/checks
   - `if_significant` for most background work

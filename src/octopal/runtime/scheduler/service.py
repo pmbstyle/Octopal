@@ -9,6 +9,7 @@ from typing import Any
 import structlog
 
 from octopal.infrastructure.store.base import Store
+from octopal.runtime.workers.allowed_paths import normalize_allowed_paths
 from octopal.runtime.workers.loader import get_worker_template
 from octopal.utils import utc_now
 
@@ -91,6 +92,7 @@ class SchedulerService:
         description: str | None = None,
         worker_id: str | None = None,
         inputs: dict | None = None,
+        allowed_paths: list[str] | None = None,
         notify_user: str | None = None,
         execution_mode: str | None = None,
     ) -> str:
@@ -110,7 +112,19 @@ class SchedulerService:
             raise ValueError(
                 f"worker_id must be omitted when execution_mode={normalized_execution_mode}."
             )
+        normalized_allowed_paths = normalize_allowed_paths(
+            allowed_paths,
+            workspace_dir=self.workspace_dir,
+        )
+        if normalized_allowed_paths and normalized_execution_mode != "worker":
+            raise ValueError("allowed_paths can only be used when execution_mode=worker.")
         task_id = self._generate_id(name)
+        metadata: dict[str, Any] = {
+            "notify_user": normalized_notify_user,
+            "execution_mode": normalized_execution_mode,
+        }
+        if normalized_allowed_paths:
+            metadata["allowed_paths"] = normalized_allowed_paths
         self.store.upsert_scheduled_task(
             task_id=task_id,
             name=name,
@@ -119,10 +133,7 @@ class SchedulerService:
             description=description,
             worker_id=worker_id_value,
             inputs=inputs,
-            metadata={
-                "notify_user": normalized_notify_user,
-                "execution_mode": normalized_execution_mode,
-            },
+            metadata=metadata,
         )
         self.sync_to_markdown()
         return task_id

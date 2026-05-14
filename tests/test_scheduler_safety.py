@@ -214,6 +214,49 @@ def test_schedule_task_rejects_worker_id_for_octo_task_mode(tmp_path: Path) -> N
     assert result == "schedule_task error: worker_id must be omitted when execution_mode=octo_task."
 
 
+def test_schedule_task_accepts_allowed_paths_for_worker_mode(tmp_path: Path) -> None:
+    store = _StoreStub()
+    scheduler = SchedulerService(store=store, workspace_dir=tmp_path)
+    payload = json.loads(
+        _tool_schedule_task(
+            {
+                "name": "Publish report",
+                "frequency": "Daily at 22:00",
+                "task": "Read the report and publish it",
+                "execution_mode": "worker",
+                "worker_id": "publisher",
+                "allowed_paths": ["memory/reports/latest.md", "memory/reports/latest.md"],
+            },
+            {"octo": SimpleNamespace(scheduler=scheduler)},
+        )
+    )
+
+    assert payload["status"] == "scheduled"
+    assert payload["allowed_paths"] == ["memory/reports/latest.md"]
+    assert store.last_upsert is not None
+    assert store.last_upsert["metadata"] == {
+        "notify_user": "if_significant",
+        "execution_mode": "worker",
+        "allowed_paths": ["memory/reports/latest.md"],
+    }
+
+
+def test_schedule_task_rejects_allowed_paths_for_octo_task_mode(tmp_path: Path) -> None:
+    scheduler = SchedulerService(store=_StoreStub(), workspace_dir=tmp_path)
+    result = _tool_schedule_task(
+        {
+            "name": "Write report",
+            "frequency": "Daily at 22:00",
+            "task": "Write the report",
+            "execution_mode": "octo_task",
+            "allowed_paths": ["memory/reports/latest.md"],
+        },
+        {"octo": SimpleNamespace(scheduler=scheduler)},
+    )
+
+    assert result == "schedule_task error: allowed_paths can only be used when execution_mode=worker."
+
+
 def test_schedule_task_derives_octo_task_mode_without_worker_id(tmp_path: Path) -> None:
     store = _StoreStub()
     scheduler = SchedulerService(store=store, workspace_dir=tmp_path)
@@ -1755,9 +1798,119 @@ async def test_octo_dispatch_due_scheduled_tasks_starts_dispatchable_workers(mon
             "tools": None,
             "model": None,
             "timeout_seconds": None,
+            "allowed_paths": None,
             "scheduled_task_id": "daily_digest",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_octo_dispatch_due_scheduled_tasks_passes_stored_allowed_paths(monkeypatch, tmp_path: Path):
+    started_calls = []
+    scheduler = SchedulerService(
+        store=_StoreStub(
+            tasks=[
+                {
+                    "id": "publish_report",
+                    "name": "Publish Report",
+                    "description": "Publish report",
+                    "frequency": "Daily at 22:00",
+                    "worker_id": "publisher",
+                    "task_text": "Read the report and publish it",
+                    "inputs_json": "{}",
+                    "metadata_json": json.dumps(
+                        {
+                            "notify_user": "never",
+                            "execution_mode": "worker",
+                            "allowed_paths": ["memory/reports/latest.md"],
+                        }
+                    ),
+                    "last_run_at": None,
+                    "enabled": 1,
+                }
+            ]
+        ),
+        workspace_dir=tmp_path,
+    )
+
+    async def _start_worker_async(self, **kwargs):
+        started_calls.append(kwargs)
+        return {"status": "started", "run_id": "run-1", "worker_id": "run-1"}
+
+    monkeypatch.setattr(octo_core.Octo, "_start_worker_async", _start_worker_async)
+
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=tmp_path),
+        scheduler=scheduler,
+    )
+
+    summary = await octo._dispatch_due_scheduled_tasks_once(chat_id=0, max_tasks=5)
+
+    assert summary["started"] == 1
+    assert started_calls[0]["allowed_paths"] == ["memory/reports/latest.md"]
+
+
+@pytest.mark.asyncio
+async def test_octo_dispatch_due_scheduled_tasks_infers_existing_workspace_paths(
+    monkeypatch,
+    tmp_path: Path,
+):
+    started_calls = []
+    report_path = tmp_path / "memory" / "reports" / "latest.md"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text("report", encoding="utf-8")
+    scheduler = SchedulerService(
+        store=_StoreStub(
+            tasks=[
+                {
+                    "id": "publish_report",
+                    "name": "Publish Report",
+                    "description": "Publish report",
+                    "frequency": "Daily at 22:00",
+                    "worker_id": "publisher",
+                    "task_text": "Read memory/reports/latest.md and publish it",
+                    "inputs_json": "{}",
+                    "metadata_json": json.dumps(
+                        {
+                            "notify_user": "never",
+                            "execution_mode": "worker",
+                        }
+                    ),
+                    "last_run_at": None,
+                    "enabled": 1,
+                }
+            ]
+        ),
+        workspace_dir=tmp_path,
+    )
+
+    async def _start_worker_async(self, **kwargs):
+        started_calls.append(kwargs)
+        return {"status": "started", "run_id": "run-1", "worker_id": "run-1"}
+
+    monkeypatch.setattr(octo_core.Octo, "_start_worker_async", _start_worker_async)
+
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=tmp_path),
+        scheduler=scheduler,
+    )
+
+    summary = await octo._dispatch_due_scheduled_tasks_once(chat_id=0, max_tasks=5)
+
+    assert summary["started"] == 1
+    assert started_calls[0]["allowed_paths"] == ["memory/reports/latest.md"]
 
 
 @pytest.mark.asyncio
