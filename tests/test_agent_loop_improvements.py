@@ -31,6 +31,7 @@ from octopal.runtime.workers.contracts import WorkerSpec
 from octopal.runtime.workers.runtime import (
     _call_mcp_with_name_fallback,
     _extract_mcp_tool_identity,
+    _validate_worker_local_tool_call,
 )
 from octopal.tools.registry import ToolSpec
 from octopal.worker_sdk.worker import Worker
@@ -876,6 +877,35 @@ def test_execute_agent_task_injects_request_instruction_without_parent_answer_to
     assert result.summary == "done"
     assert result.thinking_steps == 1
     assert result.tools_used == []
+
+
+def test_worker_runtime_allows_injected_parent_instruction_answer_tool() -> None:
+    parent_spec = _dummy_worker().spec.model_copy(
+        update={
+            "available_tools": ["start_child_worker"],
+            "effective_permissions": ["worker_manage"],
+        }
+    )
+    childless_spec = _dummy_worker().spec.model_copy(
+        update={
+            "available_tools": ["get_worker_result"],
+            "effective_permissions": ["worker_manage"],
+        }
+    )
+
+    assert (
+        _validate_worker_local_tool_call(
+            spec=parent_spec,
+            tool_name="answer_worker_instruction",
+            permission="worker_manage",
+        )
+        is None
+    )
+    assert _validate_worker_local_tool_call(
+        spec=childless_spec,
+        tool_name="answer_worker_instruction",
+        permission="worker_manage",
+    ) == "Worker tool 'answer_worker_instruction' is not allowed by this worker spec."
 
 
 def test_execute_agent_task_does_not_charge_step_for_parent_instruction_answer(
