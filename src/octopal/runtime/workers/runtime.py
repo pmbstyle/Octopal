@@ -58,6 +58,10 @@ _WORKER_BLOCKED_TOOL_NAMES = {
     "octo_check_update",
     "octo_update_self",
 }
+_CHILD_SPAWN_TOOL_NAMES = {
+    "start_child_worker",
+    "start_workers_parallel",
+}
 _PERMISSION_ALIASES = {
     "spawn_children": "worker_manage",
 }
@@ -2047,7 +2051,11 @@ def _validate_worker_local_tool_call(
 ) -> str | None:
     normalized_tool_name = str(tool_name or "").strip().lower()
     allowed_tools = set(_normalize_name_list(spec.available_tools))
-    if normalized_tool_name not in allowed_tools:
+    if normalized_tool_name not in allowed_tools and not _allows_injected_worker_tool(
+        spec,
+        normalized_tool_name,
+        allowed_tools=allowed_tools,
+    ):
         return f"Worker tool '{normalized_tool_name}' is not allowed by this worker spec."
     normalized_permission = str(permission or "").strip().lower()
     allowed_permissions = set(_normalize_permission_names(spec.effective_permissions))
@@ -2057,6 +2065,19 @@ def _validate_worker_local_tool_call(
             "which is not granted to this worker."
         )
     return None
+
+
+def _allows_injected_worker_tool(
+    spec: WorkerSpec,
+    normalized_tool_name: str,
+    *,
+    allowed_tools: set[str] | None = None,
+) -> bool:
+    """Mirror agent-worker injected tools at the runtime bridge boundary."""
+    if normalized_tool_name != "answer_worker_instruction":
+        return False
+    tools = allowed_tools if allowed_tools is not None else set(_normalize_name_list(spec.available_tools))
+    return bool(tools & _CHILD_SPAWN_TOOL_NAMES)
 
 
 def _validate_worker_mcp_tool_call(
