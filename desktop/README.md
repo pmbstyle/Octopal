@@ -29,7 +29,7 @@ npm run dist:linux
 Packaged artifacts are written to `dist/`. Platform installers are built with `electron-builder`:
 
 - Windows: NSIS installer
-- macOS: DMG
+- macOS: DMG and ZIP for Intel and Apple Silicon
 - Linux: AppImage
 
 ## Release

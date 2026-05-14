@@ -113,13 +113,15 @@ jobs:
               desktop/dist/*.exe
               desktop/dist/*.exe.blockmap
               desktop/dist/latest.yml
-          - name: macOS
+          - name: macOS Intel + Apple Silicon
             os: macos-15-intel
             command: npm run dist:mac -- --publish never
             artifact: octopal-desktop-macos
             path: |
               desktop/dist/*.dmg
               desktop/dist/*.dmg.blockmap
+              desktop/dist/*.zip
+              desktop/dist/*.zip.blockmap
               desktop/dist/latest-mac.yml
           - name: Linux
             os: ubuntu-latest
