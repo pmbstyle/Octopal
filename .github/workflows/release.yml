@@ -110,25 +110,25 @@ jobs:
             command: npm run dist:win -- --publish never
             artifact: octopal-desktop-windows
             path: |
-              cp/dist/*.exe
-              cp/dist/*.exe.blockmap
-              cp/dist/latest.yml
+              desktop/dist/*.exe
+              desktop/dist/*.exe.blockmap
+              desktop/dist/latest.yml
           - name: macOS
             os: macos-15-intel
             command: npm run dist:mac -- --publish never
             artifact: octopal-desktop-macos
             path: |
-              cp/dist/*.dmg
-              cp/dist/*.dmg.blockmap
-              cp/dist/latest-mac.yml
+              desktop/dist/*.dmg
+              desktop/dist/*.dmg.blockmap
+              desktop/dist/latest-mac.yml
           - name: Linux
             os: ubuntu-latest
             command: npm run dist:linux -- --publish never
             artifact: octopal-desktop-linux
             path: |
-              cp/dist/*.AppImage
-              cp/dist/*.AppImage.blockmap
-              cp/dist/latest-linux.yml
+              desktop/dist/*.AppImage
+              desktop/dist/*.AppImage.blockmap
+              desktop/dist/latest-linux.yml
 
     steps:
       - name: Check out repository
@@ -141,14 +141,14 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: cp/package-lock.json
+          cache-dependency-path: desktop/package-lock.json
 
       - name: Install desktop dependencies
-        working-directory: cp
+        working-directory: desktop
         run: npm ci
 
       - name: Set desktop release version
-        working-directory: cp
+        working-directory: desktop
         env:
           OCTOPAL_VERSION: ${{ needs.validate.outputs.version }}
         shell: bash
@@ -157,7 +157,7 @@ jobs:
           npm pkg set "version=${DESKTOP_VERSION}"
 
       - name: Build desktop installer
-        working-directory: cp
+        working-directory: desktop
         run: ${{ matrix.command }}
 
       - name: Upload desktop artifact
