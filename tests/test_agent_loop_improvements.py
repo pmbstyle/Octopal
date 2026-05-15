@@ -846,6 +846,8 @@ def test_execute_agent_task_injects_request_instruction_without_parent_answer_to
         assert "request_instruction" in tool_names
         assert "answer_worker_instruction" not in tool_names
         system_prompt = str(messages[0]["content"])
+        assert "Temporal context:" in system_prompt
+        assert "Current local date:" in system_prompt
         assert "Worker coordination:" in system_prompt
         assert "Parent-worker coordination:" not in system_prompt
         assert "normal tool calls" in system_prompt

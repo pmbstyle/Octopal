@@ -24,6 +24,7 @@ import structlog
 
 from octopal.infrastructure.config.settings import load_settings
 from octopal.infrastructure.providers.litellm_provider import LiteLLMProvider
+from octopal.runtime.temporal_context import format_temporal_context_prompt
 from octopal.runtime.tool_errors import ToolBridgeError
 from octopal.runtime.tool_loop import (
     _detect_tool_loop,
@@ -699,7 +700,11 @@ async def execute_agent_task(
         has_child_spawn_tools=has_child_spawn_tools
     )
 
+    temporal_context_prompt = format_temporal_context_prompt()
+
     system_prompt = f"""{spec.system_prompt}
+
+{temporal_context_prompt}
 
 Available tools:
 {tool_descriptions}
