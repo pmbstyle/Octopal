@@ -129,3 +129,34 @@ def test_load_settings_syncs_observability_config(tmp_path, monkeypatch) -> None
     assert settings.langfuse_public_key == "pk-test"
     assert settings.langfuse_secret_key == "sk-test"
     assert settings.langfuse_host == "http://localhost:3000"
+
+
+def test_load_settings_syncs_a2a_config(tmp_path, monkeypatch) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "a2a": {
+                    "enabled": True,
+                    "public_base_url": "https://octo.example",
+                    "agent_name": "Alice",
+                    "peers": {
+                        "bob": {
+                            "name": "Bob",
+                            "base_url": "https://bob.example/a2a/v1",
+                            "token": "peer-secret",
+                            "capabilities": ["chat"],
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.a2a.enabled is True
+    assert settings.a2a.public_base_url == "https://octo.example"
+    assert settings.a2a.agent_name == "Alice"
+    assert settings.a2a.peers["bob"].token == "peer-secret"

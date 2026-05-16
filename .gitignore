@@ -58,3 +58,5 @@ config.json
 /src/octopal/tools/communication/__pycache__
 /src/octopal/mcp_servers/__pycache__
 /src/octopal/infrastructure/observability/__pycache__
+/src/octopal/interop/__pycache__
+/src/octopal/interop/a2a/__pycache__

@@ -8,6 +8,7 @@ from octopal.channels.whatsapp.routes import register_whatsapp_routes
 from octopal.gateway.dashboard import register_dashboard_routes
 from octopal.gateway.ws import register_ws_routes
 from octopal.infrastructure.config.settings import Settings
+from octopal.interop.a2a.routes import register_a2a_routes
 from octopal.runtime.octo.core import Octo
 from octopal.tools.skills.management import ensure_skills_layout
 
@@ -34,7 +35,8 @@ def build_app(settings: Settings, octo: Octo | None = None) -> FastAPI:
         app.state.memory = octo.memory
         app.state.canon = octo.canon
 
+    register_a2a_routes(app)
     register_ws_routes(app)
-    register_dashboard_routes(app)
     register_whatsapp_routes(app)
+    register_dashboard_routes(app)
     return app

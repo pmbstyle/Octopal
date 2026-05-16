@@ -124,6 +124,8 @@ DEFAULT_TOOL_PROFILES: dict[str, ToolProfile] = {
                 "get_worker_result",
                 "synthesize_worker_results",
                 "propose_knowledge",
+                "a2a_list_peers",
+                "a2a_send_message",
                 "send_file_to_user",
             ]
         ),

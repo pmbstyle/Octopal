@@ -92,6 +92,29 @@ class ObservabilityConfig(BaseModel):
     langfuse_host: str | None = None
 
 
+class A2APeerConfig(BaseModel):
+    enabled: bool = True
+    name: str | None = None
+    agent_card_url: str | None = None
+    base_url: str | None = None
+    token: str | None = None
+    capabilities: list[str] = Field(default_factory=lambda: ["chat"])
+    trust_level: str = "trusted"
+
+
+class A2AConfig(BaseModel):
+    enabled: bool = False
+    public_base_url: str | None = None
+    agent_name: str = "Octopal"
+    agent_description: str = (
+        "A personal AI agent with memory, scheduled tasks, and worker orchestration."
+    )
+    protocol_version: str = "1.0"
+    max_payload_chars: int = 16000
+    max_requests_per_minute: int = 30
+    peers: dict[str, A2APeerConfig] = Field(default_factory=dict)
+
+
 class ConnectorCredentials(BaseModel):
     client_id: str | None = None
     client_secret: str | None = None
@@ -162,6 +185,7 @@ class OctopalConfig(BaseModel):
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    a2a: A2AConfig = Field(default_factory=A2AConfig)
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
 
     log_level: str = "INFO"

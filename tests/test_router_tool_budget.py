@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
+from octopal.infrastructure.config.models import A2AConfig, A2APeerConfig
 from octopal.infrastructure.providers.base import Message
 from octopal.runtime.octo.router import (
     _budget_tool_specs,
@@ -112,6 +114,114 @@ def test_get_octo_tools_keeps_self_lifecycle_tools_with_profile(monkeypatch) -> 
     assert "octo_restart_self" in names
     assert "octo_check_update" in names
     assert "octo_update_self" in names
+
+
+def test_get_octo_tools_keeps_a2a_tools_when_enabled_despite_initial_budget(
+    monkeypatch,
+) -> None:
+    class DummyOcto:
+        mcp_manager = None
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(
+                a2a=A2AConfig(
+                    enabled=True,
+                    peers={"alice": A2APeerConfig(name="Alice", token="secret")},
+                )
+            )
+        )
+
+    monkeypatch.setenv("OCTOPAL_OCTO_MAX_INITIAL_TOOL_COUNT", "8")
+
+    tool_specs, _ctx = _get_octo_tools(DummyOcto(), 0)
+    names = {spec.name for spec in tool_specs}
+
+    assert "a2a_list_peers" in names
+    assert "a2a_send_message" in names
+
+
+def test_get_octo_tools_does_not_force_a2a_tools_when_disabled(monkeypatch) -> None:
+    class DummyOcto:
+        mcp_manager = None
+        runtime = SimpleNamespace(settings=SimpleNamespace(a2a=A2AConfig(enabled=False)))
+
+    monkeypatch.setenv("OCTOPAL_OCTO_MAX_INITIAL_TOOL_COUNT", "8")
+
+    tool_specs, _ctx = _get_octo_tools(DummyOcto(), 0)
+    names = {spec.name for spec in tool_specs}
+
+    assert "a2a_list_peers" not in names
+    assert "a2a_send_message" not in names
+
+
+def test_route_or_reply_adds_a2a_context_prompt_when_enabled(monkeypatch) -> None:
+    import octopal.runtime.octo.router as router
+
+    class DummyMemory:
+        async def add_message(self, role, content, metadata=None):
+            return None
+
+    class DummyOcto:
+        store = object()
+        canon = object()
+        internal_progress_send = None
+        is_ws_active = False
+        mcp_manager = None
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(
+                a2a=A2AConfig(
+                    enabled=True,
+                    peers={"alice": A2APeerConfig(name="Alice", token="secret")},
+                )
+            )
+        )
+
+        async def set_typing(self, chat_id: int, active: bool) -> None:
+            return None
+
+        async def set_thinking(self, active: bool) -> None:
+            return None
+
+        def peek_context_wakeup(self, chat_id: int) -> str:
+            return ""
+
+    async def fake_build_octo_prompt(**kwargs):
+        return [
+            Message(role="system", content="base prompt"),
+            Message(role="user", content=str(kwargs["user_text"])),
+        ]
+
+    async def fake_build_plan(provider, messages, has_tools):
+        return None
+
+    captured: dict[str, object] = {}
+
+    async def fake_complete_route_with_tools(**kwargs):
+        captured["messages"] = kwargs["messages"]
+        captured["tool_names"] = [tool.name for tool in kwargs["tool_specs"]]
+        return "done"
+
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(router, "_build_plan", fake_build_plan)
+    monkeypatch.setattr(router, "_complete_route_with_tools", fake_complete_route_with_tools)
+
+    async def scenario() -> None:
+        response = await route_or_reply(
+            DummyOcto(),
+            object(),
+            DummyMemory(),
+            "message Alice",
+            123,
+            "",
+        )
+        assert response == "done"
+
+    asyncio.run(scenario())
+
+    messages = captured["messages"]
+    assert any("A2A interop is enabled" in str(message.content) for message in messages)
+    assert any("alice: Alice" in str(message.content) for message in messages)
+    assert "a2a_list_peers" in captured["tool_names"]
+    assert "a2a_send_message" in captured["tool_names"]
 
 
 def test_worker_followup_tools_are_narrow(monkeypatch) -> None:

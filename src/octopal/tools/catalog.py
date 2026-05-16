@@ -38,6 +38,7 @@ from octopal.tools.browser.actions import (
     browser_wait_for,
     browser_workflow,
 )
+from octopal.tools.communication.a2a import a2a_list_peers, a2a_send_message
 from octopal.tools.communication.send_file import send_file_to_user
 from octopal.tools.connectors.calendar import get_calendar_connector_tools
 from octopal.tools.connectors.drive import get_drive_connector_tools
@@ -316,6 +317,48 @@ def _tool_catalog_search_score(
 
 def get_tools(mcp_manager=None) -> list[ToolSpec]:
     tools = [
+        ToolSpec(
+            name="a2a_list_peers",
+            description="List configured trusted A2A peer agents and their allowed capabilities.",
+            parameters={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            permission="network",
+            handler=a2a_list_peers,
+        ),
+        ToolSpec(
+            name="a2a_send_message",
+            description=(
+                "Send a text message to a configured trusted A2A peer agent. "
+                "Use only for peers explicitly configured in Octopal A2A interop."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "peer_id": {
+                        "type": "string",
+                        "description": "Configured A2A peer ID from config.json.",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Plain text message to send to the peer agent.",
+                    },
+                    "context_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional A2A contextId. Omit to use a stable per-peer chat context."
+                        ),
+                    },
+                },
+                "required": ["peer_id", "text"],
+                "additionalProperties": False,
+            },
+            permission="network",
+            handler=a2a_send_message,
+            is_async=True,
+        ),
         ToolSpec(
             name="send_file_to_user",
             description="Send a local workspace file or a downloaded URL attachment to the active user channel. Only the Octo can use this.",

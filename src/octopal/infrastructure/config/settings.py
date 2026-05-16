@@ -8,7 +8,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from octopal.channels import DEFAULT_USER_CHANNEL
-from octopal.infrastructure.config.models import ConnectorsConfig, OctopalConfig
+from octopal.infrastructure.config.models import A2AConfig, ConnectorsConfig, OctopalConfig
 
 
 class Settings(BaseSettings):
@@ -114,6 +114,7 @@ class Settings(BaseSettings):
 
     # Connectors
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
+    a2a: A2AConfig = Field(default_factory=A2AConfig)
 
     # Comma-separated list of Telegram chat IDs allowed to interact with the octo
     # Get your chat ID by messaging @userinfobot on Telegram
@@ -275,6 +276,9 @@ def _sync_settings_from_config(settings: Settings, config: OctopalConfig) -> Non
     updates["langfuse_public_key"] = config.observability.langfuse_public_key
     updates["langfuse_secret_key"] = config.observability.langfuse_secret_key
     updates["langfuse_host"] = config.observability.langfuse_host
+
+    # A2A interop
+    updates["a2a"] = config.a2a
 
     # Common
     updates["log_level"] = config.log_level
