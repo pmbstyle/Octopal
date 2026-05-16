@@ -18,6 +18,22 @@ from octopal.utils import get_tailscale_ips, should_suppress_user_delivery
 logger = structlog.get_logger(__name__)
 
 
+def _is_local_ws_client(client_host: str) -> bool:
+    return client_host in ("127.0.0.1", "::1", "localhost", "testclient")
+
+
+def _provided_ws_token(socket: WebSocket) -> str:
+    auth_header = socket.headers.get("authorization", "").strip()
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    return str(socket.query_params.get("token", "")).strip()
+
+
+async def _reject_ws(socket: WebSocket, *, host: str, reason: str) -> None:
+    logger.warning("Rejected WebSocket connection", host=host, reason=reason)
+    await socket.close(code=status.WS_1008_POLICY_VIOLATION)
+
+
 async def _ws_send_json(
     session: _ActiveWsSession,
     payload: dict[str, Any],
@@ -152,12 +168,19 @@ def register_ws_routes(app: FastAPI) -> None:
             if allowed_ips:
                 logger.info("Automatically discovered Tailscale IPs", ips=allowed_ips)
 
-        is_local = client_host in ("127.0.0.1", "::1", "localhost")
+        is_local = _is_local_ws_client(client_host)
+        if not is_local and not allowed_ips:
+            await _reject_ws(socket, host=client_host, reason="no Tailscale allowlist available")
+            return
 
         if allowed_ips and not is_local and client_host not in allowed_ips:
-             logger.warning("Rejected WebSocket connection from unauthorized IP", host=client_host)
-             await socket.close(code=status.WS_1008_POLICY_VIOLATION)
-             return
+            await _reject_ws(socket, host=client_host, reason="host not in Tailscale allowlist")
+            return
+
+        expected_token = str(getattr(settings, "dashboard_token", "") or "").strip()
+        if expected_token and _provided_ws_token(socket) != expected_token:
+            await _reject_ws(socket, host=client_host, reason="invalid dashboard token")
+            return
 
         await socket.accept()
         logger.info("WebSocket connection established", host=client_host)
@@ -223,8 +246,14 @@ def register_ws_routes(app: FastAPI) -> None:
 
         # A newer WS client takes over the interactive channel from any older session.
         async with app.state.ws_session_lock:
-            previous_session: _ActiveWsSession | None = getattr(app.state, "active_ws_session", None)
-            if previous_session and previous_session.connection_id != connection_id and not previous_session.closed.is_set():
+            previous_session: _ActiveWsSession | None = getattr(
+                app.state, "active_ws_session", None
+            )
+            if (
+                previous_session
+                and previous_session.connection_id != connection_id
+                and not previous_session.closed.is_set()
+            ):
                 logger.info(
                     "Taking over active WebSocket session",
                     host=client_host,
@@ -241,12 +270,16 @@ def register_ws_routes(app: FastAPI) -> None:
                         event_name="takeover_warning",
                     )
                 except Exception:
-                    logger.debug("Failed to notify previous WebSocket session before takeover", exc_info=True)
+                    logger.debug(
+                        "Failed to notify previous WebSocket session before takeover", exc_info=True
+                    )
 
                 try:
                     await previous_session.socket.close(code=status.WS_1000_NORMAL_CLOSURE)
                 except Exception:
-                    logger.debug("Failed to close previous WebSocket session during takeover", exc_info=True)
+                    logger.debug(
+                        "Failed to close previous WebSocket session during takeover", exc_info=True
+                    )
 
                 try:
                     await asyncio.wait_for(previous_session.closed.wait(), timeout=2.0)
@@ -282,7 +315,9 @@ def register_ws_routes(app: FastAPI) -> None:
         try:
             active_workers = await asyncio.to_thread(octo.store.get_active_workers)
         except Exception:
-            logger.debug("Failed to load active workers snapshot for WebSocket session", exc_info=True)
+            logger.debug(
+                "Failed to load active workers snapshot for WebSocket session", exc_info=True
+            )
             active_workers = []
         await _ws_send_json(
             session,
@@ -293,7 +328,9 @@ def register_ws_routes(app: FastAPI) -> None:
             event_name="workers_snapshot",
         )
 
-        approvals = WsApprovalManager(send=lambda payload: _ws_send_json(session, payload, event_name="approval_request"))
+        approvals = WsApprovalManager(
+            send=lambda payload: _ws_send_json(session, payload, event_name="approval_request")
+        )
         message_lock = asyncio.Lock()
         tasks: set[asyncio.Task] = set()
 

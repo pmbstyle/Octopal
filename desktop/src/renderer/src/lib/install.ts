@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { generateDashboardToken } from "./security";
+
 export const EXISTING_SECRET_VALUE = "__OCTOPAL_DESKTOP_EXISTING_SECRET__";
 
 export function isExistingSecret(value: string | undefined | null): boolean {
@@ -150,6 +152,18 @@ function secretString(value: string | undefined): string {
   return isExistingSecret(value) ? "" : value || "";
 }
 
+function dashboardToken(value: string | undefined, webappEnabled: boolean): string {
+  if (isExistingSecret(value)) {
+    return "";
+  }
+
+  const configured = (value || "").trim();
+  if (configured || !webappEnabled) {
+    return configured;
+  }
+  return generateDashboardToken();
+}
+
 function secretNullable(value: string | undefined): string | null {
   return isExistingSecret(value) ? null : value || null;
 }
@@ -233,9 +247,9 @@ export function buildOctopalConfig(values: InstallForm) {
       workspace_dir: "workspace",
     },
     gateway: {
-      host: "0.0.0.0",
+      host: "127.0.0.1",
       port: values.dashboardPort,
-      dashboard_token: secretString(values.dashboardToken),
+      dashboard_token: dashboardToken(values.dashboardToken, values.dashboardEnabled),
       tailscale_auto_serve: true,
       tailscale_ips: "",
       webapp_enabled: values.dashboardEnabled,

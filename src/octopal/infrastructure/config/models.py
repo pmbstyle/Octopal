@@ -47,7 +47,7 @@ class MemoryConfig(BaseModel):
 
 
 class GatewayConfig(BaseModel):
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8000
     tailscale_ips: str = ""
     dashboard_token: str = ""

@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     memory_max_chars: int = Field(2000, alias="OCTOPAL_MEMORY_MAX_CHARS")
     memory_owner_id: str = Field("default", alias="OCTOPAL_MEMORY_OWNER_ID")
 
-    gateway_host: str = Field("0.0.0.0", alias="OCTOPAL_GATEWAY_HOST")
+    gateway_host: str = Field("127.0.0.1", alias="OCTOPAL_GATEWAY_HOST")
     gateway_port: int = Field(8000, alias="OCTOPAL_GATEWAY_PORT")
     tailscale_ips: str = Field("", alias="OCTOPAL_TAILSCALE_IPS")
     dashboard_token: str = Field("", alias="OCTOPAL_DASHBOARD_TOKEN")

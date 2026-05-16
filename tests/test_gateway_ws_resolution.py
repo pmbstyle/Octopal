@@ -7,12 +7,14 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from octopal.gateway.ws import (
     WsApprovalManager,
     _ActiveWsSession,
     _build_ws_file_payload,
     _handle_message,
+    _is_local_ws_client,
     _resolve_ws_chat_id,
     register_ws_routes,
 )
@@ -27,6 +29,35 @@ def test_resolve_ws_chat_id_returns_positive_when_no_allowlist() -> None:
 def test_resolve_ws_chat_id_uses_first_allowed_id_when_valid() -> None:
     settings = SimpleNamespace(allowed_telegram_chat_ids="42,100")
     assert _resolve_ws_chat_id(settings) == 42
+
+
+def test_websocket_client_host_helper_rejects_lan_addresses() -> None:
+    assert _is_local_ws_client("127.0.0.1")
+    assert _is_local_ws_client("::1")
+    assert _is_local_ws_client("testclient")
+    assert not _is_local_ws_client("192.168.1.55")
+
+
+def test_websocket_requires_dashboard_token_when_configured() -> None:
+    class DummyOcto:
+        def set_output_channel(self, is_ws: bool, **kwargs) -> bool:
+            return True
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        tailscale_ips="testclient",
+        allowed_telegram_chat_ids="",
+        dashboard_token="secret-token",
+    )
+    app.state.octo = DummyOcto()
+    register_ws_routes(app)
+
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect), client.websocket_connect("/ws"):
+            pass
+
+        with client.websocket_connect("/ws?token=secret-token") as ws:
+            assert ws.receive_json() == {"type": "workers_snapshot", "workers": []}
 
 
 def test_new_websocket_connection_takes_over_previous_session() -> None:
