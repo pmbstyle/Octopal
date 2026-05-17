@@ -4,6 +4,7 @@ import asyncio
 import base64
 import mimetypes
 import re
+import secrets
 import uuid
 from pathlib import Path
 from typing import Any
@@ -18,11 +19,10 @@ from octopal.channels.whatsapp.ids import (
 )
 from octopal.infrastructure.config.settings import Settings
 from octopal.runtime.app import build_octo
-from octopal.runtime.metrics import update_component_gauges
-from octopal.runtime.metrics import read_metrics_snapshot
-from octopal.runtime.octo_status import build_octo_status
+from octopal.runtime.metrics import read_metrics_snapshot, update_component_gauges
 from octopal.runtime.octo.core import Octo
 from octopal.runtime.octo.delivery import resolve_user_delivery
+from octopal.runtime.octo_status import build_octo_status
 from octopal.runtime.pending_turns import PendingTurnAggregator
 from octopal.runtime.state import update_last_message
 from octopal.utils import (
@@ -79,10 +79,14 @@ class WhatsAppRuntime:
             for chunk in _chunk_text(clean_text, limit=4000):
                 self.bridge.send_message(to, chunk)
 
-        async def _internal_send_file(chat_id: int, file_path: str, caption: str | None = None) -> None:
+        async def _internal_send_file(
+            chat_id: int, file_path: str, caption: str | None = None
+        ) -> None:
             to = self._number_by_chat_id.get(chat_id)
             if not to:
-                logger.warning("Missing WhatsApp recipient mapping for file delivery", chat_id=chat_id)
+                logger.warning(
+                    "Missing WhatsApp recipient mapping for file delivery", chat_id=chat_id
+                )
                 return
             clean_caption = sanitize_user_facing_text(caption or "") or None
             self.bridge.send_file(to, file_path, caption=clean_caption)
@@ -97,11 +101,15 @@ class WhatsAppRuntime:
             # if we have the message ID.
             logger.info("WhatsApp progress event", chat_id=chat_id, state=state, text=text)
 
-        async def _internal_worker_event_send(chat_id: int, event: str, payload: dict[str, Any]) -> None:
+        async def _internal_worker_event_send(
+            chat_id: int, event: str, payload: dict[str, Any]
+        ) -> None:
             logger.info("WhatsApp worker event", chat_id=chat_id, event=event, payload=payload)
 
         async def _internal_typing_control(chat_id: int, active: bool) -> None:
-            logger.debug("WhatsApp typing indicator not implemented", chat_id=chat_id, active=active)
+            logger.debug(
+                "WhatsApp typing indicator not implemented", chat_id=chat_id, active=active
+            )
 
         self.octo.internal_send = _internal_send
         self.octo.internal_send_file = _internal_send_file
@@ -114,8 +122,18 @@ class WhatsAppRuntime:
         self.octo._tg_worker_event = _internal_worker_event_send
         self.octo._tg_typing = _internal_typing_control
 
+    def _ensure_callback_token(self) -> None:
+        if self.settings.whatsapp_callback_token.strip():
+            return
+        self.settings.whatsapp_callback_token = secrets.token_urlsafe(32)
+        logger.warning(
+            "Generated ephemeral WhatsApp callback token; configure OCTOPAL_WHATSAPP_CALLBACK_TOKEN "
+            "to keep a stable token across restarts"
+        )
+
     async def start(self) -> Octo:
         self.attach_octo_output()
+        self._ensure_callback_token()
         callback_url = (
             f"http://127.0.0.1:{self.settings.gateway_port}/api/channels/whatsapp/inbound"
         )
@@ -147,10 +165,18 @@ class WhatsAppRuntime:
         if not sender or (not text and not images and not saved_file_paths):
             return {"accepted": False, "reason": "missing_sender_or_content"}
         if from_me and not self._is_personal_mode():
-            logger.debug("Ignoring WhatsApp fromMe message outside personal mode", sender=sender, conversation=conversation)
+            logger.debug(
+                "Ignoring WhatsApp fromMe message outside personal mode",
+                sender=sender,
+                conversation=conversation,
+            )
             return {"accepted": False, "reason": "from_me_ignored"}
         if from_me and not self_chat:
-            logger.debug("Ignoring WhatsApp fromMe message outside self chat", sender=sender, conversation=conversation)
+            logger.debug(
+                "Ignoring WhatsApp fromMe message outside self chat",
+                sender=sender,
+                conversation=conversation,
+            )
             return {"accepted": False, "reason": "not_self_chat"}
         allowed = parse_allowed_whatsapp_numbers(self.settings.allowed_whatsapp_numbers)
         if allowed and sender not in allowed:
@@ -189,7 +215,9 @@ class WhatsAppRuntime:
         status["octo"] = build_octo_status((metrics or {}).get("octo", {}))
         return status
 
-    def _publish_metrics(self, *, connected: bool | None = None, last_sender: str | None = None) -> None:
+    def _publish_metrics(
+        self, *, connected: bool | None = None, last_sender: str | None = None
+    ) -> None:
         gauges: dict[str, Any] = {
             "chat_mappings": len(self._number_by_chat_id),
         }
@@ -200,7 +228,10 @@ class WhatsAppRuntime:
         update_component_gauges("whatsapp", gauges)
 
     def _is_personal_mode(self) -> bool:
-        return str(getattr(self.settings, "whatsapp_mode", "separate") or "separate").strip().lower() == "personal"
+        return (
+            str(getattr(self.settings, "whatsapp_mode", "separate") or "separate").strip().lower()
+            == "personal"
+        )
 
     def _extract_media(self, payload: dict[str, Any]) -> tuple[list[str], list[str]]:
         media_data_url = str(payload.get("mediaDataUrl", "") or "").strip()
@@ -239,7 +270,9 @@ class WhatsAppRuntime:
             logger.exception("Failed to persist inbound WhatsApp media")
             return [], []
 
-        is_image = media_kind == "image" or mime_type.lower().startswith(_WHATSAPP_IMAGE_MIME_PREFIXES)
+        is_image = media_kind == "image" or mime_type.lower().startswith(
+            _WHATSAPP_IMAGE_MIME_PREFIXES
+        )
         images = [media_data_url] if is_image else []
         return images, [saved_path]
 

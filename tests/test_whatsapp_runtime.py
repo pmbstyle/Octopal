@@ -91,12 +91,37 @@ def _make_settings(*, mode: str, allowed_numbers: str) -> SimpleNamespace:
     )
 
 
+def test_whatsapp_runtime_generates_callback_token_before_start(monkeypatch) -> None:
+    fake_octo = _FakeOcto()
+    monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
+    monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+
+    settings = _make_settings(mode="personal", allowed_numbers="+15551234567")
+    runtime = WhatsAppRuntime(settings)
+
+    async def scenario() -> None:
+        await runtime.start()
+
+    asyncio.run(scenario())
+
+    assert settings.whatsapp_callback_token
+    assert len(settings.whatsapp_callback_token) >= 32
+    assert fake_octo.initialized == [whatsapp_runtime_module.whatsapp_chat_id("+15551234567")]
+
+
 def test_whatsapp_runtime_accepts_personal_self_chat(monkeypatch) -> None:
     fake_octo = _FakeOcto()
     monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
     monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None
+    )
 
     runtime = WhatsAppRuntime(_make_settings(mode="personal", allowed_numbers="+15551234567"))
     runtime.attach_octo_output()
@@ -123,8 +148,12 @@ def test_whatsapp_runtime_ignores_from_me_outside_personal_mode(monkeypatch) -> 
     fake_octo = _FakeOcto()
     monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
     monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None
+    )
 
     runtime = WhatsAppRuntime(_make_settings(mode="separate", allowed_numbers="+15551234567"))
     runtime.attach_octo_output()
@@ -151,8 +180,12 @@ def test_whatsapp_runtime_ignores_from_me_non_self_chat(monkeypatch) -> None:
     fake_octo = _FakeOcto()
     monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
     monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None
+    )
 
     runtime = WhatsAppRuntime(_make_settings(mode="personal", allowed_numbers="+15551234567"))
     runtime.attach_octo_output()
@@ -179,8 +212,12 @@ def test_whatsapp_runtime_accepts_image_only_payload_and_saves_path(monkeypatch,
     fake_octo = _FakeOcto()
     monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
     monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None
+    )
 
     settings = _make_settings(mode="personal", allowed_numbers="+15551234567")
     settings.workspace_dir = tmp_path
@@ -213,12 +250,18 @@ def test_whatsapp_runtime_accepts_image_only_payload_and_saves_path(monkeypatch,
     asyncio.run(scenario())
 
 
-def test_whatsapp_runtime_accepts_document_only_payload_and_saves_path(monkeypatch, tmp_path) -> None:
+def test_whatsapp_runtime_accepts_document_only_payload_and_saves_path(
+    monkeypatch, tmp_path
+) -> None:
     fake_octo = _FakeOcto()
     monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
     monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None
+    )
 
     settings = _make_settings(mode="personal", allowed_numbers="+15551234567")
     settings.workspace_dir = tmp_path
@@ -255,8 +298,12 @@ def test_whatsapp_runtime_aggregates_messages_within_grace_window(monkeypatch) -
     fake_octo = _FakeOcto()
     monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
     monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None
+    )
 
     settings = _make_settings(mode="personal", allowed_numbers="+15551234567")
     settings.user_message_grace_seconds = 0.05
@@ -307,8 +354,12 @@ def test_whatsapp_runtime_applies_reaction_and_strips_tag(monkeypatch) -> None:
 
     monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
     monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None
+    )
 
     runtime = WhatsAppRuntime(_make_settings(mode="personal", allowed_numbers="+15551234567"))
     runtime.attach_octo_output()
@@ -341,7 +392,7 @@ def test_whatsapp_runtime_applies_reaction_and_strips_tag(monkeypatch) -> None:
                 "message_id": "wamid-1",
                 "remote_jid": "15551234567@s.whatsapp.net",
                 "target_from_me": True,
-            }
+            },
         ]
         assert runtime.bridge.sent == [("+15551234567", "All done.")]
 
@@ -352,8 +403,12 @@ def test_whatsapp_runtime_internal_send_file_uses_bridge(monkeypatch, tmp_path: 
     fake_octo = _FakeOcto()
     monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
     monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None)
-    monkeypatch.setattr(whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None
+    )
 
     runtime = WhatsAppRuntime(_make_settings(mode="personal", allowed_numbers="+15551234567"))
     runtime.attach_octo_output()

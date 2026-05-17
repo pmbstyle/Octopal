@@ -13,11 +13,17 @@ def register_whatsapp_routes(app: FastAPI) -> None:
         x_octopal_whatsapp_token: str | None = Header(default=None),
     ) -> dict[str, Any]:
         runtime = getattr(app.state, "whatsapp_runtime", None)
-        if runtime is None or not hasattr(runtime, "settings") or not hasattr(runtime, "handle_inbound"):
+        if (
+            runtime is None
+            or not hasattr(runtime, "settings")
+            or not hasattr(runtime, "handle_inbound")
+        ):
             raise HTTPException(status_code=404, detail="WhatsApp runtime not enabled")
         expected = runtime.settings.whatsapp_callback_token.strip()
+        if not expected:
+            raise HTTPException(status_code=403, detail="WhatsApp callback token is not configured")
         provided = (x_octopal_whatsapp_token or "").strip()
-        if expected and not secrets.compare_digest(expected, provided):
+        if not secrets.compare_digest(expected, provided):
             raise HTTPException(status_code=403, detail="Invalid WhatsApp callback token")
         payload = await request.json()
         if not isinstance(payload, dict):
