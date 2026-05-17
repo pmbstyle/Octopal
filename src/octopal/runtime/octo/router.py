@@ -1352,9 +1352,9 @@ async def route_worker_results_back_to_octo(
         "- Do not start, stop, schedule, or orchestrate workers from this path.\n"
         "- Do not invent follow-up tool needs beyond the tools already exposed here.\n\n"
         "If a worker was asked to write or save its result to a workspace path and it returned "
-        "the content instead, use `fs_write` to persist the content to the exact requested "
-        "workspace-relative path before deciding whether the user needs an update. Use `fs_write` "
-        "for ordinary workspace artifacts, generated reports, research notes, and draft files. "
+        "the content instead, use `fs_write` only when that requested path is under "
+        "`reports/` or `artifacts/`. Do not write worker-returned content to any other "
+        "workspace path. "
         "Use `manage_canon` only for durable canonical knowledge in the supported canon files.\n\n"
         "If any payload output is truncated and a payload includes `worker_id`, you may use "
         "`get_worker_output_path` for a specific dotted path lookup.\n"
@@ -1764,8 +1764,12 @@ def _get_worker_followup_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec],
         "skill_exec": True,
         "skill_manage": True,
     }
+    workspace_root = Path(os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace")).resolve()
     ctx = {
-        "base_dir": Path(os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace")).resolve(),
+        "base_dir": workspace_root,
+        "workspace_root": workspace_root,
+        "allowed_paths": list(_DURABLE_WORKSPACE_ROOTS),
+        "restrict_to_allowed_paths": True,
         "octo": octo,
         "chat_id": chat_id,
     }

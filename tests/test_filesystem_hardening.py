@@ -80,6 +80,27 @@ def test_download_file_rejects_filename_with_directories(tmp_path: Path) -> None
     assert "filename must not contain directory components" in payload
 
 
+def test_fs_write_restricted_context_allows_only_configured_workspace_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "reports").mkdir(parents=True)
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    ctx = {
+        "base_dir": workspace,
+        "workspace_root": workspace,
+        "allowed_paths": ["reports", "artifacts"],
+        "restrict_to_allowed_paths": True,
+    }
+
+    assert fs_write({"path": "reports/out.md", "content": "ok"}, ctx) == "fs_write ok"
+    assert (workspace / "reports" / "out.md").read_text(encoding="utf-8") == "ok"
+
+    result = fs_write({"path": "mcp_servers.json", "content": "pwn"}, ctx)
+    assert result.startswith("fs_write error:")
+    assert "outside allowed paths" in result
+    assert not (workspace / "mcp_servers.json").exists()
+
+
 def test_fs_tools_keep_worker_scratch_and_allow_explicit_shared_paths(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     worker_dir = workspace / "workers" / "worker-1"

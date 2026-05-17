@@ -156,13 +156,14 @@ async def drive_download_to_workspace(
     if not isinstance(payload, dict) or payload.get("ok") is False:
         return payload
 
-    workspace_root, worker_dir, allowed_paths = _get_paths(ctx)
+    paths = _get_paths(ctx)
     try:
         target = _resolve_tool_path(
             path,
-            workspace_root=workspace_root,
-            worker_dir=worker_dir,
-            allowed_paths=allowed_paths,
+            workspace_root=paths.workspace_root,
+            worker_dir=paths.worker_dir,
+            allowed_paths=paths.allowed_paths,
+            restrict_to_allowed_paths=paths.restrict_to_allowed_paths,
         )
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -172,9 +173,9 @@ async def drive_download_to_workspace(
     target.write_bytes(raw_content)
 
     try:
-        relative_path = str(target.relative_to(workspace_root))
+        relative_path = str(target.relative_to(paths.workspace_root))
     except ValueError:
-        relative_path = str(target.relative_to(worker_dir))
+        relative_path = str(target.relative_to(paths.worker_dir))
 
     return {
         "ok": True,
@@ -203,13 +204,14 @@ async def drive_upload_from_workspace(
     if not path:
         return {"ok": False, "error": "path is required."}
 
-    workspace_root, worker_dir, allowed_paths = _get_paths(ctx)
+    paths = _get_paths(ctx)
     try:
         source = _resolve_tool_path(
             path,
-            workspace_root=workspace_root,
-            worker_dir=worker_dir,
-            allowed_paths=allowed_paths,
+            workspace_root=paths.workspace_root,
+            worker_dir=paths.worker_dir,
+            allowed_paths=paths.allowed_paths,
+            restrict_to_allowed_paths=paths.restrict_to_allowed_paths,
             must_exist=True,
         )
     except Exception as exc:
@@ -257,13 +259,14 @@ async def drive_update_from_workspace(
     if not file_id:
         return {"ok": False, "error": "file_id is required."}
 
-    workspace_root, worker_dir, allowed_paths = _get_paths(ctx)
+    paths = _get_paths(ctx)
     try:
         source = _resolve_tool_path(
             path,
-            workspace_root=workspace_root,
-            worker_dir=worker_dir,
-            allowed_paths=allowed_paths,
+            workspace_root=paths.workspace_root,
+            worker_dir=paths.worker_dir,
+            allowed_paths=paths.allowed_paths,
+            restrict_to_allowed_paths=paths.restrict_to_allowed_paths,
             must_exist=True,
         )
     except Exception as exc:
