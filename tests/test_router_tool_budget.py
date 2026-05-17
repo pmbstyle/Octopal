@@ -97,6 +97,8 @@ def test_get_octo_tools_uses_small_core_and_defers_mcp_tools(monkeypatch) -> Non
     assert "octo_restart_self" in names
     assert "octo_check_update" in names
     assert "octo_update_self" in names
+    assert "exec_run" not in names
+    assert "exec_run" not in {spec.name for spec in ctx["tool_resolution_report"].available_tools}
     assert "mcp_demo_tool_0" not in names
     assert "mcp_demo_tool_0" in all_names
     assert len(tool_specs) < len(all_names)

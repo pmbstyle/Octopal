@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 
 from octopal.runtime.octo.router import (
-    _build_octo_tool_policy_summary,
-    _handle_octo_tool_call,
     _budget_tool_specs,
+    _build_octo_tool_policy_summary,
+    _get_octo_tools,
+    _handle_octo_tool_call,
     _record_octo_tool_call,
 )
-from octopal.tools.diagnostics import resolve_tool_diagnostics
 from octopal.tools.catalog import get_tools
+from octopal.tools.diagnostics import resolve_tool_diagnostics
 from octopal.tools.metadata import ToolMetadata
 from octopal.tools.registry import ToolSpec
 
@@ -37,6 +39,29 @@ async def test_handle_octo_tool_call_reports_unknown_tool() -> None:
 
     assert result == {"error": "Unknown tool: missing_tool"}
     assert meta["had_error"] is True
+
+
+def test_default_octo_tool_policy_blocks_exec_run() -> None:
+    class DummyOcto:
+        mcp_manager = None
+
+    tool_specs, ctx = _get_octo_tools(DummyOcto(), 0)
+
+    assert "exec_run" not in {tool.name for tool in tool_specs}
+
+    async def scenario() -> None:
+        result, meta = await _handle_octo_tool_call(
+            {"function": {"name": "exec_run", "arguments": '{"command":"echo unsafe"}'}},
+            tool_specs,
+            ctx,
+        )
+
+        assert result["type"] == "policy_block"
+        assert result["tool"] == "exec_run"
+        assert result["reason"] == "blocked_by_deny:octo.direct_exec_denylist"
+        assert meta["error_type"] == "policy_block"
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.asyncio

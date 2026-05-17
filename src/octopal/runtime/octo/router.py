@@ -1715,7 +1715,11 @@ def _get_octo_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec], dict[str, 
         ToolPolicyPipelineStep(
             label="octo.raw_fetch_denylist",
             policy=ToolPolicy(deny=["web_fetch", "markdown_new_fetch", "fetch_plan_tool"]),
-        )
+        ),
+        ToolPolicyPipelineStep(
+            label="octo.direct_exec_denylist",
+            policy=ToolPolicy(deny=["exec_run"]),
+        ),
     ]
     all_tools = get_tools(mcp_manager=mcp_manager)
     resolution_report = resolve_tool_diagnostics(
