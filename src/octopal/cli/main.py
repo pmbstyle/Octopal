@@ -2347,7 +2347,11 @@ def _octo_tool_policy_steps() -> list[ToolPolicyPipelineStep]:
         ToolPolicyPipelineStep(
             label="octo.raw_fetch_denylist",
             policy=ToolPolicy(deny=["web_fetch", "markdown_new_fetch", "fetch_plan_tool"]),
-        )
+        ),
+        ToolPolicyPipelineStep(
+            label="octo.direct_exec_denylist",
+            policy=ToolPolicy(deny=["exec_run"]),
+        ),
     ]
 
 
