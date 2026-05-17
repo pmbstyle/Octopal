@@ -48,6 +48,7 @@ def test_default_octo_tool_policy_blocks_exec_run() -> None:
     tool_specs, ctx = _get_octo_tools(DummyOcto(), 0)
 
     assert "exec_run" not in {tool.name for tool in tool_specs}
+    assert "test_run" not in {tool.name for tool in tool_specs}
 
     async def scenario() -> None:
         result, meta = await _handle_octo_tool_call(
@@ -58,6 +59,29 @@ def test_default_octo_tool_policy_blocks_exec_run() -> None:
 
         assert result["type"] == "policy_block"
         assert result["tool"] == "exec_run"
+        assert result["reason"] == "blocked_by_deny:octo.direct_exec_denylist"
+        assert meta["error_type"] == "policy_block"
+
+    asyncio.run(scenario())
+
+
+def test_default_octo_tool_policy_blocks_test_run() -> None:
+    class DummyOcto:
+        mcp_manager = None
+
+    tool_specs, ctx = _get_octo_tools(DummyOcto(), 0)
+
+    assert "test_run" not in {tool.name for tool in tool_specs}
+
+    async def scenario() -> None:
+        result, meta = await _handle_octo_tool_call(
+            {"function": {"name": "test_run", "arguments": '{"command":"pytest -q"}'}},
+            tool_specs,
+            ctx,
+        )
+
+        assert result["type"] == "policy_block"
+        assert result["tool"] == "test_run"
         assert result["reason"] == "blocked_by_deny:octo.direct_exec_denylist"
         assert meta["error_type"] == "policy_block"
 

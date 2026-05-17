@@ -31,6 +31,7 @@ def test_build_tool_resolution_snapshot_for_octo_applies_policy_and_profile() ->
     assert "web_fetch" in blocked_rows
     assert blocked_rows["web_fetch"]["reason"] == "blocked_by_deny:octo.raw_fetch_denylist"
     assert "exec_run" in blocked_rows
+    assert "test_run" in blocked_rows
 
 
 def test_build_tool_resolution_snapshot_for_octo_blocks_direct_exec_without_profile() -> None:
@@ -45,7 +46,9 @@ def test_build_tool_resolution_snapshot_for_octo_blocks_direct_exec_without_prof
     blocked_rows = {row["name"]: row for row in snapshot["blocked"]}
 
     assert "exec_run" not in available_names
+    assert "test_run" not in available_names
     assert blocked_rows["exec_run"]["reason"] == "blocked_by_deny:octo.direct_exec_denylist"
+    assert blocked_rows["test_run"]["reason"] == "blocked_by_deny:octo.direct_exec_denylist"
 
 
 def test_tools_resolve_json_outputs_snapshot() -> None:

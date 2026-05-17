@@ -1718,7 +1718,7 @@ def _get_octo_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec], dict[str, 
         ),
         ToolPolicyPipelineStep(
             label="octo.direct_exec_denylist",
-            policy=ToolPolicy(deny=["exec_run"]),
+            policy=ToolPolicy(deny=["exec_run", "test_run"]),
         ),
     ]
     all_tools = get_tools(mcp_manager=mcp_manager)

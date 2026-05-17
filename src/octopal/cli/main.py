@@ -2350,7 +2350,7 @@ def _octo_tool_policy_steps() -> list[ToolPolicyPipelineStep]:
         ),
         ToolPolicyPipelineStep(
             label="octo.direct_exec_denylist",
-            policy=ToolPolicy(deny=["exec_run"]),
+            policy=ToolPolicy(deny=["exec_run", "test_run"]),
         ),
     ]
 
