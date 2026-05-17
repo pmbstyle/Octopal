@@ -59,7 +59,9 @@ Download the latest desktop build from the [Octopal releases page](https://githu
 
 <p align="center">
    <img alt="Octopal Desktop" src="https://github.com/user-attachments/assets/a995f7ab-28a6-45ee-b63a-2a7c45dedd3b" />
+   <img alt="Octopal Desktop Control" src="https://github.com/user-attachments/assets/b35e016c-3d53-44f3-b664-340c49602c9c" />
 </p>
+
 
 ### Server Install
 
