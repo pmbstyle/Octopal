@@ -20,9 +20,11 @@
 - `uv run octopal start` starts Octopal in background mode.
 - `uv run octopal start --foreground` runs the Octo and gateway in the foreground.
 - `uv run octopal stop`, `uv run octopal restart`, and `uv run octopal status` manage the local runtime.
+- `uv run octopal update` applies the latest release update flow for an existing install.
 - `uv run octopal logs --follow` tails `data/logs/octopal.log`.
 - `uv run octopal gateway` starts the FastAPI gateway directly.
 - `uv run octopal dashboard --once` prints one dashboard snapshot; `uv run octopal dashboard --watch` runs the live terminal dashboard.
+- `uv run octopal connector status` checks connector authorization/readiness after connector setup flows.
 - `uv run octopal sync-worker-templates --overwrite` refreshes default worker templates into `workspace/workers`.
 - `uv run octopal memory stats` and `uv run octopal memory cleanup --dry-run` cover common memory maintenance flows.
 - `uv run octopal whatsapp install-bridge`, `uv run octopal whatsapp link`, and `uv run octopal whatsapp status` manage the WhatsApp bridge.
@@ -56,6 +58,7 @@
 ## Security & Configuration Tips
 
 - Use `uv run octopal configure` to manage the primary `config.json` settings.
+- If Docker CLI/daemon or the worker image is unavailable, Octopal may temporarily fall back to `same_env`; verify the effective launcher in `uv run octopal status` or the dashboard and treat it as a local-development fallback, not the preferred isolation mode.
 - **Tailscale Integration:** Managed in the `gateway` section of `config.json` via `tailscale_auto_serve` (boolean) and `tailscale_ips` (comma-separated string).
 - Important settings include channel credentials, provider API keys, dashboard protection, and the storage paths in `config.json`.
 - Treat `data/`, WhatsApp auth state, and generated workspace files as local runtime artifacts unless the repo explicitly needs fixtures.
