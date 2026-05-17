@@ -4,11 +4,13 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.store.models import AuditEvent, WorkerRecord
 from octopal.runtime.workers.contracts import WorkerResult, WorkerSpec
 from octopal.runtime.workers.runtime import WorkerRuntime
+from octopal.tools.workers.management import _tool_answer_worker_instruction
 
 
 class _Store:
@@ -206,6 +208,104 @@ def test_runtime_answer_instruction_marks_worker_running_before_resume(tmp_path:
     assert instruction == "continue"
     assert store.status_updates == [("worker-1", "running")]
     assert store.audit_events[-1].event_type == "worker_instruction_answered"
+
+
+def test_runtime_answer_instruction_rejects_non_parent_answerer(tmp_path: Path) -> None:
+    child = _worker_record("child-1", "awaiting_instruction").model_copy(
+        update={"parent_worker_id": "parent-1"}
+    )
+    store = _Store({"child-1": child})
+    runtime = WorkerRuntime(
+        store=store,
+        policy=_Policy(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        settings=Settings(),
+    )
+
+    async def _run() -> bool:
+        future = asyncio.get_running_loop().create_future()
+        runtime._instruction_waiters[("child-1", "req-1")] = future
+        answered = await runtime.answer_instruction(
+            worker_id="child-1",
+            request_id="req-1",
+            instruction="attacker instruction",
+            answerer_worker_id="unrelated-parent",
+        )
+        assert future.done() is False
+        return answered
+
+    answered = asyncio.run(_run())
+
+    assert answered is False
+    assert store.status_updates == []
+    assert store.audit_events[-1].event_type == "worker_instruction_answer_denied"
+    assert store.audit_events[-1].data["answerer_worker_id"] == "unrelated-parent"
+
+
+def test_answer_worker_instruction_requires_direct_parent_from_worker_context(
+    tmp_path: Path,
+) -> None:
+    child = _worker_record("child-1", "awaiting_instruction").model_copy(
+        update={
+            "parent_worker_id": "parent-1",
+            "output": {
+                "instruction_request": {
+                    "request_id": "req-1",
+                    "worker_id": "child-1",
+                    "target": "parent",
+                    "question": "Which path?",
+                    "created_at": "2026-04-18T12:00:00+00:00",
+                }
+            },
+        }
+    )
+    store = _Store({"child-1": child})
+    runtime = WorkerRuntime(
+        store=store,
+        policy=_Policy(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        settings=Settings(),
+    )
+    octo = SimpleNamespace(store=store, runtime=runtime)
+    attacker_spec = WorkerSpec(
+        id="attacker-worker",
+        task="coordinate unrelated work",
+        inputs={},
+        system_prompt="s",
+        available_tools=["start_child_worker"],
+        granted_capabilities=[],
+        timeout_seconds=30,
+        max_thinking_steps=5,
+        run_id="attacker-worker",
+    )
+    parent_spec = attacker_spec.model_copy(update={"id": "parent-1", "run_id": "parent-1"})
+
+    async def _run() -> tuple[dict[str, object], dict[str, object], str]:
+        future = asyncio.get_running_loop().create_future()
+        runtime._instruction_waiters[("child-1", "req-1")] = future
+        attacker_result = json.loads(
+            await _tool_answer_worker_instruction(
+                {"worker_id": "child-1", "instruction": "attacker instruction"},
+                {"octo": octo, "worker": SimpleNamespace(spec=attacker_spec)},
+            )
+        )
+        assert future.done() is False
+        parent_result = json.loads(
+            await _tool_answer_worker_instruction(
+                {"worker_id": "child-1", "instruction": "parent instruction"},
+                {"octo": octo, "worker": SimpleNamespace(spec=parent_spec)},
+            )
+        )
+        return attacker_result, parent_result, await future
+
+    attacker_result, parent_result, instruction = asyncio.run(_run())
+
+    assert attacker_result["status"] == "unauthorized"
+    assert parent_result["status"] == "answered"
+    assert instruction == "parent instruction"
+    assert store.status_updates == [("child-1", "running")]
 
 
 def test_runtime_enqueues_octo_instruction_request_and_resumes(tmp_path: Path) -> None:
