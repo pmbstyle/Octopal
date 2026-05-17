@@ -865,16 +865,36 @@ class WorkerRuntime:
         worker_id: str,
         request_id: str,
         instruction: str,
+        answerer_worker_id: str | None = None,
     ) -> bool:
         key = (str(worker_id).strip(), str(request_id).strip())
+        answerer_id = str(answerer_worker_id or "").strip()
+        if answerer_id:
+            worker = await asyncio.to_thread(self.store.get_worker, key[0])
+            parent_worker_id = str(getattr(worker, "parent_worker_id", "") or "").strip()
+            if worker is None or parent_worker_id != answerer_id:
+                await self._append_audit(
+                    "worker_instruction_answer_denied",
+                    correlation_id=key[0],
+                    data={
+                        "worker_id": key[0],
+                        "request_id": key[1],
+                        "answerer_worker_id": answerer_id,
+                        "reason": "not_parent_worker",
+                    },
+                )
+                return False
         future = self._instruction_waiters.get(key)
         if future is None or future.done():
             return False
         await asyncio.to_thread(self.store.update_worker_status, key[0], "running")
+        audit_data = {"worker_id": key[0], "request_id": key[1]}
+        if answerer_id:
+            audit_data["answerer_worker_id"] = answerer_id
         await self._append_audit(
             "worker_instruction_answered",
             correlation_id=key[0],
-            data={"worker_id": key[0], "request_id": key[1]},
+            data=audit_data,
         )
         future.set_result(str(instruction or "").strip())
         return True

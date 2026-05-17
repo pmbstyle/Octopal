@@ -1192,6 +1192,19 @@ async def _tool_answer_worker_instruction(args: dict[str, object], ctx: dict[str
     worker = octo.store.get_worker(worker_id)
     if worker is None:
         return json.dumps({"status": "not_found", "worker_id": worker_id}, ensure_ascii=False)
+    answerer_worker_id = _answerer_worker_id(ctx)
+    if answerer_worker_id is not None and not _is_direct_child_worker(
+        worker,
+        parent_worker_id=answerer_worker_id,
+    ):
+        return json.dumps(
+            {
+                "status": "unauthorized",
+                "worker_id": worker_id,
+                "message": "Only a worker's direct parent can answer its instruction request.",
+            },
+            ensure_ascii=False,
+        )
     if not request_id:
         request = _extract_worker_instruction_request(worker.output)
         request_id = str(request.get("request_id") or "").strip() if request else ""
@@ -1215,6 +1228,7 @@ async def _tool_answer_worker_instruction(args: dict[str, object], ctx: dict[str
         worker_id=worker_id,
         request_id=request_id,
         instruction=instruction,
+        answerer_worker_id=answerer_worker_id,
     )
     return json.dumps(
         {
@@ -1224,6 +1238,19 @@ async def _tool_answer_worker_instruction(args: dict[str, object], ctx: dict[str
         },
         ensure_ascii=False,
     )
+
+
+def _answerer_worker_id(ctx: dict[str, object]) -> str | None:
+    caller_worker = ctx.get("worker")
+    spec = getattr(caller_worker, "spec", None)
+    if spec is None:
+        return None
+    answerer_id = str(getattr(spec, "run_id", "") or getattr(spec, "id", "") or "").strip()
+    return answerer_id or None
+
+
+def _is_direct_child_worker(worker: object, *, parent_worker_id: str) -> bool:
+    return str(getattr(worker, "parent_worker_id", "") or "").strip() == parent_worker_id
 
 
 def _tool_get_worker_status(args: dict[str, object], ctx: dict[str, object]) -> str:
