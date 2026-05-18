@@ -47,7 +47,10 @@ def test_docker_launcher_mounts_only_worker_dir_when_allowed_paths_missing(
     assert "--user" in args
     assert "1000:1000" in args
     assert f"{worker_dir}:/workspace/workers/worker-1" in args
+    assert f"{workspace / 'skills'}:/workspace/skills" in args
     assert f"{workspace / 'skills'}:/workspace/workers/worker-1/skills" in args
+    assert f"{workspace / '.skill-envs'}:/workspace/.skill-envs" in args
+    assert f"{workspace / '.skill-envs'}:/workspace/workers/worker-1/.skill-envs" in args
     assert "-e" in args
     assert "OCTOPAL_WORKSPACE_DIR=/workspace" in args
     assert "HOME=/workspace/workers/worker-1" in args
@@ -93,7 +96,10 @@ def test_docker_launcher_mounts_worker_dir_and_shared_paths_when_restricted(
     assert "--user" in args
     assert "1000:1000" in args
     assert f"{worker_dir}:/workspace/workers/worker-1" in args
+    assert f"{workspace / 'skills'}:/workspace/skills" in args
     assert f"{workspace / 'skills'}:/workspace/workers/worker-1/skills" in args
+    assert f"{workspace / '.skill-envs'}:/workspace/.skill-envs" in args
+    assert f"{workspace / '.skill-envs'}:/workspace/workers/worker-1/.skill-envs" in args
     assert f"{shared_dir}:/workspace/src" in args
     assert f"{shared_dir}:/workspace/workers/worker-1/src" in args
     assert "OCTOPAL_WORKSPACE_DIR=/workspace" in args
@@ -148,6 +154,7 @@ def test_docker_launcher_precreates_nested_worker_mount_targets(
 
     args = captured["args"]
     assert (worker_dir / "skills").is_dir()
+    assert (worker_dir / ".skill-envs").is_dir()
     assert (worker_dir / "memory" / "canon" / "facts.md").is_file()
     assert (worker_dir / "research" / "jobs").is_dir()
     assert f"{shared_file}:/workspace/workers/worker-1/memory/canon/facts.md" in args

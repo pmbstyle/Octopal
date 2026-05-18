@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+_WORKER_SHARED_WORKSPACE_DIRS = ("skills", ".skill-envs")
+
 
 class WorkerLauncher(Protocol):
     async def launch(
@@ -87,15 +89,21 @@ class DockerLauncher:
 
         host_ws_path = Path(self.host_workspace).resolve()
         seen_mounts: set[tuple[str, str]] = set()
-        host_skills_dir = host_ws_path / "skills"
-        host_skills_dir.mkdir(parents=True, exist_ok=True)
-        _prepare_worker_mount_target(
-            host_worker_dir,
-            rel_path="skills",
-            source_path=host_skills_dir,
-        )
-        cmd_args.extend(["-v", f"{host_skills_dir}:{container_worker_dir}/skills"])
-        seen_mounts.add((str(host_skills_dir), f"{container_worker_dir}/skills"))
+        for rel_path in _WORKER_SHARED_WORKSPACE_DIRS:
+            host_shared_dir = host_ws_path / rel_path
+            host_shared_dir.mkdir(parents=True, exist_ok=True)
+            _prepare_worker_mount_target(
+                host_worker_dir,
+                rel_path=rel_path,
+                source_path=host_shared_dir,
+            )
+            mount_targets = (
+                f"{container_ws}/{rel_path}",
+                f"{container_worker_dir}/{rel_path}",
+            )
+            for mount_target in mount_targets:
+                cmd_args.extend(["-v", f"{host_shared_dir}:{mount_target}"])
+                seen_mounts.add((str(host_shared_dir), mount_target))
         for rel_path in allowed_paths or []:
             if not isinstance(rel_path, str) or not rel_path.strip():
                 continue
