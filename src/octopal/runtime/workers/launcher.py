@@ -94,8 +94,9 @@ class DockerLauncher:
             rel_path="skills",
             source_path=host_skills_dir,
         )
-        cmd_args.extend(["-v", f"{host_skills_dir}:{container_worker_dir}/skills"])
-        seen_mounts.add((str(host_skills_dir), f"{container_worker_dir}/skills"))
+        for mount_target in (f"{container_ws}/skills", f"{container_worker_dir}/skills"):
+            cmd_args.extend(["-v", f"{host_skills_dir}:{mount_target}"])
+            seen_mounts.add((str(host_skills_dir), mount_target))
         for rel_path in allowed_paths or []:
             if not isinstance(rel_path, str) or not rel_path.strip():
                 continue

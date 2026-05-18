@@ -47,6 +47,7 @@ def test_docker_launcher_mounts_only_worker_dir_when_allowed_paths_missing(
     assert "--user" in args
     assert "1000:1000" in args
     assert f"{worker_dir}:/workspace/workers/worker-1" in args
+    assert f"{workspace / 'skills'}:/workspace/skills" in args
     assert f"{workspace / 'skills'}:/workspace/workers/worker-1/skills" in args
     assert "-e" in args
     assert "OCTOPAL_WORKSPACE_DIR=/workspace" in args
@@ -93,6 +94,7 @@ def test_docker_launcher_mounts_worker_dir_and_shared_paths_when_restricted(
     assert "--user" in args
     assert "1000:1000" in args
     assert f"{worker_dir}:/workspace/workers/worker-1" in args
+    assert f"{workspace / 'skills'}:/workspace/skills" in args
     assert f"{workspace / 'skills'}:/workspace/workers/worker-1/skills" in args
     assert f"{shared_dir}:/workspace/src" in args
     assert f"{shared_dir}:/workspace/workers/worker-1/src" in args
