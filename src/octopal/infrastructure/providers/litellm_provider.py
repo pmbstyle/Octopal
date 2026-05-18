@@ -350,7 +350,7 @@ class LiteLLMProvider:
         messages: list[Message | dict],
         *,
         tools: list[dict],
-        tool_choice: str = "auto",
+        tool_choice: object = "auto",
         **kwargs: object,
     ) -> dict:
         """Complete a chat request with tool/function calling."""
@@ -537,7 +537,7 @@ class LiteLLMProvider:
         *,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
-        tool_choice: str,
+        tool_choice: object,
         request_kwargs: dict[str, object],
     ) -> tuple[Any, str]:
         requested_response_format = request_kwargs.get("response_format")
@@ -606,12 +606,16 @@ class LiteLLMProvider:
 
     async def _acompletion_guarded(self, **kwargs: object) -> Any:
         async with self._semaphore:
+            timeout_seconds = _coerce_timeout_seconds(kwargs.get("timeout"))
             try:
-                response = await acompletion(
-                    model=self._model,
-                    api_base=self._api_base,
-                    api_key=self._api_key,
-                    **kwargs,
+                response = await _await_with_runtime_timeout(
+                    acompletion(
+                        model=self._model,
+                        api_base=self._api_base,
+                        api_key=self._api_key,
+                        **kwargs,
+                    ),
+                    timeout_seconds=timeout_seconds,
                 )
             except Exception as exc:
                 if not _is_closed_client_error(exc):
@@ -619,17 +623,23 @@ class LiteLLMProvider:
                 logger.warning(
                     "LiteLLM client was closed mid-request; retrying once with a fresh completion call"
                 )
-                response = await acompletion(
-                    model=self._model,
-                    api_base=self._api_base,
-                    api_key=self._api_key,
-                    **kwargs,
+                response = await _await_with_runtime_timeout(
+                    acompletion(
+                        model=self._model,
+                        api_base=self._api_base,
+                        api_key=self._api_key,
+                        **kwargs,
+                    ),
+                    timeout_seconds=timeout_seconds,
                 )
             # LiteLLM can occasionally return a nested awaitable object on
             # provider-error paths (seen on Python 3.14). Unwrap it to avoid
             # "coroutine ... was never awaited" warnings and leaked coroutines.
             while inspect.isawaitable(response):
-                response = await response
+                response = await _await_with_runtime_timeout(
+                    response,
+                    timeout_seconds=timeout_seconds,
+                )
             return response
 
 
@@ -642,6 +652,22 @@ def _serialize_message(message: Message | dict) -> dict:
     if serialized.get("tool_calls") and serialized.get("content") is None:
         serialized["content"] = ""
     return serialized
+
+
+def _coerce_timeout_seconds(value: object) -> float | None:
+    try:
+        timeout = float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    if timeout is None or timeout <= 0:
+        return None
+    return timeout
+
+
+async def _await_with_runtime_timeout(awaitable: Any, *, timeout_seconds: float | None) -> Any:
+    if timeout_seconds is None:
+        return await awaitable
+    return await asyncio.wait_for(awaitable, timeout=timeout_seconds)
 
 
 def _normalize_plain_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:

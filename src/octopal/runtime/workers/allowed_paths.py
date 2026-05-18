@@ -44,6 +44,30 @@ def _workspace_relative_path(
     return rel_path.as_posix()
 
 
+def _existing_parent_workspace_path(
+    raw_path: object,
+    *,
+    workspace_dir: Path | None = None,
+) -> str | None:
+    raw = str(raw_path or "").strip().strip("`'\".,;:)")
+    if not raw:
+        return None
+    rel = _workspace_relative_path(raw, workspace_dir=workspace_dir)
+    if not rel:
+        return None
+    rel_path = Path(rel)
+    if not rel_path.suffix:
+        return None
+
+    workspace = _workspace_path(workspace_dir)
+    parent = rel_path.parent
+    while str(parent) not in {"", "."}:
+        if (workspace / parent).is_dir():
+            return parent.as_posix()
+        parent = parent.parent
+    return None
+
+
 def normalize_allowed_paths(
     value: object,
     *,
@@ -77,11 +101,14 @@ def infer_allowed_paths_from_task(
     seen: set[str] = set()
     inferred: list[str] = []
     for match in _PATH_TOKEN_RE.finditer(task or ""):
+        raw_path = match.group("path")
         rel = _workspace_relative_path(
-            match.group("path"),
+            raw_path,
             workspace_dir=workspace_dir,
             require_exists=True,
         )
+        if not rel:
+            rel = _existing_parent_workspace_path(raw_path, workspace_dir=workspace_dir)
         if not rel or rel in seen:
             continue
         seen.add(rel)

@@ -668,7 +668,7 @@ def test_execute_agent_task_counts_completed_cycles_not_raw_llm_calls(
         ]
     )
 
-    async def _fake_call_llm(provider, messages, tools):
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
         return next(responses)
 
     async def _fake_execute_tool(
@@ -712,7 +712,7 @@ def test_execute_agent_task_stops_after_repeated_empty_turns(monkeypatch, tmp_pa
     )
     monkeypatch.setattr("octopal.runtime.workers.agent_worker.get_tools", lambda: [])
 
-    async def _fake_call_llm(provider, messages, tools):
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
         return {"content": ""}
 
     monkeypatch.setattr("octopal.runtime.workers.agent_worker._call_llm", _fake_call_llm)
@@ -769,7 +769,7 @@ def test_execute_agent_task_does_not_charge_step_for_throttled_poll_round(
         ]
     )
 
-    async def _fake_call_llm(provider, messages, tools):
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
         return next(responses)
 
     async def _fake_execute_tool(
@@ -841,7 +841,7 @@ def test_execute_agent_task_injects_request_instruction_without_parent_answer_to
         ]
     )
 
-    async def _fake_call_llm(provider, messages, tools):
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
         tool_names = {tool.name for tool in tools}
         assert "request_instruction" in tool_names
         assert "answer_worker_instruction" not in tool_names
@@ -969,7 +969,7 @@ def test_execute_agent_task_does_not_charge_step_for_parent_instruction_answer(
         ]
     )
 
-    async def _fake_call_llm(provider, messages, tools):
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
         tool_names = {tool.name for tool in tools}
         assert "request_instruction" in tool_names
         assert "answer_worker_instruction" in tool_names
@@ -1065,7 +1065,7 @@ def test_execute_agent_task_suspends_until_runtime_resumes_child_batch(
     call_state = {"llm_calls": 0}
     executed_tools: list[tuple[str | None, dict]] = []
 
-    async def _fake_call_llm(provider, messages, tools):
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
         tool_names = {tool.name for tool in tools}
         assert "request_instruction" in tool_names
         assert "answer_worker_instruction" in tool_names
@@ -1198,7 +1198,7 @@ def test_execute_agent_task_reawaits_children_after_instruction_answer(
     call_state = {"llm_calls": 0}
     executed_tools: list[str | None] = []
 
-    async def _fake_call_llm(provider, messages, tools):
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
         call_state["llm_calls"] += 1
         if call_state["llm_calls"] == 1:
             return {
@@ -1416,7 +1416,7 @@ def test_execute_agent_task_skips_redundant_get_worker_result_for_joined_child(
         ]
     )
 
-    async def _fake_call_llm(provider, messages, tools):
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
         return next(responses)
 
     executed_tools: list[str] = []

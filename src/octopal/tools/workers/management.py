@@ -60,6 +60,51 @@ _IMAGE_CAPABILITY_TOKENS = {
     "mcp_exec",
     "analyze_image",
 }
+_FILE_WRITE_TASK_TOKENS = {
+    "append",
+    "create",
+    "created",
+    "creates",
+    "draft",
+    "edit",
+    "edits",
+    "save",
+    "saved",
+    "update",
+    "updates",
+    "write",
+    "writes",
+    "writing",
+}
+_FILE_ARTIFACT_TASK_TOKENS = {
+    "artifact",
+    "config",
+    "csv",
+    "doc",
+    "document",
+    "draft",
+    "file",
+    "files",
+    "json",
+    "markdown",
+    "md",
+    "note",
+    "notes",
+    "path",
+    "report",
+    "text",
+    "toml",
+    "workspace",
+    "yaml",
+    "yml",
+}
+_FILESYSTEM_WRITE_TOOL_TOKENS = {"fs_write", "write_file"}
+_FILE_PATH_HINT_RE = re.compile(
+    r"(?:^|[\s`'\"])[\w./\\-]+\."
+    r"(?:cfg|conf|csv|html|ini|json|log|md|py|toml|txt|ya?ml)"
+    r"(?:$|[\s`'\",.:;])",
+    re.IGNORECASE,
+)
 
 
 def get_worker_tools() -> list[ToolSpec]:
@@ -1948,6 +1993,12 @@ def _template_supports_image_analysis(template: object) -> bool:
     return any(token in descriptor for token in ("image", "vision", "visual"))
 
 
+def _template_supports_workspace_write(template: object) -> bool:
+    available_tools = {str(t).lower() for t in getattr(template, "available_tools", [])}
+    permissions = set(_normalize_worker_permissions(getattr(template, "required_permissions", [])))
+    return bool(_FILESYSTEM_WRITE_TOOL_TOKENS & available_tools) or "filesystem_write" in permissions
+
+
 def _validate_template_requirements(
     template: object,
     *,
@@ -1979,6 +2030,12 @@ def _validate_template_requirements(
             f"{error_prefix}: worker '{getattr(template, 'id', '')}' does not advertise image/vision "
             "analysis capability. Use a vision-capable model/tool directly or a worker template with "
             "image, vision, mcp_call, or mcp_exec support."
+        )
+    if _task_requests_workspace_write(task, _tokenize(task)) and not _template_supports_workspace_write(template):
+        return (
+            f"{error_prefix}: worker '{getattr(template, 'id', '')}' does not advertise workspace write "
+            "capability for this file/artifact task. Use worker_id='auto' or a worker template with "
+            "fs_write/filesystem_write support."
         )
     return None
 
@@ -2015,6 +2072,12 @@ def _tokenize(text: str) -> set[str]:
     return set(_TOKEN_RE.findall((text or "").lower()))
 
 
+def _task_requests_workspace_write(task: str, task_tokens: set[str]) -> bool:
+    has_write_verb = bool(task_tokens & _FILE_WRITE_TASK_TOKENS)
+    has_artifact_hint = bool(task_tokens & _FILE_ARTIFACT_TASK_TOKENS)
+    return has_write_verb and (has_artifact_hint or bool(_FILE_PATH_HINT_RE.search(task or "")))
+
+
 def _select_worker_template(
     *,
     templates: list[object],
@@ -2030,6 +2093,7 @@ def _select_worker_template(
     task_tokens = _tokenize(task)
     if not task_tokens:
         task_tokens = {"task"}
+    task_requests_workspace_write = _task_requests_workspace_write(task, task_tokens)
 
     best: dict[str, object] | None = None
     for template in templates:
@@ -2060,6 +2124,9 @@ def _select_worker_template(
 
         available_tools = [str(t).lower() for t in getattr(template, "available_tools", [])]
         permissions = _normalize_worker_permissions(getattr(template, "required_permissions", []))
+        has_filesystem_write = (
+            bool(_FILESYSTEM_WRITE_TOOL_TOKENS & set(available_tools)) or "filesystem_write" in permissions
+        )
 
         if required_tools:
             matched_tools = sum(1 for t in required_tools if t in available_tools)
@@ -2072,6 +2139,13 @@ def _select_worker_template(
                 score += matched_perms * 4.0
                 reasons.append(f"required_permissions={matched_perms}/{len(required_permissions)}")
 
+        if task_requests_workspace_write:
+            if has_filesystem_write:
+                score += 7.0
+                reasons.append("filesystem_write_bonus")
+            else:
+                score -= 5.0
+                reasons.append("filesystem_write_missing_penalty")
         if "web" in task_tokens and any("web" in t for t in available_tools):
             score += 3.0
             reasons.append("web_tool_bonus")

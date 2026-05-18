@@ -15,6 +15,7 @@ import inspect
 import json
 import os
 import random
+import re
 import time
 import traceback
 from pathlib import Path
@@ -132,6 +133,50 @@ _CHILD_SPAWN_TOOLS = {
     "start_child_worker",
     "start_workers_parallel",
 }
+_WRITE_TASK_TOKENS = {
+    "append",
+    "create",
+    "created",
+    "creates",
+    "draft",
+    "edit",
+    "edits",
+    "save",
+    "saved",
+    "update",
+    "updates",
+    "write",
+    "writes",
+    "writing",
+}
+_FILE_TASK_TOKENS = {
+    "artifact",
+    "config",
+    "csv",
+    "doc",
+    "document",
+    "draft",
+    "file",
+    "files",
+    "json",
+    "markdown",
+    "md",
+    "note",
+    "notes",
+    "path",
+    "report",
+    "text",
+    "toml",
+    "workspace",
+    "yaml",
+    "yml",
+}
+_FILE_PATH_HINT_RE = re.compile(
+    r"(?:^|[\s`'\"])[\w./\\-]+\."
+    r"(?:cfg|conf|csv|html|ini|json|log|md|py|toml|txt|ya?ml)"
+    r"(?:$|[\s`'\",.:;])",
+    re.IGNORECASE,
+)
 
 
 def _parse_positive_int_env(name: str, default: int) -> int:
@@ -154,6 +199,31 @@ def _parse_nonnegative_int_env(name: str, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return value if value >= 0 else default
+
+
+def _tokenize_task(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9_]+", (text or "").lower()))
+
+
+def _task_requires_workspace_write(task: str) -> bool:
+    tokens = _tokenize_task(task)
+    return bool(tokens & _WRITE_TASK_TOKENS) and (
+        bool(tokens & _FILE_TASK_TOKENS) or bool(_FILE_PATH_HINT_RE.search(task or ""))
+    )
+
+
+def _fs_write_completion_missing(task: str, available_tools: list[str], tools_used: list[str]) -> bool:
+    normalized_available = {str(tool).strip().lower() for tool in available_tools}
+    normalized_used = {str(tool).strip().lower() for tool in tools_used}
+    return (
+        "fs_write" in normalized_available
+        and "fs_write" not in normalized_used
+        and _task_requires_workspace_write(task)
+    )
+
+
+def _force_tool_choice(tool_name: str) -> dict[str, dict[str, str] | str]:
+    return {"type": "function", "function": {"name": tool_name}}
 
 
 def _extract_tool_progress_key(tool_name: str | None, tool_result: Any) -> str | None:
@@ -711,6 +781,7 @@ Available tools:
 {tool_descriptions}
 
 Use available tools through normal tool calls. Do not emit ad-hoc JSON tool_use blocks.
+If the task asks you to create, write, save, update, or edit a workspace file and fs_write is available, you must call fs_write before returning a result. Do not claim a file was written until the fs_write tool returns successfully.
 
 {coordination_prompt}
 
@@ -784,8 +855,19 @@ Important:
 
     while thinking_steps < effective_max_steps:
         llm_start = time.perf_counter()
+        force_fs_write = _fs_write_completion_missing(
+            spec.task,
+            list(spec.available_tools or []),
+            tools_used,
+        )
         try:
-            response = await _call_llm(provider, messages, filtered_tools)
+            response = await _call_llm(
+                provider,
+                messages,
+                filtered_tools,
+                tool_choice=_force_tool_choice("fs_write") if force_fs_write else "auto",
+                response_format_enabled=not force_fs_write,
+            )
         except Exception as exc:
             telemetry["llm_latency_ms_total"] += int((time.perf_counter() - llm_start) * 1000)
             error_text = str(exc)
@@ -1083,6 +1165,20 @@ Important:
             # Try to parse structured JSON result, including fenced JSON blocks.
             result_block = _extract_result_block(content)
             if result_block is not None:
+                if _fs_write_completion_missing(spec.task, list(spec.available_tools or []), tools_used):
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "The task requires an actual fs_write tool call before completion. "
+                                "Call fs_write with the requested path and content now, then return "
+                                "the structured result only after fs_write succeeds."
+                            ),
+                        }
+                    )
+                    thinking_steps += 1
+                    continue
                 cycle_steps = thinking_steps + 1
                 return WorkerResult(
                     status=(
@@ -1101,6 +1197,20 @@ Important:
 
             # If model produced plain text with no tool call, treat it as completion.
             if content:
+                if _fs_write_completion_missing(spec.task, list(spec.available_tools or []), tools_used):
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "The task requires an actual fs_write tool call before completion. "
+                                "Call fs_write with the requested path and content now, then return "
+                                "the final answer only after fs_write succeeds."
+                            ),
+                        }
+                    )
+                    thinking_steps += 1
+                    continue
                 cycle_steps = thinking_steps + 1
                 return WorkerResult(
                     summary=content,
@@ -1169,6 +1279,9 @@ async def _call_llm(
     provider: InferenceProvider,
     messages: list[dict],
     tools: list,
+    *,
+    tool_choice: object = "auto",
+    response_format_enabled: bool = True,
 ) -> dict:
     """Call LLM with tools using the centralized provider."""
     # Build OpenAI-style tools format
@@ -1184,17 +1297,21 @@ async def _call_llm(
         for t in tools
     ]
 
-    response_format = {
-        "type": "json_schema",
-        "json_schema": {"name": "worker_result", "schema": _RESULT_SCHEMA},
-    }
+    response_format = None
+    if response_format_enabled:
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": "worker_result", "schema": _RESULT_SCHEMA},
+        }
     # Provider handles adaptive response_format downgrade when a route does not
     # support schema-constrained outputs.
+    request_kwargs: dict[str, Any] = {"tool_choice": tool_choice}
+    if response_format is not None:
+        request_kwargs["response_format"] = response_format
     response = await provider.complete_with_tools(
         messages=messages,
         tools=openai_tools if openai_tools else [],
-        tool_choice="auto",
-        response_format=response_format,
+        **request_kwargs,
     )
 
     # Return in expected format: {"content": "...", "tool_calls": [...]}

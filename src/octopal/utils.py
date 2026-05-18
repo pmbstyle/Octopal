@@ -312,6 +312,8 @@ def looks_like_textual_tool_invocation(text: str) -> bool:
     trimmed = re.sub(r"[\s\W_]+$", "", trimmed, flags=re.UNICODE).strip()
     if not trimmed:
         return False
+    if trimmed.isupper() and "_" in trimmed:
+        return False
 
     return bool(
         _TEXTUAL_TOOL_NAME_RE.fullmatch(trimmed)

@@ -35,7 +35,10 @@ def print_banner() -> None:
     """).strip()
 
     output_encoding = (sys.stdout.encoding or "utf-8").lower()
-    banner_text.encode(output_encoding, errors="strict")
+    try:
+        banner_text.encode(output_encoding, errors="strict")
+    except UnicodeEncodeError:
+        banner_text = "OCTOPAL"
 
     tagline = Text("Your trusted AI pal", style=f"italic {OCTO_SILVER}")
     subline = Text("SECURE MULTI-AGENT EXECUTION RUNTIME", style=OCTO_WHITE)

@@ -126,6 +126,27 @@ def test_serialize_message_coerces_null_tool_call_content() -> None:
     assert serialized["tool_calls"][0]["function"]["name"] == "dummy_tool"
 
 
+def test_complete_enforces_runtime_timeout(monkeypatch) -> None:
+    async def _fake_acompletion(**kwargs):
+        await asyncio.sleep(1)
+        return _response("too-late")
+
+    settings = _settings()
+    settings.litellm_timeout = 0.01
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion",
+        _fake_acompletion,
+    )
+    provider = LiteLLMProvider(settings)
+
+    try:
+        asyncio.run(provider.complete([{"role": "user", "content": "hello"}]))
+    except RuntimeError as exc:
+        assert "LiteLLM completion failed" in str(exc)
+    else:
+        raise AssertionError("completion should time out")
+
+
 def test_complete_retries_once_when_client_was_closed(monkeypatch) -> None:
     calls = {"n": 0}
 

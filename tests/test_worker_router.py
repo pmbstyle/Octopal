@@ -71,6 +71,32 @@ def test_select_worker_template_rejects_missing_required_tools() -> None:
     assert selected is None
 
 
+def test_select_worker_template_prefers_filesystem_worker_for_file_write_task() -> None:
+    templates = [
+        _template(
+            "file_editor",
+            "File Editor",
+            "Safely edits text and config files in the workspace",
+            ["fs_read", "fs_write"],
+            ["filesystem_read", "filesystem_write"],
+        ),
+        _template(
+            "web_search_ranked",
+            "Web Search Ranked",
+            "Search the web and return a ranked list of relevant sources",
+            ["web_search"],
+            ["network"],
+        ),
+    ]
+    selected = _select_worker_template(
+        templates=templates,
+        task="Create a short markdown report at experiments/qa/marker-worker-report.md with risks and mitigations.",
+    )
+    assert selected is not None
+    assert selected["template"].id == "file_editor"
+    assert "filesystem_write_bonus" in selected["reason"]
+
+
 def test_select_worker_template_requires_image_capability_for_image_tasks() -> None:
     templates = [
         _template("moltbook_orchestrator", "Presence Manager", "Sequential task manager", ["fs_read"], ["filesystem_read"]),
@@ -293,6 +319,42 @@ def test_start_worker_rejects_explicit_worker_without_image_capability() -> None
     assert "does not advertise image/vision analysis capability" in result
 
 
+def test_start_worker_rejects_explicit_worker_without_workspace_write_capability() -> None:
+    templates = [
+        _template("web_researcher", "Web Researcher", "Searches web", ["web_search"], ["network"]),
+    ]
+
+    class _Store:
+        def list_worker_templates(self):
+            return templates
+
+        def get_worker_template(self, worker_id: str):
+            for t in templates:
+                if t.id == worker_id:
+                    return t
+            return None
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+
+        async def _start_worker_async(self, **kwargs):
+            raise AssertionError("worker launch should have been rejected")
+
+    async def _scenario() -> str:
+        return await _tool_start_worker(
+            {
+                "task": "Create a short markdown report at experiments/qa/marker-worker-report.md.",
+                "worker_id": "web_researcher",
+            },
+            {"octo": _Octo(), "chat_id": 123},
+        )
+
+    result = asyncio.run(_scenario())
+    assert "does not advertise workspace write capability" in result
+    assert "fs_write/filesystem_write" in result
+
+
 def test_start_worker_infers_existing_workspace_paths(monkeypatch, tmp_path) -> None:
     image_path = tmp_path / "tmp" / "telegram_images" / "img_test.jpg"
     image_path.parent.mkdir(parents=True)
@@ -302,3 +364,15 @@ def test_start_worker_infers_existing_workspace_paths(monkeypatch, tmp_path) -> 
     inferred = _infer_allowed_paths_from_task("Inspect tmp/telegram_images/img_test.jpg")
 
     assert inferred == ["tmp/telegram_images/img_test.jpg"]
+
+
+def test_start_worker_infers_existing_parent_for_new_workspace_file(monkeypatch, tmp_path) -> None:
+    report_dir = tmp_path / "experiments" / "qa"
+    report_dir.mkdir(parents=True)
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(tmp_path))
+
+    inferred = _infer_allowed_paths_from_task(
+        "Create experiments/qa/new-agent-report.md with the requested summary"
+    )
+
+    assert inferred == ["experiments/qa"]

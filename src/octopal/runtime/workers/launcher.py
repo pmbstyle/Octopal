@@ -80,7 +80,7 @@ class DockerLauncher:
         host_worker_dir = Path(cwd).resolve()
         container_worker_dir = f"{container_ws}/workers/{worker_id}"
         cmd_args.extend(["-v", f"{host_worker_dir}:{container_worker_dir}"])
-        container_env = _filter_container_env(env, worker_workspace=container_worker_dir)
+        container_env = _filter_container_env(env, container_workspace=container_ws)
         for key, value in container_env.items():
             cmd_args.extend(["-e", f"{key}={value}"])
         cmd_args.extend(["-e", f"HOME={container_worker_dir}"])
@@ -149,7 +149,7 @@ class DockerLauncher:
 
 
 def _filter_container_env(
-    env: dict[str, str], *, worker_workspace: str | None = None
+    env: dict[str, str], *, container_workspace: str | None = None
 ) -> dict[str, str]:
     # Container env must be explicit; keep only a safe subset.
     allowed = {
@@ -168,8 +168,8 @@ def _filter_container_env(
         "FIRECRAWL_API_KEY",
     }
     filtered = {key: value for key, value in env.items() if key in allowed}
-    if worker_workspace:
-        filtered["OCTOPAL_WORKSPACE_DIR"] = worker_workspace
+    if container_workspace:
+        filtered["OCTOPAL_WORKSPACE_DIR"] = container_workspace
     return filtered
 
 

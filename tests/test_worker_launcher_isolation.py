@@ -49,7 +49,7 @@ def test_docker_launcher_mounts_only_worker_dir_when_allowed_paths_missing(
     assert f"{worker_dir}:/workspace/workers/worker-1" in args
     assert f"{workspace / 'skills'}:/workspace/workers/worker-1/skills" in args
     assert "-e" in args
-    assert "OCTOPAL_WORKSPACE_DIR=/workspace/workers/worker-1" in args
+    assert "OCTOPAL_WORKSPACE_DIR=/workspace" in args
     assert "HOME=/workspace/workers/worker-1" in args
     assert "PYTHONPATH=src" in args
     assert "BRAVE_API_KEY=brave-test-key" in args
@@ -96,7 +96,7 @@ def test_docker_launcher_mounts_worker_dir_and_shared_paths_when_restricted(
     assert f"{workspace / 'skills'}:/workspace/workers/worker-1/skills" in args
     assert f"{shared_dir}:/workspace/src" in args
     assert f"{shared_dir}:/workspace/workers/worker-1/src" in args
-    assert "OCTOPAL_WORKSPACE_DIR=/workspace/workers/worker-1" in args
+    assert "OCTOPAL_WORKSPACE_DIR=/workspace" in args
     assert "HOME=/workspace/workers/worker-1" in args
     assert f"{workspace}:/workspace" not in args
 
