@@ -23,7 +23,8 @@ from typing import Any
 import structlog
 
 from octopal.infrastructure.config.settings import load_settings
-from octopal.infrastructure.providers.litellm_provider import LiteLLMProvider
+from octopal.infrastructure.providers.base import InferenceProvider
+from octopal.infrastructure.providers.factory import build_inference_provider
 from octopal.runtime.temporal_context import format_temporal_context_prompt
 from octopal.runtime.tool_errors import ToolBridgeError
 from octopal.runtime.tool_loop import (
@@ -616,7 +617,7 @@ async def execute_agent_task(
 
     # Initialize LLM provider from settings
     settings = load_settings()
-    provider = LiteLLMProvider(settings, model=spec.model, config=spec.llm_config)
+    provider = build_inference_provider(settings, model=spec.model, config=spec.llm_config)
 
     # Build system prompt with tool descriptions
     available_tools = get_tools()
@@ -1165,7 +1166,7 @@ def _extract_result_block(content: str) -> dict[str, Any] | None:
 
 
 async def _call_llm(
-    provider: LiteLLMProvider,
+    provider: InferenceProvider,
     messages: list[dict],
     tools: list,
 ) -> dict:

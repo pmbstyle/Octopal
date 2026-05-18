@@ -36,7 +36,7 @@ SUCCESS = "#7dd36b"
 
 _PROVIDER_GROUPS: dict[str, tuple[str, ...]] = {
     "Routers and Gateways": ("openrouter", "minimax", "custom"),
-    "Hosted APIs": ("zai", "openai", "anthropic", "google", "mistral", "together", "groq"),
+    "Hosted APIs": ("zai", "openai", "codex", "anthropic", "google", "mistral", "together", "groq"),
     "Local": ("ollama",),
 }
 

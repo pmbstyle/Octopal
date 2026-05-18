@@ -140,6 +140,33 @@ type DesktopConnectorActionResult = {
   detail: string;
 };
 
+type DesktopCodexAuthStatus = {
+  available: boolean;
+  connected: boolean;
+  accountLabel?: string;
+  accountType?: string;
+  requiresOpenAIAuth?: boolean;
+  error?: string;
+};
+
+type DesktopCodexAuthStartResult = {
+  success: boolean;
+  authUrl?: string;
+  loginId?: string;
+  error?: string;
+};
+
+type DesktopCodexModelListResult = {
+  success: boolean;
+  models?: Array<{
+    id: string;
+    model: string;
+    displayName: string;
+    hidden?: boolean;
+  }>;
+  error?: string;
+};
+
 type DesktopDashboardWorkerRun = {
   id?: string;
   template_name?: string;
@@ -262,11 +289,17 @@ type OctopalDesktopApi = {
     name: DesktopConnectorName,
     forgetCredentials?: boolean,
   ) => Promise<DesktopConnectorActionResult>;
+  getCodexAuthStatus: () => Promise<DesktopCodexAuthStatus>;
+  startCodexAuth: () => Promise<DesktopCodexAuthStartResult>;
+  disconnectCodexAuth: () => Promise<{ success: boolean; error?: string }>;
+  listCodexModels: () => Promise<DesktopCodexModelListResult>;
   startWhatsAppLink: (installDir: string) => Promise<DesktopWhatsAppLinkStatus>;
   getWhatsAppLinkStatus: (installDir: string) => Promise<DesktopWhatsAppLinkStatus>;
   stopWhatsAppLink: (installDir: string) => Promise<DesktopWhatsAppLinkStatus>;
   onInstallEvent: (callback: (event: DesktopInstallEvent) => void) => () => void;
   onAppUpdateStatus: (callback: (status: DesktopAppUpdateStatus) => void) => () => void;
+  onCodexAuthStatus: (callback: (status: DesktopCodexAuthStatus) => void) => () => void;
+  onCodexAuthUpdated: (callback: () => void) => () => void;
 };
 
 interface Window {

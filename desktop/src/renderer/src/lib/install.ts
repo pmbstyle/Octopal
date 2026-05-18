@@ -17,6 +17,7 @@ export const providers = [
   },
   { id: "zai", label: "Z.AI", model: "glm-5.1", apiBase: "https://api.z.ai/api/coding/paas/v4" },
   { id: "openai", label: "OpenAI", model: "gpt-5.5", apiBase: "https://api.openai.com/v1" },
+  { id: "codex", label: "ChatGPT Codex", model: "gpt-5.4", apiBase: "" },
   { id: "anthropic", label: "Anthropic", model: "claude-opus-4-7", apiBase: "https://api.anthropic.com" },
   { id: "google", label: "Google Gemini", model: "gemini-3.1-pro-preview", apiBase: "" },
   { id: "mistral", label: "Mistral", model: "mistral-medium-3-5+1", apiBase: "https://api.mistral.ai/v1" },
@@ -30,6 +31,14 @@ export const providers = [
   { id: "minimax", label: "Minimax", model: "MiniMax-M2.7", apiBase: "https://api.minimax.io/anthropic/v1" },
   { id: "custom", label: "Custom LiteLLM", model: "", apiBase: "" },
 ] as const;
+
+export function providerRequiresApiKey(providerId: string | undefined): boolean {
+  return providerId !== "custom" && providerId !== "codex";
+}
+
+export function providerRequiresApiBase(providerId: string | undefined): boolean {
+  return providerId === "custom";
+}
 
 export const searchProviders = [
   { id: "brave", label: "Brave Search", keyField: "braveApiKey" },
@@ -106,18 +115,18 @@ export const installSchema = z
       requireField("whatsappAllowedNumbers", values.whatsappAllowedNumbers);
     }
 
-    if (values.providerId === "custom") {
+    if (providerRequiresApiBase(values.providerId)) {
       requireField("apiBase", values.apiBase);
-    } else {
+    } else if (providerRequiresApiKey(values.providerId)) {
       requireField("apiKey", values.apiKey);
     }
 
     if (!values.sameWorker) {
       requireField("workerProviderId", values.workerProviderId);
       requireField("workerModel", values.workerModel);
-      if (values.workerProviderId === "custom") {
+      if (providerRequiresApiBase(values.workerProviderId)) {
         requireField("workerApiBase", values.workerApiBase);
-      } else {
+      } else if (providerRequiresApiKey(values.workerProviderId)) {
         requireField("workerApiKey", values.workerApiKey);
       }
     }
@@ -222,8 +231,8 @@ export function buildOctopalConfig(values: InstallForm) {
     llm: {
       provider_id: values.providerId,
       model: values.model,
-      api_key: secretNullable(values.apiKey),
-      api_base: values.apiBase || null,
+      api_key: providerRequiresApiKey(values.providerId) ? secretNullable(values.apiKey) : null,
+      api_base: values.providerId === "codex" ? null : values.apiBase || null,
       model_prefix: null,
     },
     worker_llm_default: values.sameWorker
@@ -237,8 +246,8 @@ export function buildOctopalConfig(values: InstallForm) {
       : {
           provider_id: workerProviderId,
           model: workerModel,
-          api_key: secretNullable(values.workerApiKey),
-          api_base: values.workerApiBase || null,
+          api_key: providerRequiresApiKey(workerProviderId) ? secretNullable(values.workerApiKey) : null,
+          api_base: workerProviderId === "codex" ? null : values.workerApiBase || null,
           model_prefix: null,
         },
     worker_llm_overrides: {},

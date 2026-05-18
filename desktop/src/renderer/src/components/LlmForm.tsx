@@ -9,6 +9,8 @@ export function LlmForm({
   apiBaseLabel,
   apiKeyHint,
   apiBaseHint,
+  showApiKey = true,
+  showApiBase = true,
   modelInvalid,
   apiKeyInvalid,
   apiBaseInvalid,
@@ -21,6 +23,8 @@ export function LlmForm({
   apiBaseLabel: string;
   apiKeyHint: string;
   apiBaseHint: string;
+  showApiKey?: boolean;
+  showApiBase?: boolean;
   modelInvalid?: boolean;
   apiKeyInvalid?: boolean;
   apiBaseInvalid?: boolean;
@@ -33,12 +37,16 @@ export function LlmForm({
       <Field label={modelLabel} invalid={modelInvalid}>
         <Input {...modelRegistration} />
       </Field>
-      <Field label={apiKeyLabel} hint={apiKeyHint} invalid={apiKeyInvalid}>
-        <Input {...apiKeyRegistration} type="password" />
-      </Field>
-      <Field label={apiBaseLabel} hint={apiBaseHint} invalid={apiBaseInvalid}>
-        <Input {...apiBaseRegistration} placeholder="https://api.example.com/v1" />
-      </Field>
+      {showApiKey ? (
+        <Field label={apiKeyLabel} hint={apiKeyHint} invalid={apiKeyInvalid}>
+          <Input {...apiKeyRegistration} type="password" />
+        </Field>
+      ) : null}
+      {showApiBase ? (
+        <Field label={apiBaseLabel} hint={apiBaseHint} invalid={apiBaseInvalid}>
+          <Input {...apiBaseRegistration} placeholder="https://api.example.com/v1" />
+        </Field>
+      ) : null}
     </motion.div>
   );
 }

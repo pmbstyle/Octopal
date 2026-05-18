@@ -638,7 +638,7 @@ def test_execute_agent_task_counts_completed_cycles_not_raw_llm_calls(
     monkeypatch.setattr(worker, "log", _noop_log)
     monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
     monkeypatch.setattr(
-        "octopal.runtime.workers.agent_worker.LiteLLMProvider",
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
         lambda settings, model=None, config=None: object(),
     )
 
@@ -707,7 +707,7 @@ def test_execute_agent_task_stops_after_repeated_empty_turns(monkeypatch, tmp_pa
     monkeypatch.setattr(worker, "log", _noop_log)
     monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
     monkeypatch.setattr(
-        "octopal.runtime.workers.agent_worker.LiteLLMProvider",
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
         lambda settings, model=None, config=None: object(),
     )
     monkeypatch.setattr("octopal.runtime.workers.agent_worker.get_tools", lambda: [])
@@ -738,7 +738,7 @@ def test_execute_agent_task_does_not_charge_step_for_throttled_poll_round(
     monkeypatch.setattr(worker, "log", _noop_log)
     monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
     monkeypatch.setattr(
-        "octopal.runtime.workers.agent_worker.LiteLLMProvider",
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
         lambda settings, model=None, config=None: object(),
     )
 
@@ -821,7 +821,7 @@ def test_execute_agent_task_injects_request_instruction_without_parent_answer_to
     monkeypatch.setattr(worker, "log", _noop_log)
     monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
     monkeypatch.setattr(
-        "octopal.runtime.workers.agent_worker.LiteLLMProvider",
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
         lambda settings, model=None, config=None: object(),
     )
 
@@ -926,7 +926,7 @@ def test_execute_agent_task_does_not_charge_step_for_parent_instruction_answer(
     monkeypatch.setattr(worker, "log", _noop_log)
     monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
     monkeypatch.setattr(
-        "octopal.runtime.workers.agent_worker.LiteLLMProvider",
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
         lambda settings, model=None, config=None: object(),
     )
 
@@ -1038,7 +1038,7 @@ def test_execute_agent_task_suspends_until_runtime_resumes_child_batch(
     monkeypatch.setattr(worker, "log", _fake_log)
     monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
     monkeypatch.setattr(
-        "octopal.runtime.workers.agent_worker.LiteLLMProvider",
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
         lambda settings, model=None, config=None: object(),
     )
 
@@ -1171,7 +1171,7 @@ def test_execute_agent_task_reawaits_children_after_instruction_answer(
     monkeypatch.setattr(worker, "log", _noop_log)
     monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
     monkeypatch.setattr(
-        "octopal.runtime.workers.agent_worker.LiteLLMProvider",
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
         lambda settings, model=None, config=None: object(),
     )
 
@@ -1364,7 +1364,7 @@ def test_execute_agent_task_skips_redundant_get_worker_result_for_joined_child(
     monkeypatch.setattr(worker, "log", _fake_log)
     monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
     monkeypatch.setattr(
-        "octopal.runtime.workers.agent_worker.LiteLLMProvider",
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
         lambda settings, model=None, config=None: object(),
     )
 

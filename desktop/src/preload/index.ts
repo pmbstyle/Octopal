@@ -146,6 +146,33 @@ type DesktopConnectorActionResult = {
   detail: string;
 };
 
+type DesktopCodexAuthStatus = {
+  available: boolean;
+  connected: boolean;
+  accountLabel?: string;
+  accountType?: string;
+  requiresOpenAIAuth?: boolean;
+  error?: string;
+};
+
+type DesktopCodexAuthStartResult = {
+  success: boolean;
+  authUrl?: string;
+  loginId?: string;
+  error?: string;
+};
+
+type DesktopCodexModelListResult = {
+  success: boolean;
+  models?: Array<{
+    id: string;
+    model: string;
+    displayName: string;
+    hidden?: boolean;
+  }>;
+  error?: string;
+};
+
 type DesktopDashboardSnapshot = {
   ok: boolean;
   detail: string;
@@ -264,6 +291,10 @@ contextBridge.exposeInMainWorld("octopalDesktop", {
     ipcRenderer.invoke("desktop:authorize-connector", installDir, payload) as Promise<DesktopConnectorActionResult>,
   disconnectConnector: (installDir: string, name: DesktopConnectorName, forgetCredentials = false) =>
     ipcRenderer.invoke("desktop:disconnect-connector", installDir, name, forgetCredentials) as Promise<DesktopConnectorActionResult>,
+  getCodexAuthStatus: () => ipcRenderer.invoke("codex-auth:status") as Promise<DesktopCodexAuthStatus>,
+  startCodexAuth: () => ipcRenderer.invoke("codex-auth:start-login") as Promise<DesktopCodexAuthStartResult>,
+  disconnectCodexAuth: () => ipcRenderer.invoke("codex-auth:disconnect") as Promise<{ success: boolean; error?: string }>,
+  listCodexModels: () => ipcRenderer.invoke("codex-models:list") as Promise<DesktopCodexModelListResult>,
   startWhatsAppLink: (installDir: string) =>
     ipcRenderer.invoke("desktop:start-whatsapp-link", installDir) as Promise<DesktopWhatsAppLinkStatus>,
   getWhatsAppLinkStatus: (installDir: string) =>
@@ -279,5 +310,19 @@ contextBridge.exposeInMainWorld("octopalDesktop", {
     const handler = (_event: Electron.IpcRendererEvent, updateStatus: DesktopAppUpdateStatus) => callback(updateStatus);
     ipcRenderer.on("desktop:app-update-status", handler);
     return () => ipcRenderer.removeListener("desktop:app-update-status", handler);
+  },
+  onCodexAuthStatus: (callback: (status: DesktopCodexAuthStatus) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: DesktopCodexAuthStatus) => callback(status);
+    ipcRenderer.on("codex-auth-status-changed", handler);
+    return () => ipcRenderer.removeListener("codex-auth-status-changed", handler);
+  },
+  onCodexAuthUpdated: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on("codex-auth-login-completed", handler);
+    ipcRenderer.on("codex-auth-updated", handler);
+    return () => {
+      ipcRenderer.removeListener("codex-auth-login-completed", handler);
+      ipcRenderer.removeListener("codex-auth-updated", handler);
+    };
   },
 });

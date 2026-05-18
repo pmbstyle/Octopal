@@ -1,4 +1,4 @@
-import type { InstallForm } from "./install";
+import { providerRequiresApiBase, providerRequiresApiKey, type InstallForm } from "./install";
 import { messages } from "./i18n";
 import type { StepId } from "./appTypes";
 
@@ -40,13 +40,23 @@ export function getValidationFields(step: StepId, values: InstallForm): Array<ke
   }
 
   if (step === "octo-llm") {
-    return values.providerId === "custom" ? ["providerId", "model", "apiBase"] : ["providerId", "model", "apiKey"];
+    if (providerRequiresApiBase(values.providerId)) {
+      return ["providerId", "model", "apiBase"];
+    }
+    if (providerRequiresApiKey(values.providerId)) {
+      return ["providerId", "model", "apiKey"];
+    }
+    return ["providerId", "model"];
   }
 
   if (step === "worker-llm") {
-    return values.workerProviderId === "custom"
-      ? ["workerProviderId", "workerModel", "workerApiBase"]
-      : ["workerProviderId", "workerModel", "workerApiKey"];
+    if (providerRequiresApiBase(values.workerProviderId)) {
+      return ["workerProviderId", "workerModel", "workerApiBase"];
+    }
+    if (providerRequiresApiKey(values.workerProviderId)) {
+      return ["workerProviderId", "workerModel", "workerApiKey"];
+    }
+    return ["workerProviderId", "workerModel"];
   }
 
   if (step === "search") {
