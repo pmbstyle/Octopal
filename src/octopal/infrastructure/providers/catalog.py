@@ -57,6 +57,16 @@ _CATALOG: tuple[ProviderCatalogEntry, ...] = (
         base_url_label="OpenAI base URL",
     ),
     ProviderCatalogEntry(
+        id="codex",
+        label="ChatGPT Codex",
+        description="ChatGPT subscription auth through the local Codex CLI app-server.",
+        default_model="gpt-5.4",
+        requires_api_key=False,
+        supports_custom_base_url=False,
+        api_key_label="ChatGPT login",
+        model_label="Codex model",
+    ),
+    ProviderCatalogEntry(
         id="anthropic",
         label="Anthropic",
         description="Direct Anthropic Messages API through LiteLLM.",

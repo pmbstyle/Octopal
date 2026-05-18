@@ -19,6 +19,7 @@ import {
   type ConnectorAuthPayload,
   type ConnectorName,
 } from "./connectors";
+import { registerCodexAuthIPCHandlers, stopCodexAuthServer } from "./codexAuth";
 import {
   checkOctopalUpdateSafely,
   ensureWorkspaceBootstrap,
@@ -984,6 +985,7 @@ ipcMain.handle(
 ipcMain.handle("desktop:start-whatsapp-link", async (_event, installDir: string) => startWhatsAppLink(installDir));
 ipcMain.handle("desktop:get-whatsapp-link-status", async (_event, installDir: string) => getWhatsAppLinkStatus(installDir));
 ipcMain.handle("desktop:stop-whatsapp-link", async (_event, installDir: string) => stopWhatsAppLink(installDir));
+registerCodexAuthIPCHandlers();
 
 void app.whenReady().then(async () => {
   nativeTheme.themeSource = (await readSettings()).theme;
@@ -998,6 +1000,7 @@ void app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
+  stopCodexAuthServer();
   if (process.platform !== "darwin") {
     app.quit();
   }

@@ -1688,6 +1688,74 @@ p {
   accent-color: var(--primary);
 }
 
+.codex-auth-panel {
+  display: grid;
+  gap: 14px;
+  max-width: 760px;
+  margin: 4px auto 0;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--primary) 34%, var(--border));
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface-strong) 84%, var(--primary) 5%);
+}
+
+.codex-auth-ready {
+  border-color: color-mix(in srgb, var(--success) 46%, var(--border));
+  background: color-mix(in srgb, var(--success) 8%, var(--surface-strong));
+}
+
+.codex-auth-error {
+  border-color: color-mix(in srgb, var(--danger) 56%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface-strong));
+}
+
+.codex-auth-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.codex-auth-status svg {
+  width: 20px;
+  height: 20px;
+  color: var(--primary);
+}
+
+.codex-auth-ready .codex-auth-status svg {
+  color: var(--success);
+}
+
+.codex-auth-error .codex-auth-status svg {
+  color: var(--danger);
+}
+
+.codex-auth-status strong,
+.codex-auth-status span {
+  display: block;
+}
+
+.codex-auth-status strong {
+  font-size: 14px;
+}
+
+.codex-auth-status span {
+  margin-top: 5px;
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.codex-auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.codex-auth-actions .button {
+  min-height: 42px;
+}
+
 .toggle-card {
   align-items: center;
 }

@@ -59,6 +59,8 @@ export function App() {
   const [connectorMessage, setConnectorMessage] = useState("");
   const [connectorMessageTone, setConnectorMessageTone] = useState<"success" | "error" | "info">("info");
   const [selectedConnector, setSelectedConnector] = useState<DesktopConnectorName>("google");
+  const [codexAuthStatus, setCodexAuthStatus] = useState<DesktopCodexAuthStatus | null>(null);
+  const [codexAuthBusy, setCodexAuthBusy] = useState(false);
   const [configurationMode, setConfigurationMode] = useState<"install" | "edit">("install");
   const [loadedConfigChannel, setLoadedConfigChannel] = useState<InstallForm["channel"] | null>(null);
   const [installState, setInstallState] = useState<DesktopInstallState>({
@@ -276,6 +278,17 @@ export function App() {
     setConnectorStatus(result);
   }, [installState.installed, runtimeInstallDir]);
 
+  const refreshCodexAuthStatus = useCallback(async () => {
+    if (!window.octopalDesktop) {
+      setCodexAuthStatus(null);
+      return null;
+    }
+
+    const result = await window.octopalDesktop.getCodexAuthStatus();
+    setCodexAuthStatus(result);
+    return result;
+  }, []);
+
   useEffect(() => {
     void loadSettings().then(async (settings) => {
       setLanguage(settings.language);
@@ -378,6 +391,32 @@ export function App() {
 
     void refreshConnectorStatus();
   }, [refreshConnectorStatus, screen, settingsLoaded, step]);
+
+  useEffect(() => {
+    if (!settingsLoaded || screen !== "wizard" || (values.providerId !== "codex" && values.workerProviderId !== "codex")) {
+      return;
+    }
+
+    void refreshCodexAuthStatus();
+  }, [refreshCodexAuthStatus, screen, settingsLoaded, values.providerId, values.workerProviderId]);
+
+  useEffect(() => {
+    if (!settingsLoaded || !window.octopalDesktop) {
+      return;
+    }
+
+    const unsubscribeStatus = window.octopalDesktop.onCodexAuthStatus((status) => {
+      setCodexAuthStatus(status);
+      setCodexAuthBusy(false);
+    });
+    const unsubscribeUpdated = window.octopalDesktop.onCodexAuthUpdated(() => {
+      void refreshCodexAuthStatus().finally(() => setCodexAuthBusy(false));
+    });
+    return () => {
+      unsubscribeStatus();
+      unsubscribeUpdated();
+    };
+  }, [refreshCodexAuthStatus, settingsLoaded]);
 
   useEffect(() => {
     if (!settingsLoaded || screen !== "wizard" || step !== "review") {
@@ -592,6 +631,65 @@ export function App() {
       setConnectorMessageTone("error");
     } finally {
       setConnectorBusy(null);
+    }
+  }
+
+  async function authorizeCodex() {
+    if (!window.octopalDesktop) {
+      return;
+    }
+
+    setCodexAuthBusy(true);
+    try {
+      const result = await window.octopalDesktop.startCodexAuth();
+      if (!result.success) {
+        setCodexAuthStatus({
+          available: true,
+          connected: false,
+          error: result.error || copy("codexAuthorizeFailed"),
+        });
+        setCodexAuthBusy(false);
+        return;
+      }
+      window.setTimeout(() => {
+        void refreshCodexAuthStatus().finally(() => setCodexAuthBusy(false));
+      }, 1500);
+    } catch (error) {
+      setCodexAuthStatus({
+        available: false,
+        connected: false,
+        error: error instanceof Error ? error.message : copy("codexAuthorizeFailed"),
+      });
+      setCodexAuthBusy(false);
+    }
+  }
+
+  async function disconnectCodex() {
+    if (!window.octopalDesktop) {
+      return;
+    }
+
+    setCodexAuthBusy(true);
+    try {
+      const result = await window.octopalDesktop.disconnectCodexAuth();
+      if (!result.success) {
+        setCodexAuthStatus({
+          available: true,
+          connected: codexAuthStatus?.connected === true,
+          accountLabel: codexAuthStatus?.accountLabel,
+          error: result.error || copy("codexDisconnectFailed"),
+        });
+        return;
+      }
+      await refreshCodexAuthStatus();
+    } catch (error) {
+      setCodexAuthStatus({
+        available: false,
+        connected: false,
+        error: error instanceof Error ? error.message : copy("codexDisconnectFailed"),
+      });
+    } finally {
+      setCodexAuthBusy(false);
     }
   }
 
@@ -993,6 +1091,11 @@ export function App() {
             connectorMessageTone={connectorMessageTone}
             selectedConnector={selectedConnector}
             canAuthorizeConnectors={installState.installed && configurationMode === "edit"}
+            codexAuthStatus={codexAuthStatus}
+            codexAuthBusy={codexAuthBusy}
+            onCodexAuthorize={() => void authorizeCodex()}
+            onCodexRefresh={() => void refreshCodexAuthStatus()}
+            onCodexDisconnect={() => void disconnectCodex()}
           />
         ) : null}
 

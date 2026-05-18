@@ -19,6 +19,7 @@ export const channelLogos = {
 
 export const providerLogos: Record<string, string> = {
   anthropic: anthropicLogo,
+  codex: openaiLogo,
   custom: customLogo,
   google: geminiLogo,
   groq: groqLogo,

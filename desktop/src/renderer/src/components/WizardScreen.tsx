@@ -51,6 +51,11 @@ export function WizardScreen({
   connectorMessageTone,
   selectedConnector,
   canAuthorizeConnectors,
+  codexAuthStatus,
+  codexAuthBusy,
+  onCodexAuthorize,
+  onCodexRefresh,
+  onCodexDisconnect,
 }: {
   copy: CopyFn;
   language: Language;
@@ -85,6 +90,11 @@ export function WizardScreen({
   connectorMessageTone: "success" | "error" | "info";
   selectedConnector: DesktopConnectorName;
   canAuthorizeConnectors: boolean;
+  codexAuthStatus: DesktopCodexAuthStatus | null;
+  codexAuthBusy: boolean;
+  onCodexAuthorize: () => void;
+  onCodexRefresh: () => void;
+  onCodexDisconnect: () => void;
 }) {
   return (
     <motion.section
@@ -116,6 +126,11 @@ export function WizardScreen({
             form={form}
             errors={errors}
             onProviderChange={(providerId) => onProviderChange(providerId, "octo")}
+            codexAuthStatus={codexAuthStatus}
+            codexAuthBusy={codexAuthBusy}
+            onCodexAuthorize={onCodexAuthorize}
+            onCodexRefresh={onCodexRefresh}
+            onCodexDisconnect={onCodexDisconnect}
           />
         ) : null}
         {step === "worker-llm" ? (
@@ -125,6 +140,11 @@ export function WizardScreen({
             form={form}
             errors={errors}
             onProviderChange={(providerId) => onProviderChange(providerId, "worker")}
+            codexAuthStatus={codexAuthStatus}
+            codexAuthBusy={codexAuthBusy}
+            onCodexAuthorize={onCodexAuthorize}
+            onCodexRefresh={onCodexRefresh}
+            onCodexDisconnect={onCodexDisconnect}
           />
         ) : null}
         {step === "search" ? (
