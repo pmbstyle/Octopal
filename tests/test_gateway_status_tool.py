@@ -18,6 +18,19 @@ def test_gateway_status_summarizes_runtime_and_channel_state(monkeypatch, tmp_pa
     monkeypatch.setattr(tool_catalog, "load_settings", lambda: settings)
     monkeypatch.setattr(
         tool_catalog,
+        "get_worker_launcher_status",
+        lambda _settings: SimpleNamespace(
+            configured_launcher="docker",
+            effective_launcher="docker",
+            available=True,
+            reason="Docker worker runtime is ready.",
+            docker_cli_path="/usr/bin/docker",
+            docker_daemon_reachable=True,
+            docker_image_present=True,
+        ),
+    )
+    monkeypatch.setattr(
+        tool_catalog,
         "read_status",
         lambda _settings: {
             "pid": 4321,
@@ -90,8 +103,23 @@ def test_gateway_status_summarizes_runtime_and_channel_state(monkeypatch, tmp_pa
     assert payload["octo"]["followup_queues"] == 2
     assert payload["channel"]["queue_depth"] == 4
     assert payload["exec"]["sessions_running"] == 1
+    assert payload["worker_launcher"] == {
+        "configured": "docker",
+        "effective": "docker",
+        "available": True,
+        "reason": "Docker worker runtime is ready.",
+        "docker_cli_path": "/usr/bin/docker",
+        "docker_daemon_reachable": True,
+        "docker_image_present": True,
+    }
     assert payload["scheduler"]["last_dispatch_started"] == 1
     assert any(service["id"] == "scheduler" and service["status"] == "warning" for service in payload["services"])
+    assert any(
+        service["id"] == "worker-launcher"
+        and service["status"] == "ok"
+        and service["metrics"]["effective"] == "docker"
+        for service in payload["services"]
+    )
     assert payload["mcp"]["servers_connected"] == 1
     assert any(service["id"] == "gateway" and service["status"] == "ok" for service in payload["services"])
     assert any("rejected by policy" in hint for hint in payload["hints"])
@@ -107,6 +135,19 @@ def test_gateway_status_treats_missing_scheduler_metrics_as_not_reporting(monkey
         user_channel="telegram",
     )
     monkeypatch.setattr(tool_catalog, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        tool_catalog,
+        "get_worker_launcher_status",
+        lambda _settings: SimpleNamespace(
+            configured_launcher="docker",
+            effective_launcher="docker",
+            available=True,
+            reason="Docker worker runtime is ready.",
+            docker_cli_path="/usr/bin/docker",
+            docker_daemon_reachable=True,
+            docker_image_present=True,
+        ),
+    )
     monkeypatch.setattr(
         tool_catalog,
         "read_status",
@@ -149,3 +190,58 @@ def test_gateway_status_treats_missing_scheduler_metrics_as_not_reporting(monkey
     scheduler_service = next(service for service in payload["services"] if service["id"] == "scheduler")
     assert scheduler_service["status"] == "ok"
     assert scheduler_service["reason"] == "scheduler metrics unavailable"
+
+
+def test_gateway_status_warns_when_docker_launcher_falls_back(monkeypatch, tmp_path: Path) -> None:
+    settings = SimpleNamespace(
+        state_dir=tmp_path / "data",
+        workspace_dir=tmp_path / "workspace",
+        gateway_host="127.0.0.1",
+        gateway_port=8123,
+        user_channel="telegram",
+    )
+    monkeypatch.setattr(tool_catalog, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        tool_catalog,
+        "get_worker_launcher_status",
+        lambda _settings: SimpleNamespace(
+            configured_launcher="docker",
+            effective_launcher="same_env",
+            available=False,
+            reason="Docker daemon is unavailable.",
+            docker_cli_path="/usr/bin/docker",
+            docker_daemon_reachable=False,
+            docker_image_present=None,
+        ),
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "read_status",
+        lambda _settings: {
+            "pid": 4321,
+            "started_at": "2026-03-20T10:00:00+00:00",
+            "last_internal_heartbeat_at": "2026-03-20T10:06:00+00:00",
+            "status_updated_at": "2026-03-20T10:06:31+00:00",
+            "active_channel": "Telegram",
+        },
+    )
+    monkeypatch.setattr(tool_catalog, "is_pid_running", lambda pid: pid == 4321)
+    monkeypatch.setattr(
+        tool_catalog,
+        "read_metrics_snapshot",
+        lambda _state_dir: {
+            "octo": {"updated_at": "2026-03-20T10:05:01+00:00"},
+            "telegram": {"updated_at": "2026-03-20T10:05:02+00:00"},
+            "connectivity": {"mcp_servers": {"docs": {"connected": True}}},
+        },
+    )
+
+    payload = json.loads(tool_catalog._tool_gateway_status({}, {}))
+
+    assert payload["worker_launcher"]["configured"] == "docker"
+    assert payload["worker_launcher"]["effective"] == "same_env"
+    assert payload["worker_launcher"]["available"] is False
+    launcher_service = next(service for service in payload["services"] if service["id"] == "worker-launcher")
+    assert launcher_service["status"] == "warning"
+    assert launcher_service["metrics"]["docker_daemon_reachable"] is False
+    assert any("Docker worker launcher is not active" in hint for hint in payload["hints"])

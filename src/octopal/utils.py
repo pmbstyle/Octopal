@@ -315,10 +315,11 @@ def looks_like_textual_tool_invocation(text: str) -> bool:
     if trimmed.isupper() and "_" in trimmed:
         return False
 
-    return bool(
-        _TEXTUAL_TOOL_NAME_RE.fullmatch(trimmed)
-        or _TEXTUAL_TOOL_PREVIEW_RE.fullmatch(trimmed)
-    )
+    if _TEXTUAL_TOOL_PREVIEW_RE.fullmatch(trimmed):
+        return True
+    if not _TEXTUAL_TOOL_NAME_RE.fullmatch(trimmed):
+        return False
+    return "_" in trimmed or trimmed.lower().startswith("mcp__")
 
 
 _HEARTBEAT_USER_VISIBLE_OPEN = "<user_visible>"

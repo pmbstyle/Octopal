@@ -41,6 +41,7 @@ class LiteLLMProvider:
     _semaphores_by_limit: dict[int, asyncio.Semaphore] = {}
     _rate_limit_cooldowns: dict[tuple[str, str, str], float] = {}
     _tool_response_format_modes: dict[tuple[str, str, str], str] = {}
+    _tool_choice_modes: dict[tuple[str, str, str], object] = {}
 
     def __init__(
         self,
@@ -543,6 +544,7 @@ class LiteLLMProvider:
         requested_response_format = request_kwargs.get("response_format")
         route_key = self._tool_response_format_key()
         preferred_mode = self._tool_response_format_modes.get(route_key)
+        preferred_tool_choice = self._tool_choice_modes.get(route_key, tool_choice)
         candidates = _response_format_fallback_modes(
             requested_response_format, preferred_mode=preferred_mode
         )
@@ -551,17 +553,37 @@ class LiteLLMProvider:
         for index, mode in enumerate(candidates):
             attempt_kwargs = dict(request_kwargs)
             _apply_response_format_mode(attempt_kwargs, requested_response_format, mode)
+            attempt_tool_choice = preferred_tool_choice
             try:
                 response = await self._acompletion_with_resilience(
                     messages=messages,
                     tools=tools,
-                    tool_choice=tool_choice,
+                    tool_choice=attempt_tool_choice,
                     **attempt_kwargs,
                 )
                 self._tool_response_format_modes[route_key] = mode
                 return response, mode
             except Exception as exc:
                 last_exc = exc
+                if (
+                    attempt_tool_choice != "auto"
+                    and _is_tool_choice_required_unsupported_in_thinking_error(exc)
+                ):
+                    logger.info(
+                        "LiteLLM route rejected tool_choice=%r in thinking mode; retrying with tool_choice=auto for provider=%s model=%s",
+                        attempt_tool_choice,
+                        self._profile.provider_id,
+                        self._model,
+                    )
+                    response = await self._acompletion_with_resilience(
+                        messages=messages,
+                        tools=tools,
+                        tool_choice="auto",
+                        **attempt_kwargs,
+                    )
+                    self._tool_choice_modes[route_key] = "auto"
+                    self._tool_response_format_modes[route_key] = mode
+                    return response, mode
                 has_lower_mode = index < len(candidates) - 1
                 if not has_lower_mode or not _is_response_format_unsupported_error(exc):
                     raise
@@ -1179,6 +1201,15 @@ def _is_response_format_unsupported_error(exc: Exception) -> bool:
         "input_invalid",
     )
     return any(marker in text for marker in markers)
+
+
+def _is_tool_choice_required_unsupported_in_thinking_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "tool_choice" in text
+        and "thinking mode" in text
+        and ("required" in text or "object" in text)
+    )
 
 
 def _summarize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

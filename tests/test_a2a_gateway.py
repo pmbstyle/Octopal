@@ -8,18 +8,27 @@ from fastapi.testclient import TestClient
 from octopal.gateway.app import build_app
 from octopal.infrastructure.config.models import A2AConfig, A2APeerConfig
 from octopal.infrastructure.config.settings import Settings
+from octopal.infrastructure.logging import correlation_id_var
 from octopal.interop.a2a.client import _message_send_endpoint
 from octopal.interop.a2a.routes import register_a2a_routes
 from octopal.tools.communication.a2a import a2a_list_peers
 
 
 class _DummyOcto:
-    def __init__(self) -> None:
+    def __init__(self, immediate: str = "hello peer") -> None:
+        self.immediate = immediate
         self.calls: list[dict[str, object]] = []
 
     async def handle_message(self, text: str, chat_id: int, **kwargs):
-        self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
-        return SimpleNamespace(immediate="hello peer")
+        self.calls.append(
+            {
+                "text": text,
+                "chat_id": chat_id,
+                "kwargs": kwargs,
+                "correlation_id": correlation_id_var.get(),
+            }
+        )
+        return SimpleNamespace(immediate=self.immediate)
 
 
 def _app(config: A2AConfig, octo: object | None = None) -> FastAPI:
@@ -232,16 +241,116 @@ def test_message_send_routes_authenticated_peer_message_to_octo() -> None:
     payload = response.json()
     assert payload["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
     assert payload["task"]["status"]["message"]["parts"] == [{"text": "hello peer"}]
-    assert payload["task"]["contextId"] == "octopal-peer-bob"
+    assert str(payload["task"]["contextId"]).startswith("a2a-context-")
     assert payload["task"]["metadata"]["octopalPeerId"] == "bob"
     assert len(octo.calls) == 1
     call = octo.calls[0]
     assert "Peer ID: bob" in str(call["text"])
+    assert f"A2A context ID: {payload['task']['contextId']}" in str(call["text"])
     assert "hi Alice" in str(call["text"])
     assert "Do not call `a2a_send_message` back to this same peer" in str(call["text"])
     assert call["chat_id"] > 0
+    assert call["correlation_id"] == payload["task"]["id"]
     assert call["kwargs"]["is_ws"] is True
     assert call["kwargs"]["include_wakeup"] is False
+
+
+def test_message_send_scopes_peer_chat_by_a2a_context() -> None:
+    octo = _DummyOcto()
+    client = TestClient(
+        _app(
+            A2AConfig(
+                enabled=True,
+                peers={"bob": A2APeerConfig(token="secret")},
+            ),
+            octo=octo,
+        )
+    )
+    headers = {"Authorization": "Bearer secret"}
+
+    first = client.post(
+        "/a2a/v1/message:send",
+        headers=headers,
+        json={
+            "message": {
+                "role": "ROLE_USER",
+                "contextId": "ctx-one",
+                "parts": [{"text": "first"}],
+            }
+        },
+    )
+    second = client.post(
+        "/a2a/v1/message:send",
+        headers=headers,
+        json={
+            "message": {
+                "role": "ROLE_USER",
+                "contextId": "ctx-two",
+                "parts": [{"text": "second"}],
+            }
+        },
+    )
+    third = client.post(
+        "/a2a/v1/message:send",
+        headers=headers,
+        json={
+            "message": {
+                "role": "ROLE_USER",
+                "contextId": "ctx-one",
+                "parts": [{"text": "third"}],
+            }
+        },
+    )
+
+    assert first.status_code == second.status_code == third.status_code == 200
+    assert len(octo.calls) == 3
+    assert octo.calls[0]["chat_id"] != octo.calls[1]["chat_id"]
+    assert octo.calls[0]["chat_id"] == octo.calls[2]["chat_id"]
+
+
+def test_message_send_generates_fresh_context_when_absent() -> None:
+    octo = _DummyOcto()
+    client = TestClient(
+        _app(
+            A2AConfig(
+                enabled=True,
+                peers={"bob": A2APeerConfig(token="secret")},
+            ),
+            octo=octo,
+        )
+    )
+    body = {"message": {"role": "ROLE_USER", "parts": [{"text": "hi"}]}}
+    headers = {"Authorization": "Bearer secret"}
+
+    first = client.post("/a2a/v1/message:send", headers=headers, json=body)
+    second = client.post("/a2a/v1/message:send", headers=headers, json=body)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["task"]["contextId"] != second.json()["task"]["contextId"]
+    assert octo.calls[0]["chat_id"] != octo.calls[1]["chat_id"]
+
+
+def test_message_send_does_not_mark_empty_reply_completed() -> None:
+    client = TestClient(
+        _app(
+            A2AConfig(
+                enabled=True,
+                peers={"bob": A2APeerConfig(token="secret")},
+            ),
+            octo=_DummyOcto(immediate=""),
+        )
+    )
+
+    response = client.post(
+        "/a2a/v1/message:send",
+        headers={"Authorization": "Bearer secret"},
+        json={"message": {"role": "ROLE_USER", "parts": [{"text": "hi"}]}},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task"]["status"]["state"] == "TASK_STATE_FAILED"
+    assert payload["task"]["artifacts"][0]["parts"] == [{"text": ""}]
 
 
 def test_message_send_enforces_payload_size() -> None:

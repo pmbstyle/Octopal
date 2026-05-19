@@ -24,6 +24,7 @@ from octopal.runtime.scheduler.service import (
 )
 from octopal.runtime.state import is_pid_running, read_status
 from octopal.runtime.workers.allowed_paths import normalize_allowed_paths
+from octopal.runtime.workers.launcher_factory import get_worker_launcher_status
 from octopal.tools.browser.actions import (
     browser_click,
     browser_close,
@@ -1490,7 +1491,11 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
         ),
         ToolSpec(
             name="gateway_status",
-            description="Read-only control-plane snapshot for gateway, octo, active channel, exec sessions, and MCP connectivity.",
+            description=(
+                "Read-only control-plane snapshot for gateway, Octo, worker launcher/Docker readiness, "
+                "active channel, exec sessions, scheduler, and MCP connectivity. Use this before answering "
+                "questions about whether Docker workers, the gateway, scheduler, or delivery runtime are ready."
+            ),
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             permission="service_read",
             handler=lambda args, ctx: _tool_gateway_status(args, ctx),
@@ -1966,6 +1971,7 @@ def _tool_gateway_status(args, ctx) -> str:
     settings = load_settings()
     status_data = read_status(settings) or {}
     metrics = read_metrics_snapshot(settings.state_dir) or {}
+    launcher_status = get_worker_launcher_status(settings)
 
     pid = status_data.get("pid")
     running = is_pid_running(pid)
@@ -2017,6 +2023,25 @@ def _tool_gateway_status(args, ctx) -> str:
             "reason": _gateway_scheduler_reason(scheduler_metrics),
             "updated_at": scheduler_metrics.get("updated_at"),
         },
+        {
+            "id": "worker-launcher",
+            "status": (
+                "ok"
+                if launcher_status.configured_launcher != "docker"
+                or launcher_status.effective_launcher == "docker"
+                else "warning"
+            ),
+            "reason": launcher_status.reason,
+            "updated_at": status_updated_at or last_heartbeat,
+            "metrics": {
+                "configured": launcher_status.configured_launcher,
+                "effective": launcher_status.effective_launcher,
+                "available": launcher_status.available,
+                "docker_cli_path": launcher_status.docker_cli_path,
+                "docker_daemon_reachable": launcher_status.docker_daemon_reachable,
+                "docker_image_present": launcher_status.docker_image_present,
+            },
+        },
     ]
     hints: list[str] = []
     if not running:
@@ -2035,6 +2060,8 @@ def _tool_gateway_status(args, ctx) -> str:
         )
     if str(scheduler_metrics.get("last_tick_status", "") or "").strip().lower() == "failed":
         hints.append("Last scheduler tick failed; inspect scheduler control-plane traces before trusting automation.")
+    if launcher_status.configured_launcher == "docker" and launcher_status.effective_launcher != "docker":
+        hints.append(f"Docker worker launcher is not active: {launcher_status.reason}")
     if not hints:
         hints.append("Gateway control plane looks healthy.")
 
@@ -2088,6 +2115,15 @@ def _tool_gateway_status(args, ctx) -> str:
                 "sessions_running": int(exec_metrics.get("background_sessions_running", 0) or 0),
                 "sessions_total": int(exec_metrics.get("background_sessions_total", 0) or 0),
                 "updated_at": exec_metrics.get("updated_at"),
+            },
+            "worker_launcher": {
+                "configured": launcher_status.configured_launcher,
+                "effective": launcher_status.effective_launcher,
+                "available": launcher_status.available,
+                "reason": launcher_status.reason,
+                "docker_cli_path": launcher_status.docker_cli_path,
+                "docker_daemon_reachable": launcher_status.docker_daemon_reachable,
+                "docker_image_present": launcher_status.docker_image_present,
             },
             "scheduler": {
                 "running": bool(scheduler_metrics.get("running")),

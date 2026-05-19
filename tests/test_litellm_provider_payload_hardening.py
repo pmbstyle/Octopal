@@ -337,6 +337,83 @@ def test_complete_with_tools_downgrades_to_no_response_format_when_needed(monkey
     assert LiteLLMProvider._tool_response_format_modes[provider._tool_response_format_key()] == "none"
 
 
+def test_complete_with_tools_retries_auto_tool_choice_for_thinking_mode(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def _fake_acompletion(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs.get("tool_choice") == "required":
+            raise RuntimeError(
+                "<400> InternalError.Algo.InvalidParameter: The tool_choice parameter "
+                "does not support being set to required or object in thinking mode"
+            )
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "tool_calls": [],
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion",
+        _fake_acompletion,
+    )
+    LiteLLMProvider._tool_choice_modes.clear()
+    LiteLLMProvider._tool_response_format_modes.clear()
+    provider = LiteLLMProvider(_settings())
+
+    result = asyncio.run(
+        provider.complete_with_tools(
+            [{"role": "user", "content": "write the file"}],
+            tools=[{"type": "function", "function": {"name": "fs_write"}}],
+            tool_choice="required",
+        )
+    )
+
+    assert result["content"]
+    assert [call["tool_choice"] for call in calls] == ["required", "auto"]
+    assert LiteLLMProvider._tool_choice_modes[provider._tool_response_format_key()] == "auto"
+
+
+def test_complete_with_tools_reuses_auto_tool_choice_mode(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def _fake_acompletion(**kwargs):
+        calls.append(dict(kwargs))
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "tool_calls": [],
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion",
+        _fake_acompletion,
+    )
+    LiteLLMProvider._tool_choice_modes.clear()
+    provider = LiteLLMProvider(_settings())
+    LiteLLMProvider._tool_choice_modes[provider._tool_response_format_key()] = "auto"
+
+    asyncio.run(
+        provider.complete_with_tools(
+            [{"role": "user", "content": "write the file"}],
+            tools=[{"type": "function", "function": {"name": "fs_write"}}],
+            tool_choice="required",
+        )
+    )
+
+    assert [call["tool_choice"] for call in calls] == ["auto"]
+
+
 def test_sanitize_schema_for_minimax_collapses_type_array_to_single_type() -> None:
     schema = {
         "type": "object",
