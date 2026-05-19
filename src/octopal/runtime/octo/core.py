@@ -210,6 +210,7 @@ class Octo(
     _pending_conversational_closure_by_correlation: dict[str, Any] | None = None
     _structured_followup_required_by_correlation: dict[str, Any] | None = None
     _suppressed_followups_by_correlation: dict[str, Any] | None = None
+    _channel_followups_suppressed_by_correlation: dict[str, Any] | None = None
     _no_progress_turns_by_chat: dict[int, int] | None = None
     _progress_revision_by_chat: dict[int, int] | None = None
     _reset_streak_without_progress_by_chat: dict[int, int] | None = None
@@ -265,6 +266,8 @@ class Octo(
             self._structured_followup_required_by_correlation = {}
         if self._suppressed_followups_by_correlation is None:
             self._suppressed_followups_by_correlation = {}
+        if self._channel_followups_suppressed_by_correlation is None:
+            self._channel_followups_suppressed_by_correlation = {}
         if self._active_user_turns_by_correlation is None:
             self._active_user_turns_by_correlation = {}
         if self._no_progress_turns_by_chat is None:

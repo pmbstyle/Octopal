@@ -39,8 +39,14 @@ from octopal.utils import (
 
 
 def test_resolve_turn_route_mode():
-    assert resolve_turn_route_mode(track_progress=True, background_delivery=False) is RouteMode.CONVERSATION
-    assert resolve_turn_route_mode(track_progress=False, background_delivery=True) is RouteMode.HEARTBEAT
+    assert (
+        resolve_turn_route_mode(track_progress=True, background_delivery=False)
+        is RouteMode.CONVERSATION
+    )
+    assert (
+        resolve_turn_route_mode(track_progress=False, background_delivery=True)
+        is RouteMode.HEARTBEAT
+    )
     assert (
         resolve_turn_route_mode(track_progress=False, background_delivery=False)
         is RouteMode.INTERNAL_MAINTENANCE
@@ -71,6 +77,7 @@ def test_is_heartbeat_ok():
     assert is_heartbeat_ok("OK") is False
     assert is_heartbeat_ok("") is False
     assert is_heartbeat_ok(None) is False
+
 
 def test_should_send_worker_followup():
     assert should_send_worker_followup("HEARTBEAT_OK") is False
@@ -119,16 +126,22 @@ def test_extract_heartbeat_user_visible_message_ignores_hidden_wrapper():
 
 
 def test_extract_heartbeat_user_visible_message_requires_explicit_wrapper():
-    assert extract_heartbeat_user_visible_message("<user_visible>Утренний брифинг готов.</user_visible>") == (
-        "Утренний брифинг готов."
+    assert extract_heartbeat_user_visible_message(
+        "<user_visible>Утренний брифинг готов.</user_visible>"
+    ) == ("Утренний брифинг готов.")
+    assert (
+        extract_heartbeat_user_visible_message(
+            "Internal notes.\n<user_visible>Показать только это.</user_visible>"
+        )
+        == "Показать только это."
     )
-    assert extract_heartbeat_user_visible_message(
-        "Internal notes.\n<user_visible>Показать только это.</user_visible>"
-    ) == "Показать только это."
     assert extract_heartbeat_user_visible_message("Worker still running. Yielding.") is None
-    assert extract_heartbeat_user_visible_message(
-        "Ладно, canonical memory не подходит для файлов за пределами canon."
-    ) is None
+    assert (
+        extract_heartbeat_user_visible_message(
+            "Ладно, canonical memory не подходит для файлов за пределами canon."
+        )
+        is None
+    )
 
 
 def test_resolve_worker_followup_delivery_uses_deferred_mode_when_suppressed():
@@ -226,7 +239,10 @@ def test_forced_worker_followup_uses_durable_report_path_only() -> None:
             "durable_paths": ["reports/candidates.md"],
         },
     )
-    assert build_forced_worker_followup(result) == "Task finished. Output is ready in `reports/candidates.md`."
+    assert (
+        build_forced_worker_followup(result)
+        == "Task finished. Output is ready in `reports/candidates.md`."
+    )
 
 
 def test_forced_worker_followup_drops_empty_generic_completion():
@@ -282,8 +298,8 @@ def test_pending_conversational_closure_expires():
         runtime=None,
     )
     correlation_id = "corr-expired"
-    octo._pending_conversational_closure_by_correlation[correlation_id] = (
-        utc_now() - timedelta(seconds=4000)
+    octo._pending_conversational_closure_by_correlation[correlation_id] = utc_now() - timedelta(
+        seconds=4000
     )
     assert octo.has_pending_conversational_closure(correlation_id) is False
 
@@ -322,9 +338,7 @@ def test_suppressed_turn_followups_expire():
         runtime=None,
     )
     correlation_id = "suppressed-expired"
-    octo._suppressed_followups_by_correlation[correlation_id] = (
-        utc_now() - timedelta(seconds=4000)
-    )
+    octo._suppressed_followups_by_correlation[correlation_id] = utc_now() - timedelta(seconds=4000)
     assert octo.should_suppress_turn_followups(correlation_id) is False
 
 
@@ -343,6 +357,24 @@ def test_suppressed_turn_followups_can_be_marked_and_cleared():
     assert octo.should_suppress_turn_followups(correlation_id) is True
     octo.clear_suppressed_turn_followups(correlation_id)
     assert octo.should_suppress_turn_followups(correlation_id) is False
+
+
+def test_channel_followups_can_be_suppressed_for_a_correlation():
+    octo = Octo(
+        approvals=None,
+        memory=None,
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+    )
+    correlation_id = "a2a-task-test"
+
+    octo.suppress_channel_followups(correlation_id, reason="a2a_peer_message")
+
+    assert octo.should_suppress_channel_followups(correlation_id) is True
+    assert octo.channel_followup_suppression_reason(correlation_id) == "a2a_peer_message"
 
 
 def test_no_user_response_suffix_detection():
@@ -366,7 +398,9 @@ def test_should_suppress_user_delivery():
     assert not should_suppress_user_delivery("Проверяю расписание:")
     assert not should_suppress_user_delivery("list_workers")
     assert not should_suppress_user_delivery("fs_read, file: memory/2026-03-11.md")
-    assert not should_suppress_user_delivery("Successfully sent DM response to Atlas2 in OpenBotCity")
+    assert not should_suppress_user_delivery(
+        "Successfully sent DM response to Atlas2 in OpenBotCity"
+    )
 
 
 def test_sanitize_user_facing_text_removes_reasoning_and_tool_traces():
@@ -449,14 +483,17 @@ def test_control_plane_reply_preserves_existing_control_text():
 
 
 def test_merge_worker_followup_texts_deduplicates_and_joins_updates():
-    assert _merge_worker_followup_texts(
-        [
-            "Подготовила короткий итог.",
-            "Подготовила короткий итог.",
-            "NO_USER_RESPONSE",
-            "Сохранила отчёт в `research/report.md`.",
-        ]
-    ) == "Подготовила короткий итог.\n\nСохранила отчёт в `research/report.md`."
+    assert (
+        _merge_worker_followup_texts(
+            [
+                "Подготовила короткий итог.",
+                "Подготовила короткий итог.",
+                "NO_USER_RESPONSE",
+                "Сохранила отчёт в `research/report.md`.",
+            ]
+        )
+        == "Подготовила короткий итог.\n\nСохранила отчёт в `research/report.md`."
+    )
 
 
 def test_merge_worker_followup_texts_drops_shorter_overlapping_summary():
@@ -570,7 +607,9 @@ async def test_suppressed_worker_followup_is_deferred_until_internal_turn_finish
     queue.put_nowait(
         (
             "[Scheduled] Prepare summary",
-            WorkerResult(summary="Built the scheduled summary.", output={"report_path": "research/digest.md"}),
+            WorkerResult(
+                summary="Built the scheduled summary.", output={"report_path": "research/digest.md"}
+            ),
             correlation_id,
         )
     )
@@ -582,6 +621,74 @@ async def test_suppressed_worker_followup_is_deferred_until_internal_turn_finish
     assert octo.should_suppress_turn_followups(correlation_id) is False
     assert any(
         role == "assistant" and text == "Подготовила итог по расписанию."
+        for role, text, _metadata in memory_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_channel_suppressed_worker_result_does_not_send_followup(monkeypatch):
+    monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
+    octo_core._WORKER_FOLLOWUP_BATCHES.clear()
+
+    sent_messages = []
+    memory_messages = []
+    routed = []
+
+    class DummyMemory:
+        async def add_message(self, role, text, metadata):
+            memory_messages.append((role, text, metadata))
+
+    async def _send(chat_id, text):
+        sent_messages.append((chat_id, text))
+
+    async def _route_worker_results_back_to_octo(*args, **kwargs):
+        routed.append((args, kwargs))
+        return "Worker failed, follow up visibly."
+
+    monkeypatch.setattr(
+        octo_core,
+        "route_worker_results_back_to_octo",
+        _route_worker_results_back_to_octo,
+    )
+
+    octo = Octo(
+        approvals=None,
+        memory=DummyMemory(),
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+        internal_send=_send,
+    )
+    correlation_id = "a2a-task-worker-failed"
+    octo.suppress_channel_followups(correlation_id, reason="a2a_peer_message")
+    octo.mark_internal_result_pending(correlation_id)
+
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait(
+        (
+            "worker-1",
+            "Run a coding task",
+            WorkerResult(
+                status="failed",
+                summary="Worker failed after provider timeout.",
+                output={"error": "provider timeout"},
+            ),
+            correlation_id,
+            None,
+        )
+    )
+
+    await octo_core._internal_worker(octo, 123, queue)
+    await asyncio.sleep(0.03)
+
+    assert sent_messages == []
+    assert routed == []
+    assert octo_core._WORKER_FOLLOWUP_BATCHES == {}
+    assert octo.should_suppress_channel_followups(correlation_id) is True
+    assert any(
+        role == "system" and "Worker failed after provider timeout." in text
         for role, text, _metadata in memory_messages
     )
 
@@ -603,7 +710,12 @@ async def test_structured_worker_followups_route_once_per_batch(monkeypatch):
         sent_messages.append((chat_id, text))
 
     async def _route_worker_results_back_to_octo(_octo, _chat_id, worker_results):
-        routed_batches.append([(worker_id, task_text, result.summary) for worker_id, task_text, result in worker_results])
+        routed_batches.append(
+            [
+                (worker_id, task_text, result.summary)
+                for worker_id, task_text, result in worker_results
+            ]
+        )
         return "Объединила оба результата в один ответ."
 
     monkeypatch.setattr(
@@ -651,7 +763,9 @@ async def test_structured_worker_followups_route_once_per_batch(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_background_delivery_keeps_user_visible_heartbeat_reply_and_records_memory(monkeypatch):
+async def test_background_delivery_keeps_user_visible_heartbeat_reply_and_records_memory(
+    monkeypatch,
+):
     memory_messages = []
 
     class DummyMemory:
@@ -660,6 +774,7 @@ async def test_background_delivery_keeps_user_visible_heartbeat_reply_and_record
 
     async def _route_heartbeat(*args, **kwargs):
         return "<user_visible>Утренний брифинг готов.</user_visible>"
+
     monkeypatch.setattr(octo_core, "route_heartbeat", _route_heartbeat)
 
     octo = Octo(
@@ -692,7 +807,9 @@ async def test_background_delivery_keeps_user_visible_heartbeat_reply_and_record
 
 
 @pytest.mark.asyncio
-async def test_background_delivery_rewrites_unwrapped_heartbeat_result_to_explicit_user_visible(monkeypatch):
+async def test_background_delivery_rewrites_unwrapped_heartbeat_result_to_explicit_user_visible(
+    monkeypatch,
+):
     memory_messages = []
 
     class DummyMemory:
@@ -705,6 +822,7 @@ async def test_background_delivery_rewrites_unwrapped_heartbeat_result_to_explic
 
     async def _route_heartbeat(*args, **kwargs):
         return "Утренний брифинг готов."
+
     monkeypatch.setattr(octo_core, "route_heartbeat", _route_heartbeat)
 
     octo = Octo(
@@ -746,6 +864,7 @@ async def test_background_delivery_suppresses_low_signal_heartbeat_update(monkey
 
     async def _route_heartbeat(*args, **kwargs):
         return "Worker still running. Yielding."
+
     monkeypatch.setattr(octo_core, "route_heartbeat", _route_heartbeat)
 
     octo = Octo(
@@ -785,6 +904,7 @@ async def test_background_delivery_suppresses_unwrapped_internal_heartbeat_text(
             "Ладно, canonical memory не подходит для файлов за пределами canon. "
             "Мне нужно использовать tools для записи в research/."
         )
+
     monkeypatch.setattr(octo_core, "route_heartbeat", _route_heartbeat)
 
     octo = Octo(
@@ -821,6 +941,7 @@ async def test_recent_visible_delivery_suppresses_following_heartbeat_send(monke
 
     async def _route_heartbeat(*args, **kwargs):
         return "<user_visible>Свежий heartbeat-апдейт.</user_visible>"
+
     monkeypatch.setattr(octo_core, "route_heartbeat", _route_heartbeat)
     monkeypatch.setattr(octo_core, "_HEARTBEAT_USER_VISIBLE_COOLDOWN_SECONDS", 300)
 
@@ -1027,7 +1148,9 @@ async def test_batched_worker_followups_wait_for_pending_internal_results(monkey
 
 
 @pytest.mark.asyncio
-async def test_worker_followup_created_during_active_turn_is_dropped_without_followup_marker(monkeypatch):
+async def test_worker_followup_created_during_active_turn_is_dropped_without_followup_marker(
+    monkeypatch,
+):
     monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
     octo_core._WORKER_FOLLOWUP_BATCHES.clear()
 
@@ -1076,7 +1199,9 @@ async def test_worker_followup_created_during_active_turn_is_dropped_without_fol
 
 
 @pytest.mark.asyncio
-async def test_worker_followup_created_during_active_turn_flushes_after_structured_followup_hint(monkeypatch):
+async def test_worker_followup_created_during_active_turn_flushes_after_structured_followup_hint(
+    monkeypatch,
+):
     monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
     octo_core._WORKER_FOLLOWUP_BATCHES.clear()
 
@@ -1128,7 +1253,9 @@ async def test_worker_followup_created_during_active_turn_flushes_after_structur
 
 
 @pytest.mark.asyncio
-async def test_worker_followup_created_during_active_turn_is_dropped_when_work_already_finished(monkeypatch):
+async def test_worker_followup_created_during_active_turn_is_dropped_when_work_already_finished(
+    monkeypatch,
+):
     monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
     octo_core._WORKER_FOLLOWUP_BATCHES.clear()
 
@@ -1178,7 +1305,9 @@ async def test_worker_followup_created_during_active_turn_is_dropped_when_work_a
 
 
 @pytest.mark.asyncio
-async def test_final_user_reply_drops_active_turn_worker_followup_even_with_pending_internal_results(monkeypatch):
+async def test_final_user_reply_drops_active_turn_worker_followup_even_with_pending_internal_results(
+    monkeypatch,
+):
     monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
     octo_core._WORKER_FOLLOWUP_BATCHES.clear()
 
@@ -1232,6 +1361,7 @@ async def test_final_user_reply_drops_active_turn_worker_followup_even_with_pend
 
 def test_octo_does_not_have_web_fetch():
     from octopal.runtime.octo.router import _get_octo_tools
+
     class DummyOcto:
         store = None
 

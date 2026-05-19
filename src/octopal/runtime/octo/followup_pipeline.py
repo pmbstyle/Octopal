@@ -299,6 +299,9 @@ async def _flush_worker_followup_batch(octo: Any, chat_id: int, correlation_id: 
 def _schedule_worker_followup_flush(octo: Any, chat_id: int, correlation_id: str | None) -> None:
     if not correlation_id:
         return
+    if octo.should_suppress_channel_followups(correlation_id):
+        _discard_worker_followup_batch(chat_id, correlation_id)
+        return
     batch_key = (chat_id, correlation_id)
     batch = _WORKER_FOLLOWUP_BATCHES.get(batch_key)
     if batch is None:
@@ -353,6 +356,16 @@ async def _enqueue_batched_worker_followup(
     result: WorkerResult | None = None,
     notify_user: str | None = None,
 ) -> None:
+    if octo.should_suppress_channel_followups(correlation_id):
+        octo.clear_pending_conversational_closure(correlation_id)
+        logger.info(
+            "Internal worker follow-up skipped",
+            chat_id=chat_id,
+            correlation_id=correlation_id,
+            reason=octo.channel_followup_suppression_reason(correlation_id)
+            or "channel_followups_suppressed",
+        )
+        return
     if not correlation_id:
         if text is not None:
             await _send_worker_followup(octo, chat_id, correlation_id, text)
@@ -457,6 +470,15 @@ async def _internal_worker(octo: Any, chat_id: int, queue: asyncio.Queue) -> Non
             # System/internal chat (chat_id <= 0) should never emit user-facing follow-ups.
             elif chat_id <= 0:
                 logger.info("Skipping user follow-up for internal chat", chat_id=chat_id)
+            elif octo.should_suppress_channel_followups(correlation_id):
+                octo.clear_pending_conversational_closure(correlation_id)
+                logger.info(
+                    "Internal worker follow-up skipped",
+                    chat_id=chat_id,
+                    correlation_id=correlation_id,
+                    reason=octo.channel_followup_suppression_reason(correlation_id)
+                    or "channel_followups_suppressed",
+                )
             else:
                 notify_policy = normalize_notify_user_policy(notify_user)
                 if notify_policy == "never" and not _result_has_blocking_failure(result):
@@ -542,6 +564,16 @@ async def _route_instruction_request_to_octo(
             "Skipping user-visible worker instruction follow-up for internal chat",
             chat_id=chat_id,
             worker_id=worker_id,
+        )
+        return
+    if octo.should_suppress_channel_followups(correlation_id):
+        logger.info(
+            "Skipping user-visible worker instruction follow-up for suppressed channel",
+            chat_id=chat_id,
+            worker_id=worker_id,
+            correlation_id=correlation_id,
+            reason=octo.channel_followup_suppression_reason(correlation_id)
+            or "channel_followups_suppressed",
         )
         return
     await _send_worker_followup(octo, chat_id, correlation_id, decision.text, batched_count=1)

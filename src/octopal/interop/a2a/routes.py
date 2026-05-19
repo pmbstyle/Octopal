@@ -74,6 +74,9 @@ def register_a2a_routes(app: FastAPI) -> None:
         )
         correlation_token = correlation_id_var.set(task_id)
         try:
+            suppress_channel_followups = getattr(octo, "suppress_channel_followups", None)
+            if callable(suppress_channel_followups):
+                suppress_channel_followups(task_id, reason="a2a_peer_message")
             reply = await octo.handle_message(
                 octo_text,
                 _peer_chat_id(peer.peer_id, context_id),

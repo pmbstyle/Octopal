@@ -18,6 +18,7 @@ class _DummyOcto:
     def __init__(self, immediate: str = "hello peer") -> None:
         self.immediate = immediate
         self.calls: list[dict[str, object]] = []
+        self.suppressed_channel_followups: list[dict[str, object]] = []
 
     async def handle_message(self, text: str, chat_id: int, **kwargs):
         self.calls.append(
@@ -29,6 +30,11 @@ class _DummyOcto:
             }
         )
         return SimpleNamespace(immediate=self.immediate)
+
+    def suppress_channel_followups(self, correlation_id: str, *, reason: str | None = None):
+        self.suppressed_channel_followups.append(
+            {"correlation_id": correlation_id, "reason": reason}
+        )
 
 
 def _app(config: A2AConfig, octo: object | None = None) -> FastAPI:
@@ -253,6 +259,9 @@ def test_message_send_routes_authenticated_peer_message_to_octo() -> None:
     assert call["correlation_id"] == payload["task"]["id"]
     assert call["kwargs"]["is_ws"] is True
     assert call["kwargs"]["include_wakeup"] is False
+    assert octo.suppressed_channel_followups == [
+        {"correlation_id": payload["task"]["id"], "reason": "a2a_peer_message"}
+    ]
 
 
 def test_message_send_scopes_peer_chat_by_a2a_context() -> None:

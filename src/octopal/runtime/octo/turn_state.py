@@ -146,6 +146,21 @@ class OctoTurnStateMixin:
             self._suppressed_followups_by_correlation = suppressed
         suppressed[correlation_id] = utc_now()
 
+    def suppress_channel_followups(
+        self,
+        correlation_id: str | None,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        if not correlation_id:
+            return
+        self._prune_channel_followup_suppressions()
+        suppressed = self._channel_followups_suppressed_by_correlation
+        if suppressed is None:
+            suppressed = {}
+            self._channel_followups_suppressed_by_correlation = suppressed
+        suppressed[correlation_id] = {"created_at": utc_now(), "reason": str(reason or "")}
+
     def mark_user_turn_active(self, correlation_id: str | None) -> None:
         if not correlation_id:
             return
@@ -179,6 +194,27 @@ class OctoTurnStateMixin:
         if suppressed is None:
             return False
         return correlation_id in suppressed
+
+    def should_suppress_channel_followups(self, correlation_id: str | None) -> bool:
+        if not correlation_id:
+            return False
+        self._prune_channel_followup_suppressions()
+        suppressed = self._channel_followups_suppressed_by_correlation
+        if suppressed is None:
+            return False
+        return correlation_id in suppressed
+
+    def channel_followup_suppression_reason(self, correlation_id: str | None) -> str:
+        if not correlation_id:
+            return ""
+        self._prune_channel_followup_suppressions()
+        suppressed = self._channel_followups_suppressed_by_correlation
+        if not suppressed:
+            return ""
+        value = suppressed.get(correlation_id)
+        if isinstance(value, dict):
+            return str(value.get("reason") or "")
+        return ""
 
     def clear_suppressed_turn_followups(self, correlation_id: str | None) -> None:
         if not correlation_id:
@@ -261,6 +297,19 @@ class OctoTurnStateMixin:
             for correlation_id, created_at in suppressed.items()
             if not created_at or created_at < cutoff
         ]
+        for correlation_id in expired:
+            suppressed.pop(correlation_id, None)
+
+    def _prune_channel_followup_suppressions(self) -> None:
+        suppressed = self._channel_followups_suppressed_by_correlation
+        if not suppressed:
+            return
+        cutoff = utc_now() - timedelta(seconds=_pending_conversational_closure_ttl_seconds())
+        expired = []
+        for correlation_id, value in suppressed.items():
+            created_at = value.get("created_at") if isinstance(value, dict) else value
+            if not created_at or created_at < cutoff:
+                expired.append(correlation_id)
         for correlation_id in expired:
             suppressed.pop(correlation_id, None)
 
