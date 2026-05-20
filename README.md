@@ -118,6 +118,17 @@ octopal configure
 octopal start
 ```
 
+## Model Providers
+
+Octopal lets you choose one model provider for Octo and, when useful, a different provider for workers. That makes it easy to keep the coordinator on the model you trust most while sending cheaper, faster, or more specialized tasks to worker agents.
+
+Supported provider catalog:
+
+- **Frontier APIs:** OpenAI, Anthropic, Google Gemini, Mistral AI.
+- **Model routers and hosted inference:** OpenRouter, Together AI, Groq.
+- **Subscription and plan-based routes:** ChatGPT Codex, Z.ai, Minimax.
+- **Local and custom routes:** Ollama, Custom OpenAI-compatible.
+
 ## What You Can Use It For
 
 | Use case | What Octopal does |
@@ -125,6 +136,7 @@ octopal start
 | Personal operator | Runs from Telegram, WhatsApp, or a private WebSocket/dashboard client. |
 | Research | Delegates browsing, fetching, synthesis, and source-heavy work to workers. |
 | Coding and repo work | Uses code workers, test runners, repo researchers, release managers, and bug investigators. |
+| Agent-to-agent teamwork | Connects trusted peer agents over A2A so autonomous systems can ask, answer, and split work together. |
 | Recurring routines | Schedules background reports, checks, reminders, and operational tasks. |
 | Memory-heavy work | Keeps conversation history, canon, user preferences, identity files, and durable project context. |
 | Tool orchestration | Uses MCP servers, skills, shell, filesystem, web, browser/search, and connectors under policy controls. |
@@ -155,6 +167,21 @@ Octo:
 3. Sends the report back through your chosen channel.
 4. Keeps the routine visible in the dashboard.
 ```
+
+## Agent-To-Agent Collaboration
+
+Octopal can expose an invite-only A2A surface so trusted agents can talk to Octo as peers instead of forcing every automation through a human chat window.
+
+That turns separate agents into a working team:
+
+- Several Octopal instances can cooperate as a private agent network.
+- Other agents and coding runtimes, such as Codex, Claude Code, Gemini, and similar tools, can connect as trusted peers.
+- One agent can ask Octopal to use its memory, workers, tools, or local context.
+- Octopal can receive peer messages, route them through local policy, and answer from the same coordinator/worker runtime it uses for you.
+- Specialized agents can hand off work to each other instead of duplicating every connector, skill, and long-running routine.
+- Multi-agent workflows can stay autonomous while still keeping clear trust boundaries around which peers are allowed to call in.
+
+The current A2A integration is intentionally private by default. Peers are configured explicitly, authenticate with bearer tokens, discover Octopal through its agent card, and send text tasks over the A2A HTTP+JSON interface.
 
 ## How It Compares
 
