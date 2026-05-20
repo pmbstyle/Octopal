@@ -292,6 +292,17 @@ def _build_worker_skill_usage_prompt(tools: list[Any]) -> str:
     return "\n".join(lines)
 
 
+def _build_worker_task_prompt(task: str, inputs: Any) -> str:
+    task_prompt = f"Task: {task}"
+    if not inputs:
+        return task_prompt
+    try:
+        inputs_json = json.dumps(inputs, ensure_ascii=False, separators=(",", ":"), default=str)
+    except Exception:
+        inputs_json = str(inputs)
+    return f"{task_prompt}\n\nInputs JSON: {inputs_json}"
+
+
 def _tool_schema_chars(tools: list[Any]) -> int:
     try:
         payload = [
@@ -971,7 +982,7 @@ Important:
 - Messages like "Successfully sent DM...", "Failed to send DM...", token/JWT errors, retries, truncation counts, and orchestration status are internal runtime details.
 """
 
-    task_prompt = f"Task: {spec.task}\n\nInputs: {json.dumps(spec.inputs, indent=2)}"
+    task_prompt = _build_worker_task_prompt(spec.task, spec.inputs)
     messages = [
         {"role": "system", "content": system_prompt},
         {

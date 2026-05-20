@@ -3,6 +3,7 @@ from __future__ import annotations
 from octopal.runtime.workers.agent_worker import (
     _build_worker_file_write_prompt,
     _build_worker_skill_usage_prompt,
+    _build_worker_task_prompt,
     _build_worker_tool_inventory_prompt,
     _force_tool_choice,
     _fs_write_completion_missing,
@@ -93,6 +94,19 @@ def test_worker_skill_usage_prompt_requires_skill_tools() -> None:
     prompt = _build_worker_skill_usage_prompt([read_tool, use_skill_tool])
     assert "Skill usage:" in prompt
     assert "use_skill" in prompt
+
+
+def test_worker_task_prompt_omits_empty_inputs_and_keeps_unicode_compact() -> None:
+    assert _build_worker_task_prompt("Summarize the news", {}) == "Task: Summarize the news"
+
+    prompt = _build_worker_task_prompt(
+        "Answer",
+        {"query": "Привет", "limit": 3},
+    )
+
+    assert prompt == 'Task: Answer\n\nInputs JSON: {"query":"Привет","limit":3}'
+    assert "\\u041f" not in prompt
+    assert "\n  " not in prompt
 
 
 def test_worker_context_telemetry_records_prompt_and_tool_result_growth() -> None:
