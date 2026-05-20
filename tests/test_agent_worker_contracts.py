@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from octopal.runtime.workers.agent_worker import (
+    _build_worker_tool_inventory_prompt,
     _force_tool_choice,
     _fs_write_completion_missing,
+    _record_worker_llm_context_snapshot,
+    _record_worker_tool_result_context,
     _task_requires_workspace_write,
 )
+from octopal.tools.registry import ToolSpec
 
 
 def test_workspace_write_task_detection_requires_write_intent_and_file_hint() -> None:
@@ -27,3 +31,63 @@ def test_force_tool_choice_uses_openai_function_shape() -> None:
         "type": "function",
         "function": {"name": "fs_write"},
     }
+
+
+def test_worker_tool_inventory_omits_duplicate_descriptions_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("OCTOPAL_WORKER_PROMPT_TOOL_DESCRIPTIONS", raising=False)
+    tool = ToolSpec(
+        name="web_search",
+        description="Search the web with a deliberately long duplicate schema description.",
+        parameters={"type": "object"},
+        permission="network",
+        handler=lambda args, ctx: {"ok": True},
+    )
+
+    inventory = _build_worker_tool_inventory_prompt([tool])
+
+    assert inventory == "- web_search"
+    assert "duplicate schema description" not in inventory
+
+
+def test_worker_context_telemetry_records_prompt_and_tool_result_growth() -> None:
+    tool = ToolSpec(
+        name="web_fetch",
+        description="Fetch web content.",
+        parameters={"type": "object", "properties": {"url": {"type": "string"}}},
+        permission="network",
+        handler=lambda args, ctx: {"ok": True},
+    )
+    telemetry = {
+        "context": {
+            "tool_schema_chars": 0,
+            "llm_input_chars_total": 0,
+            "llm_input_chars_peak": 0,
+            "message_count_peak": 0,
+            "tool_result_raw_chars_total": 0,
+            "tool_result_rendered_chars_total": 0,
+            "tool_result_rendered_chars_by_tool": {},
+            "tool_result_truncated_chars_total": 0,
+            "llm_calls": [],
+        }
+    }
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "task"},
+    ]
+
+    _record_worker_llm_context_snapshot(telemetry, messages=messages, tools=[tool], step=0)
+    _record_worker_tool_result_context(
+        telemetry,
+        tool_name="web_fetch",
+        raw_result={"content": "x" * 100},
+        rendered_text="x" * 20,
+        was_compacted=True,
+    )
+
+    context = telemetry["context"]
+    assert context["llm_input_chars_total"] > 0
+    assert context["llm_input_chars_peak"] == context["llm_calls"][0]["input_chars"]
+    assert context["message_count_peak"] == 2
+    assert context["tool_result_raw_chars_total"] > context["tool_result_rendered_chars_total"]
+    assert context["tool_result_rendered_chars_by_tool"]["web_fetch"] == 20
+    assert context["tool_result_truncated_chars_total"] > 0
