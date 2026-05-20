@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from octopal.runtime.workers.agent_worker import (
+    _build_worker_file_write_prompt,
+    _build_worker_skill_usage_prompt,
     _build_worker_tool_inventory_prompt,
     _force_tool_choice,
     _fs_write_completion_missing,
@@ -47,6 +49,50 @@ def test_worker_tool_inventory_omits_duplicate_descriptions_by_default(monkeypat
 
     assert inventory == "- web_search"
     assert "duplicate schema description" not in inventory
+
+
+def test_worker_file_write_prompt_requires_fs_write_tool() -> None:
+    read_tool = ToolSpec(
+        name="fs_read",
+        description="Read a file.",
+        parameters={"type": "object"},
+        permission="read",
+        handler=lambda args, ctx: {"ok": True},
+    )
+    write_tool = ToolSpec(
+        name="fs_write",
+        description="Write a file.",
+        parameters={"type": "object"},
+        permission="write",
+        handler=lambda args, ctx: {"ok": True},
+    )
+
+    assert _build_worker_file_write_prompt([read_tool]) == ""
+    prompt = _build_worker_file_write_prompt([read_tool, write_tool])
+    assert "fs_write" in prompt
+    assert "returns successfully" in prompt
+
+
+def test_worker_skill_usage_prompt_requires_skill_tools() -> None:
+    read_tool = ToolSpec(
+        name="fs_read",
+        description="Read a file.",
+        parameters={"type": "object"},
+        permission="read",
+        handler=lambda args, ctx: {"ok": True},
+    )
+    use_skill_tool = ToolSpec(
+        name="use_skill",
+        description="Read a skill.",
+        parameters={"type": "object"},
+        permission="read",
+        handler=lambda args, ctx: {"ok": True},
+    )
+
+    assert _build_worker_skill_usage_prompt([read_tool]) == ""
+    prompt = _build_worker_skill_usage_prompt([read_tool, use_skill_tool])
+    assert "Skill usage:" in prompt
+    assert "use_skill" in prompt
 
 
 def test_worker_context_telemetry_records_prompt_and_tool_result_growth() -> None:

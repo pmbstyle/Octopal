@@ -133,6 +133,11 @@ _CHILD_SPAWN_TOOLS = {
     "start_child_worker",
     "start_workers_parallel",
 }
+_SKILL_TOOL_NAMES = {
+    "list_skills",
+    "run_skill_script",
+    "use_skill",
+}
 _WRITE_TASK_TOKENS = {
     "append",
     "create",
@@ -244,6 +249,47 @@ def _build_worker_tool_inventory_prompt(tools: list[Any]) -> str:
     if _parse_bool_env("OCTOPAL_WORKER_PROMPT_TOOL_DESCRIPTIONS", False):
         return "\n".join(f"- {tool.name}: {tool.description}" for tool in tools)
     return "\n".join(f"- {tool.name}" for tool in tools)
+
+
+def _tool_names(tools: list[Any]) -> set[str]:
+    return {str(getattr(tool, "name", "")).strip() for tool in tools if getattr(tool, "name", "")}
+
+
+def _build_worker_file_write_prompt(tools: list[Any]) -> str:
+    if "fs_write" not in _tool_names(tools):
+        return ""
+    return (
+        "If the task asks you to create, write, save, update, or edit a workspace file, "
+        "you must call fs_write before returning a result. Do not claim a file was written "
+        "until the fs_write tool returns successfully."
+    )
+
+
+def _build_worker_skill_usage_prompt(tools: list[Any]) -> str:
+    names = _tool_names(tools)
+    dynamic_skill_tools = sorted(name for name in names if name.startswith("skill_"))
+    if not (names & _SKILL_TOOL_NAMES or dynamic_skill_tools):
+        return ""
+
+    lines = ["Skill usage:", "- Octopal skills are internal tools, not MCP servers."]
+    if "list_skills" in names:
+        lines.append("- Use list_skills to discover available skills and their readiness/runtime status.")
+    if "use_skill" in names:
+        lines.append("- Use use_skill to read a skill's guidance from SKILL.md.")
+    if dynamic_skill_tools:
+        if "use_skill" in names:
+            lines.append(
+                "- Dynamic skill_<id> tools may exist for compatibility, but workers should prefer use_skill."
+            )
+        else:
+            lines.append("- Use available dynamic skill_<id> tools for their matching skill workflows.")
+    if "run_skill_script" in names:
+        lines.append("- If a skill includes bundled scripts, use run_skill_script to execute them.")
+        if "exec_run" in names:
+            lines.append(
+                "- Do not use exec_run for scripts that belong to a skill bundle unless run_skill_script is unavailable."
+            )
+    return "\n".join(lines)
 
 
 def _tool_schema_chars(tools: list[Any]) -> int:
@@ -882,6 +928,16 @@ async def execute_agent_task(
     coordination_prompt = _build_worker_coordination_prompt(
         has_child_spawn_tools=has_child_spawn_tools
     )
+    guidance_prompt = "\n\n".join(
+        part
+        for part in (
+            "Use available tools through normal tool calls. Do not emit ad-hoc JSON tool_use blocks.",
+            _build_worker_file_write_prompt(filtered_tools),
+            coordination_prompt,
+            _build_worker_skill_usage_prompt(filtered_tools),
+        )
+        if part
+    )
 
     temporal_context_prompt = format_temporal_context_prompt()
 
@@ -892,18 +948,7 @@ async def execute_agent_task(
 Available tools:
 {tool_inventory}
 
-Use available tools through normal tool calls. Do not emit ad-hoc JSON tool_use blocks.
-If the task asks you to create, write, save, update, or edit a workspace file and fs_write is available, you must call fs_write before returning a result. Do not claim a file was written until the fs_write tool returns successfully.
-
-{coordination_prompt}
-
-Skill usage:
-- Octopal skills are internal tools, not MCP servers.
-- Use list_skills to discover available skills and their readiness/runtime status.
-- Use use_skill to read a skill's guidance from SKILL.md.
-- Dynamic skill_<id> tools may exist for compatibility, but workers should prefer use_skill.
-- If a skill includes bundled scripts, use run_skill_script to execute them.
-- Do not use exec_run for scripts that belong to a skill bundle unless run_skill_script is unavailable.
+{guidance_prompt}
 
 When you have completed the task, respond with:
 {{
