@@ -6,12 +6,21 @@ from datetime import UTC, datetime
 
 from octopal.infrastructure.store.models import WorkerRecord, WorkerTemplateRecord
 from octopal.tools.workers.management import (
+    _tool_list_workers,
     _tool_start_workers_parallel,
     _tool_synthesize_worker_results,
 )
 
 
-def _template(worker_id: str, description: str, tools: list[str], perms: list[str]) -> WorkerTemplateRecord:
+def _template(
+    worker_id: str,
+    description: str,
+    tools: list[str],
+    perms: list[str],
+    *,
+    can_spawn_children: bool = False,
+    allowed_child_templates: list[str] | None = None,
+) -> WorkerTemplateRecord:
     now = datetime.now(UTC)
     return WorkerTemplateRecord(
         id=worker_id,
@@ -23,9 +32,52 @@ def _template(worker_id: str, description: str, tools: list[str], perms: list[st
         model=None,
         max_thinking_steps=8,
         default_timeout_seconds=120,
+        can_spawn_children=can_spawn_children,
+        allowed_child_templates=allowed_child_templates or [],
         created_at=now,
         updated_at=now,
     )
+
+
+def test_list_workers_returns_compact_capability_payload() -> None:
+    templates = [
+        _template("web_researcher", "research web topics", ["web_search"], ["network"]),
+        _template(
+            "research_coordinator",
+            "split research across child workers",
+            ["list_workers", "start_workers_parallel"],
+            ["worker_manage"],
+            can_spawn_children=True,
+            allowed_child_templates=["web_researcher", "repo_researcher"],
+        ),
+    ]
+
+    class _Store:
+        def list_worker_templates(self):
+            return templates
+
+    class _Octo:
+        store = _Store()
+
+    payload = _tool_list_workers({}, {"octo": _Octo()})
+    result = json.loads(payload)
+
+    assert result["count"] == 2
+    assert "available_tools" not in payload
+    assert "allowed_child_templates" not in payload
+    leaf, parent = result["workers"]
+    assert leaf == {
+        "worker_id": "web_researcher",
+        "name": "Web_Researcher",
+        "description": "research web topics",
+        "tools": ["web_search"],
+        "permissions": ["network"],
+        "timeout_seconds": 120,
+    }
+    assert parent["tools"] == ["list_workers", "start_workers_parallel"]
+    assert parent["permissions"] == ["worker_manage"]
+    assert parent["can_spawn_children"] is True
+    assert parent["children"] == ["web_researcher", "repo_researcher"]
 
 
 def test_start_workers_parallel_launches_multiple() -> None:

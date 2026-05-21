@@ -98,16 +98,17 @@ def render_tool_result_for_llm(
         budget=budget,
         raw_text_field_names=_raw_text_field_names_for_tool(tool_name),
     )
+    parsed_json_text = isinstance(result, str) and not isinstance(compacted, str)
     if isinstance(compacted, str):
         rendered = compacted.strip()
     else:
-        rendered = json.dumps(compacted, ensure_ascii=False, default=str)
+        rendered = json.dumps(compacted, ensure_ascii=False, default=str, separators=(",", ":"))
 
     final_text = rendered.strip()
     if not final_text:
         return RenderedToolResult(text="", was_compacted=was_compacted)
 
-    summary_prefix = _build_summary_prefix(result, was_compacted=was_compacted)
+    summary_prefix = "" if parsed_json_text else _build_summary_prefix(result, was_compacted=was_compacted)
     if summary_prefix:
         final_text = f"{summary_prefix}\n{final_text}"
 
@@ -184,7 +185,7 @@ def _build_summary_prefix(value: Any, *, was_compacted: bool) -> str:
     summary_parts: list[str] = []
 
     if isinstance(value, dict):
-        keys = [str(key) for key in value.keys()]
+        keys = [str(key) for key in value]
         preview_keys = ", ".join(keys[:10]) if keys else "(none)"
         summary_parts.append(
             f"[tool_result_summary type=dict keys={len(keys)} top_keys={preview_keys}]"

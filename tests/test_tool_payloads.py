@@ -18,7 +18,7 @@ def test_render_tool_result_compacts_large_nested_payload() -> None:
     assert rendered.was_compacted is True
     assert len(rendered.text) <= 32000
     assert "[tool_result_summary type=dict" in rendered.text
-    assert '"status": "ok"' in rendered.text
+    assert '"status":"ok"' in rendered.text
     assert "__octopal_compaction__" in rendered.text
     assert "truncated" in rendered.text
 
@@ -39,7 +39,7 @@ def test_render_tool_result_parses_small_json_string_without_counting_as_compact
     rendered = render_tool_result_for_llm(raw, tool_name="exec_run")
 
     assert rendered.was_compacted is False
-    assert '"returncode": 0' in rendered.text
+    assert '"returncode":0' in rendered.text
     assert "__octopal_compaction__" not in rendered.text
 
 
@@ -74,7 +74,7 @@ def test_render_tool_result_preserves_raw_drive_file_content_field() -> None:
     rendered = render_tool_result_for_llm(payload, tool_name="drive_read_text_file")
 
     assert rendered.was_compacted is False
-    assert '"content": "{\\"featureFlags\\":{\\"raw\\":true}}"' in rendered.text
+    assert '"content":"{\\"featureFlags\\":{\\"raw\\":true}}"' in rendered.text
     assert "__octopal_compaction__" not in rendered.text
 
 

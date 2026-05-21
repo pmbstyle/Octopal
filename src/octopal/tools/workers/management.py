@@ -609,21 +609,26 @@ def _tool_list_workers(args: dict[str, object], ctx: dict[str, object]) -> str:
     templates = octo.store.list_worker_templates()
     template_list = []
     for t in templates:
-        template_list.append({
+        worker_info: dict[str, object] = {
             "worker_id": t.id,
             "name": t.name,
             "description": t.description,
-            "available_tools": t.available_tools,
-            "required_permissions": t.required_permissions,
-            "default_timeout_seconds": t.default_timeout_seconds,
-            "can_spawn_children": bool(getattr(t, "can_spawn_children", False)),
-            "allowed_child_templates": list(getattr(t, "allowed_child_templates", [])),
-        })
+            "tools": t.available_tools,
+            "permissions": t.required_permissions,
+            "timeout_seconds": t.default_timeout_seconds,
+        }
+        can_spawn_children = bool(getattr(t, "can_spawn_children", False))
+        allowed_child_templates = list(getattr(t, "allowed_child_templates", []))
+        if can_spawn_children:
+            worker_info["can_spawn_children"] = True
+        if allowed_child_templates:
+            worker_info["children"] = allowed_child_templates
+        template_list.append(worker_info)
 
     return json.dumps({
         "count": len(template_list),
         "workers": template_list,
-    }, ensure_ascii=False)
+    }, ensure_ascii=False, separators=(",", ":"))
 
 
 def _tool_create_worker_template(args: dict[str, object], ctx: dict[str, object]) -> str:
