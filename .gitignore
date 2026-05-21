@@ -1,5 +1,6 @@
 .env
 /data
+/data-test
 /src/octopal/__pycache__
 /src/octopal/config/__pycache__
 /src/octopal/intents/__pycache__
@@ -10,6 +11,7 @@
 /src/octopal/telegram/__pycache__
 /src/octopal/workers/__pycache__
 /workspace
+/workspace-test
 /src/octopal/tools/__pycache__
 /src/octopal/gateway/__pycache__
 /src/octopal/cli/__pycache__
@@ -52,6 +54,7 @@ HEARTBEAT.md
 /src/octopal/infrastructure/providers/__pycache__
 /src/octopal/infrastructure/store/__pycache__
 config.json
+config.test.json
 /src/octopal/cli/wizard/__pycache__
 /src/octopal/infrastructure/connectors/__pycache__
 /src/octopal/tools/connectors/__pycache__
