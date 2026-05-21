@@ -303,6 +303,16 @@ def _build_worker_task_prompt(task: str, inputs: Any) -> str:
     return f"{task_prompt}\n\nInputs JSON: {inputs_json}"
 
 
+def _build_worker_completion_protocol_prompt() -> str:
+    return (
+        "Completion protocol:\n"
+        "- When done, return JSON with type=\"result\", summary, and optional output/questions.\n"
+        "- Use questions only when blocked after request_instruction times out or the task must stop.\n"
+        "- summary is internal; do not treat it as user-facing copy.\n"
+        "- Never present transport/debug/auth details, retries, truncation counts, or orchestration status as user-facing content."
+    )
+
+
 def _tool_schema_chars(tools: list[Any]) -> int:
     try:
         payload = [
@@ -961,25 +971,7 @@ Available tools:
 
 {guidance_prompt}
 
-When you have completed the task, respond with:
-{{
-  "type": "result",
-  "summary": "Internal summary for the Octo/runtime",
-  "output": {{...}}
-}}
-
-If you still cannot continue after request_instruction times out or the task truly must stop,
-return a partial result with questions:
-{{
-  "type": "result",
-  "summary": "...",
-  "questions": ["question1", "question2"]
-}}
-
-Important:
-- `summary` is internal. Do not assume it will ever be shown to the user verbatim.
-- Never return transport/debug/auth details as if they were user-facing content.
-- Messages like "Successfully sent DM...", "Failed to send DM...", token/JWT errors, retries, truncation counts, and orchestration status are internal runtime details.
+{_build_worker_completion_protocol_prompt()}
 """
 
     task_prompt = _build_worker_task_prompt(spec.task, spec.inputs)
@@ -1730,30 +1722,28 @@ def _make_request_instruction_tool(worker: Worker) -> Any:
     return ToolSpec(
         name="request_instruction",
         description=(
-            "Pause this worker and ask Octo or the parent worker for blocking guidance. "
-            "Use this when the task cannot safely continue without a decision, missing input, "
-            "or a scoped instruction. The runtime resumes the worker with the answer or a timeout."
+            "Pause and ask Octo or the parent for blocking guidance when the task cannot safely continue."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "question": {
                     "type": "string",
-                    "description": "The concrete question or decision needed before continuing.",
+                    "description": "Concrete question needed before continuing.",
                 },
                 "context": {
                     "type": "object",
-                    "description": "Compact structured context the supervisor needs to answer.",
+                    "description": "Compact structured context.",
                     "additionalProperties": True,
                 },
                 "target": {
                     "type": "string",
                     "enum": ["octo", "parent"],
-                    "description": "Who should answer. Use parent when this is a child-worker coordination issue.",
+                    "description": "Use parent for child-worker coordination.",
                 },
                 "timeout_seconds": {
                     "type": "number",
-                    "description": "How long to wait before resuming with timed_out status. Default 120.",
+                    "description": "Seconds to wait; default 120.",
                 },
             },
             "required": ["question"],
