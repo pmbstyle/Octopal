@@ -544,7 +544,9 @@ class LiteLLMProvider:
         requested_response_format = request_kwargs.get("response_format")
         route_key = self._tool_response_format_key()
         preferred_mode = self._tool_response_format_modes.get(route_key)
-        preferred_tool_choice = self._tool_choice_modes.get(route_key, tool_choice)
+        preferred_tool_choice = tool_choice
+        if tool_choice == "auto":
+            preferred_tool_choice = self._tool_choice_modes.get(route_key, tool_choice)
         candidates = _response_format_fallback_modes(
             requested_response_format, preferred_mode=preferred_mode
         )

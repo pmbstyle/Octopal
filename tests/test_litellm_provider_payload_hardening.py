@@ -407,11 +407,49 @@ def test_complete_with_tools_reuses_auto_tool_choice_mode(monkeypatch) -> None:
         provider.complete_with_tools(
             [{"role": "user", "content": "write the file"}],
             tools=[{"type": "function", "function": {"name": "fs_write"}}],
-            tool_choice="required",
+            tool_choice="auto",
         )
     )
 
     assert [call["tool_choice"] for call in calls] == ["auto"]
+
+
+def test_complete_with_tools_does_not_override_explicit_tool_choice_with_cached_auto(
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def _fake_acompletion(**kwargs):
+        calls.append(dict(kwargs))
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "tool_calls": [],
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion",
+        _fake_acompletion,
+    )
+    LiteLLMProvider._tool_choice_modes.clear()
+    provider = LiteLLMProvider(_settings())
+    LiteLLMProvider._tool_choice_modes[provider._tool_response_format_key()] = "auto"
+    forced_tool_choice = {"type": "function", "function": {"name": "fs_write"}}
+
+    asyncio.run(
+        provider.complete_with_tools(
+            [{"role": "user", "content": "write the file"}],
+            tools=[{"type": "function", "function": {"name": "fs_write"}}],
+            tool_choice=forced_tool_choice,
+        )
+    )
+
+    assert [call["tool_choice"] for call in calls] == [forced_tool_choice]
 
 
 def test_sanitize_schema_for_minimax_collapses_type_array_to_single_type() -> None:
