@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from octopal.runtime.workers.agent_worker import (
+    _build_worker_completion_protocol_prompt,
     _build_worker_file_write_prompt,
     _build_worker_skill_usage_prompt,
     _build_worker_task_prompt,
     _build_worker_tool_inventory_prompt,
     _force_tool_choice,
     _fs_write_completion_missing,
+    _make_request_instruction_tool,
     _record_worker_llm_context_snapshot,
     _record_worker_tool_result_context,
     _task_requires_workspace_write,
+    _tool_schema_chars,
 )
 from octopal.tools.registry import ToolSpec
 
@@ -107,6 +110,30 @@ def test_worker_task_prompt_omits_empty_inputs_and_keeps_unicode_compact() -> No
     assert prompt == 'Task: Answer\n\nInputs JSON: {"query":"Привет","limit":3}'
     assert "\\u041f" not in prompt
     assert "\n  " not in prompt
+
+
+def test_worker_completion_protocol_keeps_required_contract_concise() -> None:
+    prompt = _build_worker_completion_protocol_prompt()
+
+    assert len(prompt) < 420
+    assert 'type="result"' in prompt
+    assert "summary" in prompt
+    assert "output/questions" in prompt
+    assert "request_instruction" in prompt
+    assert "transport/debug/auth" in prompt
+
+
+def test_request_instruction_tool_schema_stays_compact() -> None:
+    class _Worker:
+        async def request_instruction(self, **_kwargs):
+            return {}
+
+    tool = _make_request_instruction_tool(_Worker())
+
+    assert _tool_schema_chars([tool]) < 760
+    assert "blocking guidance" in tool.description
+    assert "question" in tool.parameters["required"]
+    assert tool.parameters["properties"]["target"]["enum"] == ["octo", "parent"]
 
 
 def test_worker_context_telemetry_records_prompt_and_tool_result_growth() -> None:
