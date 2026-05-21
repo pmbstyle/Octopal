@@ -133,6 +133,11 @@ _CHILD_SPAWN_TOOLS = {
     "start_child_worker",
     "start_workers_parallel",
 }
+_SKILL_TOOL_NAMES = {
+    "list_skills",
+    "run_skill_script",
+    "use_skill",
+}
 _WRITE_TASK_TOKENS = {
     "append",
     "create",
@@ -201,6 +206,18 @@ def _parse_nonnegative_int_env(name: str, default: int) -> int:
     return value if value >= 0 else default
 
 
+def _parse_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = str(raw).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _tokenize_task(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9_]+", (text or "").lower()))
 
@@ -224,6 +241,158 @@ def _fs_write_completion_missing(task: str, available_tools: list[str], tools_us
 
 def _force_tool_choice(tool_name: str) -> dict[str, dict[str, str] | str]:
     return {"type": "function", "function": {"name": tool_name}}
+
+
+def _build_worker_tool_inventory_prompt(tools: list[Any]) -> str:
+    if not tools:
+        return "- (none)"
+    if _parse_bool_env("OCTOPAL_WORKER_PROMPT_TOOL_DESCRIPTIONS", False):
+        return "\n".join(f"- {tool.name}: {tool.description}" for tool in tools)
+    return "\n".join(f"- {tool.name}" for tool in tools)
+
+
+def _tool_names(tools: list[Any]) -> set[str]:
+    return {str(getattr(tool, "name", "")).strip() for tool in tools if getattr(tool, "name", "")}
+
+
+def _build_worker_file_write_prompt(tools: list[Any]) -> str:
+    if "fs_write" not in _tool_names(tools):
+        return ""
+    return (
+        "If the task asks you to create, write, save, update, or edit a workspace file, "
+        "you must call fs_write before returning a result. Do not claim a file was written "
+        "until the fs_write tool returns successfully."
+    )
+
+
+def _build_worker_skill_usage_prompt(tools: list[Any]) -> str:
+    names = _tool_names(tools)
+    dynamic_skill_tools = sorted(name for name in names if name.startswith("skill_"))
+    if not (names & _SKILL_TOOL_NAMES or dynamic_skill_tools):
+        return ""
+
+    lines = ["Skill usage:", "- Octopal skills are internal tools, not MCP servers."]
+    if "list_skills" in names:
+        lines.append("- Use list_skills to discover available skills and their readiness/runtime status.")
+    if "use_skill" in names:
+        lines.append("- Use use_skill to read a skill's guidance from SKILL.md.")
+    if dynamic_skill_tools:
+        if "use_skill" in names:
+            lines.append(
+                "- Dynamic skill_<id> tools may exist for compatibility, but workers should prefer use_skill."
+            )
+        else:
+            lines.append("- Use available dynamic skill_<id> tools for their matching skill workflows.")
+    if "run_skill_script" in names:
+        lines.append("- If a skill includes bundled scripts, use run_skill_script to execute them.")
+        if "exec_run" in names:
+            lines.append(
+                "- Do not use exec_run for scripts that belong to a skill bundle unless run_skill_script is unavailable."
+            )
+    return "\n".join(lines)
+
+
+def _build_worker_task_prompt(task: str, inputs: Any) -> str:
+    task_prompt = f"Task: {task}"
+    if not inputs:
+        return task_prompt
+    try:
+        inputs_json = json.dumps(inputs, ensure_ascii=False, separators=(",", ":"), default=str)
+    except Exception:
+        inputs_json = str(inputs)
+    return f"{task_prompt}\n\nInputs JSON: {inputs_json}"
+
+
+def _tool_schema_chars(tools: list[Any]) -> int:
+    try:
+        payload = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                },
+            }
+            for tool in tools
+        ]
+        return len(json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception:
+        return 0
+
+
+def _message_chars(messages: list[dict[str, Any]]) -> int:
+    try:
+        return sum(len(json.dumps(message, ensure_ascii=False, default=str)) for message in messages)
+    except Exception:
+        return sum(len(str(message)) for message in messages)
+
+
+def _value_chars(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False, default=str))
+    except Exception:
+        return len(str(value))
+
+
+def _record_worker_llm_context_snapshot(
+    telemetry: dict[str, Any],
+    *,
+    messages: list[dict[str, Any]],
+    tools: list[Any],
+    step: int,
+) -> None:
+    context = telemetry.get("context")
+    if not isinstance(context, dict):
+        return
+    message_chars = _message_chars(messages)
+    tool_schema_chars = int(context.get("tool_schema_chars") or _tool_schema_chars(tools))
+    input_chars = message_chars + tool_schema_chars
+    context["llm_input_chars_total"] = int(context.get("llm_input_chars_total") or 0) + input_chars
+    context["llm_input_chars_peak"] = max(int(context.get("llm_input_chars_peak") or 0), input_chars)
+    context["message_count_peak"] = max(int(context.get("message_count_peak") or 0), len(messages))
+
+    calls = context.get("llm_calls")
+    if isinstance(calls, list) and len(calls) < 64:
+        calls.append(
+            {
+                "step": step,
+                "message_count": len(messages),
+                "message_chars": message_chars,
+                "tool_schema_chars": tool_schema_chars,
+                "input_chars": input_chars,
+            }
+        )
+
+
+def _record_worker_tool_result_context(
+    telemetry: dict[str, Any],
+    *,
+    tool_name: str,
+    raw_result: Any,
+    rendered_text: str,
+    was_compacted: bool,
+) -> None:
+    context = telemetry.get("context")
+    if not isinstance(context, dict):
+        return
+    raw_chars = _value_chars(raw_result)
+    rendered_chars = len(rendered_text or "")
+    context["tool_result_raw_chars_total"] = (
+        int(context.get("tool_result_raw_chars_total") or 0) + raw_chars
+    )
+    context["tool_result_rendered_chars_total"] = (
+        int(context.get("tool_result_rendered_chars_total") or 0) + rendered_chars
+    )
+    if was_compacted and raw_chars > rendered_chars:
+        context["tool_result_truncated_chars_total"] = (
+            int(context.get("tool_result_truncated_chars_total") or 0)
+            + (raw_chars - rendered_chars)
+        )
+    by_tool = context.get("tool_result_rendered_chars_by_tool")
+    if isinstance(by_tool, dict):
+        key = tool_name or "<unknown>"
+        by_tool[key] = int(by_tool.get(key) or 0) + rendered_chars
 
 
 def _extract_tool_progress_key(tool_name: str | None, tool_result: Any) -> str | None:
@@ -766,9 +935,19 @@ async def execute_agent_task(
         )
         filtered_tools.append(mcp_spec)
 
-    tool_descriptions = "\n".join(f"- {t.name}: {t.description}" for t in filtered_tools)
+    tool_inventory = _build_worker_tool_inventory_prompt(filtered_tools)
     coordination_prompt = _build_worker_coordination_prompt(
         has_child_spawn_tools=has_child_spawn_tools
+    )
+    guidance_prompt = "\n\n".join(
+        part
+        for part in (
+            "Use available tools through normal tool calls. Do not emit ad-hoc JSON tool_use blocks.",
+            _build_worker_file_write_prompt(filtered_tools),
+            coordination_prompt,
+            _build_worker_skill_usage_prompt(filtered_tools),
+        )
+        if part
     )
 
     temporal_context_prompt = format_temporal_context_prompt()
@@ -778,20 +957,9 @@ async def execute_agent_task(
 {temporal_context_prompt}
 
 Available tools:
-{tool_descriptions}
+{tool_inventory}
 
-Use available tools through normal tool calls. Do not emit ad-hoc JSON tool_use blocks.
-If the task asks you to create, write, save, update, or edit a workspace file and fs_write is available, you must call fs_write before returning a result. Do not claim a file was written until the fs_write tool returns successfully.
-
-{coordination_prompt}
-
-Skill usage:
-- Octopal skills are internal tools, not MCP servers.
-- Use list_skills to discover available skills and their readiness/runtime status.
-- Use use_skill to read a skill's guidance from SKILL.md.
-- Dynamic skill_<id> tools may exist for compatibility, but workers should prefer use_skill.
-- If a skill includes bundled scripts, use run_skill_script to execute them.
-- Do not use exec_run for scripts that belong to a skill bundle unless run_skill_script is unavailable.
+{guidance_prompt}
 
 When you have completed the task, respond with:
 {{
@@ -814,11 +982,12 @@ Important:
 - Messages like "Successfully sent DM...", "Failed to send DM...", token/JWT errors, retries, truncation counts, and orchestration status are internal runtime details.
 """
 
+    task_prompt = _build_worker_task_prompt(spec.task, spec.inputs)
     messages = [
         {"role": "system", "content": system_prompt},
         {
             "role": "user",
-            "content": f"Task: {spec.task}\n\nInputs: {json.dumps(spec.inputs, indent=2)}",
+            "content": task_prompt,
         },
     ]
 
@@ -844,6 +1013,20 @@ Important:
         "empty_turns": 0,
         "paused_seconds": 0,
         "tokens": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "context": {
+            "system_prompt_chars": len(system_prompt),
+            "task_prompt_chars": len(task_prompt),
+            "tool_count": len(filtered_tools),
+            "tool_schema_chars": _tool_schema_chars(filtered_tools),
+            "llm_input_chars_total": 0,
+            "llm_input_chars_peak": 0,
+            "message_count_peak": len(messages),
+            "tool_result_raw_chars_total": 0,
+            "tool_result_rendered_chars_total": 0,
+            "tool_result_rendered_chars_by_tool": {},
+            "tool_result_truncated_chars_total": 0,
+            "llm_calls": [],
+        },
     }
     upstream_failures: dict[str, int] = {}
     successful_tool_calls = 0
@@ -855,6 +1038,12 @@ Important:
 
     while thinking_steps < effective_max_steps:
         llm_start = time.perf_counter()
+        _record_worker_llm_context_snapshot(
+            telemetry,
+            messages=messages,
+            tools=filtered_tools,
+            step=thinking_steps,
+        )
         force_fs_write = _fs_write_completion_missing(
             spec.task,
             list(spec.available_tools or []),
@@ -1110,6 +1299,13 @@ Important:
                 )
                 if rendered_tool_result.was_compacted:
                     telemetry["tool_result_truncations"] += 1
+                _record_worker_tool_result_context(
+                    telemetry,
+                    tool_name=str(tool_name or ""),
+                    raw_result=tool_result,
+                    rendered_text=rendered_tool_result.text,
+                    was_compacted=rendered_tool_result.was_compacted,
+                )
                 messages.append(
                     {
                         "role": "tool",
