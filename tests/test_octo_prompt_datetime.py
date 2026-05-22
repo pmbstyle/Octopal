@@ -65,3 +65,27 @@ def test_build_control_plane_prompt_includes_current_datetime_system_message() -
         _assert_current_datetime_message(datetime_messages[0])
 
     asyncio.run(scenario())
+
+
+def test_build_control_plane_prompt_uses_compact_system_prompt() -> None:
+    async def scenario() -> None:
+        messages = await build_control_plane_prompt(
+            user_text="scheduled tick",
+            chat_id=123,
+            mode_label="scheduler",
+            mode_rules="Return SCHEDULER_IDLE.",
+        )
+
+        system_text = "\n".join(
+            str(message.content)
+            for message in messages
+            if message.role == "system" and isinstance(message.content, str)
+        )
+
+        assert len(system_text) < 2500
+        assert "bounded operational route" in system_text
+        assert "Return SCHEDULER_IDLE." in system_text
+        assert "Available worker templates" not in system_text
+        assert "Canonical Memory Management" not in system_text
+
+    asyncio.run(scenario())

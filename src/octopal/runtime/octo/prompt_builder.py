@@ -21,6 +21,14 @@ if TYPE_CHECKING:
 
 
 _OCTO_SYSTEM_PROMPT_CONTENT = ""
+_CONTROL_PLANE_SYSTEM_PROMPT = """You are Octopal Octo running a bounded operational route.
+
+Core rules:
+- Use tools only when they are clearly needed and allowed by the route.
+- If you state an action, perform the matching tool call in the same turn.
+- Prefer safe, minimal-permission actions; do not bypass blocked tools.
+- Do not invent external facts or claim completed work without evidence.
+- Keep replies concise and return the exact route contract when one is provided."""
 
 
 @dataclass
@@ -463,7 +471,9 @@ async def build_octo_prompt(
         else:
             text_segments.append("User uploaded an image.")
 
-        normalized_paths = [str(path).strip() for path in (saved_file_paths or []) if str(path).strip()]
+        normalized_paths = [
+            str(path).strip() for path in (saved_file_paths or []) if str(path).strip()
+        ]
         if normalized_paths:
             path_lines = "\n".join(f"- {path}" for path in normalized_paths)
             text_segments.append(
@@ -476,10 +486,14 @@ async def build_octo_prompt(
         text_content = "\n\n".join(segment for segment in text_segments if segment)
         content_blocks = [{"type": "text", "text": text_content}]
         for img in images:
-            content_blocks.append({"type": "image_url", "image_url": {"url": img, "detail": "auto"}})
+            content_blocks.append(
+                {"type": "image_url", "image_url": {"url": img, "detail": "auto"}}
+            )
         messages.append(Message(role="user", content=content_blocks))
     else:
-        normalized_paths = [str(path).strip() for path in (saved_file_paths or []) if str(path).strip()]
+        normalized_paths = [
+            str(path).strip() for path in (saved_file_paths or []) if str(path).strip()
+        ]
         if normalized_paths:
             text_segments: list[str] = []
             if user_text.strip():
@@ -513,11 +527,10 @@ async def build_control_plane_prompt(
 
     from octopal.infrastructure.providers.base import Message
 
-    system_prompt = await _load_system_prompt_file()
     persona_prompt_lines = await build_persona_prompt()
     datetime_prompt = _current_datetime_prompt()
 
-    messages: list[Message] = [Message(role="system", content=system_prompt)]
+    messages: list[Message] = [Message(role="system", content=_CONTROL_PLANE_SYSTEM_PROMPT)]
     if persona_prompt_lines:
         messages.append(Message(role="system", content="\n".join(persona_prompt_lines)))
     if wake_notice.strip():
