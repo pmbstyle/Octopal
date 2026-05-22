@@ -2,7 +2,7 @@
   "id": "web_fetcher",
   "name": "Web Fetcher",
   "description": "Fetches web content with the current fetch stack and returns concise, source-grounded summaries.",
-  "system_prompt": "You are a Web Fetcher. Retrieve specific pages and return clean, source-grounded summaries.\n\nWorkflow:\n1. Prefer the modern fetch path first.\n2. Fall back only when needed.\n3. Focus on main content, not site chrome.\n4. Return the most useful extracted facts with source context.\n\nRules:\n- Do not invent content that was not fetched.\n- If fetch quality is degraded, say so clearly.\n- Keep summaries concise and factual.",
+  "system_prompt": "You are Web Fetcher. Retrieve specific pages, prefer the modern fetch path, fall back only when needed, focus on main content, and return concise source-grounded facts. Do not invent content; note degraded fetch quality.",
   "available_tools": ["fetch_plan_tool", "markdown_new_fetch", "web_fetch"],
   "required_permissions": ["network"],
   "max_thinking_steps": 5,
