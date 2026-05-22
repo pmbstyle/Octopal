@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from octopal.infrastructure.observability.helpers import (
     summarize_exception,
 )
 from octopal.infrastructure.providers.base import InferenceProvider, Message
+from octopal.runtime.intents.types import ActionIntent
 from octopal.runtime.memory.service import MemoryService
 from octopal.runtime.octo.control_plane import RouteMode
 from octopal.runtime.octo.delivery import resolve_user_delivery
@@ -63,7 +65,7 @@ _DEFAULT_MAX_TOOL_COUNT = 64
 _MIN_TOOL_COUNT_ON_OVERFLOW = 12
 _CATALOG_TOOL_EXPANSION_LIMIT = 12
 _CATALOG_MCP_TOOL_EXPANSION_LIMIT = 1
-_DEFAULT_INITIAL_OCTO_TOOL_COUNT = 40
+_DEFAULT_INITIAL_OCTO_TOOL_COUNT = 42
 _MANDATORY_OCTO_TOOL_NAMES = {
     "octo_restart_self",
     "octo_check_update",
@@ -101,7 +103,9 @@ _PRIORITY_TOOL_NAMES = {
     "get_worker_result",
     "get_worker_output_path",
     "worker_yield",
+    "exec_run",
     "gateway_status",
+    "git_ops",
     "mcp_discover",
     "mcp_call",
     "manage_canon",
@@ -141,6 +145,8 @@ _ALWAYS_INCLUDE_TOOL_NAMES = {
     "fs_write",
     "fs_move",
     "fs_delete",
+    "exec_run",
+    "git_ops",
     "mcp_call",
 }
 _A2A_TOOL_NAMES = {
@@ -1718,7 +1724,7 @@ def _get_octo_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec], dict[str, 
         ),
         ToolPolicyPipelineStep(
             label="octo.direct_exec_denylist",
-            policy=ToolPolicy(deny=["exec_run", "test_run"]),
+            policy=ToolPolicy(deny=["test_run"]),
         ),
     ]
     all_tools = get_tools(mcp_manager=mcp_manager)
@@ -2436,6 +2442,23 @@ async def _handle_octo_tool_call(
         logger.debug("Octo tool call", tool_name=name, args=args)
         for spec in tools:
             if spec.name == name:
+                approval_payload = await _maybe_request_octo_tool_approval(
+                    spec=spec,
+                    args=args if isinstance(args, dict) else {},
+                    ctx=ctx,
+                )
+                if approval_payload is not None:
+                    tool_trace_status = "error"
+                    tool_trace_metadata["approval_required"] = True
+                    tool_trace_output = {
+                        "result_preview": safe_preview(approval_payload, limit=240),
+                        "result_size": len(str(approval_payload)),
+                    }
+                    return approval_payload, {
+                        "timed_out": False,
+                        "had_error": True,
+                        "error_type": "approval_required",
+                    }
                 try:
                     if spec.is_async:
                         import inspect
@@ -2504,6 +2527,189 @@ async def _handle_octo_tool_call(
             )
         if tool_trace_token is not None:
             reset_trace_context(tool_trace_token)
+
+
+async def _maybe_request_octo_tool_approval(
+    *,
+    spec: ToolSpec,
+    args: dict[str, Any],
+    ctx: dict[str, object],
+) -> dict[str, Any] | None:
+    if str(getattr(spec, "name", "") or "") != "exec_run":
+        return None
+    reason = _exec_run_approval_reason(args)
+    if reason is None:
+        return None
+
+    command = str(args.get("command", "") or "").strip()
+    action = str(args.get("action", "start") or "start").strip().lower()
+    intent = ActionIntent(
+        id=str(uuid.uuid4()),
+        type="exec.run",
+        payload={
+            "action": action,
+            "command": command,
+            "background": bool(args.get("background", False)),
+            "reason": reason,
+        },
+        payload_hash=hash_payload(
+            {
+                "action": action,
+                "command": command,
+                "background": bool(args.get("background", False)),
+                "reason": reason,
+            }
+        ),
+        risk="high",
+        requires_approval=True,
+        worker_id="octo",
+    )
+
+    requester = _resolve_octo_approval_requester(ctx)
+    if requester is None:
+        return {
+            "type": "approval_required",
+            "tool": spec.name,
+            "reason": reason,
+            "message": "Dangerous exec_run command requires direct user approval, but no approval channel is available.",
+        }
+
+    try:
+        approved = await requester(intent)
+    except Exception as exc:
+        logger.exception("Octo exec approval requester failed")
+        return {
+            "type": "approval_required",
+            "tool": spec.name,
+            "reason": reason,
+            "message": f"Dangerous exec_run command approval failed: {exc}",
+        }
+    if approved:
+        return None
+    return {
+        "type": "approval_denied",
+        "tool": spec.name,
+        "reason": reason,
+        "message": "Dangerous exec_run command was not approved by the user.",
+    }
+
+
+def _resolve_octo_approval_requester(
+    ctx: dict[str, object],
+) -> Callable[[ActionIntent], Awaitable[bool]] | None:
+    requester = ctx.get("approval_requester")
+    if callable(requester):
+        return requester
+
+    octo = ctx.get("octo")
+    chat_id = int(ctx.get("chat_id", 0) or 0)
+    approval_requesters = getattr(octo, "_approval_requesters", None)
+    if isinstance(approval_requesters, dict):
+        requester = approval_requesters.get(chat_id)
+        if callable(requester):
+            return requester
+
+    approvals = getattr(octo, "approvals", None)
+    if chat_id > 0 and getattr(approvals, "bot", None):
+
+        async def _telegram_requester(intent: ActionIntent) -> bool:
+            return await approvals.request_approval(chat_id, intent)
+
+        return _telegram_requester
+    return None
+
+
+def _exec_run_approval_reason(args: dict[str, Any]) -> str | None:
+    action = str(args.get("action", "start") or "start").strip().lower()
+    if action == "start":
+        command = str(args.get("command", "") or "").strip()
+        return _dangerous_exec_command_reason(command)
+    if action == "write":
+        input_data = str(args.get("input_data", "") or "")
+        reason = _dangerous_exec_command_reason(input_data)
+        if reason is not None:
+            return f"interactive input looks dangerous: {reason}"
+    return None
+
+
+def _dangerous_exec_command_reason(command: str) -> str | None:
+    normalized = str(command or "").strip()
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    command_words = _shell_command_words(lowered)
+    if not command_words:
+        return None
+
+    dangerous_tokens = {
+        "sudo",
+        "su",
+        "doas",
+        "rm",
+        "rmdir",
+        "unlink",
+        "shred",
+        "dd",
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
+        "kill",
+        "pkill",
+        "killall",
+    }
+    for token in command_words:
+        if token in dangerous_tokens or token.startswith("mkfs"):
+            return f"uses dangerous command `{token}`"
+
+    dangerous_patterns = (
+        (r"\bgit\s+reset\s+--hard\b", "uses `git reset --hard`"),
+        (r"\bgit\s+clean\b.*\s-[^\s]*[fd]", "uses destructive `git clean`"),
+        (r"\bdocker\s+system\s+prune\b", "uses `docker system prune`"),
+        (r"\bdocker\s+(container\s+)?rm\b", "removes Docker containers"),
+        (r"\bdocker\s+compose\b.*\bdown\b", "stops Docker compose services"),
+        (r"\bkubectl\s+delete\b", "deletes Kubernetes resources"),
+        (r"\bchmod\s+.*\b777\b", "sets broad chmod permissions"),
+        (r"\bchown\s+.*\s-r\b|\bchown\s+-r\b", "recursively changes ownership"),
+        (r"\bdiskutil\s+erase", "erases a disk"),
+        (r">\s*/dev/", "writes to a device path"),
+    )
+    for pattern, reason in dangerous_patterns:
+        if re.search(pattern, lowered):
+            return reason
+    return None
+
+
+def _shell_tokens(command: str) -> list[str]:
+    try:
+        return [str(token).strip().lower() for token in shlex.split(command) if str(token).strip()]
+    except ValueError:
+        return [token for token in re.split(r"\s+", command) if token]
+
+
+def _shell_command_words(command: str) -> list[str]:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        tokens = [str(token).strip().lower() for token in lexer if str(token).strip()]
+    except ValueError:
+        tokens = _shell_tokens(command)
+
+    command_words: list[str] = []
+    expect_command = True
+    command_prefixes = {"command", "builtin", "env", "time", "nohup"}
+    separators = {";", "&", "&&", "|", "||", "(", ")"}
+    for token in tokens:
+        if token in separators:
+            expect_command = True
+            continue
+        if not expect_command:
+            continue
+        if "=" in token and not token.startswith("="):
+            continue
+        command_words.append(token)
+        expect_command = token in command_prefixes
+    return command_words
 
 
 def _record_octo_tool_call(

@@ -8,6 +8,7 @@ import pytest
 from octopal.runtime.octo.router import (
     _budget_tool_specs,
     _build_octo_tool_policy_summary,
+    _dangerous_exec_command_reason,
     _get_octo_tools,
     _handle_octo_tool_call,
     _record_octo_tool_call,
@@ -41,28 +42,69 @@ async def test_handle_octo_tool_call_reports_unknown_tool() -> None:
     assert meta["had_error"] is True
 
 
-def test_default_octo_tool_policy_blocks_exec_run() -> None:
+def test_octo_tool_policy_requires_approval_for_dangerous_exec_run() -> None:
     class DummyOcto:
         mcp_manager = None
 
     tool_specs, ctx = _get_octo_tools(DummyOcto(), 0)
 
-    assert "exec_run" not in {tool.name for tool in tool_specs}
+    assert "exec_run" in {tool.name for tool in tool_specs}
     assert "test_run" not in {tool.name for tool in tool_specs}
 
     async def scenario() -> None:
         result, meta = await _handle_octo_tool_call(
-            {"function": {"name": "exec_run", "arguments": '{"command":"echo unsafe"}'}},
+            {"function": {"name": "exec_run", "arguments": '{"command":"rm -rf workspace"}'}},
             tool_specs,
             ctx,
         )
 
-        assert result["type"] == "policy_block"
+        assert result["type"] == "approval_required"
         assert result["tool"] == "exec_run"
-        assert result["reason"] == "blocked_by_deny:octo.direct_exec_denylist"
-        assert meta["error_type"] == "policy_block"
+        assert "dangerous" in result["message"].lower()
+        assert meta["error_type"] == "approval_required"
 
     asyncio.run(scenario())
+
+
+def test_exec_run_approval_detector_ignores_dangerous_words_in_arguments() -> None:
+    assert _dangerous_exec_command_reason("echo rm -rf workspace") is None
+    assert _dangerous_exec_command_reason("printf 'sudo true'") is None
+    assert (
+        _dangerous_exec_command_reason("echo ok && rm -rf workspace")
+        == "uses dangerous command `rm`"
+    )
+
+
+def test_octo_exec_run_uses_direct_approval_for_dangerous_commands() -> None:
+    calls: list[object] = []
+    tool = ToolSpec(
+        name="exec_run",
+        description="exec",
+        parameters={"type": "object"},
+        permission="exec",
+        handler=lambda _args, _ctx: {"ok": True},
+    )
+
+    async def requester(intent):
+        calls.append(intent)
+        return True
+
+    async def scenario() -> None:
+        result, meta = await _handle_octo_tool_call(
+            {"function": {"name": "exec_run", "arguments": '{"command":"sudo true"}'}},
+            [tool],
+            {"approval_requester": requester},
+        )
+
+        assert result == {"ok": True}
+        assert meta["had_error"] is False
+
+    asyncio.run(scenario())
+
+    assert len(calls) == 1
+    assert calls[0].type == "exec.run"
+    assert calls[0].requires_approval is True
+    assert calls[0].risk == "high"
 
 
 def test_default_octo_tool_policy_blocks_test_run() -> None:
