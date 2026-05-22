@@ -100,6 +100,8 @@ def register_a2a_routes(app: FastAPI) -> None:
             },
         }
         return {
+            "taskState": state,
+            "replyText": reply_text,
             "task": {
                 "id": task_id,
                 "contextId": context_id,
@@ -122,7 +124,7 @@ def register_a2a_routes(app: FastAPI) -> None:
                     "octopalPeerId": peer.peer_id,
                     "octopalPeerName": peer_label,
                 },
-            }
+            },
         }
 
 

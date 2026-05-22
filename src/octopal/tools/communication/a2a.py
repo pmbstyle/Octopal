@@ -81,12 +81,21 @@ def _json(payload: dict[str, Any]) -> str:
 
 
 def _extract_a2a_task_state(payload: dict[str, Any]) -> str:
+    for key in ("task_state", "taskState"):
+        value = str(payload.get(key) or "").strip() if isinstance(payload, dict) else ""
+        if value:
+            return value
     task = payload.get("task") if isinstance(payload, dict) else None
     status = task.get("status") if isinstance(task, dict) else None
     return str(status.get("state") or "").strip() if isinstance(status, dict) else ""
 
 
 def _extract_a2a_reply_text(payload: dict[str, Any]) -> str:
+    for key in ("reply_text", "replyText"):
+        value = str(payload.get(key) or "").strip() if isinstance(payload, dict) else ""
+        if value:
+            return value
+
     task = payload.get("task") if isinstance(payload, dict) else None
     if not isinstance(task, dict):
         return ""

@@ -250,8 +250,15 @@ def test_message_send_routes_authenticated_peer_message_to_octo() -> None:
 
     assert response.status_code == 200
     payload = response.json()
+    wrapped_render = render_tool_result_for_llm(
+        json.dumps({"status_code": response.status_code, "json": payload}),
+        tool_name="http_post",
+    )
+    assert payload["taskState"] == "TASK_STATE_COMPLETED"
+    assert payload["replyText"] == "hello peer"
     assert payload["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
     assert payload["task"]["status"]["message"]["parts"] == [{"text": "hello peer"}]
+    assert "hello peer" in wrapped_render.text
     assert str(payload["task"]["contextId"]).startswith("a2a-context-")
     assert payload["task"]["metadata"]["octopalPeerId"] == "bob"
     assert len(octo.calls) == 1
@@ -447,6 +454,8 @@ def test_a2a_send_message_exposes_reply_text_above_protocol_envelope(monkeypatch
         context_id: str | None = None,
     ) -> dict[str, Any]:
         return {
+            "taskState": "TASK_STATE_COMPLETED",
+            "replyText": f"Readable reply to: {text}",
             "task": {
                 "id": "a2a-task-1",
                 "contextId": context_id or f"octopal-peer-{peer_id}",
@@ -463,7 +472,7 @@ def test_a2a_send_message_exposes_reply_text_above_protocol_envelope(monkeypatch
                         "parts": [{"text": "Readable reply to: hello"}],
                     }
                 ],
-            }
+            },
         }
 
     monkeypatch.setattr(a2a_tools, "send_peer_message", fake_send_peer_message)
