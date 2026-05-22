@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from types import SimpleNamespace
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -11,6 +14,8 @@ from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.logging import correlation_id_var
 from octopal.interop.a2a.client import _message_send_endpoint
 from octopal.interop.a2a.routes import register_a2a_routes
+from octopal.runtime.tool_payloads import render_tool_result_for_llm
+from octopal.tools.communication import a2a as a2a_tools
 from octopal.tools.communication.a2a import a2a_list_peers
 
 
@@ -431,6 +436,62 @@ def test_a2a_list_peers_exposes_enabled_configured_peers_without_tokens() -> Non
     assert '"Bob"' in payload
     assert "secret" not in payload
     assert '"peer_id": "off"' not in payload
+
+
+def test_a2a_send_message_exposes_reply_text_above_protocol_envelope(monkeypatch) -> None:
+    async def fake_send_peer_message(
+        _config: A2AConfig,
+        *,
+        peer_id: str,
+        text: str,
+        context_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "task": {
+                "id": "a2a-task-1",
+                "contextId": context_id or f"octopal-peer-{peer_id}",
+                "status": {
+                    "state": "TASK_STATE_COMPLETED",
+                    "message": {
+                        "role": "ROLE_AGENT",
+                        "parts": [{"text": f"Readable reply to: {text}"}],
+                    },
+                },
+                "artifacts": [
+                    {
+                        "name": "response",
+                        "parts": [{"text": "Readable reply to: hello"}],
+                    }
+                ],
+            }
+        }
+
+    monkeypatch.setattr(a2a_tools, "send_peer_message", fake_send_peer_message)
+    ctx = {
+        "octo": SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    a2a=A2AConfig(
+                        enabled=True,
+                        peers={
+                            "bob": A2APeerConfig(
+                                token="secret",
+                                base_url="https://bob.example/a2a/v1",
+                            )
+                        },
+                    )
+                )
+            )
+        )
+    }
+
+    raw = asyncio.run(a2a_tools.a2a_send_message({"peer_id": "bob", "text": "hello"}, ctx))
+    payload = json.loads(raw)
+    rendered = render_tool_result_for_llm(raw, tool_name="a2a_send_message")
+
+    assert payload["task_state"] == "TASK_STATE_COMPLETED"
+    assert payload["reply_text"] == "Readable reply to: hello"
+    assert "Readable reply to: hello" in rendered.text
 
 
 def test_message_send_endpoint_can_be_derived_from_agent_card_url() -> None:

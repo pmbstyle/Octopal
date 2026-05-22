@@ -30,6 +30,8 @@ async def a2a_send_message(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             "status": "ok",
             "peer_id": peer_id,
             "context_id": context_id or f"octopal-peer-{peer_id}",
+            "task_state": _extract_a2a_task_state(payload),
+            "reply_text": _extract_a2a_reply_text(payload),
             "response": payload,
         }
     )
@@ -76,3 +78,43 @@ def _resolve_a2a_config(ctx: dict[str, Any]) -> A2AConfig:
 
 def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _extract_a2a_task_state(payload: dict[str, Any]) -> str:
+    task = payload.get("task") if isinstance(payload, dict) else None
+    status = task.get("status") if isinstance(task, dict) else None
+    return str(status.get("state") or "").strip() if isinstance(status, dict) else ""
+
+
+def _extract_a2a_reply_text(payload: dict[str, Any]) -> str:
+    task = payload.get("task") if isinstance(payload, dict) else None
+    if not isinstance(task, dict):
+        return ""
+
+    status = task.get("status")
+    if isinstance(status, dict):
+        text = _message_parts_text(status.get("message"))
+        if text:
+            return text
+
+    artifacts = task.get("artifacts")
+    if isinstance(artifacts, list):
+        for artifact in artifacts:
+            text = _message_parts_text(artifact)
+            if text:
+                return text
+    return ""
+
+
+def _message_parts_text(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+    parts = message.get("parts")
+    if not isinstance(parts, list):
+        return ""
+    texts = [
+        str(part.get("text") or "").strip()
+        for part in parts
+        if isinstance(part, dict) and str(part.get("text") or "").strip()
+    ]
+    return "\n".join(texts)
