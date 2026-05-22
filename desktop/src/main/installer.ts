@@ -172,16 +172,32 @@ function getPathValue(env: NodeJS.ProcessEnv): string {
   return env.Path ?? env.PATH ?? "";
 }
 
-function withLocalToolPaths(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function withLocalToolPaths(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const home = homedir();
   const extraPaths =
     process.platform === "win32"
       ? [join(home, ".local", "bin"), join(home, ".cargo", "bin")]
-      : [join(home, ".local", "bin"), join(home, ".cargo", "bin")];
+      : [
+          join(home, ".local", "bin"),
+          join(home, ".cargo", "bin"),
+          join(home, ".docker", "bin"),
+          "/opt/homebrew/bin",
+          "/opt/homebrew/sbin",
+          "/usr/local/bin",
+          "/usr/local/sbin",
+          "/Applications/Docker.app/Contents/Resources/bin",
+          "/usr/bin",
+          "/bin",
+          "/usr/sbin",
+          "/sbin",
+        ];
   const pathKey = process.platform === "win32" ? "Path" : "PATH";
+  const paths = [...extraPaths, ...getPathValue(env).split(delimiter)]
+    .map((item) => item.trim())
+    .filter(Boolean);
   return {
     ...env,
-    [pathKey]: [...extraPaths, getPathValue(env)].filter(Boolean).join(delimiter),
+    [pathKey]: [...new Set(paths)].join(delimiter),
   };
 }
 

@@ -28,6 +28,7 @@ import {
   startOctopalSafely,
   stopOctopalSafely,
   updateOctopalSafely,
+  withLocalToolPaths,
   type InstallEvent,
   type InstallPayload,
 } from "./installer";
@@ -807,7 +808,11 @@ function createWindow(): void {
 
 async function checkCommand(command: string, args: string[]): Promise<{ ok: boolean; detail: string }> {
   try {
-    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5000, windowsHide: true });
+    const { stdout, stderr } = await execFileAsync(command, args, {
+      timeout: 5000,
+      windowsHide: true,
+      env: withLocalToolPaths(),
+    });
     return { ok: true, detail: (stdout || stderr).trim().split(/\r?\n/)[0] || "Available" };
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
