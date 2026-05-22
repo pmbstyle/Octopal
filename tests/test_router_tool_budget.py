@@ -94,13 +94,13 @@ def test_get_octo_tools_uses_small_core_and_defers_mcp_tools(monkeypatch) -> Non
     assert "octo_self_queue_take" in names
     assert "octo_self_queue_update" in names
     assert "repair_scheduled_tasks" in names
+    assert "exec_run" in names
     assert "git_ops" in names
     assert "octo_restart_self" in names
     assert "octo_check_update" in names
     assert "octo_update_self" in names
-    assert "exec_run" not in names
     assert "test_run" not in names
-    assert "exec_run" not in {spec.name for spec in ctx["tool_resolution_report"].available_tools}
+    assert "exec_run" in {spec.name for spec in ctx["tool_resolution_report"].available_tools}
     assert "test_run" not in {spec.name for spec in ctx["tool_resolution_report"].available_tools}
     assert "mcp_demo_tool_0" not in names
     assert "mcp_demo_tool_0" in all_names
