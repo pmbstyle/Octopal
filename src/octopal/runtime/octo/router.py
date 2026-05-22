@@ -63,7 +63,7 @@ _DEFAULT_MAX_TOOL_COUNT = 64
 _MIN_TOOL_COUNT_ON_OVERFLOW = 12
 _CATALOG_TOOL_EXPANSION_LIMIT = 12
 _CATALOG_MCP_TOOL_EXPANSION_LIMIT = 1
-_DEFAULT_INITIAL_OCTO_TOOL_COUNT = 40
+_DEFAULT_INITIAL_OCTO_TOOL_COUNT = 41
 _MANDATORY_OCTO_TOOL_NAMES = {
     "octo_restart_self",
     "octo_check_update",
@@ -102,6 +102,7 @@ _PRIORITY_TOOL_NAMES = {
     "get_worker_output_path",
     "worker_yield",
     "gateway_status",
+    "git_ops",
     "mcp_discover",
     "mcp_call",
     "manage_canon",
@@ -141,6 +142,7 @@ _ALWAYS_INCLUDE_TOOL_NAMES = {
     "fs_write",
     "fs_move",
     "fs_delete",
+    "git_ops",
     "mcp_call",
 }
 _A2A_TOOL_NAMES = {
