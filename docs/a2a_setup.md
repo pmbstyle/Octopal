@@ -116,3 +116,27 @@ curl http://100.64.10.21:8001/.well-known/agent-card.json
 ```
 
 Then ask either agent to list peers with `a2a_list_peers` and send a test message with `a2a_send_message`.
+
+## Message Parts
+
+`a2a_send_message` can send a plain text part, a structured JSON `data` part, and file `url` parts to a configured peer:
+
+```json
+{
+  "peer_id": "nova",
+  "text": "Please compare these inputs.",
+  "data": {
+    "intent": "compare",
+    "expected_output": "short summary"
+  },
+  "file_urls": [
+    {
+      "url": "https://example.internal/report.pdf",
+      "filename": "report.pdf",
+      "media_type": "application/pdf"
+    }
+  ]
+}
+```
+
+Inbound peer messages may also include A2A `raw` file parts. Octopal stores those raw parts under the local state directory and forwards the saved file paths to Octo as attachments.

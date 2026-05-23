@@ -10,17 +10,28 @@ from octopal.interop.a2a.client import A2AClientError, send_peer_message
 async def a2a_send_message(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     peer_id = str((args or {}).get("peer_id") or "").strip()
     text = str((args or {}).get("text") or "").strip()
+    data = (args or {}).get("data")
+    file_urls = (args or {}).get("file_urls")
     context_id = str((args or {}).get("context_id") or "").strip() or None
     if not peer_id:
         return _json({"status": "error", "message": "peer_id is required."})
-    if not text:
-        return _json({"status": "error", "message": "text is required."})
+    if not text and data is None and not file_urls:
+        return _json({"status": "error", "message": "text, data, or file_urls is required."})
+    if file_urls is not None and not isinstance(file_urls, list):
+        return _json({"status": "error", "message": "file_urls must be a list."})
 
     config = _resolve_a2a_config(ctx)
     if not config.enabled:
         return _json({"status": "error", "message": "A2A interop is disabled."})
     try:
-        payload = await send_peer_message(config, peer_id=peer_id, text=text, context_id=context_id)
+        payload = await send_peer_message(
+            config,
+            peer_id=peer_id,
+            text=text,
+            data=data,
+            file_urls=file_urls,
+            context_id=context_id,
+        )
     except A2AClientError as exc:
         return _json({"status": "error", "message": str(exc)})
     except Exception as exc:
@@ -32,6 +43,7 @@ async def a2a_send_message(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             "context_id": context_id or f"octopal-peer-{peer_id}",
             "task_state": _extract_a2a_task_state(payload),
             "reply_text": _extract_a2a_reply_text(payload),
+            "artifacts": _extract_a2a_artifacts(payload),
             "response": payload,
         }
     )
@@ -113,6 +125,49 @@ def _extract_a2a_reply_text(payload: dict[str, Any]) -> str:
             if text:
                 return text
     return ""
+
+
+def _extract_a2a_artifacts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    task = payload.get("task") if isinstance(payload, dict) else None
+    artifacts = task.get("artifacts") if isinstance(task, dict) else None
+    if not isinstance(artifacts, list):
+        return []
+    return [_summarize_artifact(artifact) for artifact in artifacts if isinstance(artifact, dict)]
+
+
+def _summarize_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
+    parts = artifact.get("parts")
+    part_summaries = (
+        [_summarize_part(part) for part in parts if isinstance(part, dict)]
+        if isinstance(parts, list)
+        else []
+    )
+    return {
+        "artifact_id": str(artifact.get("artifactId") or artifact.get("artifact_id") or "").strip(),
+        "name": str(artifact.get("name") or "").strip(),
+        "description": str(artifact.get("description") or "").strip(),
+        "parts": part_summaries,
+    }
+
+
+def _summarize_part(part: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "media_type": str(part.get("mediaType") or part.get("media_type") or "").strip(),
+        "filename": str(part.get("filename") or "").strip(),
+    }
+    if "text" in part:
+        text = str(part.get("text") or "")
+        summary.update({"kind": "text", "text_preview": text[:500], "chars": len(text)})
+    elif "data" in part:
+        summary.update({"kind": "data", "data": part.get("data")})
+    elif "url" in part:
+        summary.update({"kind": "url", "url": str(part.get("url") or "").strip()})
+    elif "raw" in part:
+        raw = str(part.get("raw") or "")
+        summary.update({"kind": "raw", "base64_chars": len(raw)})
+    else:
+        summary["kind"] = "unknown"
+    return {key: value for key, value in summary.items() if value not in ("", None)}
 
 
 def _message_parts_text(message: Any) -> str:

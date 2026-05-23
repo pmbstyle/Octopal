@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import re
 import time
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -11,7 +15,12 @@ from octopal.infrastructure.config.models import A2AConfig
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.logging import correlation_id_var
 from octopal.interop.a2a.agent_card import build_agent_card
-from octopal.interop.a2a.models import A2AMessageSendRequest, message_text
+from octopal.interop.a2a.models import (
+    A2AMessage,
+    A2AMessageSendRequest,
+    message_content_for_octo,
+    message_payload_size,
+)
 from octopal.interop.a2a.security import (
     authenticate_peer,
     require_a2a_enabled,
@@ -45,10 +54,10 @@ def register_a2a_routes(app: FastAPI) -> None:
             request_payload = A2AMessageSendRequest.model_validate(payload)
         except ValidationError as exc:
             raise HTTPException(status_code=400, detail="Invalid A2A message payload") from exc
-        text = message_text(request_payload.message)
-        if not text:
-            raise HTTPException(status_code=400, detail="A2A message must contain text")
-        if len(text) > max(1, int(config.max_payload_chars)):
+        content = message_content_for_octo(request_payload.message)
+        if not content:
+            raise HTTPException(status_code=400, detail="A2A message must contain content")
+        if message_payload_size(request_payload.message) > max(1, int(config.max_payload_chars)):
             raise HTTPException(status_code=413, detail="A2A message is too large")
         if request_payload.message.task_id:
             raise HTTPException(
@@ -65,12 +74,18 @@ def register_a2a_routes(app: FastAPI) -> None:
 
         task_id = f"a2a-task-{uuid4().hex}"
         context_id = request_payload.message.context_id or f"a2a-context-{uuid4().hex}"
+        saved_file_paths = _persist_raw_file_parts(
+            app,
+            request_payload.message,
+            peer_id=peer.peer_id,
+            context_id=context_id,
+        )
         peer_label = peer.config.name or peer.peer_id
         octo_text = _build_octo_peer_prompt(
             peer_id=peer.peer_id,
             peer_name=peer_label,
             context_id=context_id,
-            text=text,
+            text=content,
         )
         correlation_token = correlation_id_var.set(task_id)
         try:
@@ -82,6 +97,7 @@ def register_a2a_routes(app: FastAPI) -> None:
                 _peer_chat_id(peer.peer_id, context_id),
                 show_typing=False,
                 is_ws=True,
+                saved_file_paths=saved_file_paths,
                 include_wakeup=False,
             )
         finally:
@@ -123,6 +139,7 @@ def register_a2a_routes(app: FastAPI) -> None:
                 "metadata": {
                     "octopalPeerId": peer.peer_id,
                     "octopalPeerName": peer_label,
+                    "octopalSavedFilePaths": saved_file_paths,
                 },
             },
         }
@@ -136,6 +153,58 @@ def _a2a_config(app: FastAPI) -> A2AConfig:
     if isinstance(candidate, A2AConfig):
         return candidate
     return A2AConfig()
+
+
+def _persist_raw_file_parts(
+    app: FastAPI,
+    message: A2AMessage,
+    *,
+    peer_id: str,
+    context_id: str,
+) -> list[str]:
+    saved: list[str] = []
+    raw_parts = [part for part in message.parts if part.raw is not None]
+    if not raw_parts:
+        return saved
+    state_dir = _a2a_state_dir(app)
+    target_dir = (
+        state_dir / "incoming" / _safe_path_component(peer_id) / _safe_path_component(context_id)
+    )
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for part in raw_parts:
+        raw_value = str(part.raw or "").strip()
+        if not raw_value:
+            continue
+        try:
+            binary = base64.b64decode(raw_value, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Invalid base64 A2A raw part") from exc
+        if not binary:
+            continue
+        filename = _safe_filename(part.filename or f"a2a-file-{uuid4().hex}")
+        path = (target_dir / filename).resolve()
+        path.write_bytes(binary)
+        saved.append(str(path))
+    return saved
+
+
+def _a2a_state_dir(app: FastAPI) -> Path:
+    settings = getattr(app.state, "settings", None)
+    state_dir = getattr(settings, "state_dir", None)
+    if state_dir is None:
+        return Path("data").resolve() / "a2a"
+    return Path(state_dir).resolve() / "a2a"
+
+
+def _safe_path_component(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip(".-")
+    return sanitized or "unknown"
+
+
+def _safe_filename(value: str) -> str:
+    name = Path(str(value or "")).name
+    sanitized = re.sub(r"[^A-Za-z0-9_. -]+", "-", name).strip(". ")
+    return sanitized or f"a2a-file-{uuid4().hex}"
 
 
 def _validate_a2a_version(config: A2AConfig, requested_version: str | None) -> None:

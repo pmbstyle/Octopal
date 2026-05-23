@@ -32,21 +32,34 @@ def build_agent_card(config: A2AConfig, *, base_url: str) -> dict[str, object]:
             }
         },
         "securityRequirements": [{"peerBearer": []}],
-        "defaultInputModes": ["text/plain"],
-        "defaultOutputModes": ["text/plain"],
+        "defaultInputModes": [
+            "text/plain",
+            "application/json",
+            "application/octet-stream",
+            "image/png",
+            "image/jpeg",
+            "application/pdf",
+        ],
+        "defaultOutputModes": ["text/plain", "application/json"],
         "skills": [
             {
                 "id": "peer-chat",
                 "name": "Trusted Peer Chat",
                 "description": (
-                    "Accepts text messages from authenticated trusted peer agents and "
-                    "routes them through Octopal policy."
+                    "Accepts text, structured data, and file parts from authenticated "
+                    "trusted peer agents and routes them through Octopal policy."
                 ),
                 "tags": ["chat", "agent-to-agent", "trusted-peer"],
-                "examples": ["Send a private note to this Octopal instance."],
-                "inputModes": ["text/plain"],
-                "outputModes": ["text/plain"],
+                "examples": ["Send a private note or task payload to this Octopal instance."],
+                "inputModes": [
+                    "text/plain",
+                    "application/json",
+                    "application/octet-stream",
+                    "image/png",
+                    "image/jpeg",
+                    "application/pdf",
+                ],
+                "outputModes": ["text/plain", "application/json"],
             }
         ],
     }
-
