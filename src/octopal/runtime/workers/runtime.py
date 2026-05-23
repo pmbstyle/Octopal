@@ -1761,8 +1761,8 @@ def _repair_worker_result_payload(raw_result: Any) -> dict[str, Any]:
         output = {"repr": _truncate_text(repr(output), 32000)}
 
     repaired: dict[str, Any] = {"summary": summary}
-    status = raw_result.get("status")
-    if status in {"completed", "failed"}:
+    status = _normalize_worker_result_status(raw_result, output)
+    if status is not None:
         repaired["status"] = status
     if output is not None:
         repaired["output"] = output
@@ -1786,6 +1786,23 @@ def _repair_worker_result_payload(raw_result: Any) -> dict[str, Any]:
         repaired["knowledge_proposals"] = knowledge_proposals
 
     return repaired
+
+
+def _normalize_worker_result_status(raw_result: dict[str, Any], output: Any) -> str | None:
+    status = str(raw_result.get("status") or "").strip().lower()
+    if status in {"completed", "failed"}:
+        return status
+    if status in {"error", "failure"}:
+        return "failed"
+    if str(raw_result.get("error") or "").strip():
+        return "failed"
+    if isinstance(output, dict):
+        output_status = str(output.get("status") or "").strip().lower()
+        if output_status in {"error", "failed", "failure"}:
+            return "failed"
+        if str(output.get("error") or "").strip():
+            return "failed"
+    return None
 
 
 def _is_json_serializable(value: Any) -> bool:

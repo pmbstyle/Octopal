@@ -46,6 +46,8 @@ def test_docker_launcher_mounts_only_worker_dir_when_allowed_paths_missing(
     args = captured["args"]
     assert "--user" in args
     assert "1000:1000" in args
+    assert "--add-host" in args
+    assert "host.docker.internal:host-gateway" in args
     assert f"{worker_dir}:/workspace/workers/worker-1" in args
     assert f"{workspace / 'skills'}:/workspace/skills" in args
     assert f"{workspace / 'skills'}:/workspace/workers/worker-1/skills" in args

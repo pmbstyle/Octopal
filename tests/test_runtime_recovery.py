@@ -9,6 +9,7 @@ from octopal.runtime.workers.runtime import (
     WorkerRuntime,
     _classify_recoverable_error,
     _classify_worker_text_log_level,
+    _repair_worker_result_payload,
     _sanitize_task_text,
 )
 
@@ -116,6 +117,21 @@ def test_recovery_error_classifier() -> None:
     recoverable2, reason2 = _classify_recoverable_error(RuntimeError("hard failure"))
     assert recoverable2 is False
     assert reason2 == "non_recoverable"
+
+
+def test_repair_worker_result_payload_infers_failed_status_from_output_error() -> None:
+    repaired = _repair_worker_result_payload(
+        {
+            "summary": "Failed to connect to Cobalt API server",
+            "output": {
+                "status": "error",
+                "error": "Connection failed",
+            },
+        }
+    )
+
+    assert repaired["status"] == "failed"
+    assert repaired["summary"] == "Failed to connect to Cobalt API server"
 
 
 def test_runtime_recovers_after_transient_failure(tmp_path: Path) -> None:
