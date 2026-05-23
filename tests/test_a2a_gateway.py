@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -42,9 +44,9 @@ class _DummyOcto:
         )
 
 
-def _app(config: A2AConfig, octo: object | None = None) -> FastAPI:
+def _app(config: A2AConfig, octo: object | None = None, state_dir: Path | None = None) -> FastAPI:
     app = FastAPI()
-    app.state.settings = SimpleNamespace(a2a=config)
+    app.state.settings = SimpleNamespace(a2a=config, state_dir=state_dir or Path("data"))
     app.state.octo = octo
     register_a2a_routes(app)
     return app
@@ -76,6 +78,8 @@ def test_agent_card_exposes_minimal_public_capabilities_when_enabled() -> None:
     assert payload["name"] == "Alice"
     assert payload["supportedInterfaces"][0]["url"] == "https://octo.example/a2a/v1"
     assert payload["securityRequirements"] == [{"peerBearer": []}]
+    assert "application/json" in payload["defaultInputModes"]
+    assert "application/octet-stream" in payload["skills"][0]["inputModes"]
     assert payload["skills"][0]["id"] == "peer-chat"
 
 
@@ -276,6 +280,85 @@ def test_message_send_routes_authenticated_peer_message_to_octo() -> None:
     ]
 
 
+def test_message_send_routes_data_and_file_url_parts_to_octo_prompt() -> None:
+    octo = _DummyOcto()
+    client = TestClient(
+        _app(
+            A2AConfig(
+                enabled=True,
+                peers={"bob": A2APeerConfig(name="Bob", token="secret")},
+            ),
+            octo=octo,
+        )
+    )
+
+    response = client.post(
+        "/a2a/v1/message:send",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "message": {
+                "role": "ROLE_USER",
+                "parts": [
+                    {"text": "please inspect this"},
+                    {"data": {"intent": "summarize", "priority": 2}},
+                    {
+                        "url": "https://example.test/report.pdf",
+                        "filename": "report.pdf",
+                        "mediaType": "application/pdf",
+                    },
+                ],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    call_text = str(octo.calls[0]["text"])
+    assert "please inspect this" in call_text
+    assert "Structured data part 2" in call_text
+    assert '"intent": "summarize"' in call_text
+    assert "File URL part 3" in call_text
+    assert "https://example.test/report.pdf" in call_text
+
+
+def test_message_send_saves_raw_part_as_attachment(tmp_path: Path) -> None:
+    octo = _DummyOcto()
+    client = TestClient(
+        _app(
+            A2AConfig(
+                enabled=True,
+                peers={"bob": A2APeerConfig(name="Bob", token="secret")},
+            ),
+            octo=octo,
+            state_dir=tmp_path,
+        )
+    )
+    encoded = base64.b64encode(b"hello from peer file").decode("ascii")
+
+    response = client.post(
+        "/a2a/v1/message:send",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "message": {
+                "role": "ROLE_USER",
+                "contextId": "ctx-files",
+                "parts": [
+                    {"text": "file attached"},
+                    {"raw": encoded, "filename": "note.txt", "mediaType": "text/plain"},
+                ],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    saved_paths = octo.calls[0]["kwargs"]["saved_file_paths"]
+    assert len(saved_paths) == 1
+    saved_path = Path(saved_paths[0])
+    assert saved_path.name == "note.txt"
+    assert saved_path.read_bytes() == b"hello from peer file"
+    assert tmp_path in saved_path.parents
+    assert response.json()["task"]["metadata"]["octopalSavedFilePaths"] == [str(saved_path)]
+
+
 def test_message_send_scopes_peer_chat_by_a2a_context() -> None:
     octo = _DummyOcto()
     client = TestClient(
@@ -450,9 +533,13 @@ def test_a2a_send_message_exposes_reply_text_above_protocol_envelope(monkeypatch
         _config: A2AConfig,
         *,
         peer_id: str,
-        text: str,
+        text: str | None = None,
+        data: Any = None,
+        file_urls: list[dict[str, Any]] | None = None,
         context_id: str | None = None,
     ) -> dict[str, Any]:
+        assert data is None
+        assert file_urls is None
         return {
             "taskState": "TASK_STATE_COMPLETED",
             "replyText": f"Readable reply to: {text}",
@@ -501,6 +588,93 @@ def test_a2a_send_message_exposes_reply_text_above_protocol_envelope(monkeypatch
     assert payload["task_state"] == "TASK_STATE_COMPLETED"
     assert payload["reply_text"] == "Readable reply to: hello"
     assert "Readable reply to: hello" in rendered.text
+
+
+def test_a2a_send_message_forwards_structured_data_and_file_urls(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_send_peer_message(
+        _config: A2AConfig,
+        *,
+        peer_id: str,
+        text: str | None = None,
+        data: Any = None,
+        file_urls: list[dict[str, Any]] | None = None,
+        context_id: str | None = None,
+    ) -> dict[str, Any]:
+        captured.update(
+            {
+                "peer_id": peer_id,
+                "text": text,
+                "data": data,
+                "file_urls": file_urls,
+                "context_id": context_id,
+            }
+        )
+        return {
+            "taskState": "TASK_STATE_COMPLETED",
+            "replyText": "received",
+            "task": {
+                "id": "a2a-task-1",
+                "contextId": context_id or f"octopal-peer-{peer_id}",
+                "status": {
+                    "state": "TASK_STATE_COMPLETED",
+                    "message": {"role": "ROLE_AGENT", "parts": [{"text": "received"}]},
+                },
+                "artifacts": [
+                    {
+                        "artifactId": "artifact-1",
+                        "name": "structured",
+                        "parts": [{"data": {"ok": True}, "mediaType": "application/json"}],
+                    }
+                ],
+            },
+        }
+
+    monkeypatch.setattr(a2a_tools, "send_peer_message", fake_send_peer_message)
+    ctx = {
+        "octo": SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    a2a=A2AConfig(
+                        enabled=True,
+                        peers={
+                            "bob": A2APeerConfig(
+                                token="secret",
+                                base_url="https://bob.example/a2a/v1",
+                            )
+                        },
+                    )
+                )
+            )
+        )
+    }
+
+    raw = asyncio.run(
+        a2a_tools.a2a_send_message(
+            {
+                "peer_id": "bob",
+                "text": "analyze",
+                "data": {"intent": "compare"},
+                "file_urls": [
+                    {
+                        "url": "https://example.test/a.csv",
+                        "filename": "a.csv",
+                        "media_type": "text/csv",
+                    }
+                ],
+            },
+            ctx,
+        )
+    )
+    payload = json.loads(raw)
+
+    assert captured["peer_id"] == "bob"
+    assert captured["data"] == {"intent": "compare"}
+    assert captured["file_urls"][0]["url"] == "https://example.test/a.csv"
+    assert payload["reply_text"] == "received"
+    assert payload["artifacts"][0]["parts"][0]["kind"] == "data"
+    assert payload["artifacts"][0]["parts"][0]["data"] == {"ok": True}
 
 
 def test_message_send_endpoint_can_be_derived_from_agent_card_url() -> None:

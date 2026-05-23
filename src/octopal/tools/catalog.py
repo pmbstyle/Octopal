@@ -332,7 +332,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
         ToolSpec(
             name="a2a_send_message",
             description=(
-                "Send a text message to a configured trusted A2A peer agent. "
+                "Send a text, structured data, or file-URL message to a configured trusted A2A peer agent. "
                 "Use only for peers explicitly configured in Octopal A2A interop."
             ),
             parameters={
@@ -344,7 +344,40 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     },
                     "text": {
                         "type": "string",
-                        "description": "Plain text message to send to the peer agent.",
+                        "description": "Optional plain text message to send to the peer agent.",
+                    },
+                    "data": {
+                        "type": "object",
+                        "description": "Optional structured JSON data part to send to the peer agent.",
+                        "additionalProperties": True,
+                    },
+                    "file_urls": {
+                        "type": "array",
+                        "description": "Optional file URL parts to reference for the peer agent.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "url": {
+                                    "type": "string",
+                                    "description": "HTTP(S) or private-network URL for the file content.",
+                                },
+                                "filename": {
+                                    "type": "string",
+                                    "description": "Optional display filename.",
+                                },
+                                "media_type": {
+                                    "type": "string",
+                                    "description": "Optional media type such as application/pdf or image/png.",
+                                },
+                                "metadata": {
+                                    "type": "object",
+                                    "description": "Optional metadata for this file part.",
+                                    "additionalProperties": True,
+                                },
+                            },
+                            "required": ["url"],
+                            "additionalProperties": False,
+                        },
                     },
                     "context_id": {
                         "type": "string",
@@ -353,7 +386,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                         ),
                     },
                 },
-                "required": ["peer_id", "text"],
+                "required": ["peer_id"],
                 "additionalProperties": False,
             },
             permission="network",

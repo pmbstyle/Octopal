@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from typing import Any
 from uuid import uuid4
 
@@ -16,7 +17,10 @@ async def send_peer_message(
     config: A2AConfig,
     *,
     peer_id: str,
-    text: str,
+    text: str | None = None,
+    data: Any = None,
+    file_urls: list[dict[str, Any]] | None = None,
+    raw_files: list[dict[str, Any]] | None = None,
     context_id: str | None = None,
     timeout_seconds: float = 60.0,
 ) -> dict[str, Any]:
@@ -30,10 +34,19 @@ async def send_peer_message(
     if not token:
         raise A2AClientError(f"A2A peer {peer_id!r} has no bearer token configured.")
 
+    parts = _build_message_parts(
+        text=text,
+        data=data,
+        file_urls=file_urls,
+        raw_files=raw_files,
+    )
+    if not parts:
+        raise A2AClientError("A2A message requires text, data, file_urls, or raw_files.")
+
     payload = {
         "message": {
             "role": "ROLE_USER",
-            "parts": [{"text": text}],
+            "parts": parts,
             "messageId": f"octopal-message-{uuid4().hex}",
             "contextId": context_id or f"octopal-peer-{peer_id}",
         }
@@ -53,6 +66,56 @@ async def send_peer_message(
     if not isinstance(data, dict):
         raise A2AClientError(f"A2A peer {peer_id!r} returned a non-object response.")
     return data
+
+
+def _build_message_parts(
+    *,
+    text: str | None,
+    data: Any,
+    file_urls: list[dict[str, Any]] | None,
+    raw_files: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    text_value = str(text or "").strip()
+    if text_value:
+        parts.append({"text": text_value, "mediaType": "text/plain"})
+    if data is not None:
+        parts.append({"data": data, "mediaType": "application/json"})
+    for item in file_urls or []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        part: dict[str, Any] = {"url": url}
+        _copy_optional_part_fields(part, item)
+        parts.append(part)
+    for item in raw_files or []:
+        if not isinstance(item, dict):
+            continue
+        raw = str(item.get("raw") or "").strip()
+        if not raw:
+            binary = item.get("bytes")
+            if isinstance(binary, bytes):
+                raw = base64.b64encode(binary).decode("ascii")
+        if not raw:
+            continue
+        part = {"raw": raw}
+        _copy_optional_part_fields(part, item)
+        parts.append(part)
+    return parts
+
+
+def _copy_optional_part_fields(target: dict[str, Any], source: dict[str, Any]) -> None:
+    filename = str(source.get("filename") or "").strip()
+    if filename:
+        target["filename"] = filename
+    media_type = str(source.get("media_type") or source.get("mediaType") or "").strip()
+    if media_type:
+        target["mediaType"] = media_type
+    metadata = source.get("metadata")
+    if isinstance(metadata, dict) and metadata:
+        target["metadata"] = metadata
 
 
 def _message_send_endpoint(peer: A2APeerConfig) -> str:
