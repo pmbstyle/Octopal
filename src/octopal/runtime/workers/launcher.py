@@ -78,6 +78,9 @@ class DockerLauncher:
         user_spec = _host_user_spec()
         if user_spec:
             cmd_args.extend(["--user", user_spec])
+        # Make host services reachable from Linux Docker workers using the same
+        # hostname that Docker Desktop exposes on macOS/Windows.
+        cmd_args.extend(["--add-host", "host.docker.internal:host-gateway"])
 
         host_worker_dir = Path(cwd).resolve()
         container_worker_dir = f"{container_ws}/workers/{worker_id}"

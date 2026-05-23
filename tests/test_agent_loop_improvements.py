@@ -14,6 +14,7 @@ from octopal.runtime.workers.agent_worker import (
     _execute_tool,
     _extract_error_text,
     _extract_mcp_identity,
+    _extract_result_block,
     _extract_tool_progress_key,
     _hash_tool_call,
     _hash_tool_outcome,
@@ -446,6 +447,26 @@ def test_build_inference_unavailable_result_marks_retryable_failure() -> None:
     assert result.output is not None
     assert result.output["retryable"] is True
     assert result.output["reason"] == "inference_upstream_unavailable"
+
+
+def test_extract_result_block_reads_embedded_failure_payload() -> None:
+    result = _extract_result_block(
+        """The request failed.
+
+{
+  "type": "result",
+  "summary": "Failed to connect to Cobalt API server",
+  "output": {
+    "status": "error",
+    "error": "Connection failed"
+  }
+}
+"""
+    )
+
+    assert result is not None
+    assert result["status"] == "failed"
+    assert result["summary"] == "Failed to connect to Cobalt API server"
 
 
 def test_detect_orchestration_stall_warns_and_breaks_on_repeated_no_progress() -> None:

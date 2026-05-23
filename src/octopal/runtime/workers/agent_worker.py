@@ -1452,15 +1452,58 @@ def _extract_result_block(content: str) -> dict[str, Any] | None:
             payload = json.loads(candidate)
         except (json.JSONDecodeError, TypeError):
             continue
-        if isinstance(payload, dict):
-            if payload.get("type") == "result":
-                return payload
-            if "summary" in payload:
-                normalized = dict(payload)
-                normalized.setdefault("type", "result")
-                if _is_valid_result_payload(normalized):
-                    return normalized
+        normalized = _normalize_result_payload(payload)
+        if normalized is not None:
+            return normalized
+
+    for payload in _iter_embedded_json_objects(stripped):
+        normalized = _normalize_result_payload(payload)
+        if normalized is not None:
+            return normalized
     return None
+
+
+def _iter_embedded_json_objects(content: str):
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(content):
+        if char != "{":
+            continue
+        try:
+            payload, _end = decoder.raw_decode(content[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            yield payload
+
+
+def _normalize_result_payload(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("type") != "result" and "summary" not in payload:
+        return None
+
+    normalized = dict(payload)
+    normalized.setdefault("type", "result")
+    status = str(normalized.get("status") or "").strip().lower()
+    if status in {"error", "failure"} or (
+        "status" not in normalized and _result_payload_indicates_failure(normalized)
+    ):
+        normalized["status"] = "failed"
+
+    if _is_valid_result_payload(normalized):
+        return normalized
+    return None
+
+
+def _result_payload_indicates_failure(payload: dict[str, Any]) -> bool:
+    output = payload.get("output")
+    if isinstance(output, dict):
+        if str(output.get("error") or "").strip():
+            return True
+        status = str(output.get("status") or "").strip().lower()
+        if status in {"error", "failed", "failure"}:
+            return True
+    return str(payload.get("error") or "").strip() != ""
 
 
 async def _call_llm(
