@@ -181,7 +181,7 @@ That turns separate agents into a working team:
 - Specialized agents can hand off work to each other instead of duplicating every connector, skill, and long-running routine.
 - Multi-agent workflows can stay autonomous while still keeping clear trust boundaries around which peers are allowed to call in.
 
-The current A2A integration is intentionally private by default. Peers are configured explicitly, authenticate with bearer tokens, discover Octopal through its agent card, and send text tasks over the A2A HTTP+JSON interface.
+The current A2A integration is intentionally private by default. Peers are configured explicitly, authenticate with bearer tokens, discover Octopal through its agent card, and send text tasks over the A2A HTTP+JSON interface. See [docs/a2a_setup.md](docs/a2a_setup.md) for a step-by-step private Tailscale setup.
 
 ## How It Compares
 
