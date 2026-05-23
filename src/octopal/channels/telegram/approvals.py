@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from octopal.runtime.intents.approval_format import format_approval_message
 from octopal.runtime.intents.types import ActionIntent
 
 
@@ -22,12 +23,7 @@ class ApprovalManager:
         future: asyncio.Future = loop.create_future()
         self._pending[intent.id] = future
 
-        text = (
-            "Approval required:\n"
-            f"Intent: {intent.type}\n"
-            f"Risk: {intent.risk}\n"
-            f"Payload: {intent.payload}"
-        )
+        text = format_approval_message(intent)
         await self.bot.send_message(
             chat_id,
             text,

@@ -70,9 +70,16 @@ def test_exec_run_approval_detector_ignores_dangerous_words_in_arguments() -> No
     assert _dangerous_exec_command_reason("echo rm -rf workspace") is None
     assert _dangerous_exec_command_reason("printf 'sudo true'") is None
     assert (
+        _dangerous_exec_command_reason(
+            "find workspace/config-type 2>/dev/null; ls workspace/config/ 2>/dev/null"
+        )
+        is None
+    )
+    assert (
         _dangerous_exec_command_reason("echo ok && rm -rf workspace")
         == "uses dangerous command `rm`"
     )
+    assert _dangerous_exec_command_reason("echo ok > /dev/sda") == "writes to a device path"
 
 
 def test_octo_exec_run_uses_direct_approval_for_dangerous_commands() -> None:
