@@ -2672,7 +2672,7 @@ def _dangerous_exec_command_reason(command: str) -> str | None:
         (r"\bchmod\s+.*\b777\b", "sets broad chmod permissions"),
         (r"\bchown\s+.*\s-r\b|\bchown\s+-r\b", "recursively changes ownership"),
         (r"\bdiskutil\s+erase", "erases a disk"),
-        (r">\s*/dev/", "writes to a device path"),
+        (r">\s*/dev/(?!null(?:$|[\s;&|)]))", "writes to a device path"),
     )
     for pattern, reason in dangerous_patterns:
         if re.search(pattern, lowered):

@@ -11,6 +11,7 @@ from typing import Any
 import structlog
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 
+from octopal.runtime.intents.approval_format import approval_display_payload
 from octopal.runtime.octo.core import Octo, OctoReply
 from octopal.runtime.octo.delivery import resolve_user_delivery
 from octopal.utils import get_tailscale_ips, should_suppress_user_delivery
@@ -134,6 +135,7 @@ class WsApprovalManager:
             {
                 "type": "approval_request",
                 "intent": intent.model_dump(),
+                "display": approval_display_payload(intent),
             }
         )
         try:
