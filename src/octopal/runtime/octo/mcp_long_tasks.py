@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from dataclasses import dataclass
 from typing import Any
 
 import structlog
 
 from octopal.infrastructure.observability.helpers import safe_preview
+from octopal.runtime.octo.delivery import resolve_user_delivery
+from octopal.runtime.workers.contracts import WorkerResult
 
 logger = structlog.get_logger(__name__)
 
@@ -213,11 +216,12 @@ async def _poll_phone_task(
                 attempt=attempt,
             )
             if status in _PHONE_FAILED_STATUSES:
-                await _send_mcp_followup(
+                await _route_mcp_task_result_to_octo(
                     octo,
-                    chat_id,
-                    task.correlation_id,
-                    _format_failure_text(status_payload),
+                    chat_id=chat_id,
+                    task=task,
+                    status="failed",
+                    payload=status_payload,
                 )
                 return
             if status in _PHONE_DONE_STATUSES or _payload_has_result(status_payload):
@@ -227,20 +231,25 @@ async def _poll_phone_task(
                     task.result_tool,
                     {task.task_id_key: task.task_id},
                 )
-                await _send_mcp_followup(
+                await _route_mcp_task_result_to_octo(
                     octo,
-                    chat_id,
-                    task.correlation_id,
-                    _format_result_text(result_payload),
+                    chat_id=chat_id,
+                    task=task,
+                    status="completed",
+                    payload=result_payload,
                 )
                 return
             await asyncio.sleep(_MCP_LONG_TASK_POLL_INTERVAL_SECONDS)
 
-        await _send_mcp_followup(
+        await _route_mcp_task_result_to_octo(
             octo,
-            chat_id,
-            task.correlation_id,
-            "Phone task is still running; I will need to check it again later.",
+            chat_id=chat_id,
+            task=task,
+            status="failed",
+            payload={
+                "status": "timeout",
+                "message": "MCP long-running task did not complete before the polling budget ended.",
+            },
         )
     except asyncio.CancelledError:
         raise
@@ -275,24 +284,121 @@ async def _call_mcp_json(
     )
 
 
-async def _send_mcp_followup(
+async def _route_mcp_task_result_to_octo(
     octo: Any,
+    *,
+    chat_id: int,
+    task: _PendingMCPTask,
+    status: str,
+    payload: Any,
+) -> None:
+    result_status = "completed" if status == "completed" else "failed"
+    result = WorkerResult(
+        status=result_status,
+        summary=f"MCP long-running task {result_status}.",
+        output={
+            "source": "mcp_long_task",
+            "server_id": task.server_id,
+            "task_id": task.task_id,
+            "task_id_key": task.task_id_key,
+            "status_tool": task.status_tool,
+            "result_tool": task.result_tool,
+            "payload": payload,
+        },
+        tools_used=[task.status_tool, task.result_tool],
+    )
+    add_message = getattr(getattr(octo, "memory", None), "add_message", None)
+    if callable(add_message):
+        await add_message(
+            "system",
+            f"MCP long-running task {result_status}: {safe_preview(payload, limit=500)}",
+            {
+                "chat_id": chat_id,
+                "mcp_long_task": True,
+                "worker_result": True,
+                "correlation_id": task.correlation_id,
+                "server_id": task.server_id,
+                "task_id": task.task_id,
+            },
+        )
+
+    route = _route_worker_results_back_to_octo_callable()
+    if callable(route):
+        try:
+            routed_text = await route(
+                octo,
+                chat_id,
+                [(f"mcp:{task.server_id}", _mcp_task_text(task), result)],
+            )
+        except Exception:
+            logger.exception(
+                "Failed to route MCP long-running task result through Octo",
+                chat_id=chat_id,
+                server_id=task.server_id,
+                task_id=task.task_id,
+            )
+            routed_text = _format_result_text(payload)
+    else:
+        routed_text = _format_result_text(payload)
+
+    await _deliver_mcp_octo_reply(
+        octo,
+        chat_id=chat_id,
+        correlation_id=task.correlation_id,
+        text=routed_text,
+    )
+
+
+def _route_worker_results_back_to_octo_callable():
+    core_module = sys.modules.get("octopal.runtime.octo.core")
+    if core_module is None:
+        return None
+    return getattr(core_module, "route_worker_results_back_to_octo", None)
+
+
+def _mcp_task_text(task: _PendingMCPTask) -> str:
+    return (
+        f"Handle completed long-running MCP task from server '{task.server_id}'. "
+        "Decide whether to send the user a clean channel response."
+    )
+
+
+async def _deliver_mcp_octo_reply(
+    octo: Any,
+    *,
     chat_id: int,
     correlation_id: str | None,
     text: str,
 ) -> None:
-    final_text = str(text or "").strip()
-    if not final_text:
+    decision = resolve_user_delivery(text)
+    if not decision.user_visible:
+        logger.info(
+            "MCP long-running task produced no user-visible follow-up",
+            chat_id=chat_id,
+            reason=decision.reason,
+        )
         return
     sender = getattr(octo, "internal_send", None)
-    if callable(sender):
-        await sender(chat_id, final_text)
+    if not callable(sender):
+        logger.info(
+            "MCP long-running task produced a reply but no sender is attached",
+            chat_id=chat_id,
+            text_len=len(decision.text),
+        )
+        return
+    await sender(chat_id, decision.text)
+    note_delivery = getattr(octo, "note_user_visible_delivery", None)
+    if callable(note_delivery):
+        note_delivery(chat_id, decision.text)
+    clearer = getattr(octo, "clear_pending_conversational_closure", None)
+    if callable(clearer):
+        clearer(correlation_id)
     memory = getattr(octo, "memory", None)
     add_message = getattr(memory, "add_message", None)
     if callable(add_message):
         await add_message(
             "assistant",
-            final_text,
+            decision.text,
             {
                 "chat_id": chat_id,
                 "background_delivery": True,
@@ -315,14 +421,14 @@ def _format_result_text(payload: Any) -> str:
     text = _first_present_text(
         payload,
         (
-            "result",
-            "final_result",
-            "answer",
-            "output",
-            "text",
             "message",
+            "answer",
+            "final_result",
+            "result",
+            "output",
             "content",
             "data",
+            "text",
         ),
     )
     if text:
@@ -336,7 +442,7 @@ def _coerce_payload(value: Any) -> Any:
         if not stripped:
             return {}
         try:
-            return json.loads(stripped)
+            return _coerce_payload(json.loads(stripped))
         except Exception:
             return stripped
     if isinstance(value, list):
@@ -385,6 +491,23 @@ def _first_present_text(payload: Any, keys: tuple[str, ...]) -> str:
     value = _find_key(payload, keys)
     if value is None:
         return ""
+    value = _coerce_payload(value)
+    if isinstance(value, dict):
+        nested = _first_present_text(
+            value,
+            (
+                "message",
+                "answer",
+                "final_result",
+                "result",
+                "output",
+                "content",
+                "data",
+                "text",
+            ),
+        )
+        if nested:
+            return nested
     if isinstance(value, str):
         return value.strip()
     return json.dumps(value, ensure_ascii=False, indent=2)

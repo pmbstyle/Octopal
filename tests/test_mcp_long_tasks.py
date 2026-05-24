@@ -54,11 +54,29 @@ class DummyOcto:
     async def internal_send(self, chat_id: int, text: str) -> None:
         self.sent.append((chat_id, text))
 
+    def note_user_visible_delivery(self, _chat_id: int, _text: str) -> None:
+        return None
+
+
+def _route_with_text(text: str, calls: list | None = None):
+    async def _route(_octo, _chat_id, worker_results):
+        if calls is not None:
+            calls.append(worker_results)
+        return text
+
+    return _route
+
 
 @pytest.mark.asyncio
 async def test_phone_start_schedules_result_poll_and_marks_followup(monkeypatch) -> None:
     monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_INITIAL_DELAY_SECONDS", 0)
     monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_POLL_INTERVAL_SECONDS", 0)
+    routed = []
+    monkeypatch.setattr(
+        mcp_long_tasks,
+        "_route_worker_results_back_to_octo_callable",
+        lambda: _route_with_text("Octo says NASA says hello from X.", routed),
+    )
 
     octo = DummyOcto()
     tracked = maybe_track_mcp_long_task(
@@ -81,19 +99,20 @@ async def test_phone_start_schedules_result_poll_and_marks_followup(monkeypatch)
         ("glm_cellphone", "get_phone_task_status", {"task_id": "phone-1"}),
         ("glm_cellphone", "get_phone_task_result", {"task_id": "phone-1"}),
     ]
-    assert octo.sent == [(123, "NASA says hello from X.")]
-    assert octo.memory.messages == [
-        (
-            "assistant",
-            "NASA says hello from X.",
-            {
-                "chat_id": 123,
-                "background_delivery": True,
-                "mcp_long_task": True,
-                "correlation_id": "turn-1",
-            },
-        )
-    ]
+    assert octo.sent == [(123, "Octo says NASA says hello from X.")]
+    assert routed
+    worker_id, task_text, result = routed[0][0]
+    assert worker_id == "mcp:glm_cellphone"
+    assert "long-running MCP task" in task_text
+    assert result.output["payload"] == {"result": "NASA says hello from X."}
+    assert any(
+        role == "system" and metadata.get("mcp_long_task") is True
+        for role, _text, metadata in octo.memory.messages
+    )
+    assert any(
+        role == "assistant" and text == "Octo says NASA says hello from X."
+        for role, text, _metadata in octo.memory.messages
+    )
     assert octo._pending_mcp_long_tasks == {}
 
 
@@ -101,6 +120,11 @@ async def test_phone_start_schedules_result_poll_and_marks_followup(monkeypatch)
 async def test_raw_mcp_status_call_schedules_result_poll(monkeypatch) -> None:
     monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_INITIAL_DELAY_SECONDS", 0)
     monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(
+        mcp_long_tasks,
+        "_route_worker_results_back_to_octo_callable",
+        lambda: _route_with_text("Octo routed raw status result."),
+    )
 
     octo = DummyOcto()
     tracked = maybe_track_mcp_long_task(
@@ -124,13 +148,18 @@ async def test_raw_mcp_status_call_schedules_result_poll(monkeypatch) -> None:
         "get_phone_task_status",
         {"task_id": "phone-raw"},
     )
-    assert octo.sent == [(123, "NASA says hello from X.")]
+    assert octo.sent == [(123, "Octo routed raw status result.")]
 
 
 @pytest.mark.asyncio
 async def test_phone_start_uses_job_id_for_glm_cellphone(monkeypatch) -> None:
     monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_INITIAL_DELAY_SECONDS", 0)
     monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(
+        mcp_long_tasks,
+        "_route_worker_results_back_to_octo_callable",
+        lambda: _route_with_text("Octo routed job id result."),
+    )
 
     octo = DummyOcto()
     tracked = maybe_track_mcp_long_task(
@@ -153,13 +182,59 @@ async def test_phone_start_uses_job_id_for_glm_cellphone(monkeypatch) -> None:
         ("glm_cellphone", "get_phone_task_status", {"job_id": "job-1"}),
         ("glm_cellphone", "get_phone_task_result", {"job_id": "job-1"}),
     ]
-    assert octo.sent == [(123, "NASA says hello from X.")]
+    assert octo.sent == [(123, "Octo routed job id result.")]
+
+
+@pytest.mark.asyncio
+async def test_raw_mcp_start_extracts_job_id_from_text_wrapper_string(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_INITIAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(
+        mcp_long_tasks,
+        "_route_worker_results_back_to_octo_callable",
+        lambda: _route_with_text("Octo routed wrapper result."),
+    )
+
+    octo = DummyOcto()
+    tracked = maybe_track_mcp_long_task(
+        octo=octo,
+        chat_id=123,
+        correlation_id="turn-wrapper",
+        tool_name="mcp_call",
+        args={
+            "server_id": "glm_cellphone",
+            "tool_name": "start_phone_task",
+            "arguments": {"task": "Open X"},
+        },
+        result=json.dumps(
+            [
+                {
+                    "type": "text",
+                    "text": json.dumps({"job_id": "job-wrapper", "status": "queued"}),
+                }
+            ]
+        ),
+    )
+
+    assert tracked is True
+    await asyncio.sleep(0.01)
+
+    assert octo.mcp_manager.calls[0] == (
+        "glm_cellphone",
+        "get_phone_task_status",
+        {"job_id": "job-wrapper"},
+    )
 
 
 @pytest.mark.asyncio
 async def test_router_tracks_generated_phone_tool_result(monkeypatch) -> None:
     monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_INITIAL_DELAY_SECONDS", 0)
     monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(
+        mcp_long_tasks,
+        "_route_worker_results_back_to_octo_callable",
+        lambda: _route_with_text("Octo routed generated tool result."),
+    )
 
     async def _handler(_args, _ctx):
         return [{"type": "text", "text": '{"task_id":"phone-router","status":"running"}'}]
@@ -198,8 +273,30 @@ async def test_router_tracks_generated_phone_tool_result(monkeypatch) -> None:
 
     await asyncio.sleep(0.01)
 
-    assert octo.sent == [(123, "NASA says hello from X.")]
+    assert octo.sent == [(123, "Octo routed generated tool result.")]
 
 
 def test_plain_text_phone_result_is_not_json_quoted() -> None:
     assert mcp_long_tasks._format_result_text("plain result") == "plain result"
+
+
+def test_phone_result_prefers_message_inside_mcp_text_wrapper() -> None:
+    payload = [
+        {
+            "type": "text",
+            "text": json.dumps(
+                {
+                    "job_id": "job-1",
+                    "status": "completed",
+                    "terminal": True,
+                    "task": "Open X",
+                    "message": "Full text of the posts:\n\n1. Hello\n\n2. World",
+                }
+            ),
+        }
+    ]
+
+    assert (
+        mcp_long_tasks._format_result_text(payload)
+        == "Full text of the posts:\n\n1. Hello\n\n2. World"
+    )
