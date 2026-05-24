@@ -37,6 +37,7 @@ _PHONE_FAILED_STATUSES = {"failed", "failure", "error", "cancelled", "canceled",
 class _PendingMCPTask:
     server_id: str
     task_id: str
+    task_id_key: str
     status_tool: str
     result_tool: str
     correlation_id: str | None
@@ -70,23 +71,24 @@ def maybe_track_mcp_long_task(
 
     payload = _coerce_payload(result)
     if resolved_tool_name == _PHONE_RESULT_TOOL:
-        task_id = _extract_task_id(args, payload)
-        if task_id:
-            _cancel_phone_task_poll(octo, chat_id, resolved_server_id, task_id, correlation_id)
+        task_ref = _extract_task_ref(args, payload)
+        if task_ref is not None:
+            _cancel_phone_task_poll(octo, chat_id, resolved_server_id, task_ref[0], correlation_id)
         return False
 
     if resolved_tool_name not in {_PHONE_START_TOOL, _PHONE_STATUS_TOOL}:
         return False
 
-    task_id = _extract_task_id(args, payload)
-    if not task_id:
+    task_ref = _extract_task_ref(args, payload)
+    if task_ref is None:
         logger.info(
-            "Skipping MCP long-task tracking without task id",
+            "Skipping MCP long-task tracking without task/job id",
             server_id=resolved_server_id,
             tool=resolved_tool_name,
             result_preview=safe_preview(payload, limit=240),
         )
         return False
+    task_id, task_id_key = task_ref
 
     status = _extract_status(payload)
     if resolved_tool_name == _PHONE_STATUS_TOOL and status in _PHONE_FAILED_STATUSES:
@@ -102,6 +104,7 @@ def maybe_track_mcp_long_task(
         task=_PendingMCPTask(
             server_id=resolved_server_id,
             task_id=task_id,
+            task_id_key=task_id_key,
             status_tool=_PHONE_STATUS_TOOL,
             result_tool=_PHONE_RESULT_TOOL,
             correlation_id=correlation_id,
@@ -198,7 +201,7 @@ async def _poll_phone_task(
                 octo,
                 task.server_id,
                 task.status_tool,
-                {"task_id": task.task_id},
+                {task.task_id_key: task.task_id},
             )
             status = _extract_status(status_payload)
             logger.info(
@@ -222,7 +225,7 @@ async def _poll_phone_task(
                     octo,
                     task.server_id,
                     task.result_tool,
-                    {"task_id": task.task_id},
+                    {task.task_id_key: task.task_id},
                 )
                 await _send_mcp_followup(
                     octo,
@@ -349,12 +352,19 @@ def _coerce_payload(value: Any) -> Any:
     return value
 
 
-def _extract_task_id(args: dict[str, Any], payload: Any) -> str:
+def _extract_task_ref(args: dict[str, Any], payload: Any) -> tuple[str, str] | None:
     for source in (args, payload):
-        found = _find_key(source, ("task_id", "taskId", "id"))
-        if found:
-            return str(found).strip()
-    return ""
+        found = _find_key_with_name(source, ("task_id", "taskId", "job_id", "jobId", "id"))
+        if found is None:
+            continue
+        key, value = found
+        task_id = str(value).strip()
+        if not task_id:
+            continue
+        if _normalize_name(key) == "job_id":
+            return task_id, "job_id"
+        return task_id, "task_id"
+    return None
 
 
 def _extract_status(payload: Any) -> str:
@@ -381,18 +391,25 @@ def _first_present_text(payload: Any, keys: tuple[str, ...]) -> str:
 
 
 def _find_key(value: Any, keys: tuple[str, ...]) -> Any:
+    found = _find_key_with_name(value, keys)
+    if found is None:
+        return None
+    return found[1]
+
+
+def _find_key_with_name(value: Any, keys: tuple[str, ...]) -> tuple[str, Any] | None:
     if isinstance(value, dict):
-        lowered = {str(key).lower(): val for key, val in value.items()}
+        lowered = {str(key).lower(): (str(key), val) for key, val in value.items()}
         for key in keys:
             if key.lower() in lowered:
                 return lowered[key.lower()]
         for item in value.values():
-            found = _find_key(item, keys)
+            found = _find_key_with_name(item, keys)
             if found is not None:
                 return found
     if isinstance(value, list):
         for item in value:
-            found = _find_key(item, keys)
+            found = _find_key_with_name(item, keys)
             if found is not None:
                 return found
     return None
