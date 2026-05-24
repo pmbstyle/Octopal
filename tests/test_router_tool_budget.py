@@ -672,6 +672,18 @@ def test_normalize_worker_followup_reply_suppresses_embedded_no_response_json() 
     assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
 
 
+def test_normalize_worker_followup_reply_suppresses_internal_mode_leak() -> None:
+    raw = """
+    {
+      "user_response": "I'm in bounded worker-result follow-up mode and can't modify the schedule from here. I'll do this on the next turn.",
+      "no_user_response": false,
+      "actions_taken": [],
+      "reason": "needs orchestration"
+    }
+    """
+    assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
+
+
 def test_build_worker_result_payload_keeps_preview_text_for_large_output() -> None:
     payload = _build_worker_result_payload(
         "worker-1",

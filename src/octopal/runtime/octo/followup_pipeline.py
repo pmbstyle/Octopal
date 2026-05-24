@@ -6,6 +6,7 @@ from typing import Any
 
 import structlog
 
+from octopal.infrastructure.logging import correlation_id_var
 from octopal.infrastructure.observability.base import now_ms
 from octopal.infrastructure.observability.helpers import safe_preview, summarize_exception
 from octopal.runtime.metrics import update_component_gauges
@@ -169,6 +170,7 @@ async def _flush_worker_followup_batch(octo: Any, chat_id: int, correlation_id: 
     )
     trace_status = "ok"
     trace_output: dict[str, Any] | None = None
+    correlation_token = correlation_id_var.set(correlation_id)
     try:
         await asyncio.sleep(_worker_followup_batch_window_seconds())
         batch_key = (chat_id, correlation_id)
@@ -294,6 +296,7 @@ async def _flush_worker_followup_batch(octo: Any, chat_id: int, correlation_id: 
             output=trace_output,
             metadata=trace_metadata,
         )
+        correlation_id_var.reset(correlation_token)
 
 
 def _schedule_worker_followup_flush(octo: Any, chat_id: int, correlation_id: str | None) -> None:
@@ -417,6 +420,7 @@ async def _internal_worker(octo: Any, chat_id: int, queue: asyncio.Queue) -> Non
     """
     while True:
         correlation_id: str | None = None
+        correlation_token = None
         try:
             item = await asyncio.wait_for(queue.get(), timeout=_queue_idle_timeout_seconds())
             notify_user = None
@@ -430,9 +434,12 @@ async def _internal_worker(octo: Any, chat_id: int, queue: asyncio.Queue) -> Non
         except TimeoutError:
             break
         try:
+            if correlation_id:
+                correlation_token = correlation_id_var.set(correlation_id)
             logger.info(
                 "Processing internal worker result",
                 chat_id=chat_id,
+                correlation_id=correlation_id,
                 summary_len=len(result.summary or ""),
             )
             # Add worker result to memory for context, but don't auto-send
@@ -511,6 +518,8 @@ async def _internal_worker(octo: Any, chat_id: int, queue: asyncio.Queue) -> Non
             if octo.should_flush_worker_followups(correlation_id):
                 octo.clear_suppressed_turn_followups(correlation_id)
             _schedule_worker_followup_flush(octo, chat_id, correlation_id)
+            if correlation_token is not None:
+                correlation_id_var.reset(correlation_token)
             queue.task_done()
     _INTERNAL_TASKS.pop(chat_id, None)
     if queue.empty():
