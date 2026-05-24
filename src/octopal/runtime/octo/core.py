@@ -208,6 +208,7 @@ class Octo(
     _last_reply_norm_by_chat: dict[int, str] | None = None
     _last_user_visible_delivery_at_by_chat: dict[int, Any] | None = None
     _pending_conversational_closure_by_correlation: dict[str, Any] | None = None
+    _pending_mcp_long_tasks: dict[tuple[int, str, str], asyncio.Task] | None = None
     _structured_followup_required_by_correlation: dict[str, Any] | None = None
     _suppressed_followups_by_correlation: dict[str, Any] | None = None
     _channel_followups_suppressed_by_correlation: dict[str, Any] | None = None
@@ -262,6 +263,8 @@ class Octo(
             self._last_user_visible_delivery_at_by_chat = {}
         if self._pending_conversational_closure_by_correlation is None:
             self._pending_conversational_closure_by_correlation = {}
+        if self._pending_mcp_long_tasks is None:
+            self._pending_mcp_long_tasks = {}
         if self._structured_followup_required_by_correlation is None:
             self._structured_followup_required_by_correlation = {}
         if self._suppressed_followups_by_correlation is None:
