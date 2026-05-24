@@ -96,6 +96,33 @@ def test_memory_context_uses_confidence_weighting() -> None:
     assert "High confidence old fact" in context[0]
 
 
+def test_recent_history_excludes_internal_system_entries() -> None:
+    store = _StoreStub()
+    service = MemoryService(store=store, embeddings=None, owner_id="default")
+
+    async def scenario() -> list[tuple[str, str, str]]:
+        await service.add_message("user", "ага, давай", {"chat_id": 7})
+        await service.add_message(
+            "system",
+            "Worker completed: unrelated scheduled report",
+            {"chat_id": 7, "worker_result": True},
+        )
+        await service.add_message(
+            "system",
+            "Planner mode=execute; steps=4",
+            {"chat_id": 7, "planner": True},
+        )
+        await service.add_message("assistant", "Шаг 6/40, ищет профиль.", {"chat_id": 7})
+        return await service.get_recent_history(7, limit=10)
+
+    history = asyncio.run(scenario())
+
+    assert [(role, content) for role, content, _created_at in history] == [
+        ("user", "ага, давай"),
+        ("assistant", "Шаг 6/40, ищет профиль."),
+    ]
+
+
 def test_memory_adds_typed_enrichment_metadata() -> None:
     store = _StoreStub()
     service = MemoryService(store=store, embeddings=None, owner_id="default")

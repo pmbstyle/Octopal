@@ -175,9 +175,11 @@ class MemoryService:
         return [f"{entry.role}: {entry.content}" for _, entry in top]
 
     async def get_recent_history(self, chat_id: int, limit: int = 6) -> list[tuple[str, str, str]]:
+        fetch_limit = max(limit * 5, 50)
         entries = await asyncio.to_thread(
-            self.store.list_memory_entries_by_chat, chat_id, limit=limit
+            self.store.list_memory_entries_by_chat, chat_id, limit=fetch_limit
         )
+        entries = [entry for entry in entries if _is_conversational_history_entry(entry)][:limit]
         entries.reverse()
         return [(entry.role, entry.content, entry.created_at.isoformat()) for entry in entries]
 
@@ -204,6 +206,19 @@ def _normalize_text(value: str) -> str:
     lowered = (value or "").strip().lower()
     lowered = re.sub(r"\s+", " ", lowered)
     return lowered
+
+
+def _is_conversational_history_entry(entry: MemoryEntry) -> bool:
+    if entry.role not in {"user", "assistant"}:
+        return False
+    metadata = entry.metadata or {}
+    internal_flags = (
+        "worker_result",
+        "planner",
+        "scheduler",
+        "control_plane",
+    )
+    return not any(bool(metadata.get(flag)) for flag in internal_flags)
 
 
 def _extract_assertion(value: str) -> _Assertion | None:
