@@ -14,6 +14,7 @@ from typing import Any
 
 import structlog
 
+from octopal.infrastructure.logging import correlation_id_var
 from octopal.infrastructure.observability.base import (
     bind_trace_context,
     get_current_trace_context,
@@ -30,6 +31,7 @@ from octopal.runtime.intents.types import ActionIntent
 from octopal.runtime.memory.service import MemoryService
 from octopal.runtime.octo.control_plane import RouteMode
 from octopal.runtime.octo.delivery import resolve_user_delivery
+from octopal.runtime.octo.mcp_long_tasks import maybe_track_mcp_long_task
 from octopal.runtime.octo.prompt_builder import (
     build_bootstrap_context_prompt,
     build_control_plane_prompt,
@@ -2482,6 +2484,16 @@ async def _handle_octo_tool_call(
                 }
                 logger.debug(
                     "Octo tool result", tool_name=name, result_preview=f"{str(result)[:200]}..."
+                )
+                maybe_track_mcp_long_task(
+                    octo=ctx.get("octo"),
+                    chat_id=int(ctx.get("chat_id", 0) or 0),
+                    correlation_id=str(correlation_id_var.get() or "").strip() or None,
+                    tool_name=str(name or ""),
+                    args=args if isinstance(args, dict) else {},
+                    result=result,
+                    server_id=getattr(spec, "server_id", None),
+                    remote_tool_name=getattr(spec, "remote_tool_name", None),
                 )
                 return result, {"timed_out": False, "had_error": False}
         blocked_payload = _resolve_octo_policy_block(tool_name=str(name or ""), ctx=ctx)
