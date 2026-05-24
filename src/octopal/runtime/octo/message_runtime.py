@@ -375,10 +375,7 @@ class OctoMessageRuntimeMixin:
                         "Dropped worker follow-up after final in-turn reply",
                         chat_id=chat_id,
                     )
-            pending_followup_work = self.has_active_workers_for_correlation(
-                correlation_id
-            ) or self.has_pending_internal_results_for_correlation(correlation_id)
-            if wants_followup and pending_followup_work and not finalized_visible_reply:
+            if wants_followup and not finalized_visible_reply:
                 _schedule_worker_followup_flush(self, chat_id, correlation_id)
             else:
                 _discard_worker_followup_batch(

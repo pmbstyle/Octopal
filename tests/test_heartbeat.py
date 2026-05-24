@@ -1253,7 +1253,7 @@ async def test_worker_followup_created_during_active_turn_flushes_after_structur
 
 
 @pytest.mark.asyncio
-async def test_worker_followup_created_during_active_turn_is_dropped_when_work_already_finished(
+async def test_worker_followup_created_during_active_turn_flushes_when_work_already_finished(
     monkeypatch,
 ):
     monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
@@ -1300,7 +1300,7 @@ async def test_worker_followup_created_during_active_turn_is_dropped_when_work_a
         octo_core.correlation_id_var.reset(token)
     await asyncio.sleep(0.03)
 
-    assert sent_messages == []
+    assert sent_messages == [(123, "Фоновый итог.")]
     assert octo_core._WORKER_FOLLOWUP_BATCHES == {}
 
 
