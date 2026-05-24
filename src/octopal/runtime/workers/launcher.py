@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Protocol
 
 _WORKER_SHARED_WORKSPACE_DIRS = ("skills", ".skill-envs")
+_FILE_LIKE_SUFFIXES = {".json", ".jsonl", ".md", ".txt", ".csv", ".tsv", ".yaml", ".yml", ".py"}
 
 
 class WorkerLauncher(Protocol):
@@ -116,7 +117,7 @@ class DockerLauncher:
             except ValueError:
                 continue
             if not host_path.exists():
-                continue
+                _prepare_missing_allowed_path(host_path)
             _prepare_worker_mount_target(
                 host_worker_dir,
                 rel_path=rel_path,
@@ -203,6 +204,14 @@ def _prepare_worker_mount_target(
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists():
         target.touch()
+
+
+def _prepare_missing_allowed_path(host_path: Path) -> None:
+    if host_path.suffix.lower() in _FILE_LIKE_SUFFIXES:
+        host_path.parent.mkdir(parents=True, exist_ok=True)
+        host_path.touch(exist_ok=True)
+        return
+    host_path.mkdir(parents=True, exist_ok=True)
 
 
 def _host_user_spec() -> str | None:

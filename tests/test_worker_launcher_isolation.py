@@ -109,6 +109,45 @@ def test_docker_launcher_mounts_worker_dir_and_shared_paths_when_restricted(
     assert f"{workspace}:/workspace" not in args
 
 
+def test_docker_launcher_creates_missing_allowed_directory_before_mount(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    worker_dir = workspace / "workers" / "worker-1"
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    spec_path = worker_dir / "spec.json"
+    spec_path.write_text(
+        json.dumps({"id": "worker-1", "allowed_paths": ["research/x-digest"]}),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    async def _fake_exec(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(pid=123)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(launcher_mod, "_host_user_spec", lambda: "1000:1000")
+
+    launcher = DockerLauncher(image="octopal:test", host_workspace=str(workspace))
+    asyncio.run(
+        launcher.launch(
+            spec_path=str(spec_path),
+            cwd=str(worker_dir),
+            env={"PYTHONPATH": "src", "OCTOPAL_WORKSPACE_DIR": "/workspace"},
+        )
+    )
+
+    args = captured["args"]
+    digest_dir = workspace / "research" / "x-digest"
+    assert digest_dir.is_dir()
+    assert (worker_dir / "research" / "x-digest").is_dir()
+    assert f"{digest_dir}:/workspace/research/x-digest" in args
+    assert f"{digest_dir}:/workspace/workers/worker-1/research/x-digest" in args
+
+
 def test_docker_launcher_precreates_nested_worker_mount_targets(
     tmp_path: Path,
     monkeypatch,

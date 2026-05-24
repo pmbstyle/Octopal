@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from octopal.infrastructure.logging import correlation_id_var
 from octopal.runtime.octo import core as octo_core
 from octopal.runtime.octo import router as octo_router
 from octopal.runtime.octo.control_plane import RouteMode, RouteRequest, resolve_turn_route_mode
@@ -1357,6 +1358,63 @@ async def test_final_user_reply_drops_active_turn_worker_followup_even_with_pend
     assert sent_messages == []
     assert octo_core._WORKER_FOLLOWUP_BATCHES == {}
     assert octo.should_suppress_turn_followups(correlation_id) is True
+
+
+@pytest.mark.asyncio
+async def test_internal_worker_followup_binds_item_correlation(monkeypatch):
+    monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
+    octo_core._WORKER_FOLLOWUP_BATCHES.clear()
+    octo_core._INTERNAL_QUEUES.clear()
+    octo_core._INTERNAL_TASKS.clear()
+
+    seen_correlations = []
+    sent_messages = []
+
+    class DummyMemory:
+        async def add_message(self, role, text, metadata):
+            return None
+
+    async def _send(chat_id, text):
+        sent_messages.append((chat_id, text))
+
+    async def _route_worker_results_back_to_octo(_octo, _chat_id, _worker_results):
+        seen_correlations.append(correlation_id_var.get())
+        return "Готово."
+
+    monkeypatch.setattr(
+        octo_core,
+        "route_worker_results_back_to_octo",
+        _route_worker_results_back_to_octo,
+    )
+
+    octo = Octo(
+        approvals=None,
+        memory=DummyMemory(),
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+        internal_send=_send,
+    )
+
+    stale_token = correlation_id_var.set("stale-correlation")
+    try:
+        octo_core._enqueue_internal_result(
+            octo,
+            123,
+            "worker-1",
+            "finish task",
+            WorkerResult(status="completed", summary="done"),
+            correlation_id="fresh-correlation",
+        )
+    finally:
+        correlation_id_var.reset(stale_token)
+
+    await asyncio.sleep(0.05)
+
+    assert seen_correlations == ["fresh-correlation"]
+    assert sent_messages == [(123, "Готово.")]
 
 
 def test_octo_does_not_have_web_fetch():
