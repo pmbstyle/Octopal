@@ -13,7 +13,7 @@ from octopal.runtime.worker_result_payloads import (
     summarize_worker_output_for_context,
 )
 from octopal.runtime.workers.allowed_paths import (
-    infer_allowed_paths_from_task as _infer_allowed_paths_from_task,
+    infer_allowed_paths_from_values as _infer_allowed_paths_from_values,
 )
 from octopal.tools.registry import ToolSpec
 from octopal.utils import utc_now
@@ -40,6 +40,12 @@ _ALLOWED_PATHS_GUIDANCE = (
     "and pass the smallest explicit set that will do the job. "
     "If the task only needs the worker's own scratch space, omit allowed_paths."
 )
+
+
+def _infer_allowed_paths_from_task(task: str) -> list[str] | None:
+    return _infer_allowed_paths_from_values(task)
+
+
 _IMAGE_TASK_TOKENS = {
     "image",
     "images",
@@ -896,7 +902,7 @@ async def _start_worker_common(
     allowed_paths = (
         args.get("allowed_paths")
         if "allowed_paths" in args
-        else _infer_allowed_paths_from_task(task)
+        else _infer_allowed_paths_from_values(task, inputs)
     )
 
     launch = await octo._start_worker_async(
@@ -1018,7 +1024,7 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
                 allowed_paths=(
                     item.get("allowed_paths")
                     if "allowed_paths" in item
-                    else _infer_allowed_paths_from_task(task_text)
+                    else _infer_allowed_paths_from_values(task_text, inputs)
                 ),
             )
 

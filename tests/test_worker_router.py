@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from octopal.infrastructure.store.models import WorkerTemplateRecord
 from octopal.tools.workers.management import (
     _infer_allowed_paths_from_task,
+    _infer_allowed_paths_from_values,
     _select_worker_template,
     _tool_start_worker,
 )
@@ -376,3 +377,16 @@ def test_start_worker_infers_existing_parent_for_new_workspace_file(monkeypatch,
     )
 
     assert inferred == ["experiments/qa"]
+
+
+def test_start_worker_infers_workspace_paths_from_inputs(monkeypatch, tmp_path) -> None:
+    draft_dir = tmp_path / "memory" / "moltbook"
+    draft_dir.mkdir(parents=True)
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(tmp_path))
+
+    inferred = _infer_allowed_paths_from_values(
+        "Publish the current draft.",
+        {"draft_path": "memory/moltbook/draft.md"},
+    )
+
+    assert inferred == ["memory/moltbook"]
