@@ -14,7 +14,7 @@ from octopal.gateway.app import build_app
 from octopal.infrastructure.config.models import A2AConfig, A2APeerConfig
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.logging import correlation_id_var
-from octopal.interop.a2a.client import _message_send_endpoint
+from octopal.interop.a2a.client import A2AClientError, _message_send_endpoint
 from octopal.interop.a2a.routes import register_a2a_routes
 from octopal.runtime.tool_payloads import render_tool_result_for_llm
 from octopal.tools.communication import a2a as a2a_tools
@@ -588,6 +588,85 @@ def test_a2a_send_message_exposes_reply_text_above_protocol_envelope(monkeypatch
     assert payload["task_state"] == "TASK_STATE_COMPLETED"
     assert payload["reply_text"] == "Readable reply to: hello"
     assert "Readable reply to: hello" in rendered.text
+
+
+def test_a2a_send_message_labels_non_transport_errors(monkeypatch) -> None:
+    async def fake_send_peer_message(
+        _config: A2AConfig,
+        *,
+        peer_id: str,
+        text: str | None = None,
+        data: Any = None,
+        file_urls: list[dict[str, Any]] | None = None,
+        context_id: str | None = None,
+    ) -> dict[str, Any]:
+        raise A2AClientError("A2A peer 'bob' returned HTTP 400: Invalid A2A message payload")
+
+    monkeypatch.setattr(a2a_tools, "send_peer_message", fake_send_peer_message)
+    ctx = {
+        "octo": SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    a2a=A2AConfig(
+                        enabled=True,
+                        peers={
+                            "bob": A2APeerConfig(
+                                token="secret",
+                                base_url="https://bob.example/a2a/v1",
+                            )
+                        },
+                    )
+                )
+            )
+        )
+    }
+
+    raw = asyncio.run(a2a_tools.a2a_send_message({"peer_id": "bob", "text": "hello"}, ctx))
+    payload = json.loads(raw)
+
+    assert payload["status"] == "error"
+    assert payload["ok"] is False
+    assert payload["error_type"] == "validation"
+    assert payload["transport_error"] is False
+    assert "Do not describe the A2A bridge as down" in payload["diagnosis"]
+
+
+def test_a2a_send_message_marks_upstream_transport_errors(monkeypatch) -> None:
+    async def fake_send_peer_message(
+        _config: A2AConfig,
+        *,
+        peer_id: str,
+        text: str | None = None,
+        data: Any = None,
+        file_urls: list[dict[str, Any]] | None = None,
+        context_id: str | None = None,
+    ) -> dict[str, Any]:
+        raise A2AClientError("A2A peer 'bob' returned HTTP 503: temporarily unavailable")
+
+    monkeypatch.setattr(a2a_tools, "send_peer_message", fake_send_peer_message)
+    ctx = {
+        "octo": SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    a2a=A2AConfig(
+                        enabled=True,
+                        peers={
+                            "bob": A2APeerConfig(
+                                token="secret",
+                                base_url="https://bob.example/a2a/v1",
+                            )
+                        },
+                    )
+                )
+            )
+        )
+    }
+
+    raw = asyncio.run(a2a_tools.a2a_send_message({"peer_id": "bob", "text": "hello"}, ctx))
+    payload = json.loads(raw)
+
+    assert payload["error_type"] == "upstream_unavailable"
+    assert payload["transport_error"] is True
 
 
 def test_a2a_send_message_forwards_structured_data_and_file_urls(monkeypatch) -> None:

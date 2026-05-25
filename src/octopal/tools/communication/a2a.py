@@ -14,15 +14,18 @@ async def a2a_send_message(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     file_urls = (args or {}).get("file_urls")
     context_id = str((args or {}).get("context_id") or "").strip() or None
     if not peer_id:
-        return _json({"status": "error", "message": "peer_id is required."})
+        return _error_payload("peer_id is required.", error_type="validation")
     if not text and data is None and not file_urls:
-        return _json({"status": "error", "message": "text, data, or file_urls is required."})
+        return _error_payload(
+            "text, data, or file_urls is required.",
+            error_type="validation",
+        )
     if file_urls is not None and not isinstance(file_urls, list):
-        return _json({"status": "error", "message": "file_urls must be a list."})
+        return _error_payload("file_urls must be a list.", error_type="validation")
 
     config = _resolve_a2a_config(ctx)
     if not config.enabled:
-        return _json({"status": "error", "message": "A2A interop is disabled."})
+        return _error_payload("A2A interop is disabled.", error_type="disabled")
     try:
         payload = await send_peer_message(
             config,
@@ -33,9 +36,12 @@ async def a2a_send_message(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             context_id=context_id,
         )
     except A2AClientError as exc:
-        return _json({"status": "error", "message": str(exc)})
+        return _error_payload(str(exc), error_type=_classify_a2a_error(str(exc)))
     except Exception as exc:
-        return _json({"status": "error", "message": f"A2A request failed: {exc}"})
+        return _error_payload(
+            f"A2A request failed: {exc}",
+            error_type=_classify_a2a_error(str(exc)),
+        )
     return _json(
         {
             "status": "ok",
@@ -47,6 +53,47 @@ async def a2a_send_message(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             "response": payload,
         }
     )
+
+
+def _error_payload(message: str, *, error_type: str) -> str:
+    transport_error = error_type in {
+        "transport",
+        "upstream_unavailable",
+        "rate_limited",
+        "auth",
+    }
+    return _json(
+        {
+            "status": "error",
+            "ok": False,
+            "error_type": error_type,
+            "transport_error": transport_error,
+            "message": message,
+            "diagnosis": (
+                "Do not describe the A2A bridge as down unless transport_error is true; "
+                "report the exact error instead."
+            ),
+        }
+    )
+
+
+def _classify_a2a_error(message: str) -> str:
+    lowered = message.lower()
+    if "returned http 401" in lowered or "returned http 403" in lowered:
+        return "auth"
+    if "returned http 429" in lowered:
+        return "rate_limited"
+    if any(f"returned http {status}" in lowered for status in range(500, 600)):
+        return "upstream_unavailable"
+    if any(token in lowered for token in ("timeout", "timed out", "connection", "dns")):
+        return "transport"
+    if "not configured" in lowered or "disabled" in lowered or "token" in lowered:
+        return "configuration"
+    if "payload" in lowered or "capability" in lowered or "required" in lowered:
+        return "validation"
+    if "returned http" in lowered:
+        return "peer_http"
+    return "unknown"
 
 
 def a2a_list_peers(args: dict[str, Any], ctx: dict[str, Any]) -> str:

@@ -12,6 +12,7 @@ from octopal.runtime.octo.router import (
     _get_octo_tools,
     _handle_octo_tool_call,
     _record_octo_tool_call,
+    _tool_result_payload_error_type,
 )
 from octopal.tools.catalog import get_tools
 from octopal.tools.diagnostics import resolve_tool_diagnostics
@@ -169,6 +170,31 @@ def test_record_octo_tool_call_returns_warning_for_repeated_no_progress() -> Non
 
     assert state is not None
     assert state["level"] == "warning"
+
+
+def test_tool_result_payload_error_detection_ignores_successful_error_words() -> None:
+    result = json.dumps(
+        {
+            "status": "ok",
+            "reply_text": "The peer mentioned a failed publish but A2A worked.",
+            "response": {"errors": []},
+        }
+    )
+
+    assert _tool_result_payload_error_type(result) is None
+
+
+def test_tool_result_payload_error_detection_uses_structured_status() -> None:
+    result = json.dumps(
+        {
+            "status": "error",
+            "ok": False,
+            "error_type": "validation",
+            "message": "peer_id is required.",
+        }
+    )
+
+    assert _tool_result_payload_error_type(result) == "validation"
 
 
 def test_record_octo_tool_call_returns_critical_for_global_breaker() -> None:
