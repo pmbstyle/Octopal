@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 _PATH_TOKEN_RE = re.compile(r"(?P<path>(?:[A-Za-z]:[\\/])?(?:[\w.@()+-]+[\\/])+[\w.@()+-]+)")
@@ -98,10 +99,16 @@ def infer_allowed_paths_from_task(
     *,
     workspace_dir: Path | None = None,
 ) -> list[str] | None:
+    return infer_allowed_paths_from_values(task, workspace_dir=workspace_dir)
+
+
+def infer_allowed_paths_from_values(
+    *values: object,
+    workspace_dir: Path | None = None,
+) -> list[str] | None:
     seen: set[str] = set()
     inferred: list[str] = []
-    for match in _PATH_TOKEN_RE.finditer(task or ""):
-        raw_path = match.group("path")
+    for raw_path in _iter_path_candidates(values):
         rel = _workspace_relative_path(
             raw_path,
             workspace_dir=workspace_dir,
@@ -114,3 +121,24 @@ def infer_allowed_paths_from_task(
         seen.add(rel)
         inferred.append(rel)
     return inferred or None
+
+
+def _iter_path_candidates(value: object) -> list[str]:
+    candidates: list[str] = []
+
+    def visit(item: object) -> None:
+        if item is None:
+            return
+        if isinstance(item, str):
+            candidates.extend(match.group("path") for match in _PATH_TOKEN_RE.finditer(item))
+            return
+        if isinstance(item, Mapping):
+            for nested in item.values():
+                visit(nested)
+            return
+        if isinstance(item, Sequence) and not isinstance(item, (bytes, bytearray)):
+            for nested in item:
+                visit(nested)
+
+    visit(value)
+    return candidates
