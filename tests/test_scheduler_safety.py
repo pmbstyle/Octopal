@@ -541,6 +541,9 @@ def test_scheduled_octo_control_route_block_marker_is_generic() -> None:
     assert octo_core._looks_like_scheduled_octo_control_route_block(
         "The task has no direct tools available in this bounded route."
     )
+    assert octo_core._looks_like_scheduled_octo_control_route_block(
+        "У меня нет `a2a_send_message` в текущем bounded route — не могу отправить peer message."
+    )
     assert not octo_core._looks_like_scheduled_octo_control_route_block(
         "The task mentioned weather but completed successfully."
     )
