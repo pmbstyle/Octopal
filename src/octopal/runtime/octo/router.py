@@ -1114,6 +1114,14 @@ async def _complete_route_with_tools(
                             tool_name=tool_name,
                             rendered_chars=len(tool_result_text),
                         )
+                    payload_error_type = _tool_result_payload_error_type(tool_result)
+                    if payload_error_type and not tool_meta.get("had_error"):
+                        tool_meta = {
+                            **tool_meta,
+                            "had_error": True,
+                            "error_type": payload_error_type,
+                        }
+
                     loop_state = _record_octo_tool_call(
                         tool_call_history,
                         call=call,
@@ -1172,7 +1180,7 @@ async def _complete_route_with_tools(
                                 response_text=fallback_text,
                                 internal_followup=internal_followup,
                             )
-                    if "error" in tool_result_text.lower() or "failed" in tool_result_text.lower():
+                    if tool_meta.get("had_error"):
                         last_error = tool_result_text
                 continue
 
@@ -1726,6 +1734,50 @@ def normalize_plain_text(text: str) -> str:
 def _looks_like_tool_error(text: str) -> bool:
     lowered = text.lower()
     return " error" in lowered or "failed" in lowered
+
+
+def _tool_result_payload_error_type(result: Any) -> str | None:
+    payload = _parse_tool_result_payload(result)
+    if not isinstance(payload, dict):
+        return None
+
+    status = str(payload.get("status") or "").strip().lower()
+    if status in {"error", "failed", "failure"}:
+        return str(payload.get("error_type") or "structured_error_status")
+
+    state = str(payload.get("state") or "").strip().lower()
+    if state in {"error", "failed", "failure"}:
+        return str(payload.get("error_type") or "structured_error_state")
+
+    if payload.get("ok") is False:
+        return str(payload.get("error_type") or "structured_not_ok")
+
+    if _has_meaningful_error_value(payload.get("error")):
+        return str(payload.get("error_type") or "structured_error_field")
+
+    if _has_meaningful_error_value(payload.get("errors")):
+        return str(payload.get("error_type") or "structured_errors_field")
+
+    return None
+
+
+def _parse_tool_result_payload(result: Any) -> Any:
+    if isinstance(result, str):
+        try:
+            return json.loads(result)
+        except Exception:
+            return None
+    return result
+
+
+def _has_meaningful_error_value(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return True
 
 
 def _log_system_prompt(messages: list[Message], label: str) -> None:
