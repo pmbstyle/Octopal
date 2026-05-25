@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import structlog
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -56,6 +57,7 @@ _WINDOW_CHOICES = {15, 60, 240, 1440}
 _SERVICE_CHOICES = {"all", "gateway", "octo", "telegram", "whatsapp", "exec_run", "mcp", "workers"}
 _STREAM_TOPICS = {"overview", "incidents", "octo", "workers", "system", "actions", "snapshot"}
 _EMPTY_ACTION_PAYLOAD = Body(default={})
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)

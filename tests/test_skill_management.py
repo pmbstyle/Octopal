@@ -329,7 +329,7 @@ print(json.dumps(payload))
     stdout_payload = json.loads(payload["stdout"])
 
     assert payload["returncode"] == 0
-    assert payload["runner"].endswith("python.exe") or payload["runner"].endswith("python")
+    assert Path(payload["runner"]).resolve() == Path(sys.executable).resolve()
     assert stdout_payload["args"] == ["hello"]
     assert Path(stdout_payload["cwd"]).resolve() == worker_dir.resolve()
 

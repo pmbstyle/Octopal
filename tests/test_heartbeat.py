@@ -629,6 +629,7 @@ async def test_suppressed_worker_followup_is_deferred_until_internal_turn_finish
 @pytest.mark.asyncio
 async def test_channel_suppressed_worker_result_does_not_send_followup(monkeypatch):
     monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
+    monkeypatch.setattr(octo_core, "_QUEUE_IDLE_TIMEOUT_SECONDS", 0.01)
     octo_core._WORKER_FOLLOWUP_BATCHES.clear()
 
     sent_messages = []
