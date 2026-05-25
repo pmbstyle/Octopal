@@ -1917,6 +1917,62 @@ async def test_octo_dispatch_due_scheduled_tasks_infers_existing_workspace_paths
 
 
 @pytest.mark.asyncio
+async def test_octo_dispatch_due_scheduled_tasks_infers_workspace_paths_from_inputs(
+    monkeypatch,
+    tmp_path: Path,
+):
+    started_calls = []
+    draft_dir = tmp_path / "memory" / "moltbook"
+    draft_dir.mkdir(parents=True)
+    scheduler = SchedulerService(
+        store=_StoreStub(
+            tasks=[
+                {
+                    "id": "publish_draft",
+                    "name": "Publish Draft",
+                    "description": "Publish draft",
+                    "frequency": "Daily at 22:00",
+                    "worker_id": "publisher",
+                    "task_text": "Publish the current draft.",
+                    "inputs_json": json.dumps({"draft_path": "memory/moltbook/draft.md"}),
+                    "metadata_json": json.dumps(
+                        {
+                            "notify_user": "never",
+                            "execution_mode": "worker",
+                        }
+                    ),
+                    "last_run_at": None,
+                    "enabled": 1,
+                }
+            ]
+        ),
+        workspace_dir=tmp_path,
+    )
+
+    async def _start_worker_async(self, **kwargs):
+        started_calls.append(kwargs)
+        return {"status": "started", "run_id": "run-1", "worker_id": "run-1"}
+
+    monkeypatch.setattr(octo_core.Octo, "_start_worker_async", _start_worker_async)
+
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=tmp_path),
+        scheduler=scheduler,
+    )
+
+    summary = await octo._dispatch_due_scheduled_tasks_once(chat_id=0, max_tasks=5)
+
+    assert summary["started"] == 1
+    assert started_calls[0]["allowed_paths"] == ["memory/moltbook"]
+
+
+@pytest.mark.asyncio
 async def test_octo_dispatch_due_scheduled_tasks_targets_single_configured_chat(monkeypatch):
     started_calls = []
     scheduler = SchedulerService(

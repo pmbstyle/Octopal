@@ -36,7 +36,7 @@ from octopal.runtime.scheduler.service import (
     parse_scheduled_task_blocked_until,
 )
 from octopal.runtime.workers.allowed_paths import (
-    infer_allowed_paths_from_task,
+    infer_allowed_paths_from_values,
     normalize_allowed_paths,
 )
 from octopal.utils import utc_now
@@ -108,7 +108,7 @@ def _scheduled_task_allowed_paths(
     )
     if explicit:
         return explicit
-    return infer_allowed_paths_from_task(task_text, workspace_dir=workspace_dir)
+    return infer_allowed_paths_from_values(task_text, inputs, workspace_dir=workspace_dir)
 
 
 class OctoScheduledRuntimeMixin:
