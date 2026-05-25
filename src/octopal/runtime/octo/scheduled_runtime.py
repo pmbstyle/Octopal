@@ -564,7 +564,11 @@ class OctoScheduledRuntimeMixin:
             reply_text,
             bounded_control=False,
         )
-        if normalized_reply == _SCHEDULED_OCTO_CONTROL_BLOCKED:
+        route_blocked = normalized_reply == _SCHEDULED_OCTO_CONTROL_BLOCKED or (
+            normalized_reply in {_SCHEDULED_OCTO_CONTROL_DONE, "NO_USER_RESPONSE"}
+            and _looks_like_scheduled_octo_control_route_block(reply_text)
+        )
+        if route_blocked:
             logger.warning(
                 "Scheduled Octo task reported blocked",
                 task_id=task_id or None,

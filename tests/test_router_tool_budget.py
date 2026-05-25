@@ -684,6 +684,18 @@ def test_normalize_worker_followup_reply_suppresses_internal_mode_leak() -> None
     assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
 
 
+def test_normalize_worker_followup_reply_suppresses_a2a_mode_leak() -> None:
+    raw = """
+    {
+      "user_response": "I don't have the A2A messaging tools available in my current tool set. I need to send the message from my full orchestration context. Отправлю сообщение как только вернусь в полный режим — сейчас у меня нет доступа к A2A инструментам из этого контекста.",
+      "no_user_response": false,
+      "actions_taken": [],
+      "reason": "needs orchestration"
+    }
+    """
+    assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
+
+
 def test_build_worker_result_payload_keeps_preview_text_for_large_output() -> None:
     payload = _build_worker_result_payload(
         "worker-1",

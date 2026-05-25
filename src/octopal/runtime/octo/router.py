@@ -1475,8 +1475,13 @@ def _looks_like_internal_worker_followup_leak(text: str) -> bool:
         "bounded worker-result follow-up mode",
         "worker-result follow-up mode",
         "full orchestration mode",
+        "full orchestration context",
+        "current tool set",
         "bounded route",
         "on the next turn",
+        "полный режим",
+        "нет доступа к a2a",
+        "нет `a2a_send_message`",
     )
     orchestration_phrases = (
         "can't modify",

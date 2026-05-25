@@ -20,11 +20,18 @@ _SCHEDULED_OCTO_CONTROL_BLOCKED = "SCHEDULED_TASK_BLOCKED"
 _SCHEDULED_OCTO_CONTROL_BLOCKED_MARKERS = (
     "bounded `octo_control` route",
     "bounded octo_control route",
+    "current bounded route",
     "requires external network access",
     "cannot be performed from the bounded",
     "no workers may be launched",
     "no direct tools available",
     "requires a worker",
+    "no `a2a_send_message`",
+    "нет `a2a_send_message`",
+    "a2a messaging tools available in my current tool set",
+    "full orchestration context",
+    "полный режим",
+    "нет доступа к a2a",
 )
 
 
