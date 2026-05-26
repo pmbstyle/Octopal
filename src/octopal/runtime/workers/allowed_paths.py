@@ -130,7 +130,10 @@ def _iter_path_candidates(value: object) -> list[str]:
         if item is None:
             return
         if isinstance(item, str):
-            candidates.extend(match.group("path") for match in _PATH_TOKEN_RE.finditer(item))
+            for match in _PATH_TOKEN_RE.finditer(item):
+                if _is_url_path_match(item, match.start()):
+                    continue
+                candidates.append(match.group("path"))
             return
         if isinstance(item, Mapping):
             for nested in item.values():
@@ -142,3 +145,7 @@ def _iter_path_candidates(value: object) -> list[str]:
 
     visit(value)
     return candidates
+
+
+def _is_url_path_match(text: str, start: int) -> bool:
+    return start >= 3 and text[start - 3 : start] == "://"
