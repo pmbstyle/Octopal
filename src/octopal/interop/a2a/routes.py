@@ -15,6 +15,7 @@ from octopal.infrastructure.config.models import A2AConfig
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.logging import correlation_id_var
 from octopal.interop.a2a.agent_card import build_agent_card
+from octopal.interop.a2a.capabilities import message_required_capabilities
 from octopal.interop.a2a.models import (
     A2AMessage,
     A2AMessageSendRequest,
@@ -54,6 +55,8 @@ def register_a2a_routes(app: FastAPI) -> None:
             request_payload = A2AMessageSendRequest.model_validate(payload)
         except ValidationError as exc:
             raise HTTPException(status_code=400, detail="Invalid A2A message payload") from exc
+        for capability in message_required_capabilities(request_payload.message.parts):
+            require_peer_capability(peer, capability)
         content = message_content_for_octo(request_payload.message)
         if not content:
             raise HTTPException(status_code=400, detail="A2A message must contain content")

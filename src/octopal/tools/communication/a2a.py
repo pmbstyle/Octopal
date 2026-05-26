@@ -12,16 +12,19 @@ async def a2a_send_message(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     text = str((args or {}).get("text") or "").strip()
     data = (args or {}).get("data")
     file_urls = (args or {}).get("file_urls")
+    raw_files = (args or {}).get("raw_files")
     context_id = str((args or {}).get("context_id") or "").strip() or None
     if not peer_id:
         return _error_payload("peer_id is required.", error_type="validation")
-    if not text and data is None and not file_urls:
+    if not text and data is None and not file_urls and not raw_files:
         return _error_payload(
-            "text, data, or file_urls is required.",
+            "text, data, file_urls, or raw_files is required.",
             error_type="validation",
         )
     if file_urls is not None and not isinstance(file_urls, list):
         return _error_payload("file_urls must be a list.", error_type="validation")
+    if raw_files is not None and not isinstance(raw_files, list):
+        return _error_payload("raw_files must be a list.", error_type="validation")
 
     config = _resolve_a2a_config(ctx)
     if not config.enabled:
@@ -33,6 +36,7 @@ async def a2a_send_message(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             text=text,
             data=data,
             file_urls=file_urls,
+            raw_files=raw_files,
             context_id=context_id,
         )
     except A2AClientError as exc:

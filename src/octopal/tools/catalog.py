@@ -332,8 +332,9 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
         ToolSpec(
             name="a2a_send_message",
             description=(
-                "Send a text, structured data, or file-URL message to a configured trusted A2A peer agent. "
-                "Use only for peers explicitly configured in Octopal A2A interop."
+                "Send text, structured data, file-URL, or raw file message parts to a configured "
+                "trusted A2A peer agent. Rich parts require the peer to allow the matching "
+                "A2A capabilities: data, files:url, or files:raw."
             ),
             parameters={
                 "type": "object",
@@ -348,12 +349,18 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     },
                     "data": {
                         "type": "object",
-                        "description": "Optional structured JSON data part to send to the peer agent.",
+                        "description": (
+                            "Optional structured JSON data part to send to the peer agent. Requires "
+                            "the peer to allow the data capability."
+                        ),
                         "additionalProperties": True,
                     },
                     "file_urls": {
                         "type": "array",
-                        "description": "Optional file URL parts to reference for the peer agent.",
+                        "description": (
+                            "Optional file URL parts to reference for the peer agent. Requires the "
+                            "peer to allow the files:url capability."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
@@ -376,6 +383,37 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                                 },
                             },
                             "required": ["url"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "raw_files": {
+                        "type": "array",
+                        "description": (
+                            "Optional raw/base64 file parts to send to the peer agent. Requires the "
+                            "peer to allow the files:raw capability."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "raw": {
+                                    "type": "string",
+                                    "description": "Base64-encoded file content.",
+                                },
+                                "filename": {
+                                    "type": "string",
+                                    "description": "Optional display filename.",
+                                },
+                                "media_type": {
+                                    "type": "string",
+                                    "description": "Optional media type such as application/pdf or image/png.",
+                                },
+                                "metadata": {
+                                    "type": "object",
+                                    "description": "Optional metadata for this raw file part.",
+                                    "additionalProperties": True,
+                                },
+                            },
+                            "required": ["raw"],
                             "additionalProperties": False,
                         },
                     },

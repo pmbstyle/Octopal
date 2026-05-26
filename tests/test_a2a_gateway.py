@@ -286,7 +286,13 @@ def test_message_send_routes_data_and_file_url_parts_to_octo_prompt() -> None:
         _app(
             A2AConfig(
                 enabled=True,
-                peers={"bob": A2APeerConfig(name="Bob", token="secret")},
+                peers={
+                    "bob": A2APeerConfig(
+                        name="Bob",
+                        token="secret",
+                        capabilities=["chat", "data", "files:url"],
+                    )
+                },
             ),
             octo=octo,
         )
@@ -320,13 +326,50 @@ def test_message_send_routes_data_and_file_url_parts_to_octo_prompt() -> None:
     assert "https://example.test/report.pdf" in call_text
 
 
-def test_message_send_saves_raw_part_as_attachment(tmp_path: Path) -> None:
+def test_message_send_rejects_rich_parts_without_peer_capability() -> None:
     octo = _DummyOcto()
     client = TestClient(
         _app(
             A2AConfig(
                 enabled=True,
                 peers={"bob": A2APeerConfig(name="Bob", token="secret")},
+            ),
+            octo=octo,
+        )
+    )
+
+    response = client.post(
+        "/a2a/v1/message:send",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "message": {
+                "role": "ROLE_USER",
+                "parts": [
+                    {"text": "please inspect this"},
+                    {"data": {"intent": "summarize"}},
+                ],
+            }
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "A2A peer lacks 'data' capability"
+    assert octo.calls == []
+
+
+def test_message_send_saves_raw_part_as_attachment(tmp_path: Path) -> None:
+    octo = _DummyOcto()
+    client = TestClient(
+        _app(
+            A2AConfig(
+                enabled=True,
+                peers={
+                    "bob": A2APeerConfig(
+                        name="Bob",
+                        token="secret",
+                        capabilities=["chat", "files:raw"],
+                    )
+                },
             ),
             octo=octo,
             state_dir=tmp_path,
@@ -536,10 +579,12 @@ def test_a2a_send_message_exposes_reply_text_above_protocol_envelope(monkeypatch
         text: str | None = None,
         data: Any = None,
         file_urls: list[dict[str, Any]] | None = None,
+        raw_files: list[dict[str, Any]] | None = None,
         context_id: str | None = None,
     ) -> dict[str, Any]:
         assert data is None
         assert file_urls is None
+        assert raw_files is None
         return {
             "taskState": "TASK_STATE_COMPLETED",
             "replyText": f"Readable reply to: {text}",
@@ -598,6 +643,7 @@ def test_a2a_send_message_labels_non_transport_errors(monkeypatch) -> None:
         text: str | None = None,
         data: Any = None,
         file_urls: list[dict[str, Any]] | None = None,
+        raw_files: list[dict[str, Any]] | None = None,
         context_id: str | None = None,
     ) -> dict[str, Any]:
         raise A2AClientError("A2A peer 'bob' returned HTTP 400: Invalid A2A message payload")
@@ -639,6 +685,7 @@ def test_a2a_send_message_marks_upstream_transport_errors(monkeypatch) -> None:
         text: str | None = None,
         data: Any = None,
         file_urls: list[dict[str, Any]] | None = None,
+        raw_files: list[dict[str, Any]] | None = None,
         context_id: str | None = None,
     ) -> dict[str, Any]:
         raise A2AClientError("A2A peer 'bob' returned HTTP 503: temporarily unavailable")
@@ -679,6 +726,7 @@ def test_a2a_send_message_forwards_structured_data_and_file_urls(monkeypatch) ->
         text: str | None = None,
         data: Any = None,
         file_urls: list[dict[str, Any]] | None = None,
+        raw_files: list[dict[str, Any]] | None = None,
         context_id: str | None = None,
     ) -> dict[str, Any]:
         captured.update(
@@ -687,6 +735,7 @@ def test_a2a_send_message_forwards_structured_data_and_file_urls(monkeypatch) ->
                 "text": text,
                 "data": data,
                 "file_urls": file_urls,
+                "raw_files": raw_files,
                 "context_id": context_id,
             }
         )
@@ -721,6 +770,7 @@ def test_a2a_send_message_forwards_structured_data_and_file_urls(monkeypatch) ->
                             "bob": A2APeerConfig(
                                 token="secret",
                                 base_url="https://bob.example/a2a/v1",
+                                capabilities=["chat", "data", "files:url"],
                             )
                         },
                     )
@@ -754,6 +804,104 @@ def test_a2a_send_message_forwards_structured_data_and_file_urls(monkeypatch) ->
     assert payload["reply_text"] == "received"
     assert payload["artifacts"][0]["parts"][0]["kind"] == "data"
     assert payload["artifacts"][0]["parts"][0]["data"] == {"ok": True}
+
+
+def test_a2a_send_message_rejects_data_without_peer_capability() -> None:
+    ctx = {
+        "octo": SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    a2a=A2AConfig(
+                        enabled=True,
+                        peers={
+                            "bob": A2APeerConfig(
+                                token="secret",
+                                base_url="https://bob.example/a2a/v1",
+                            )
+                        },
+                    )
+                )
+            )
+        )
+    }
+
+    raw = asyncio.run(
+        a2a_tools.a2a_send_message(
+            {"peer_id": "bob", "text": "analyze", "data": {"intent": "compare"}},
+            ctx,
+        )
+    )
+    payload = json.loads(raw)
+
+    assert payload["status"] == "error"
+    assert payload["error_type"] == "validation"
+    assert payload["transport_error"] is False
+    assert "does not allow required capabilities: data" in payload["message"]
+
+
+def test_a2a_send_message_forwards_raw_files_when_allowed(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_send_peer_message(
+        _config: A2AConfig,
+        *,
+        peer_id: str,
+        text: str | None = None,
+        data: Any = None,
+        file_urls: list[dict[str, Any]] | None = None,
+        raw_files: list[dict[str, Any]] | None = None,
+        context_id: str | None = None,
+    ) -> dict[str, Any]:
+        captured.update(
+            {
+                "peer_id": peer_id,
+                "text": text,
+                "raw_files": raw_files,
+            }
+        )
+        return {"taskState": "TASK_STATE_COMPLETED", "replyText": "received"}
+
+    monkeypatch.setattr(a2a_tools, "send_peer_message", fake_send_peer_message)
+    ctx = {
+        "octo": SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    a2a=A2AConfig(
+                        enabled=True,
+                        peers={
+                            "bob": A2APeerConfig(
+                                token="secret",
+                                base_url="https://bob.example/a2a/v1",
+                                capabilities=["chat", "files:raw"],
+                            )
+                        },
+                    )
+                )
+            )
+        )
+    }
+
+    raw = asyncio.run(
+        a2a_tools.a2a_send_message(
+            {
+                "peer_id": "bob",
+                "text": "inspect",
+                "raw_files": [
+                    {
+                        "raw": base64.b64encode(b"hello").decode("ascii"),
+                        "filename": "note.txt",
+                        "media_type": "text/plain",
+                    }
+                ],
+            },
+            ctx,
+        )
+    )
+    payload = json.loads(raw)
+
+    assert captured["peer_id"] == "bob"
+    assert captured["raw_files"][0]["filename"] == "note.txt"
+    assert payload["reply_text"] == "received"
 
 
 def test_message_send_endpoint_can_be_derived_from_agent_card_url() -> None:
