@@ -107,6 +107,7 @@ _RESULT_SCHEMA = {
     "additionalProperties": True,
 }
 logger = structlog.get_logger(__name__)
+_WORKER_BASE_PROMPT_CONTENT = ""
 _OCTO_PROXY_TOOLS = {
     "list_workers",
     "start_worker",
@@ -229,7 +230,9 @@ def _task_requires_workspace_write(task: str) -> bool:
     )
 
 
-def _fs_write_completion_missing(task: str, available_tools: list[str], tools_used: list[str]) -> bool:
+def _fs_write_completion_missing(
+    task: str, available_tools: list[str], tools_used: list[str]
+) -> bool:
     normalized_available = {str(tool).strip().lower() for tool in available_tools}
     normalized_used = {str(tool).strip().lower() for tool in tools_used}
     return (
@@ -249,6 +252,25 @@ def _build_worker_tool_inventory_prompt(tools: list[Any]) -> str:
     if _parse_bool_env("OCTOPAL_WORKER_PROMPT_TOOL_DESCRIPTIONS", False):
         return "\n".join(f"- {tool.name}: {tool.description}" for tool in tools)
     return "\n".join(f"- {tool.name}" for tool in tools)
+
+
+def _load_worker_base_prompt() -> str:
+    """Load shared worker guardrails used by every worker template."""
+
+    global _WORKER_BASE_PROMPT_CONTENT
+
+    if _WORKER_BASE_PROMPT_CONTENT:
+        return _WORKER_BASE_PROMPT_CONTENT
+
+    prompt_path = Path(__file__).parent.parent / "octo" / "prompts" / "worker_system.md"
+    try:
+        _WORKER_BASE_PROMPT_CONTENT = prompt_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        _WORKER_BASE_PROMPT_CONTENT = (
+            "You are an Octopal Worker running one bounded task for Octo. "
+            "Use only visible tools, stay within scope, and return verifiable results."
+        )
+    return _WORKER_BASE_PROMPT_CONTENT
 
 
 def _tool_names(tools: list[Any]) -> set[str]:
@@ -273,7 +295,9 @@ def _build_worker_skill_usage_prompt(tools: list[Any]) -> str:
 
     lines = ["Skill usage:", "- Octopal skills are internal tools, not MCP servers."]
     if "list_skills" in names:
-        lines.append("- Use list_skills to discover available skills and their readiness/runtime status.")
+        lines.append(
+            "- Use list_skills to discover available skills and their readiness/runtime status."
+        )
     if "use_skill" in names:
         lines.append("- Use use_skill to read a skill's guidance from SKILL.md.")
     if dynamic_skill_tools:
@@ -282,7 +306,9 @@ def _build_worker_skill_usage_prompt(tools: list[Any]) -> str:
                 "- Dynamic skill_<id> tools may exist for compatibility, but workers should prefer use_skill."
             )
         else:
-            lines.append("- Use available dynamic skill_<id> tools for their matching skill workflows.")
+            lines.append(
+                "- Use available dynamic skill_<id> tools for their matching skill workflows."
+            )
     if "run_skill_script" in names:
         lines.append("- If a skill includes bundled scripts, use run_skill_script to execute them.")
         if "exec_run" in names:
@@ -306,7 +332,7 @@ def _build_worker_task_prompt(task: str, inputs: Any) -> str:
 def _build_worker_completion_protocol_prompt() -> str:
     return (
         "Completion protocol:\n"
-        "- When done, return JSON with type=\"result\", summary, and optional output/questions.\n"
+        '- When done, return JSON with type="result", summary, and optional output/questions.\n'
         "- Use questions only when blocked after request_instruction times out or the task must stop.\n"
         "- summary is internal; do not treat it as user-facing copy.\n"
         "- Never present transport/debug/auth details, retries, truncation counts, or orchestration status as user-facing content."
@@ -333,7 +359,9 @@ def _tool_schema_chars(tools: list[Any]) -> int:
 
 def _message_chars(messages: list[dict[str, Any]]) -> int:
     try:
-        return sum(len(json.dumps(message, ensure_ascii=False, default=str)) for message in messages)
+        return sum(
+            len(json.dumps(message, ensure_ascii=False, default=str)) for message in messages
+        )
     except Exception:
         return sum(len(str(message)) for message in messages)
 
@@ -359,7 +387,9 @@ def _record_worker_llm_context_snapshot(
     tool_schema_chars = int(context.get("tool_schema_chars") or _tool_schema_chars(tools))
     input_chars = message_chars + tool_schema_chars
     context["llm_input_chars_total"] = int(context.get("llm_input_chars_total") or 0) + input_chars
-    context["llm_input_chars_peak"] = max(int(context.get("llm_input_chars_peak") or 0), input_chars)
+    context["llm_input_chars_peak"] = max(
+        int(context.get("llm_input_chars_peak") or 0), input_chars
+    )
     context["message_count_peak"] = max(int(context.get("message_count_peak") or 0), len(messages))
 
     calls = context.get("llm_calls")
@@ -395,10 +425,9 @@ def _record_worker_tool_result_context(
         int(context.get("tool_result_rendered_chars_total") or 0) + rendered_chars
     )
     if was_compacted and raw_chars > rendered_chars:
-        context["tool_result_truncated_chars_total"] = (
-            int(context.get("tool_result_truncated_chars_total") or 0)
-            + (raw_chars - rendered_chars)
-        )
+        context["tool_result_truncated_chars_total"] = int(
+            context.get("tool_result_truncated_chars_total") or 0
+        ) + (raw_chars - rendered_chars)
     by_tool = context.get("tool_result_rendered_chars_by_tool")
     if isinstance(by_tool, dict):
         key = tool_name or "<unknown>"
@@ -962,7 +991,12 @@ async def execute_agent_task(
 
     temporal_context_prompt = format_temporal_context_prompt()
 
-    system_prompt = f"""{spec.system_prompt}
+    worker_base_prompt = _load_worker_base_prompt()
+
+    system_prompt = f"""{worker_base_prompt}
+
+Template role:
+{spec.system_prompt}
 
 {temporal_context_prompt}
 
@@ -1184,9 +1218,8 @@ Available tools:
                 )
                 if not step_exempt:
                     round_consumes_step = True
-                if (
-                    normalized_tool_name == "answer_worker_instruction"
-                    and not tool_meta.get("had_error")
+                if normalized_tool_name == "answer_worker_instruction" and not tool_meta.get(
+                    "had_error"
                 ):
                     answered_instruction_this_round = True
                 loop_state = _detect_tool_loop(
@@ -1353,7 +1386,9 @@ Available tools:
             # Try to parse structured JSON result, including fenced JSON blocks.
             result_block = _extract_result_block(content)
             if result_block is not None:
-                if _fs_write_completion_missing(spec.task, list(spec.available_tools or []), tools_used):
+                if _fs_write_completion_missing(
+                    spec.task, list(spec.available_tools or []), tools_used
+                ):
                     messages.append({"role": "assistant", "content": content})
                     messages.append(
                         {
@@ -1385,7 +1420,9 @@ Available tools:
 
             # If model produced plain text with no tool call, treat it as completion.
             if content:
-                if _fs_write_completion_missing(spec.task, list(spec.available_tools or []), tools_used):
+                if _fs_write_completion_missing(
+                    spec.task, list(spec.available_tools or []), tools_used
+                ):
                     messages.append({"role": "assistant", "content": content})
                     messages.append(
                         {

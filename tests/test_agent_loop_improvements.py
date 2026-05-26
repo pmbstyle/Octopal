@@ -450,8 +450,7 @@ def test_build_inference_unavailable_result_marks_retryable_failure() -> None:
 
 
 def test_extract_result_block_reads_embedded_failure_payload() -> None:
-    result = _extract_result_block(
-        """The request failed.
+    result = _extract_result_block("""The request failed.
 
 {
   "type": "result",
@@ -461,8 +460,7 @@ def test_extract_result_block_reads_embedded_failure_payload() -> None:
     "error": "Connection failed"
   }
 }
-"""
-    )
+""")
 
     assert result is not None
     assert result["status"] == "failed"
@@ -869,6 +867,8 @@ def test_execute_agent_task_injects_request_instruction_without_parent_answer_to
         system_prompt = str(messages[0]["content"])
         assert "Temporal context:" in system_prompt
         assert "Current local date:" in system_prompt
+        assert "Octopal Worker" in system_prompt
+        assert "Template role:" in system_prompt
         assert "Worker coordination:" in system_prompt
         assert "Parent-worker coordination:" not in system_prompt
         assert "normal tool calls" in system_prompt
@@ -924,11 +924,14 @@ def test_worker_runtime_allows_injected_parent_instruction_answer_tool() -> None
         )
         is None
     )
-    assert _validate_worker_local_tool_call(
-        spec=childless_spec,
-        tool_name="answer_worker_instruction",
-        permission="worker_manage",
-    ) == "Worker tool 'answer_worker_instruction' is not allowed by this worker spec."
+    assert (
+        _validate_worker_local_tool_call(
+            spec=childless_spec,
+            tool_name="answer_worker_instruction",
+            permission="worker_manage",
+        )
+        == "Worker tool 'answer_worker_instruction' is not allowed by this worker spec."
+    )
 
 
 def test_execute_agent_task_does_not_charge_step_for_parent_instruction_answer(
@@ -936,9 +939,7 @@ def test_execute_agent_task_does_not_charge_step_for_parent_instruction_answer(
     tmp_path: Path,
 ) -> None:
     worker = Worker(
-        spec=_dummy_worker().spec.model_copy(
-            update={"available_tools": ["start_child_worker"]}
-        )
+        spec=_dummy_worker().spec.model_copy(update={"available_tools": ["start_child_worker"]})
     )
 
     async def _noop_log(level: str, message: str) -> None:
@@ -979,9 +980,7 @@ def test_execute_agent_task_does_not_charge_step_for_parent_instruction_answer(
                         "id": "call-1",
                         "function": {
                             "name": "answer_worker_instruction",
-                            "arguments": (
-                                '{"worker_id": "child-1", "instruction": "continue"}'
-                            ),
+                            "arguments": ('{"worker_id": "child-1", "instruction": "continue"}'),
                         },
                     }
                 ]
@@ -1142,7 +1141,12 @@ def test_execute_agent_task_suspends_until_runtime_resumes_child_batch(
             "stopped_count": 0,
             "missing_count": 0,
             "completed": [
-                {"worker_id": "child-1", "status": "completed", "summary": "child summary", "output": {"ok": True}}
+                {
+                    "worker_id": "child-1",
+                    "status": "completed",
+                    "summary": "child summary",
+                    "output": {"ok": True},
+                }
             ],
             "failed": [],
             "stopped": [],
@@ -1160,8 +1164,13 @@ def test_execute_agent_task_suspends_until_runtime_resumes_child_batch(
     assert result.output["joined"] is True
     assert call_state["llm_calls"] == 2
     assert [name for name, _ in executed_tools] == ["start_child_worker"]
-    assert any("Suspending parent worker until child batch completes" in message for message in log_messages)
-    assert any("Resuming parent worker after child batch update" in message for message in log_messages)
+    assert any(
+        "Suspending parent worker until child batch completes" in message
+        for message in log_messages
+    )
+    assert any(
+        "Resuming parent worker after child batch update" in message for message in log_messages
+    )
 
 
 def test_execute_agent_task_reawaits_children_after_instruction_answer(
@@ -1470,7 +1479,12 @@ def test_execute_agent_task_skips_redundant_get_worker_result_for_joined_child(
             "stopped_count": 0,
             "missing_count": 0,
             "completed": [
-                {"worker_id": "child-1", "status": "completed", "summary": "child summary", "output": {"ok": True}}
+                {
+                    "worker_id": "child-1",
+                    "status": "completed",
+                    "summary": "child summary",
+                    "output": {"ok": True},
+                }
             ],
             "failed": [],
             "stopped": [],
@@ -1487,4 +1501,7 @@ def test_execute_agent_task_skips_redundant_get_worker_result_for_joined_child(
     assert result.output is not None
     assert result.output["guardrail"] is True
     assert executed_tools == ["start_child_worker"]
-    assert any("Skipping redundant get_worker_result for already-joined child worker: child-1" in message for message in log_messages)
+    assert any(
+        "Skipping redundant get_worker_result for already-joined child worker: child-1" in message
+        for message in log_messages
+    )

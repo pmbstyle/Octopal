@@ -93,10 +93,17 @@ def test_build_octo_prompt_includes_worker_first_guardrails() -> None:
         )
         system_message = messages[0]
         assert isinstance(system_message.content, str)
-        assert "Workers are the default execution unit for external work." in system_message.content
-        assert "Treat direct Octo-side network or MCP access as emergency-only fallback." in system_message.content
-        assert "For scheduled or network-heavy work, never lower `timeout_seconds` below the worker template default" in system_message.content
-        assert "prefer a capable parent worker that can spawn child workers or use `start_workers_parallel`" in system_message.content
+        assert (
+            "Workers are the normal boundary for web/network access, remote APIs"
+            in system_message.content
+        )
+        assert "For external work, use a worker first." in system_message.content
+        assert "Prefer template defaults. Set `timeout_seconds` only" in system_message.content
+        assert "Use multiple workers only for independent subtasks" in system_message.content
+        assert (
+            "Scheduler dispatch of due worker tasks is handled by the runtime"
+            in system_message.content
+        )
 
     asyncio.run(scenario())
 
@@ -202,7 +209,9 @@ def test_build_octo_prompt_includes_compact_facts_context_when_available() -> No
             return ""
 
     class DummyFacts:
-        def get_relevant_facts(self, query: str, *, memory_facets: list[str] | None = None, limit: int = 3):
+        def get_relevant_facts(
+            self, query: str, *, memory_facets: list[str] | None = None, limit: int = 3
+        ):
             return ["primary installer is uv (decisions.md)"]
 
     async def scenario() -> None:
@@ -215,7 +224,9 @@ def test_build_octo_prompt_includes_compact_facts_context_when_available() -> No
             bootstrap_context="",
             facts=DummyFacts(),
         )
-        merged = "\n".join(str(message.content) for message in messages if isinstance(message.content, str))
+        merged = "\n".join(
+            str(message.content) for message in messages if isinstance(message.content, str)
+        )
         assert "<facts>" in merged
         assert "primary installer is uv" in merged
 
