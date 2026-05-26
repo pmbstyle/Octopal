@@ -7,6 +7,11 @@ from uuid import uuid4
 import httpx
 
 from octopal.infrastructure.config.models import A2AConfig, A2APeerConfig
+from octopal.interop.a2a.capabilities import (
+    A2A_CAPABILITY_CHAT,
+    missing_peer_capabilities,
+    outbound_required_capabilities,
+)
 
 
 class A2AClientError(RuntimeError):
@@ -27,8 +32,16 @@ async def send_peer_message(
     peer = config.peers.get(peer_id)
     if peer is None or not peer.enabled:
         raise A2AClientError(f"A2A peer {peer_id!r} is not configured or enabled.")
-    if "chat" not in {item.strip().lower() for item in peer.capabilities}:
+    missing = missing_peer_capabilities(
+        peer,
+        outbound_required_capabilities(data=data, file_urls=file_urls, raw_files=raw_files),
+    )
+    if missing == [A2A_CAPABILITY_CHAT]:
         raise A2AClientError(f"A2A peer {peer_id!r} does not allow chat.")
+    if missing:
+        raise A2AClientError(
+            f"A2A peer {peer_id!r} does not allow required capabilities: " f"{', '.join(missing)}."
+        )
     endpoint = _message_send_endpoint(peer)
     token = str(peer.token or "").strip()
     if not token:

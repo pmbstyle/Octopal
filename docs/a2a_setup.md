@@ -62,7 +62,7 @@ On `atlas`, add `nova` as a peer:
         "name": "Nova",
         "base_url": "http://100.64.10.21:8001/a2a/v1",
         "token": "shared-token-for-atlas-and-nova",
-        "capabilities": ["chat"],
+        "capabilities": ["chat", "data", "files:url", "files:raw"],
         "trust_level": "trusted"
       }
     }
@@ -90,7 +90,7 @@ On `nova`, add the reciprocal `atlas` peer:
         "name": "Atlas",
         "base_url": "http://100.64.10.20:8001/a2a/v1",
         "token": "shared-token-for-atlas-and-nova",
-        "capabilities": ["chat"],
+        "capabilities": ["chat", "data", "files:url", "files:raw"],
         "trust_level": "trusted"
       }
     }
@@ -119,7 +119,9 @@ Then ask either agent to list peers with `a2a_list_peers` and send a test messag
 
 ## Message Parts
 
-`a2a_send_message` can send a plain text part, a structured JSON `data` part, and file `url` parts to a configured peer:
+Peer capabilities are local policy gates. Use `chat` for text messages, `data` for structured JSON parts, `files:url` for file URL parts, and `files:raw` for raw/base64 file parts. Keep a peer at `["chat"]` when it should only exchange plain text.
+
+`a2a_send_message` can send a plain text part, a structured JSON `data` part, file `url` parts, and raw/base64 file parts to a configured peer when the matching capabilities are allowed:
 
 ```json
 {
@@ -135,8 +137,15 @@ Then ask either agent to list peers with `a2a_list_peers` and send a test messag
       "filename": "report.pdf",
       "media_type": "application/pdf"
     }
+  ],
+  "raw_files": [
+    {
+      "raw": "SGVsbG8gZnJvbSBhIHBlZXIgZmlsZQo=",
+      "filename": "note.txt",
+      "media_type": "text/plain"
+    }
   ]
 }
 ```
 
-Inbound peer messages may also include A2A `raw` file parts. Octopal stores those raw parts under the local state directory and forwards the saved file paths to Octo as attachments.
+Inbound peer messages may also include A2A `raw` file parts when that peer has `files:raw`. Octopal stores those raw parts under the local state directory and forwards the saved file paths to Octo as attachments.

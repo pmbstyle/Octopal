@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException, Request
 
 from octopal.infrastructure.config.models import A2AConfig, A2APeerConfig
+from octopal.interop.a2a.capabilities import missing_peer_capabilities
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,5 @@ def authenticate_peer(request: Request, config: A2AConfig) -> AuthenticatedPeer:
 
 
 def require_peer_capability(peer: AuthenticatedPeer, capability: str) -> None:
-    capabilities = {str(item).strip().lower() for item in peer.config.capabilities}
-    if capability.strip().lower() not in capabilities:
+    if missing_peer_capabilities(peer.config, [capability.strip().lower()]):
         raise HTTPException(status_code=403, detail=f"A2A peer lacks {capability!r} capability")
-
