@@ -390,3 +390,15 @@ def test_start_worker_infers_workspace_paths_from_inputs(monkeypatch, tmp_path) 
     )
 
     assert inferred == ["memory/moltbook"]
+
+
+def test_start_worker_does_not_infer_workspace_paths_from_url_inputs(monkeypatch, tmp_path) -> None:
+    (tmp_path / "example.com" / "reports").mkdir(parents=True)
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(tmp_path))
+
+    inferred = _infer_allowed_paths_from_values(
+        "Fetch the remote report.",
+        {"url": "https://example.com/reports/out.md"},
+    )
+
+    assert inferred is None
