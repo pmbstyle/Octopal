@@ -2144,7 +2144,9 @@ def _build_scheduled_octo_task_input(task: dict[str, Any]) -> str:
     return (
         "Run this scheduled Octo task as a full autonomous workspace task:\n"
         f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n\n"
-        "Use the normal tools, workspace context, memory, filesystem, MCP, web, and workers as needed. "
+        "Use the normal tools, workspace context, memory, filesystem, and workers as needed. "
+        "Keep external work worker-first; use direct network or MCP tools only when the tool policy "
+        "allows it and no viable worker path fits the task. "
         "Complete the task end-to-end before returning a completion signal. "
         "If you create or update a file, verify it exists before finishing. "
         "Do not treat this as a bounded control-plane route.\n\n"
