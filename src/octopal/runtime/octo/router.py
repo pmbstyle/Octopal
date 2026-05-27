@@ -175,6 +175,7 @@ _WORKER_FOLLOWUP_ALLOWED_TOOL_NAMES = {
     "fs_write",
     "get_worker_output_path",
     "manage_canon",
+    "octo_continue_from_control_route",
 }
 _HEARTBEAT_ALLOWED_TOOL_NAMES = {
     "octo_context_health",
@@ -204,6 +205,7 @@ _PROACTIVE_ALLOWED_TOOL_NAMES = {
     "octo_self_queue_update",
 }
 _SCHEDULED_OCTO_CONTROL_ALLOWED_TOOL_NAMES = _SCHEDULER_ALLOWED_TOOL_NAMES | {
+    "octo_continue_from_control_route",
     "octo_context_reset",
     "octo_memchain_status",
     "octo_memchain_verify",
@@ -799,6 +801,7 @@ async def route_scheduled_octo_control(
     await octo.set_thinking(True)
     try:
         octo_tools, ctx = _get_scheduled_octo_control_tools(octo, chat_id)
+        ctx["control_route_notify_user"] = task.get("notify_user")
         resolution_report = ctx.get("tool_resolution_report")
         available_count = len(getattr(resolution_report, "available_tools", ()) or ())
         deferred_count = max(0, available_count - len(octo_tools))
@@ -827,10 +830,14 @@ async def route_scheduled_octo_control(
                 "Scheduled Octo control route rules:\n"
                 "- Keep this turn bounded to the single scheduled task in the payload.\n"
                 "- You may use allowed control-plane and maintenance tools when necessary.\n"
-                "- Do not start workers or broad orchestration from this route.\n"
+                "- Do not start workers or broad orchestration directly from this route.\n"
+                "- If the task needs normal Octo tools, workspace writes, workers, external access, "
+                "A2A, or broader orchestration and the payload gives enough context to proceed, call "
+                "`octo_continue_from_control_route` with one concrete continuation task, then return "
+                "SCHEDULED_TASK_DONE after the tool succeeds.\n"
                 "- Return exactly one of: SCHEDULED_TASK_DONE, SCHEDULED_TASK_BLOCKED, NO_USER_RESPONSE, or <user_visible>...</user_visible>.\n"
                 "- Use SCHEDULED_TASK_DONE only if the task completed successfully with no user-visible update.\n"
-                "- Use SCHEDULED_TASK_BLOCKED when the task cannot complete from this bounded route because it needs workers, external access, or unavailable tools.\n"
+                "- Use SCHEDULED_TASK_BLOCKED only when the task cannot complete and cannot be safely continued through the normal route.\n"
                 "- Use <user_visible> only for a concise user-facing update after the task is complete."
             ),
         )
@@ -1332,6 +1339,8 @@ async def route_worker_results_back_to_octo(
     octo: Any,
     chat_id: int,
     worker_results: list[tuple[str, WorkerResult] | tuple[str, str, WorkerResult]],
+    *,
+    notify_user: str | None = None,
 ) -> str:
     """Decide on one combined follow-up after one or more worker updates."""
     normalized_results = [_normalize_worker_result_entry(item) for item in worker_results]
@@ -1365,7 +1374,11 @@ async def route_worker_results_back_to_octo(
         "`output.files` as internal unless the artifact summary marks them durable.\n"
         "- If you answer the user, write exactly one clean Octo response in plain language.\n"
         "- Synthesize across the payloads once; do not emit multiple overlapping summaries.\n"
-        "- Do not start, stop, schedule, or orchestrate workers from this path.\n"
+        "- Do not start, stop, schedule, or orchestrate workers directly from this path.\n"
+        "- If the worker result requires normal Octo tools, workspace writes outside the durable "
+        "artifact roots, scheduling, worker orchestration, A2A, or any other full-turn action, "
+        "call `octo_continue_from_control_route` with one concrete continuation task, then return "
+        "exactly NO_USER_RESPONSE unless the user must answer a question first.\n"
         "- Do not invent follow-up tool needs beyond the tools already exposed here.\n\n"
         "- Never mention bounded mode, worker-result follow-up mode, full orchestration mode, "
         "or promise that you will take an action on a later turn. If more orchestration is needed, "
@@ -1396,6 +1409,8 @@ async def route_worker_results_back_to_octo(
     await octo.set_thinking(True)
     try:
         octo_tools, ctx = _get_worker_followup_tools(octo, chat_id)
+        if notify_user is not None:
+            ctx["control_route_notify_user"] = notify_user
         tool_policy_summary = _build_octo_tool_policy_summary(
             octo_tools,
             ctx.get("tool_resolution_report"),

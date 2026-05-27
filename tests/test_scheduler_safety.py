@@ -1468,6 +1468,7 @@ async def test_route_scheduled_octo_control_uses_control_plane_prompt_and_skips_
         assert kwargs["mode_label"] == "scheduled_octo_control"
         assert "memory_compact" in kwargs["user_text"]
         assert "octo_control" in kwargs["user_text"]
+        assert "octo_continue_from_control_route" in kwargs["mode_rules"]
         return [octo_router.Message(role="system", content="scheduled octo control")]
 
     async def _complete_route_with_tools(**kwargs):

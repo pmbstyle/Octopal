@@ -158,6 +158,12 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
         profile_tags=("ops", "communication"),
         capabilities=("self_queue_write",),
     ),
+    "octo_continue_from_control_route": ToolMetadata(
+        category="runtime",
+        risk="guarded",
+        profile_tags=("ops", "communication"),
+        capabilities=("self_recover", "planning"),
+    ),
     "execute_self_queue_item": ToolMetadata(
         category="runtime",
         risk="guarded",

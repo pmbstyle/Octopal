@@ -95,7 +95,16 @@ async def _route_worker_results_back_to_octo(*args: Any, **kwargs: Any) -> str:
         "route_worker_results_back_to_octo",
         _default_route_worker_results_back_to_octo,
     )
-    return await route_func(*args, **kwargs)
+    try:
+        return await route_func(*args, **kwargs)
+    except TypeError as exc:
+        if "notify_user" not in kwargs or "unexpected keyword argument 'notify_user'" not in str(
+            exc
+        ):
+            raise
+        retry_kwargs = dict(kwargs)
+        retry_kwargs.pop("notify_user", None)
+        return await route_func(*args, **retry_kwargs)
 
 
 def _publish_runtime_metrics(thinking_count: int = 0) -> None:
@@ -190,12 +199,14 @@ async def _flush_worker_followup_batch(octo: Any, chat_id: int, correlation_id: 
         merged_texts = list(batch.texts)
 
         if batch.items:
+            notify_user = _combine_worker_followup_notify_policy(batch.items)
             try:
                 batched_text = await asyncio.wait_for(
                     _route_worker_results_back_to_octo(
                         octo,
                         chat_id,
                         [(item.worker_id, item.task_text, item.result) for item in batch.items],
+                        notify_user=notify_user,
                     ),
                     timeout=_worker_result_routing_timeout_seconds(),
                 )
@@ -210,7 +221,6 @@ async def _flush_worker_followup_batch(octo: Any, chat_id: int, correlation_id: 
 
             pending_closure = octo.has_pending_conversational_closure(correlation_id)
             synthetic_result = _build_worker_followup_batch_result(batch.items)
-            notify_user = _combine_worker_followup_notify_policy(batch.items)
             trace_metadata.update(
                 {
                     "pending_closure": pending_closure,
@@ -378,6 +388,7 @@ async def _enqueue_batched_worker_followup(
                 octo,
                 chat_id,
                 [(str(worker_id or "").strip(), task_text, result)],
+                notify_user=notify_user,
             )
             decision = resolve_user_delivery(routed_text)
             if decision.user_visible:
