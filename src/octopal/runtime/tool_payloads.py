@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from octopal.runtime.capability_outcomes import extract_capability_outcome
+
 _COMPACTION_META_KEY = "__octopal_compaction__"
 _MAX_RENDER_CHARS = 32_000
 _MAX_CONTAINER_ITEMS = 48
@@ -108,7 +110,9 @@ def render_tool_result_for_llm(
     if not final_text:
         return RenderedToolResult(text="", was_compacted=was_compacted)
 
-    summary_prefix = "" if parsed_json_text else _build_summary_prefix(result, was_compacted=was_compacted)
+    summary_prefix = (
+        "" if parsed_json_text else _build_summary_prefix(result, was_compacted=was_compacted)
+    )
     if summary_prefix:
         final_text = f"{summary_prefix}\n{final_text}"
 
@@ -125,7 +129,11 @@ def _budget_for_tool(tool_name: str | None, *, max_chars: int | None) -> ToolRen
     normalized_name = str(tool_name or "").strip().lower()
     base_budget = _EXACT_TOOL_BUDGET_OVERRIDES.get(normalized_name)
     if base_budget is None:
-        base_budget = _CONTENT_HEAVY_BUDGET if _is_content_heavy_tool_name(normalized_name) else _DEFAULT_BUDGET
+        base_budget = (
+            _CONTENT_HEAVY_BUDGET
+            if _is_content_heavy_tool_name(normalized_name)
+            else _DEFAULT_BUDGET
+        )
     if max_chars is None:
         return base_budget
     return ToolRenderBudget(
@@ -184,6 +192,15 @@ def _preserve_raw_text(value: str, *, max_chars: int) -> tuple[str, bool]:
 def _build_summary_prefix(value: Any, *, was_compacted: bool) -> str:
     summary_parts: list[str] = []
 
+    capability_outcome = extract_capability_outcome(value)
+    if capability_outcome:
+        kind = _summary_token(capability_outcome.get("kind"))
+        next_action = _summary_text(capability_outcome.get("next_action"), limit=160)
+        if next_action:
+            summary_parts.append(f"[capability_outcome kind={kind} next_action={next_action}]")
+        else:
+            summary_parts.append(f"[capability_outcome kind={kind}]")
+
     if isinstance(value, dict):
         keys = [str(key) for key in value]
         preview_keys = ", ".join(keys[:10]) if keys else "(none)"
@@ -203,6 +220,18 @@ def _build_summary_prefix(value: Any, *, was_compacted: bool) -> str:
         summary_parts.append("[tool_result_compacted=true]")
 
     return "\n".join(summary_parts)
+
+
+def _summary_token(value: Any) -> str:
+    token = str(value or "").strip()
+    return re.sub(r"[^a-zA-Z0-9_.:-]+", "_", token)[:80] or "unknown"
+
+
+def _summary_text(value: Any, *, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def _compact_tool_value(
@@ -278,9 +307,7 @@ def _compact_tool_value(
         omitted = len(sequence) - len(compacted_items)
         if omitted > 0:
             changed = True
-            compacted_items.append(
-                f"... [{omitted} more {type(value).__name__} items omitted]"
-            )
+            compacted_items.append(f"... [{omitted} more {type(value).__name__} items omitted]")
         return compacted_items, changed
 
     return value, False

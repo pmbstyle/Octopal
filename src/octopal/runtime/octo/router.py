@@ -27,6 +27,11 @@ from octopal.infrastructure.observability.helpers import (
     summarize_exception,
 )
 from octopal.infrastructure.providers.base import InferenceProvider, Message
+from octopal.runtime.capability_outcomes import (
+    CAPABILITY_OUTCOME_KEY,
+    CapabilityOutcomeKind,
+    capability_outcome,
+)
 from octopal.runtime.intents.types import ActionIntent
 from octopal.runtime.memory.service import MemoryService
 from octopal.runtime.octo.control_plane import RouteMode
@@ -1908,7 +1913,11 @@ def _get_worker_followup_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec],
             policy=ToolPolicy(allow=sorted(_WORKER_FOLLOWUP_ALLOWED_TOOL_NAMES)),
         )
     ]
-    all_tools = _get_static_mode_tool_candidates(_WORKER_FOLLOWUP_ALLOWED_TOOL_NAMES)
+    known_tools = get_tools(mcp_manager=None)
+    all_tools = _get_static_mode_tool_candidates(
+        _WORKER_FOLLOWUP_ALLOWED_TOOL_NAMES,
+        tool_candidates=known_tools,
+    )
     resolution_report = resolve_tool_diagnostics(
         all_tools,
         permissions=perms,
@@ -1919,6 +1928,7 @@ def _get_worker_followup_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec],
     ctx["active_tool_specs"] = tool_specs
     ctx["tool_resolution_report"] = resolution_report
     ctx["all_tool_specs"] = all_tools
+    ctx["known_tool_specs"] = known_tools
     ctx["mcp_refresh_attempted"] = False
     return tool_specs, ctx
 
@@ -1992,7 +2002,11 @@ def _get_control_plane_tools(
             policy=ToolPolicy(allow=sorted(allowed_tool_names)),
         )
     ]
-    all_tools = _get_static_mode_tool_candidates(allowed_tool_names)
+    known_tools = get_tools(mcp_manager=None)
+    all_tools = _get_static_mode_tool_candidates(
+        allowed_tool_names,
+        tool_candidates=known_tools,
+    )
     resolution_report = resolve_tool_diagnostics(
         all_tools,
         permissions=perms,
@@ -2003,11 +2017,16 @@ def _get_control_plane_tools(
     ctx["active_tool_specs"] = tool_specs
     ctx["tool_resolution_report"] = resolution_report
     ctx["all_tool_specs"] = all_tools
+    ctx["known_tool_specs"] = known_tools
     ctx["mcp_refresh_attempted"] = False
     return tool_specs, ctx
 
 
-def _get_static_mode_tool_candidates(allowed_tool_names: set[str]) -> list[ToolSpec]:
+def _get_static_mode_tool_candidates(
+    allowed_tool_names: set[str],
+    *,
+    tool_candidates: list[ToolSpec] | None = None,
+) -> list[ToolSpec]:
     """Return only static tools needed by a bounded route mode.
 
     Control-plane paths must not hydrate dynamic MCP tools just to discard them
@@ -2016,9 +2035,8 @@ def _get_static_mode_tool_candidates(allowed_tool_names: set[str]) -> list[ToolS
     """
 
     allowed = {str(name).strip().lower() for name in allowed_tool_names if str(name).strip()}
-    return [
-        tool for tool in get_tools(mcp_manager=None) if str(tool.name).strip().lower() in allowed
-    ]
+    candidates = tool_candidates if tool_candidates is not None else get_tools(mcp_manager=None)
+    return [tool for tool in candidates if str(tool.name).strip().lower() in allowed]
 
 
 def _build_scheduler_tick_input(octo: Any, *, max_tasks: int = 10) -> str:
@@ -2640,6 +2658,22 @@ async def _handle_octo_tool_call(
             }
         tool_trace_status = "error"
         tool_trace_metadata["error_type"] = "unknown_tool"
+        unavailable_payload = _resolve_octo_unavailable_tool(
+            tool_name=str(name or ""),
+            active_tools=tools,
+            ctx=ctx,
+        )
+        if unavailable_payload is not None:
+            tool_trace_metadata["error_type"] = "tool_unavailable"
+            tool_trace_output = {
+                "result_preview": safe_preview(unavailable_payload, limit=240),
+                "result_size": len(str(unavailable_payload)),
+            }
+            return unavailable_payload, {
+                "timed_out": False,
+                "had_error": True,
+                "error_type": "tool_unavailable",
+            }
         unknown_payload = {"error": f"Unknown tool: {name}"}
         tool_trace_output = {
             "result_preview": safe_preview(unknown_payload, limit=240),
@@ -2703,6 +2737,14 @@ async def _maybe_request_octo_tool_approval(
             "tool": spec.name,
             "reason": reason,
             "message": "Dangerous exec_run command requires direct user approval, but no approval channel is available.",
+            CAPABILITY_OUTCOME_KEY: capability_outcome(
+                "needs_approval",
+                reason=reason,
+                next_action=(
+                    "Ask the user for direct approval, or choose a safer non-dangerous tool path."
+                ),
+                tool=spec.name,
+            ),
         }
 
     try:
@@ -2714,6 +2756,14 @@ async def _maybe_request_octo_tool_approval(
             "tool": spec.name,
             "reason": reason,
             "message": f"Dangerous exec_run command approval failed: {exc}",
+            CAPABILITY_OUTCOME_KEY: capability_outcome(
+                "needs_approval",
+                reason=reason,
+                next_action=(
+                    "Retry the approval request if appropriate, or choose a safer non-dangerous tool path."
+                ),
+                tool=spec.name,
+            ),
         }
     if approved:
         return None
@@ -2722,6 +2772,15 @@ async def _maybe_request_octo_tool_approval(
         "tool": spec.name,
         "reason": reason,
         "message": "Dangerous exec_run command was not approved by the user.",
+        CAPABILITY_OUTCOME_KEY: capability_outcome(
+            "policy_denied",
+            reason="user_denied_approval",
+            next_action=(
+                "Stop this action and choose a safer alternative, or report the concrete approval denial."
+            ),
+            tool=spec.name,
+            policy_reason="user_denied_approval",
+        ),
     }
 
 
@@ -2946,7 +3005,84 @@ def _resolve_octo_policy_block(tool_name: str, ctx: dict[str, object]) -> dict[s
             "risk": entry.tool.metadata.risk,
             "message": f"Tool '{entry.tool.name}' is blocked by the current Octo tool policy.",
             "hint": _policy_block_hint(entry.tool),
+            CAPABILITY_OUTCOME_KEY: capability_outcome(
+                "policy_denied",
+                reason=entry.reasons[0] if entry.reasons else "blocked_by_policy",
+                next_action=_policy_block_hint(entry.tool),
+                tool=entry.tool.name,
+                policy_reason=entry.reasons[0] if entry.reasons else "blocked_by_policy",
+            ),
         }
+    return None
+
+
+def _resolve_octo_unavailable_tool(
+    *,
+    tool_name: str,
+    active_tools: list[ToolSpec],
+    ctx: dict[str, object],
+) -> dict[str, Any] | None:
+    normalized_name = str(tool_name or "").strip().lower()
+    if not normalized_name:
+        return None
+
+    active_names = {str(tool.name).strip().lower() for tool in active_tools}
+    if normalized_name in active_names:
+        return None
+
+    spec = _find_known_tool_spec(normalized_name, ctx)
+    if spec is None:
+        return None
+
+    active_tool_names = {str(tool.name).strip().lower() for tool in active_tools}
+    if "octo_continue_from_control_route" in active_tool_names:
+        kind: CapabilityOutcomeKind = "needs_continuation"
+        next_action = (
+            "Call octo_continue_from_control_route with one concrete continuation task "
+            "that can use the broader Octo toolset."
+        )
+    elif "tool_catalog_search" in active_tool_names:
+        kind = "needs_continuation"
+        next_action = (
+            "Use tool_catalog_search to activate the missing tool if it fits the task; "
+            "otherwise choose a safe alternative."
+        )
+    elif "worker_spawn" in tuple(getattr(spec.metadata, "capabilities", ()) or ()):
+        kind = "needs_worker"
+        next_action = "Delegate the work through an available worker path."
+    else:
+        kind = "needs_continuation"
+        next_action = "Continue through a route that exposes the required capability."
+
+    return {
+        "type": "tool_unavailable",
+        "tool": tool_name,
+        "message": f"Tool '{tool_name}' exists but is not active in this execution contract.",
+        CAPABILITY_OUTCOME_KEY: capability_outcome(
+            kind,
+            reason="known_tool_not_active",
+            next_action=next_action,
+            missing_tool=tool_name,
+            details={
+                "category": str(getattr(spec.metadata, "category", "") or ""),
+                "capabilities": list(getattr(spec.metadata, "capabilities", ()) or ()),
+            },
+        ),
+    }
+
+
+def _find_known_tool_spec(normalized_name: str, ctx: dict[str, object]) -> ToolSpec | None:
+    report = ctx.get("tool_resolution_report")
+    if isinstance(report, ToolResolutionReport):
+        candidates = list(report.available_tools) + [entry.tool for entry in report.blocked_tools]
+        for spec in candidates:
+            if str(spec.name).strip().lower() == normalized_name:
+                return spec
+
+    for key in ("all_tool_specs", "known_tool_specs"):
+        for spec in ctx.get(key) or ():
+            if isinstance(spec, ToolSpec) and str(spec.name).strip().lower() == normalized_name:
+                return spec
     return None
 
 

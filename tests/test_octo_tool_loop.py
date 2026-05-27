@@ -5,11 +5,13 @@ import json
 
 import pytest
 
+from octopal.runtime.capability_outcomes import CAPABILITY_OUTCOME_KEY
 from octopal.runtime.octo.router import (
     _budget_tool_specs,
     _build_octo_tool_policy_summary,
     _dangerous_exec_command_reason,
     _get_octo_tools,
+    _get_scheduled_octo_control_tools,
     _handle_octo_tool_call,
     _record_octo_tool_call,
     _tool_result_payload_error_type,
@@ -62,6 +64,8 @@ def test_octo_tool_policy_requires_approval_for_dangerous_exec_run() -> None:
         assert result["type"] == "approval_required"
         assert result["tool"] == "exec_run"
         assert "dangerous" in result["message"].lower()
+        assert result[CAPABILITY_OUTCOME_KEY]["kind"] == "needs_approval"
+        assert "approval" in result[CAPABILITY_OUTCOME_KEY]["next_action"].lower()
         assert meta["error_type"] == "approval_required"
 
     asyncio.run(scenario())
@@ -133,6 +137,10 @@ def test_default_octo_tool_policy_blocks_test_run() -> None:
         assert result["type"] == "policy_block"
         assert result["tool"] == "test_run"
         assert result["reason"] == "blocked_by_deny:octo.direct_exec_denylist"
+        assert result[CAPABILITY_OUTCOME_KEY]["kind"] == "policy_denied"
+        assert result[CAPABILITY_OUTCOME_KEY]["policy_reason"] == (
+            "blocked_by_deny:octo.direct_exec_denylist"
+        )
         assert meta["error_type"] == "policy_block"
 
     asyncio.run(scenario())
@@ -242,7 +250,29 @@ async def test_handle_octo_tool_call_returns_policy_block_for_known_blocked_tool
     assert result["type"] == "policy_block"
     assert result["tool"] == "exec_run"
     assert result["reason"] == "blocked_by_permission:exec"
+    assert result[CAPABILITY_OUTCOME_KEY]["kind"] == "policy_denied"
     assert meta["error_type"] == "policy_block"
+
+
+@pytest.mark.asyncio
+async def test_handle_octo_tool_call_returns_capability_outcome_for_inactive_known_tool() -> None:
+    class DummyOcto:
+        mcp_manager = None
+
+    tools, ctx = _get_scheduled_octo_control_tools(DummyOcto(), 123)
+
+    result, meta = await _handle_octo_tool_call(
+        {"function": {"name": "start_worker", "arguments": "{}"}},
+        tools,
+        ctx,
+    )
+
+    assert result["type"] == "tool_unavailable"
+    assert result["tool"] == "start_worker"
+    assert result[CAPABILITY_OUTCOME_KEY]["kind"] == "needs_continuation"
+    assert result[CAPABILITY_OUTCOME_KEY]["missing_tool"] == "start_worker"
+    assert "octo_continue_from_control_route" in result[CAPABILITY_OUTCOME_KEY]["next_action"]
+    assert meta["error_type"] == "tool_unavailable"
 
 
 def test_build_octo_tool_policy_summary_counts_risk_classes() -> None:
