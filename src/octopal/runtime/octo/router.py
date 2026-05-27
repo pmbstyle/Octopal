@@ -27,6 +27,11 @@ from octopal.infrastructure.observability.helpers import (
     summarize_exception,
 )
 from octopal.infrastructure.providers.base import InferenceProvider, Message
+from octopal.runtime.capability_outcomes import (
+    CAPABILITY_OUTCOME_KEY,
+    CapabilityOutcomeKind,
+    capability_outcome,
+)
 from octopal.runtime.intents.types import ActionIntent
 from octopal.runtime.memory.service import MemoryService
 from octopal.runtime.octo.control_plane import RouteMode
@@ -558,7 +563,7 @@ async def route_heartbeat(
                 "Heartbeat route rules:\n"
                 "- Return exactly one of: HEARTBEAT_OK, NO_USER_RESPONSE, or <user_visible>...</user_visible>.\n"
                 "- Use tools only if they are clearly necessary for current heartbeat/scheduler state.\n"
-                "- Do not start broad orchestration from heartbeat mode.\n"
+                "- Do not start broad orchestration from this lightweight operational turn.\n"
                 "- Do not rely on full workspace bootstrap, recent chat history, or rich memory recall."
             ),
         )
@@ -676,7 +681,7 @@ async def route_scheduler_tick(
                 "- You may inspect schedule state and worker availability.\n"
                 "- You may apply safe scheduled-task route repairs with repair_scheduled_tasks(apply=true) "
                 "when the candidate is unambiguous.\n"
-                "- Do not dispatch workers directly from this route.\n"
+                "- Do not dispatch workers directly during this scheduler tick.\n"
                 "- Return one of: SCHEDULER_IDLE, NO_USER_RESPONSE, or <user_visible>...</user_visible>."
             ),
         )
@@ -742,9 +747,9 @@ async def route_proactive_tick(
                 "- You may add, claim, execute, cancel, or mark self-queue items only when the payload supports it.\n"
                 "- You may preview scheduled-task repair candidates with repair_scheduled_tasks(apply=false).\n"
                 "- You may apply scheduled-task repairs only for unambiguous blocked_by_route candidates. "
-                "For worker repairs the task must already have a valid worker_id; never provide worker_id from this route.\n"
+                "For worker repairs the task must already have a valid worker_id; never invent a worker_id during this tick.\n"
                 "- Do not start workers directly, schedule recurring tasks, use filesystem tools, use network/MCP tools, "
-                "or perform external side effects from this route.\n"
+                "or perform external side effects during this tick.\n"
                 "- Use execute_self_queue_item only for an existing low/medium-risk queue item with an explicit worker_id; "
                 "the runtime will start the worker or mark the item blocked.\n"
                 "- Prefer queueing one concrete low-risk initiative when there is no safe executable queue item.\n"
@@ -830,7 +835,7 @@ async def route_scheduled_octo_control(
                 "Scheduled Octo control route rules:\n"
                 "- Keep this turn bounded to the single scheduled task in the payload.\n"
                 "- You may use allowed control-plane and maintenance tools when necessary.\n"
-                "- Do not start workers or broad orchestration directly from this route.\n"
+                "- Do not start workers or broad orchestration directly inside this control turn.\n"
                 "- If the task needs normal Octo tools, workspace writes, workers, external access, "
                 "A2A, or broader orchestration and the payload gives enough context to proceed, call "
                 "`octo_continue_from_control_route` with one concrete continuation task, then return "
@@ -1353,9 +1358,10 @@ async def route_worker_results_back_to_octo(
     )
 
     worker_result_prompt = (
-        "One or more worker updates arrived for the same user request. You are in bounded "
-        "worker-result follow-up mode, not full orchestration mode. Decide whether the update "
-        "needs an internal action or one combined user follow-up now based on these payloads.\n"
+        "One or more worker updates arrived for the same user request. Use this lightweight "
+        "worker-result follow-up contract to decide whether the payload can be handled with the "
+        "visible tools, needs one combined user follow-up, or should be continued through the "
+        "normal Octo route.\n"
         "<worker_results>\n"
         f"{payload_json}\n"
         "</worker_results>\n\n"
@@ -1438,6 +1444,8 @@ async def route_worker_results_back_to_octo(
                     "Worker-result follow-up path rules:\n"
                     "- Keep this turn cheap, bounded, and deterministic.\n"
                     "- Use tools only if they are clearly necessary to inspect a specific worker result detail.\n"
+                    "- If visible tools are insufficient and enough context exists, use the continuation tool; "
+                    "do not explain internal path limits.\n"
                     "- Return JSON only using the worker follow-up contract from the user message.\n"
                 ),
             )
@@ -1905,7 +1913,11 @@ def _get_worker_followup_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec],
             policy=ToolPolicy(allow=sorted(_WORKER_FOLLOWUP_ALLOWED_TOOL_NAMES)),
         )
     ]
-    all_tools = _get_static_mode_tool_candidates(_WORKER_FOLLOWUP_ALLOWED_TOOL_NAMES)
+    known_tools = get_tools(mcp_manager=None)
+    all_tools = _get_static_mode_tool_candidates(
+        _WORKER_FOLLOWUP_ALLOWED_TOOL_NAMES,
+        tool_candidates=known_tools,
+    )
     resolution_report = resolve_tool_diagnostics(
         all_tools,
         permissions=perms,
@@ -1916,6 +1928,7 @@ def _get_worker_followup_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec],
     ctx["active_tool_specs"] = tool_specs
     ctx["tool_resolution_report"] = resolution_report
     ctx["all_tool_specs"] = all_tools
+    ctx["known_tool_specs"] = known_tools
     ctx["mcp_refresh_attempted"] = False
     return tool_specs, ctx
 
@@ -1989,7 +2002,11 @@ def _get_control_plane_tools(
             policy=ToolPolicy(allow=sorted(allowed_tool_names)),
         )
     ]
-    all_tools = _get_static_mode_tool_candidates(allowed_tool_names)
+    known_tools = get_tools(mcp_manager=None)
+    all_tools = _get_static_mode_tool_candidates(
+        allowed_tool_names,
+        tool_candidates=known_tools,
+    )
     resolution_report = resolve_tool_diagnostics(
         all_tools,
         permissions=perms,
@@ -2000,11 +2017,16 @@ def _get_control_plane_tools(
     ctx["active_tool_specs"] = tool_specs
     ctx["tool_resolution_report"] = resolution_report
     ctx["all_tool_specs"] = all_tools
+    ctx["known_tool_specs"] = known_tools
     ctx["mcp_refresh_attempted"] = False
     return tool_specs, ctx
 
 
-def _get_static_mode_tool_candidates(allowed_tool_names: set[str]) -> list[ToolSpec]:
+def _get_static_mode_tool_candidates(
+    allowed_tool_names: set[str],
+    *,
+    tool_candidates: list[ToolSpec] | None = None,
+) -> list[ToolSpec]:
     """Return only static tools needed by a bounded route mode.
 
     Control-plane paths must not hydrate dynamic MCP tools just to discard them
@@ -2013,9 +2035,8 @@ def _get_static_mode_tool_candidates(allowed_tool_names: set[str]) -> list[ToolS
     """
 
     allowed = {str(name).strip().lower() for name in allowed_tool_names if str(name).strip()}
-    return [
-        tool for tool in get_tools(mcp_manager=None) if str(tool.name).strip().lower() in allowed
-    ]
+    candidates = tool_candidates if tool_candidates is not None else get_tools(mcp_manager=None)
+    return [tool for tool in candidates if str(tool.name).strip().lower() in allowed]
 
 
 def _build_scheduler_tick_input(octo: Any, *, max_tasks: int = 10) -> str:
@@ -2121,7 +2142,7 @@ async def _build_proactive_tick_input(octo: Any, *, chat_id: int, reason: str) -
         "only when the candidate is safe. Worker repairs require an existing worker_id. "
         "If the best opportunity is confidence >= 0.75, low/medium risk, and no pending work exists, "
         "use octo_self_queue_add to queue exactly one concrete initiative. "
-        "Do not call start_worker directly from this route."
+        "Do not call start_worker directly during this proactive tick."
     )
 
 
@@ -2637,6 +2658,22 @@ async def _handle_octo_tool_call(
             }
         tool_trace_status = "error"
         tool_trace_metadata["error_type"] = "unknown_tool"
+        unavailable_payload = _resolve_octo_unavailable_tool(
+            tool_name=str(name or ""),
+            active_tools=tools,
+            ctx=ctx,
+        )
+        if unavailable_payload is not None:
+            tool_trace_metadata["error_type"] = "tool_unavailable"
+            tool_trace_output = {
+                "result_preview": safe_preview(unavailable_payload, limit=240),
+                "result_size": len(str(unavailable_payload)),
+            }
+            return unavailable_payload, {
+                "timed_out": False,
+                "had_error": True,
+                "error_type": "tool_unavailable",
+            }
         unknown_payload = {"error": f"Unknown tool: {name}"}
         tool_trace_output = {
             "result_preview": safe_preview(unknown_payload, limit=240),
@@ -2700,6 +2737,14 @@ async def _maybe_request_octo_tool_approval(
             "tool": spec.name,
             "reason": reason,
             "message": "Dangerous exec_run command requires direct user approval, but no approval channel is available.",
+            CAPABILITY_OUTCOME_KEY: capability_outcome(
+                "needs_approval",
+                reason=reason,
+                next_action=(
+                    "Ask the user for direct approval, or choose a safer non-dangerous tool path."
+                ),
+                tool=spec.name,
+            ),
         }
 
     try:
@@ -2711,6 +2756,14 @@ async def _maybe_request_octo_tool_approval(
             "tool": spec.name,
             "reason": reason,
             "message": f"Dangerous exec_run command approval failed: {exc}",
+            CAPABILITY_OUTCOME_KEY: capability_outcome(
+                "needs_approval",
+                reason=reason,
+                next_action=(
+                    "Retry the approval request if appropriate, or choose a safer non-dangerous tool path."
+                ),
+                tool=spec.name,
+            ),
         }
     if approved:
         return None
@@ -2719,6 +2772,15 @@ async def _maybe_request_octo_tool_approval(
         "tool": spec.name,
         "reason": reason,
         "message": "Dangerous exec_run command was not approved by the user.",
+        CAPABILITY_OUTCOME_KEY: capability_outcome(
+            "policy_denied",
+            reason="user_denied_approval",
+            next_action=(
+                "Stop this action and choose a safer alternative, or report the concrete approval denial."
+            ),
+            tool=spec.name,
+            policy_reason="user_denied_approval",
+        ),
     }
 
 
@@ -2943,7 +3005,84 @@ def _resolve_octo_policy_block(tool_name: str, ctx: dict[str, object]) -> dict[s
             "risk": entry.tool.metadata.risk,
             "message": f"Tool '{entry.tool.name}' is blocked by the current Octo tool policy.",
             "hint": _policy_block_hint(entry.tool),
+            CAPABILITY_OUTCOME_KEY: capability_outcome(
+                "policy_denied",
+                reason=entry.reasons[0] if entry.reasons else "blocked_by_policy",
+                next_action=_policy_block_hint(entry.tool),
+                tool=entry.tool.name,
+                policy_reason=entry.reasons[0] if entry.reasons else "blocked_by_policy",
+            ),
         }
+    return None
+
+
+def _resolve_octo_unavailable_tool(
+    *,
+    tool_name: str,
+    active_tools: list[ToolSpec],
+    ctx: dict[str, object],
+) -> dict[str, Any] | None:
+    normalized_name = str(tool_name or "").strip().lower()
+    if not normalized_name:
+        return None
+
+    active_names = {str(tool.name).strip().lower() for tool in active_tools}
+    if normalized_name in active_names:
+        return None
+
+    spec = _find_known_tool_spec(normalized_name, ctx)
+    if spec is None:
+        return None
+
+    active_tool_names = {str(tool.name).strip().lower() for tool in active_tools}
+    if "octo_continue_from_control_route" in active_tool_names:
+        kind: CapabilityOutcomeKind = "needs_continuation"
+        next_action = (
+            "Call octo_continue_from_control_route with one concrete continuation task "
+            "that can use the broader Octo toolset."
+        )
+    elif "tool_catalog_search" in active_tool_names:
+        kind = "needs_continuation"
+        next_action = (
+            "Use tool_catalog_search to activate the missing tool if it fits the task; "
+            "otherwise choose a safe alternative."
+        )
+    elif "worker_spawn" in tuple(getattr(spec.metadata, "capabilities", ()) or ()):
+        kind = "needs_worker"
+        next_action = "Delegate the work through an available worker path."
+    else:
+        kind = "needs_continuation"
+        next_action = "Continue through a route that exposes the required capability."
+
+    return {
+        "type": "tool_unavailable",
+        "tool": tool_name,
+        "message": f"Tool '{tool_name}' exists but is not active in this execution contract.",
+        CAPABILITY_OUTCOME_KEY: capability_outcome(
+            kind,
+            reason="known_tool_not_active",
+            next_action=next_action,
+            missing_tool=tool_name,
+            details={
+                "category": str(getattr(spec.metadata, "category", "") or ""),
+                "capabilities": list(getattr(spec.metadata, "capabilities", ()) or ()),
+            },
+        ),
+    }
+
+
+def _find_known_tool_spec(normalized_name: str, ctx: dict[str, object]) -> ToolSpec | None:
+    report = ctx.get("tool_resolution_report")
+    if isinstance(report, ToolResolutionReport):
+        candidates = list(report.available_tools) + [entry.tool for entry in report.blocked_tools]
+        for spec in candidates:
+            if str(spec.name).strip().lower() == normalized_name:
+                return spec
+
+    for key in ("all_tool_specs", "known_tool_specs"):
+        for spec in ctx.get(key) or ():
+            if isinstance(spec, ToolSpec) and str(spec.name).strip().lower() == normalized_name:
+                return spec
     return None
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from octopal.infrastructure.providers.base import Message
+from octopal.runtime.capability_outcomes import CAPABILITY_OUTCOME_KEY
 from octopal.runtime.tool_payloads import render_tool_result_for_llm
 
 
@@ -21,6 +22,21 @@ def test_render_tool_result_compacts_large_nested_payload() -> None:
     assert '"status":"ok"' in rendered.text
     assert "__octopal_compaction__" in rendered.text
     assert "truncated" in rendered.text
+
+
+def test_render_tool_result_surfaces_capability_outcome() -> None:
+    payload = {
+        "type": "tool_unavailable",
+        CAPABILITY_OUTCOME_KEY: {
+            "kind": "needs_continuation",
+            "next_action": "Call octo_continue_from_control_route with one concrete continuation task.",
+        },
+    }
+
+    rendered = render_tool_result_for_llm(payload)
+
+    assert "[capability_outcome kind=needs_continuation" in rendered.text
+    assert "octo_continue_from_control_route" in rendered.text
 
 
 def test_render_tool_result_parses_json_strings_before_compacting() -> None:

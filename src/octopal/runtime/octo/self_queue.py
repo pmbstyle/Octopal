@@ -101,15 +101,15 @@ def _scheduler_opportunity_cards(
         ).strip()
         if suggested_mode == "worker":
             task = (
-                f"Inspect scheduled task {task_id!r} ({name!r}) blocked from its current route. "
+                f"Inspect scheduled task {task_id!r} ({name!r}) whose current dispatch policy cannot complete it. "
                 "Find the least-risk repair or migration path, verify whether worker execution is appropriate, "
                 "and report the exact recommended change."
             )
             suggested_worker_id = worker_id
         else:
             task = (
-                f"Repair scheduled task {task_id!r} ({name!r}) from its blocked control route "
-                "to the full scheduled Octo task execution mode, then verify it is dispatch-ready."
+                f"Repair scheduled task {task_id!r} ({name!r}) by moving it to an execution policy "
+                "that can complete the work, then verify it is dispatch-ready."
             )
             suggested_worker_id = None
         cards.append(

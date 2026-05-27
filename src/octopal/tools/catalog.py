@@ -884,8 +884,9 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
         ToolSpec(
             name="repair_scheduled_tasks",
             description=(
-                "Preview or apply safe repairs for scheduled tasks with known route-compatibility suggestions. "
-                "Proactive mode is guarded to blocked_by_route repairs and cannot provide worker_id."
+                "Preview or apply safe repairs for scheduled tasks with known "
+                "route-compatibility suggestions. "
+                "Proactive ticks are guarded to blocked_by_route repairs and cannot invent worker_id values."
             ),
             parameters={
                 "type": "object",
