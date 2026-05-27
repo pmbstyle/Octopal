@@ -5,11 +5,13 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import structlog
 
 from octopal.channels import normalize_user_channel, user_channel_label
 from octopal.infrastructure.config.settings import load_settings
+from octopal.infrastructure.logging import correlation_id_var
 from octopal.runtime.memory.memchain import (
     memchain_init,
     memchain_record,
@@ -615,6 +617,39 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             },
             permission="self_control",
             handler=_tool_octo_self_queue_add,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="octo_continue_from_control_route",
+            description=(
+                "Exit bounded control handling and continue the work through a normal Octo "
+                "conversation route with the full Octo toolset. Use only when the current bounded "
+                "route has enough context to safely hand off one concrete continuation task."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": (
+                            "Concrete continuation task for the normal Octo route to complete."
+                        ),
+                    },
+                    "context_summary": {
+                        "type": "string",
+                        "description": "Short evidence/context summary that the normal route needs.",
+                    },
+                    "worker_result_summary": {"type": "string"},
+                    "notify_user": {
+                        "type": "boolean",
+                        "description": "Whether to send the normal-route result to the user.",
+                    },
+                },
+                "required": ["task"],
+                "additionalProperties": False,
+            },
+            permission="self_control",
+            handler=_tool_octo_continue_from_control_route,
             is_async=True,
         ),
         ToolSpec(
@@ -2459,6 +2494,95 @@ async def _tool_octo_self_queue_add(args, ctx) -> str:
         return json.dumps({"status": "error", "message": "octo self queue is unavailable"}, ensure_ascii=False)
     payload = await octo.add_self_queue_item(chat_id, args or {})
     return json.dumps(payload, ensure_ascii=False)
+
+
+async def _tool_octo_continue_from_control_route(args, ctx) -> str:
+    from octopal.runtime.octo.delivery import resolve_user_delivery
+    from octopal.runtime.octo.reply import OctoReply
+
+    args = args or {}
+    ctx = ctx or {}
+    octo = ctx.get("octo")
+    if octo is None or not hasattr(octo, "handle_message"):
+        return json.dumps(
+            {
+                "status": "error",
+                "message": "normal Octo continuation is unavailable",
+            },
+            ensure_ascii=False,
+        )
+
+    task = str(args.get("task", "") or "").strip()
+    if not task:
+        return json.dumps(
+            {"status": "error", "message": "task is required"},
+            ensure_ascii=False,
+        )
+
+    try:
+        chat_id = int(ctx.get("chat_id", 0) or 0)
+    except Exception:
+        chat_id = 0
+    context_summary = str(
+        args.get("context_summary") or args.get("worker_result_summary") or ""
+    ).strip()
+    if "control_route_notify_user" in ctx:
+        route_notify_policy = normalize_notify_user_policy(ctx.get("control_route_notify_user"))
+        notify_user = route_notify_policy not in {"never", "if_significant"}
+    elif "notify_user" in args:
+        notify_user = bool(args.get("notify_user"))
+    else:
+        notify_user = True
+
+    handoff_text = (
+        "Continue from a completed bounded control route as a normal Octo conversation route.\n"
+        "This is an internal handoff, not a new user request. Use the normal tools, workspace "
+        "context, memory, filesystem, A2A, scheduling, and workers as needed. Complete the "
+        "continuation end-to-end, and do not mention bounded/follow-up mode or this handoff "
+        "unless the user specifically asks about runtime internals.\n\n"
+        f"Continuation task:\n{task}"
+    )
+    if context_summary:
+        handoff_text += f"\n\nRelevant context:\n{context_summary}"
+    if not notify_user:
+        handoff_text += (
+            "\n\nDelivery policy: complete this continuation silently. Do not send messages, "
+            "files, reactions, or user-facing updates. Return a non-user-visible completion signal."
+        )
+
+    token = correlation_id_var.set(f"control-handoff-{uuid4()}")
+    try:
+        reply = await octo.handle_message(
+            handoff_text,
+            chat_id,
+            show_typing=True,
+            persist_to_memory=False,
+            track_progress=True,
+            include_wakeup=True,
+            background_delivery=True,
+        )
+    finally:
+        correlation_id_var.reset(token)
+
+    reply_text = str(reply.immediate or "") if isinstance(reply, OctoReply) else str(reply or "")
+
+    sent = False
+    if notify_user and reply_text:
+        delivery = resolve_user_delivery(reply_text)
+        sender = getattr(octo, "internal_send", None)
+        if delivery.user_visible and callable(sender):
+            await sender(chat_id, delivery.text)
+            sent = True
+
+    return json.dumps(
+        {
+            "status": "continued",
+            "delivered": sent,
+            "notify_user": notify_user,
+            "reply_preview": reply_text[:240],
+        },
+        ensure_ascii=False,
+    )
 
 
 async def _tool_execute_self_queue_item(args, ctx) -> str:

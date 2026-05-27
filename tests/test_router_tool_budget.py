@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -270,6 +271,14 @@ def test_worker_followup_tools_are_narrow(monkeypatch) -> None:
                 permission="filesystem_write",
                 handler=lambda args, ctx: {"ok": True},
             ),
+            ToolSpec(
+                name="octo_continue_from_control_route",
+                description="continue",
+                parameters={"type": "object", "properties": {}},
+                permission="self_control",
+                handler=lambda args, ctx: {"ok": True},
+                is_async=True,
+            ),
         ]
 
     class DummyOcto:
@@ -279,7 +288,12 @@ def test_worker_followup_tools_are_narrow(monkeypatch) -> None:
 
     tools, _ctx = _get_worker_followup_tools(DummyOcto(), 123)
 
-    assert {tool.name for tool in tools} == {"manage_canon", "get_worker_output_path", "fs_write"}
+    assert {tool.name for tool in tools} == {
+        "manage_canon",
+        "get_worker_output_path",
+        "fs_write",
+        "octo_continue_from_control_route",
+    }
 
 
 def test_control_plane_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -> None:
@@ -347,6 +361,14 @@ def test_control_plane_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -> 
                 handler=lambda args, ctx: {"ok": True},
             ),
             ToolSpec(
+                name="octo_continue_from_control_route",
+                description="continue",
+                parameters={"type": "object", "properties": {}},
+                permission="self_control",
+                handler=lambda args, ctx: {"ok": True},
+                is_async=True,
+            ),
+            ToolSpec(
                 name="mcp_agentmail_list_inboxes",
                 description="dynamic mcp",
                 parameters={"type": "object", "properties": {}},
@@ -388,6 +410,7 @@ def test_control_plane_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -> 
         "list_active_workers",
         "manage_canon",
         "search_canon",
+        "octo_continue_from_control_route",
     }.issubset({tool.name for tool in scheduled_octo_control_tools})
     assert {"list_workers", "list_active_workers"}.issubset(
         {tool.name for tool in internal_maintenance_tools}
@@ -464,6 +487,14 @@ def test_worker_followup_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -
                 handler=lambda args, ctx: {"ok": True},
             ),
             ToolSpec(
+                name="octo_continue_from_control_route",
+                description="continue",
+                parameters={"type": "object", "properties": {}},
+                permission="self_control",
+                handler=lambda args, ctx: {"ok": True},
+                is_async=True,
+            ),
+            ToolSpec(
                 name="mcp_agentmail_list_inboxes",
                 description="dynamic mcp",
                 parameters={"type": "object", "properties": {}},
@@ -485,7 +516,12 @@ def test_worker_followup_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -
 
     assert calls == [None]
     assert ctx["mcp_refresh_attempted"] is False
-    assert {tool.name for tool in tools} == {"manage_canon", "get_worker_output_path", "fs_write"}
+    assert {tool.name for tool in tools} == {
+        "manage_canon",
+        "get_worker_output_path",
+        "fs_write",
+        "octo_continue_from_control_route",
+    }
 
 
 def test_worker_followup_fs_write_context_is_limited_to_durable_artifacts(
@@ -511,6 +547,173 @@ def test_worker_followup_fs_write_context_is_limited_to_durable_artifacts(
     assert blocked.startswith("fs_write error:")
     assert "outside allowed paths" in blocked
     assert not (tmp_path / "mcp_servers.json").exists()
+
+
+def test_control_route_continue_tool_runs_normal_route_and_sends(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(tmp_path))
+
+    class DummyOcto:
+        mcp_manager = None
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.sent: list[tuple[int, str]] = []
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
+            return "Done from normal route"
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            self.sent.append((chat_id, text))
+
+    octo = DummyOcto()
+    tools, ctx = _get_worker_followup_tools(octo, 123)
+    continue_tool = next(tool for tool in tools if tool.name == "octo_continue_from_control_route")
+
+    result = asyncio.run(
+        continue_tool.handler(
+            {
+                "task": "Record the worker result in daily memory.",
+                "context_summary": "Worker returned a useful note.",
+            },
+            ctx,
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "continued"
+    assert payload["delivered"] is True
+    assert octo.sent == [(123, "Done from normal route")]
+    assert octo.calls[0]["chat_id"] == 123
+    assert "normal Octo conversation route" in str(octo.calls[0]["text"])
+    assert "Record the worker result in daily memory." in str(octo.calls[0]["text"])
+    kwargs = octo.calls[0]["kwargs"]
+    assert kwargs["persist_to_memory"] is False
+    assert kwargs["track_progress"] is True
+    assert kwargs["background_delivery"] is True
+
+
+def test_control_route_continue_tool_honors_scheduled_notify_never() -> None:
+    class DummyOcto:
+        mcp_manager = None
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.sent: list[tuple[int, str]] = []
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
+            return "Done from normal route"
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            self.sent.append((chat_id, text))
+
+    octo = DummyOcto()
+    tools, ctx = _get_scheduled_octo_control_tools(octo, 123)
+    ctx["control_route_notify_user"] = "never"
+    continue_tool = next(tool for tool in tools if tool.name == "octo_continue_from_control_route")
+
+    result = asyncio.run(
+        continue_tool.handler(
+            {
+                "task": "Run the normal-route continuation quietly.",
+                "notify_user": True,
+            },
+            ctx,
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "continued"
+    assert payload["delivered"] is False
+    assert payload["notify_user"] is False
+    assert octo.sent == []
+    handoff_text = str(octo.calls[0]["text"])
+    assert "Delivery policy: complete this continuation silently." in handoff_text
+    assert "Do not send messages, files, reactions, or user-facing updates." in handoff_text
+
+
+def test_worker_followup_continue_tool_honors_notify_never(monkeypatch) -> None:
+    import octopal.runtime.octo.router as router
+
+    class DummyOcto:
+        store = object()
+        canon = object()
+        facts = None
+        reflection = None
+        is_ws_active = False
+        mcp_manager = None
+        provider = object()
+
+        def __init__(self) -> None:
+            self.thinking_states: list[bool] = []
+            self.calls: list[dict[str, object]] = []
+            self.sent: list[tuple[int, str]] = []
+            self.memory = object()
+
+        async def set_thinking(self, active: bool) -> None:
+            self.thinking_states.append(active)
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
+            return "Visible normal-route result"
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            self.sent.append((chat_id, text))
+
+    async def fake_build_octo_prompt(**kwargs):
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def fake_build_bootstrap_context_prompt(store, chat_id):
+        return Message(role="system", content="bootstrap")
+
+    async def fake_complete_route_with_tools(**kwargs):
+        assert kwargs["ctx"]["control_route_notify_user"] == "never"
+        continue_tool = next(
+            tool for tool in kwargs["tool_specs"] if tool.name == "octo_continue_from_control_route"
+        )
+        result = await continue_tool.handler(
+            {
+                "task": "Continue quietly from the worker result.",
+                "notify_user": True,
+            },
+            kwargs["ctx"],
+        )
+        payload = json.loads(result)
+        assert payload["status"] == "continued"
+        assert payload["delivered"] is False
+        assert payload["notify_user"] is False
+        return '{"user_response": null, "no_user_response": true, "actions_taken": [], "reason": "continued"}'
+
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(
+        router, "build_bootstrap_context_prompt", fake_build_bootstrap_context_prompt
+    )
+    monkeypatch.setattr(router, "_complete_route_with_tools", fake_complete_route_with_tools)
+
+    async def scenario() -> None:
+        octo = DummyOcto()
+        response = await route_worker_results_back_to_octo(
+            octo,
+            123,
+            [
+                (
+                    "worker-1",
+                    "write memory update",
+                    WorkerResult(summary="needs normal-route memory write"),
+                )
+            ],
+            notify_user="never",
+        )
+        assert response == "NO_USER_RESPONSE"
+        assert octo.sent == []
+        assert octo.calls
+        assert "Delivery policy: complete this continuation silently." in str(octo.calls[0]["text"])
+        assert octo.thinking_states == [True, False]
+
+    asyncio.run(scenario())
 
 
 def test_worker_followup_route_skips_planner_and_uses_narrow_tools(monkeypatch) -> None:
@@ -580,6 +783,14 @@ def test_worker_followup_route_skips_planner_and_uses_narrow_tools(monkeypatch) 
                 permission="filesystem_write",
                 handler=lambda args, ctx: {"ok": True},
             ),
+            ToolSpec(
+                name="octo_continue_from_control_route",
+                description="continue",
+                parameters={"type": "object", "properties": {}},
+                permission="self_control",
+                handler=lambda args, ctx: {"ok": True},
+                is_async=True,
+            ),
         ]
 
     async def fake_build_octo_prompt(**kwargs):
@@ -623,6 +834,7 @@ def test_worker_followup_route_skips_planner_and_uses_narrow_tools(monkeypatch) 
             "get_worker_output_path",
             "manage_canon",
             "fs_write",
+            "octo_continue_from_control_route",
         }
         assert octo.thinking_states == [True, False]
 
