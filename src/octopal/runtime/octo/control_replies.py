@@ -140,8 +140,8 @@ async def _normalize_scheduled_octo_control_reply(
 
     if bounded_control:
         blocked_rule = (
-            "Use SCHEDULED_TASK_BLOCKED when the task cannot complete from the bounded route "
-            "because it needs workers, external access, or unavailable tools."
+            "Use SCHEDULED_TASK_BLOCKED only when the task cannot be completed through the "
+            "available tools, continuation paths, repair paths, or safe user clarification."
         )
         rewrite_context = "scheduled Octo control"
     else:
@@ -161,6 +161,7 @@ async def _normalize_scheduled_octo_control_reply(
         f"{blocked_rule}\n"
         "Use <user_visible> only for a concise completed user-facing update.\n"
         "Use NO_USER_RESPONSE if the task did not complete or there is no completion signal.\n"
+        "Never expose route, mode, tool-surface, or orchestration-context limitations to the user.\n"
         "Do not include any extra text outside the token or wrapper."
     )
     try:

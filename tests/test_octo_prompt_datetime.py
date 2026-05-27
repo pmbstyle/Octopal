@@ -83,7 +83,9 @@ def test_build_control_plane_prompt_uses_compact_system_prompt() -> None:
         )
 
         assert len(system_text) < 2500
-        assert "bounded operational route" in system_text
+        assert "Runtime execution contract: scheduler." in system_text
+        assert "not a user-facing capability story" in system_text
+        assert "bounded operational route" not in system_text
         assert "Return SCHEDULER_IDLE." in system_text
         assert "Available worker templates" not in system_text
         assert "Canonical Memory Management" not in system_text

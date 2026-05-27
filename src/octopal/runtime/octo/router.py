@@ -558,7 +558,7 @@ async def route_heartbeat(
                 "Heartbeat route rules:\n"
                 "- Return exactly one of: HEARTBEAT_OK, NO_USER_RESPONSE, or <user_visible>...</user_visible>.\n"
                 "- Use tools only if they are clearly necessary for current heartbeat/scheduler state.\n"
-                "- Do not start broad orchestration from heartbeat mode.\n"
+                "- Do not start broad orchestration from this lightweight operational turn.\n"
                 "- Do not rely on full workspace bootstrap, recent chat history, or rich memory recall."
             ),
         )
@@ -676,7 +676,7 @@ async def route_scheduler_tick(
                 "- You may inspect schedule state and worker availability.\n"
                 "- You may apply safe scheduled-task route repairs with repair_scheduled_tasks(apply=true) "
                 "when the candidate is unambiguous.\n"
-                "- Do not dispatch workers directly from this route.\n"
+                "- Do not dispatch workers directly during this scheduler tick.\n"
                 "- Return one of: SCHEDULER_IDLE, NO_USER_RESPONSE, or <user_visible>...</user_visible>."
             ),
         )
@@ -742,9 +742,9 @@ async def route_proactive_tick(
                 "- You may add, claim, execute, cancel, or mark self-queue items only when the payload supports it.\n"
                 "- You may preview scheduled-task repair candidates with repair_scheduled_tasks(apply=false).\n"
                 "- You may apply scheduled-task repairs only for unambiguous blocked_by_route candidates. "
-                "For worker repairs the task must already have a valid worker_id; never provide worker_id from this route.\n"
+                "For worker repairs the task must already have a valid worker_id; never invent a worker_id during this tick.\n"
                 "- Do not start workers directly, schedule recurring tasks, use filesystem tools, use network/MCP tools, "
-                "or perform external side effects from this route.\n"
+                "or perform external side effects during this tick.\n"
                 "- Use execute_self_queue_item only for an existing low/medium-risk queue item with an explicit worker_id; "
                 "the runtime will start the worker or mark the item blocked.\n"
                 "- Prefer queueing one concrete low-risk initiative when there is no safe executable queue item.\n"
@@ -830,7 +830,7 @@ async def route_scheduled_octo_control(
                 "Scheduled Octo control route rules:\n"
                 "- Keep this turn bounded to the single scheduled task in the payload.\n"
                 "- You may use allowed control-plane and maintenance tools when necessary.\n"
-                "- Do not start workers or broad orchestration directly from this route.\n"
+                "- Do not start workers or broad orchestration directly inside this control turn.\n"
                 "- If the task needs normal Octo tools, workspace writes, workers, external access, "
                 "A2A, or broader orchestration and the payload gives enough context to proceed, call "
                 "`octo_continue_from_control_route` with one concrete continuation task, then return "
@@ -1353,9 +1353,10 @@ async def route_worker_results_back_to_octo(
     )
 
     worker_result_prompt = (
-        "One or more worker updates arrived for the same user request. You are in bounded "
-        "worker-result follow-up mode, not full orchestration mode. Decide whether the update "
-        "needs an internal action or one combined user follow-up now based on these payloads.\n"
+        "One or more worker updates arrived for the same user request. Use this lightweight "
+        "worker-result follow-up contract to decide whether the payload can be handled with the "
+        "visible tools, needs one combined user follow-up, or should be continued through the "
+        "normal Octo route.\n"
         "<worker_results>\n"
         f"{payload_json}\n"
         "</worker_results>\n\n"
@@ -1438,6 +1439,8 @@ async def route_worker_results_back_to_octo(
                     "Worker-result follow-up path rules:\n"
                     "- Keep this turn cheap, bounded, and deterministic.\n"
                     "- Use tools only if they are clearly necessary to inspect a specific worker result detail.\n"
+                    "- If visible tools are insufficient and enough context exists, use the continuation tool; "
+                    "do not explain internal path limits.\n"
                     "- Return JSON only using the worker follow-up contract from the user message.\n"
                 ),
             )
@@ -2121,7 +2124,7 @@ async def _build_proactive_tick_input(octo: Any, *, chat_id: int, reason: str) -
         "only when the candidate is safe. Worker repairs require an existing worker_id. "
         "If the best opportunity is confidence >= 0.75, low/medium risk, and no pending work exists, "
         "use octo_self_queue_add to queue exactly one concrete initiative. "
-        "Do not call start_worker directly from this route."
+        "Do not call start_worker directly during this proactive tick."
     )
 
 
