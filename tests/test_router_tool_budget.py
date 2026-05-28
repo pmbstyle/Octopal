@@ -7,6 +7,11 @@ from types import SimpleNamespace
 
 from octopal.infrastructure.config.models import A2AConfig, A2APeerConfig
 from octopal.infrastructure.providers.base import Message
+from octopal.runtime.octo.delivery import (
+    restore_user_delivery,
+    resolve_user_delivery,
+    suppress_user_delivery,
+)
 from octopal.runtime.octo.router import (
     _budget_tool_specs,
     _build_worker_result_payload,
@@ -27,6 +32,7 @@ from octopal.runtime.octo.router import (
     route_or_reply,
     route_worker_results_back_to_octo,
 )
+from octopal.tools.communication.send_file import send_file_to_user
 from octopal.runtime.workers.contracts import WorkerResult
 from octopal.tools.registry import ToolSpec
 from octopal.tools.tools import get_tools
@@ -790,6 +796,42 @@ def test_obvious_continuation_outcome_auto_continues_scheduled_control() -> None
         assert "Scheduled task payload: write update with a worker." in handoff_text
 
     asyncio.run(scenario())
+
+
+def test_silent_control_route_suppresses_normal_route_reply_delivery() -> None:
+    token = suppress_user_delivery()
+    try:
+        decision = resolve_user_delivery("Normal route completed.")
+    finally:
+        restore_user_delivery(token)
+
+    assert decision.user_visible is False
+    assert decision.reason == "delivery_suppressed"
+
+
+def test_send_file_to_user_respects_suppressed_delivery(tmp_path: Path) -> None:
+    class DummyOcto:
+        async def internal_send_file(self, chat_id: int, path: str, caption: str | None = None) -> None:
+            raise AssertionError("file delivery should be blocked when user delivery is suppressed")
+
+    token = suppress_user_delivery()
+    try:
+        result = asyncio.run(
+            send_file_to_user(
+                {"path": "reports/out.txt"},
+                {
+                    "octo": DummyOcto(),
+                    "chat_id": 123,
+                    "base_dir": tmp_path,
+                },
+            )
+        )
+    finally:
+        restore_user_delivery(token)
+
+    payload = json.loads(result)
+    assert payload["status"] == "error"
+    assert payload["message"] == "user delivery is suppressed for this continuation"
 
 
 def test_worker_followup_route_skips_planner_and_uses_narrow_tools(monkeypatch) -> None:
