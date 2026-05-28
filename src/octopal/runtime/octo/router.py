@@ -31,6 +31,7 @@ from octopal.runtime.capability_outcomes import (
     CAPABILITY_OUTCOME_KEY,
     CapabilityOutcomeKind,
     capability_outcome,
+    extract_capability_outcome,
 )
 from octopal.runtime.intents.types import ActionIntent
 from octopal.runtime.memory.service import MemoryService
@@ -926,6 +927,7 @@ async def _complete_route_with_tools(
         vision_tool_fallback_used = False
         structured_followup_required = False
         unbacked_action_retry_used = False
+        auto_continuation_attempted = False
 
         for _ in range(max_attempts):
             try:
@@ -1192,6 +1194,20 @@ async def _complete_route_with_tools(
                                 response_text=fallback_text,
                                 internal_followup=internal_followup,
                             )
+                    if not auto_continuation_attempted:
+                        auto_reply, attempted = await _maybe_auto_continue_capability_outcome(
+                            octo=octo,
+                            call=call,
+                            tool_result=tool_result,
+                            active_tool_specs=active_tool_specs,
+                            ctx=ctx,
+                            messages=messages,
+                            user_text=user_text,
+                            internal_followup=internal_followup,
+                        )
+                        auto_continuation_attempted = attempted
+                        if auto_reply is not None:
+                            return auto_reply
                     if tool_meta.get("had_error"):
                         last_error = tool_result_text
                 continue
@@ -2948,6 +2964,144 @@ def _tool_result_requests_followup(tool_name: str | None, tool_result: Any) -> b
     if not isinstance(structured, dict):
         return False
     return bool(structured.get("followup_required"))
+
+
+async def _maybe_auto_continue_capability_outcome(
+    *,
+    octo: Any,
+    call: dict[str, Any],
+    tool_result: Any,
+    active_tool_specs: list[ToolSpec],
+    ctx: dict[str, object],
+    messages: list[Message | dict[str, Any]],
+    user_text: str,
+    internal_followup: bool,
+) -> tuple[str | None, bool]:
+    outcome = extract_capability_outcome(tool_result)
+    if not outcome or outcome.get("kind") != "needs_continuation":
+        return None, False
+
+    tool_name = str(call.get("function", {}).get("name") or "").strip()
+    if tool_name == "octo_continue_from_control_route":
+        return None, False
+
+    continuation_spec = _find_active_tool_spec(
+        "octo_continue_from_control_route",
+        active_tool_specs,
+    )
+    if continuation_spec is None:
+        return None, False
+
+    continuation_args = _build_auto_continuation_args(
+        call=call,
+        outcome=outcome,
+        user_text=user_text,
+    )
+    synthetic_call = {
+        "id": f"auto-continuation-{uuid.uuid4().hex[:12]}",
+        "type": "function",
+        "function": {
+            "name": "octo_continue_from_control_route",
+            "arguments": json.dumps(continuation_args, ensure_ascii=False),
+        },
+    }
+    logger.info(
+        "Auto-continuing capability outcome",
+        original_tool=tool_name,
+        missing_tool=str(outcome.get("missing_tool") or ""),
+        route_policy_label=str(ctx.get("route_policy_label") or ""),
+    )
+    continuation_result, continuation_meta = await _handle_octo_tool_call(
+        synthetic_call,
+        active_tool_specs,
+        ctx,
+    )
+    continuation_payload = _parse_tool_result_payload(continuation_result)
+    continuation_status = ""
+    if isinstance(continuation_payload, dict):
+        continuation_status = str(continuation_payload.get("status") or "").strip().lower()
+
+    if not continuation_meta.get("had_error") and continuation_status == "continued":
+        return _auto_continuation_completion_signal(ctx, internal_followup=internal_followup), True
+
+    rendered = render_tool_result_for_llm(
+        continuation_result,
+        tool_name="octo_continue_from_control_route",
+    ).text
+    messages.append(
+        Message(
+            role="system",
+            content=(
+                "Automatic continuation was attempted but did not complete successfully. "
+                "Do not repeat the unavailable tool call. Use the available tools, ask for "
+                "safe clarification, or return the route's blocked signal with the concrete blocker.\n"
+                f"Continuation result:\n{rendered}"
+            ),
+        )
+    )
+    return None, True
+
+
+def _find_active_tool_spec(name: str, tool_specs: list[ToolSpec]) -> ToolSpec | None:
+    normalized_name = str(name or "").strip().lower()
+    for spec in tool_specs:
+        if str(spec.name).strip().lower() == normalized_name:
+            return spec
+    return None
+
+
+def _build_auto_continuation_args(
+    *,
+    call: dict[str, Any],
+    outcome: dict[str, Any],
+    user_text: str,
+) -> dict[str, Any]:
+    function = call.get("function") or {}
+    tool_name = str(function.get("name") or "").strip()
+    missing_tool = str(outcome.get("missing_tool") or tool_name).strip()
+    next_action = str(outcome.get("next_action") or "").strip()
+    reason = str(outcome.get("reason") or "").strip()
+    args = _parse_tool_call_arguments(function.get("arguments", "{}"))
+
+    task = (
+        "Complete the original turn through the normal Octo route. "
+        f"The current execution contract could not use `{missing_tool}` directly, "
+        "but the task has enough context to continue safely. Use the normal-route tools "
+        "needed to finish the work end-to-end. Do not mention route, mode, tool-surface, "
+        "or handoff internals unless the user explicitly asks."
+    )
+    context_summary = (
+        "Capability outcome requested normal-route continuation.\n"
+        f"- attempted_tool: {tool_name or '<unknown>'}\n"
+        f"- missing_tool: {missing_tool or '<unknown>'}\n"
+        f"- reason: {reason or '<none>'}\n"
+        f"- next_action: {next_action or '<none>'}\n"
+        f"- attempted_args: {safe_preview(args, limit=2000)}\n\n"
+        "Original/control input:\n"
+        f"{safe_preview(user_text, limit=12000)}"
+    )
+    return {"task": task, "context_summary": context_summary}
+
+
+def _parse_tool_call_arguments(raw_args: Any) -> Any:
+    if isinstance(raw_args, str):
+        try:
+            return json.loads(raw_args)
+        except Exception:
+            return raw_args
+    return raw_args
+
+
+def _auto_continuation_completion_signal(
+    ctx: dict[str, object],
+    *,
+    internal_followup: bool,
+) -> str:
+    if internal_followup:
+        return "NO_USER_RESPONSE"
+    if str(ctx.get("route_policy_label") or "") == "octo.scheduler_octo_control_allowlist":
+        return "SCHEDULED_TASK_DONE"
+    return "NO_USER_RESPONSE"
 
 
 def _build_octo_tool_policy_summary(
