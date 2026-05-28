@@ -43,6 +43,7 @@ from octopal.runtime.octo.prompt_builder import (
     build_control_plane_prompt,
     build_octo_prompt,
 )
+from octopal.runtime.plans import PlanRunService
 from octopal.runtime.tool_loop import (
     _detect_tool_loop,
     _hash_tool_call,
@@ -81,6 +82,9 @@ _MANDATORY_OCTO_TOOL_NAMES = {
     "octo_context_health",
     "check_schedule",
     "tool_catalog_search",
+    "plan_create",
+    "plan_status",
+    "plan_update_step",
     "list_workers",
     "start_worker",
     "get_worker_status",
@@ -100,6 +104,9 @@ _PRIORITY_TOOL_NAMES = {
     "octo_context_reset",
     "octo_context_health",
     "tool_catalog_search",
+    "plan_create",
+    "plan_status",
+    "plan_update_step",
     "octo_self_queue_add",
     "execute_self_queue_item",
     "octo_self_queue_list",
@@ -128,6 +135,9 @@ _ALWAYS_INCLUDE_TOOL_NAMES = {
     "check_schedule",
     "scheduler_status",
     "tool_catalog_search",
+    "plan_create",
+    "plan_status",
+    "plan_update_step",
     "octo_opportunity_scan",
     # Scheduler control loop
     "list_schedule",
@@ -435,9 +445,13 @@ async def route_or_reply(
             facts=getattr(octo, "facts", None),
             reflection=getattr(octo, "reflection", None),
         )
+        runtime_plan_context = _build_runtime_plan_context(octo, chat_id)
+        messages.append(Message(role="system", content=_build_runtime_plan_guidance()))
         a2a_context = _build_a2a_route_context(octo)
         if a2a_context:
             messages.append(Message(role="system", content=a2a_context))
+        if runtime_plan_context:
+            messages.append(Message(role="system", content=runtime_plan_context))
         _log_system_prompt(messages, "route")
 
         plan = await _build_plan(provider, messages, bool(octo_tools))
@@ -1854,6 +1868,7 @@ def _get_octo_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec], dict[str, 
         "base_dir": Path(os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace")).resolve(),
         "octo": octo,
         "chat_id": chat_id,
+        "correlation_id": correlation_id_var.get(),
         "mcp_manager": getattr(octo, "mcp_manager", None),
     }
     mcp_manager = ctx["mcp_manager"]
@@ -2267,6 +2282,81 @@ def _build_a2a_route_context(octo: Any) -> str:
         "Configured peers visible to this Octo instance:\n"
         f"{peer_summary}"
     )
+
+
+def _build_runtime_plan_context(octo: Any, chat_id: int, *, limit: int = 3) -> str:
+    store = getattr(octo, "store", None)
+    if store is None or chat_id <= 0:
+        return ""
+    try:
+        service = PlanRunService(store)
+        runs = service.active_runs_for_chat(chat_id, limit=limit)
+        snapshots = [service.get_snapshot(run.id) for run in runs]
+    except Exception:
+        logger.debug("Failed to load runtime plan context", chat_id=chat_id, exc_info=True)
+        return ""
+    compact_plans: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        if not snapshot:
+            continue
+        run = snapshot.get("run") or {}
+        steps = snapshot.get("steps") or []
+        compact_plans.append(
+            {
+                "run_id": run.get("id"),
+                "goal": run.get("goal"),
+                "status": run.get("status"),
+                "current_step_id": run.get("current_step_id"),
+                "steps": [
+                    {
+                        "id": step.get("step_id"),
+                        "kind": step.get("kind"),
+                        "title": step.get("title"),
+                        "status": step.get("status"),
+                        "executor": step.get("executor"),
+                        "worker_run_id": step.get("worker_run_id"),
+                        "summary": _compact_plan_step_summary(step),
+                    }
+                    for step in steps
+                ],
+            }
+        )
+    if not compact_plans:
+        return ""
+    payload = json.dumps(compact_plans, ensure_ascii=False)
+    return (
+        "Runtime plan state is active for this chat. These plans are durable execution state, "
+        "not casual notes.\n"
+        "- If the current user message is about an active plan, continue or update that plan instead of starting over.\n"
+        "- If the message is unrelated, handle it without cancelling or overwriting the active plan.\n"
+        "- Keep plan state current with `plan_update_step` before claiming progress or completion.\n"
+        "- Use `plan_status` when you need the full stored state.\n"
+        "<runtime_plans>\n"
+        f"{payload}\n"
+        "</runtime_plans>"
+    )
+
+
+def _build_runtime_plan_guidance() -> str:
+    return (
+        "Runtime plan guidance:\n"
+        "- For user requests that require multiple actions, workers, tool calls, approvals, or later continuation, "
+        "create or update a durable runtime plan with `plan_create` / `plan_update_step`.\n"
+        "- Do not merely say you will continue later; if the task has concrete follow-up work, keep it in a plan.\n"
+        "- Keep plans short and actionable. Prefer 3-7 steps. Use workers for isolated external or long-running work.\n"
+        "- Before final user-visible completion, make sure the relevant plan step and run are terminal or clearly blocked."
+    )
+
+
+def _compact_plan_step_summary(step: dict[str, Any]) -> str | None:
+    output = step.get("output")
+    if not isinstance(output, dict) or not output:
+        return None
+    for key in ("summary", "result", "message"):
+        value = output.get(key)
+        if isinstance(value, str) and value.strip():
+            return safe_preview(value, limit=180)
+    return safe_preview(json.dumps(output, ensure_ascii=False), limit=180)
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:

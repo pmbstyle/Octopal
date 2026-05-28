@@ -147,6 +147,23 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
         profile_tags=("ops",),
         capabilities=("self_observe", "self_recover"),
     ),
+    "plan_create": ToolMetadata(
+        category="runtime",
+        risk="guarded",
+        profile_tags=("minimal", "ops", "coding"),
+        capabilities=("planning", "plan_write"),
+    ),
+    "plan_status": ToolMetadata(
+        category="runtime",
+        profile_tags=("minimal", "ops", "coding"),
+        capabilities=("planning", "plan_read"),
+    ),
+    "plan_update_step": ToolMetadata(
+        category="runtime",
+        risk="guarded",
+        profile_tags=("minimal", "ops", "coding"),
+        capabilities=("planning", "plan_write"),
+    ),
     "octo_opportunity_scan": ToolMetadata(
         category="runtime",
         profile_tags=("ops", "research"),

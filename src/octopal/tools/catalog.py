@@ -54,6 +54,7 @@ from octopal.tools.inventory import annotate_tool_specs
 from octopal.tools.memory.canon import manage_canon, search_canon
 from octopal.tools.memory.experiments import octo_experiment_log
 from octopal.tools.ops.exec_run import exec_run
+from octopal.tools.plans import get_plan_tools
 from octopal.tools.registry import ToolSpec
 from octopal.tools.skills.management import get_registered_skill_tools, get_skill_management_tools
 from octopal.tools.web.fetch import markdown_new_fetch, web_fetch
@@ -1768,6 +1769,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
     ]
     tools.extend(get_skill_management_tools())
     tools.extend(get_registered_skill_tools())
+    tools.extend(get_plan_tools())
     tools.extend(get_worker_tools())
     tools.extend(get_connector_status_tools())
     tools.extend(get_calendar_connector_tools(mcp_manager))

@@ -12,7 +12,14 @@ from octopal.infrastructure.store.models import (
 )
 from octopal.utils import utc_now
 
-PLAN_ACTIVE_STATUSES = {"planned", "running", "needs_next_step", "awaiting_worker"}
+PLAN_ACTIVE_STATUSES = {
+    "planned",
+    "running",
+    "needs_next_step",
+    "awaiting_worker",
+    "awaiting_approval",
+    "awaiting_user",
+}
 PLAN_TERMINAL_STATUSES = {"completed", "failed", "cancelled", "blocked"}
 STEP_ACTIVE_STATUSES = {"running", "awaiting_worker", "awaiting_approval", "awaiting_input"}
 STEP_TERMINAL_STATUSES = {"completed", "failed", "skipped", "cancelled"}
