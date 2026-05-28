@@ -37,6 +37,8 @@ from octopal.runtime.workers.contracts import WorkerResult
 from octopal.tools.registry import ToolSpec
 from octopal.tools.tools import get_tools
 
+_RUNTIME_PLAN_TOOL_NAMES = {"plan_create", "plan_status", "plan_update_step"}
+
 
 def test_budget_keeps_internal_worker_and_scheduler_tools() -> None:
     all_tools = get_tools(mcp_manager=None)
@@ -52,15 +54,17 @@ def test_budget_keeps_internal_worker_and_scheduler_tools() -> None:
         "list_active_workers",
         "schedule_task",
         "tool_catalog_search",
+        *_RUNTIME_PLAN_TOOL_NAMES,
     }
     assert must_keep.issubset(names)
 
 
-def test_shrink_retry_keeps_start_worker() -> None:
+def test_shrink_retry_keeps_core_runtime_tools() -> None:
     all_tools = get_tools(mcp_manager=None)
     shrunk = _shrink_tool_specs_for_retry(all_tools)
     names = {spec.name for spec in shrunk}
     assert "start_worker" in names
+    assert _RUNTIME_PLAN_TOOL_NAMES.issubset(names)
 
 
 def test_get_octo_tools_uses_small_core_and_defers_mcp_tools(monkeypatch) -> None:
@@ -93,6 +97,7 @@ def test_get_octo_tools_uses_small_core_and_defers_mcp_tools(monkeypatch) -> Non
     all_names = {spec.name for spec in ctx["all_tool_specs"]}
 
     assert "tool_catalog_search" in names
+    assert _RUNTIME_PLAN_TOOL_NAMES.issubset(names)
     assert "start_worker" in names
     assert "fs_read" in names
     assert "octo_opportunity_scan" in names
@@ -109,6 +114,9 @@ def test_get_octo_tools_uses_small_core_and_defers_mcp_tools(monkeypatch) -> Non
     assert "octo_update_self" in names
     assert "test_run" not in names
     assert "exec_run" in {spec.name for spec in ctx["tool_resolution_report"].available_tools}
+    assert _RUNTIME_PLAN_TOOL_NAMES.issubset(
+        {spec.name for spec in ctx["tool_resolution_report"].available_tools}
+    )
     assert "test_run" not in {spec.name for spec in ctx["tool_resolution_report"].available_tools}
     assert "mcp_demo_tool_0" not in names
     assert "mcp_demo_tool_0" in all_names
@@ -128,6 +136,21 @@ def test_get_octo_tools_keeps_self_lifecycle_tools_with_profile(monkeypatch) -> 
     assert "octo_restart_self" in names
     assert "octo_check_update" in names
     assert "octo_update_self" in names
+    assert _RUNTIME_PLAN_TOOL_NAMES.issubset(names)
+
+
+def test_get_octo_tools_keeps_runtime_plan_tools_under_tiny_budget(monkeypatch) -> None:
+    class DummyOcto:
+        mcp_manager = None
+
+    monkeypatch.setenv("OCTOPAL_OCTO_MAX_INITIAL_TOOL_COUNT", "8")
+    monkeypatch.setenv("OCTOPAL_OCTO_MAX_TOOL_COUNT", "8")
+    monkeypatch.delenv("OCTOPAL_OCTO_DEFER_TOOL_LOADING", raising=False)
+
+    tool_specs, _ctx = _get_octo_tools(DummyOcto(), 0)
+    names = {spec.name for spec in tool_specs}
+
+    assert _RUNTIME_PLAN_TOOL_NAMES.issubset(names)
 
 
 def test_get_octo_tools_keeps_a2a_tools_when_enabled_despite_initial_budget(

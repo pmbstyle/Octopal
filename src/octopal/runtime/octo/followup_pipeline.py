@@ -38,6 +38,7 @@ from octopal.runtime.octo.router import (
     should_force_worker_followup,
 )
 from octopal.runtime.octo.runtime_config import _env_int
+from octopal.runtime.plans import PlanRunService
 from octopal.runtime.scheduler.service import normalize_notify_user_policy
 from octopal.runtime.workers.contracts import WorkerResult
 
@@ -476,6 +477,12 @@ async def _internal_worker(octo: Any, chat_id: int, queue: asyncio.Queue) -> Non
                     f"Worker error: {output_error}",
                     {"worker_result": True, "task": task_text, "chat_id": chat_id},
                 )
+            _sync_runtime_plan_with_worker_result(
+                octo,
+                chat_id,
+                worker_id=worker_id,
+                result=result,
+            )
             if _is_instruction_request_result(result):
                 await _route_instruction_request_to_octo(
                     octo,
@@ -536,6 +543,46 @@ async def _internal_worker(octo: Any, chat_id: int, queue: asyncio.Queue) -> Non
     if queue.empty():
         _INTERNAL_QUEUES.pop(chat_id, None)
     _publish_runtime_metrics()
+
+
+def _sync_runtime_plan_with_worker_result(
+    octo: Any,
+    chat_id: int,
+    *,
+    worker_id: str,
+    result: WorkerResult,
+) -> None:
+    store = getattr(octo, "store", None)
+    normalized_worker_id = str(worker_id or "").strip()
+    if store is None or not normalized_worker_id:
+        return
+    try:
+        step = PlanRunService(store).update_worker_step_result(
+            worker_run_id=normalized_worker_id,
+            chat_id=chat_id if chat_id > 0 else None,
+            result_status=str(getattr(result, "status", "completed") or "completed"),
+            summary=str(getattr(result, "summary", "") or ""),
+            output=getattr(result, "output", None),
+            questions=list(getattr(result, "questions", []) or []),
+            tools_used=list(getattr(result, "tools_used", []) or []),
+        )
+    except Exception:
+        logger.debug(
+            "Failed to sync runtime plan with worker result",
+            chat_id=chat_id,
+            worker_id=normalized_worker_id,
+            exc_info=True,
+        )
+        return
+    if step is not None:
+        logger.info(
+            "Synced runtime plan step with worker result",
+            chat_id=chat_id,
+            worker_id=normalized_worker_id,
+            plan_run_id=step.run_id,
+            plan_step_id=step.step_id,
+            worker_result_status=getattr(result, "status", None),
+        )
 
 
 async def _route_instruction_request_to_octo(

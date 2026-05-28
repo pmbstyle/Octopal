@@ -8,6 +8,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from octopal.runtime.plans import PlanRunService
 from octopal.runtime.worker_result_payloads import (
     SYNTHESIZE_WORKER_OUTPUT_CONTEXT_BUDGET,
     summarize_worker_output_for_context,
@@ -178,6 +179,14 @@ def get_worker_tools() -> list[ToolSpec]:
                     "scheduled_task_id": {
                         "type": "string",
                         "description": "Optional schedule task ID when this worker run comes from check_schedule. Enables reliable execution tracking.",
+                    },
+                    "plan_run_id": {
+                        "type": "string",
+                        "description": "Optional runtime plan id when this worker executes a specific durable plan step.",
+                    },
+                    "plan_step_id": {
+                        "type": "string",
+                        "description": "Optional runtime plan step id to bind to the launched worker run.",
                     },
                     "required_tools": {
                         "type": "array",
@@ -937,6 +946,15 @@ async def _start_worker_common(
         message = f"Worker start returned status={status}."
     followup_required = status in {"started", "skipped_duplicate"} and bool(launched_worker_id or run_id)
     next_best_action = "wait_for_worker_progress" if followup_required else "continue_current_plan"
+    plan_binding = (
+        _bind_plan_step_for_worker_launch(
+            octo=octo,
+            args=args,
+            worker_run_id=str(launched_worker_id or "").strip(),
+        )
+        if status == "started"
+        else _skipped_plan_step_binding(args)
+    )
 
     return json.dumps({
         "status": status,
@@ -954,7 +972,67 @@ async def _start_worker_common(
         "message": message,
         "followup_required": followup_required,
         "next_best_action": next_best_action,
+        **({"plan_binding": plan_binding} if plan_binding else {}),
     }, ensure_ascii=False)
+
+
+def _bind_plan_step_for_worker_launch(
+    *,
+    octo: Octo,
+    args: dict[str, object],
+    worker_run_id: str,
+) -> dict[str, object] | None:
+    plan_run_id = str(args.get("plan_run_id") or "").strip()
+    plan_step_id = str(args.get("plan_step_id") or "").strip()
+    if not plan_run_id and not plan_step_id:
+        return None
+    if not plan_run_id or not plan_step_id:
+        return {
+            "status": "error",
+            "message": "plan_run_id and plan_step_id must be provided together",
+        }
+    if not worker_run_id:
+        return {
+            "status": "error",
+            "run_id": plan_run_id,
+            "step_id": plan_step_id,
+            "message": "worker run id is unavailable",
+        }
+    store = getattr(octo, "store", None)
+    if store is None:
+        return {
+            "status": "error",
+            "run_id": plan_run_id,
+            "step_id": plan_step_id,
+            "message": "Octo store is unavailable",
+        }
+    service = PlanRunService(store)
+    snapshot = service.get_snapshot(plan_run_id)
+    if snapshot is None:
+        return {"status": "not_found", "run_id": plan_run_id}
+    known_steps = {str(step.get("step_id") or "") for step in snapshot.get("steps") or []}
+    if plan_step_id not in known_steps:
+        return {"status": "not_found", "run_id": plan_run_id, "step_id": plan_step_id}
+    service.bind_worker_step(plan_run_id, plan_step_id, worker_run_id)
+    return {
+        "status": "ok",
+        "run_id": plan_run_id,
+        "step_id": plan_step_id,
+        "worker_run_id": worker_run_id,
+    }
+
+
+def _skipped_plan_step_binding(args: dict[str, object]) -> dict[str, object] | None:
+    plan_run_id = str(args.get("plan_run_id") or "").strip()
+    plan_step_id = str(args.get("plan_step_id") or "").strip()
+    if not plan_run_id and not plan_step_id:
+        return None
+    return {
+        "status": "skipped",
+        "run_id": plan_run_id or None,
+        "step_id": plan_step_id or None,
+        "message": "worker was not started; plan step was not bound",
+    }
 
 
 async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, object]) -> str:
