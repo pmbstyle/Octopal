@@ -138,6 +138,12 @@ _ALWAYS_INCLUDE_TOOL_NAMES = {
     "plan_create",
     "plan_status",
     "plan_update_step",
+    # Self-queue controls are runtime state, not discoverable nice-to-haves.
+    "octo_self_queue_add",
+    "execute_self_queue_item",
+    "octo_self_queue_list",
+    "octo_self_queue_take",
+    "octo_self_queue_update",
     "octo_opportunity_scan",
     # Scheduler control loop
     "list_schedule",
