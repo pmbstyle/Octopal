@@ -10,6 +10,7 @@ from octopal.infrastructure.providers.base import Message
 from octopal.runtime.octo.router import (
     _budget_tool_specs,
     _build_worker_result_payload,
+    _complete_route_with_tools,
     _decode_and_save_images,
     _expand_active_tool_specs_from_catalog_result,
     _finalize_response,
@@ -712,6 +713,81 @@ def test_worker_followup_continue_tool_honors_notify_never(monkeypatch) -> None:
         assert octo.calls
         assert "Delivery policy: complete this continuation silently." in str(octo.calls[0]["text"])
         assert octo.thinking_states == [True, False]
+
+    asyncio.run(scenario())
+
+
+def test_obvious_continuation_outcome_auto_continues_scheduled_control() -> None:
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, **kwargs):
+            raise AssertionError("auto-continuation should not fall back to plain completion")
+
+        async def complete_stream(self, messages, *, on_partial, **kwargs):
+            raise AssertionError("streaming should not be used in this test")
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            self.calls += 1
+            assert self.calls == 1
+            names = {tool["function"]["name"] for tool in tools}
+            assert "octo_continue_from_control_route" in names
+            assert "start_worker" not in names
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "start_worker",
+                            "arguments": '{"worker_id":"memory","task":"write update"}',
+                        },
+                    }
+                ],
+            }
+
+    class DummyOcto:
+        mcp_manager = None
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.sent: list[tuple[int, str]] = []
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
+            return "Normal route completed."
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            self.sent.append((chat_id, text))
+
+    async def scenario() -> None:
+        octo = DummyOcto()
+        provider = DummyProvider()
+        tools, ctx = _get_scheduled_octo_control_tools(octo, 123)
+        ctx["control_route_notify_user"] = "never"
+
+        reply = await _complete_route_with_tools(
+            octo=octo,
+            provider=provider,
+            messages=[Message(role="user", content="scheduled task payload")],
+            tool_specs=tools,
+            ctx=ctx,
+            internal_followup=False,
+            user_text="Scheduled task payload: write update with a worker.",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+
+        assert reply == "SCHEDULED_TASK_DONE"
+        assert provider.calls == 1
+        assert octo.sent == []
+        assert len(octo.calls) == 1
+        handoff_text = str(octo.calls[0]["text"])
+        assert "Complete the original turn through the normal Octo route." in handoff_text
+        assert "attempted_tool: start_worker" in handoff_text
+        assert "Scheduled task payload: write update with a worker." in handoff_text
 
     asyncio.run(scenario())
 
