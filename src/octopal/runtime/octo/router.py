@@ -2344,6 +2344,8 @@ def _build_runtime_plan_guidance() -> str:
         "create or update a durable runtime plan with `plan_create` / `plan_update_step`.\n"
         "- Do not merely say you will continue later; if the task has concrete follow-up work, keep it in a plan.\n"
         "- Keep plans short and actionable. Prefer 3-7 steps. Use workers for isolated external or long-running work.\n"
+        "- When starting a worker for a specific plan step, pass `plan_run_id` and `plan_step_id` to `start_worker` "
+        "so the worker run is bound to the durable plan immediately.\n"
         "- Before final user-visible completion, make sure the relevant plan step and run are terminal or clearly blocked."
     )
 
