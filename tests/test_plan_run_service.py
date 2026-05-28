@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from octopal.infrastructure.store.sqlite import SQLiteStore
+from octopal.runtime.octo.followup_pipeline import _sync_runtime_plan_with_worker_result
 from octopal.runtime.plans import PlanRunService
+from octopal.runtime.workers.contracts import WorkerResult
 
 
 class _StoreSettings:
@@ -96,3 +99,121 @@ def test_plan_service_binds_worker_step_for_resume(tmp_path: Path) -> None:
     assert step.status == "awaiting_worker"
     assert step.worker_run_id == "worker-123"
     assert store.list_plan_events(run.id)[-1].event_type == "step.awaiting_worker"
+
+
+def test_plan_service_completes_worker_step_from_result(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    service = PlanRunService(store)
+    run = service.create_run(
+        goal="Research topic",
+        chat_id=123,
+        steps=[
+            {"id": "research", "kind": "worker", "title": "Research"},
+            {"id": "reply", "kind": "final", "title": "Reply"},
+        ],
+    )
+    service.bind_worker_step(run.id, "research", "worker-123")
+
+    matched = service.update_worker_step_result(
+        worker_run_id="worker-123",
+        chat_id=123,
+        result_status="completed",
+        summary="Found the answer.",
+        output={"artifact_summary": {"durable_paths": ["reports/research.md"]}},
+        tools_used=["web_fetch"],
+    )
+
+    assert matched is not None
+    saved = store.get_plan_run(run.id)
+    assert saved is not None
+    assert saved.status == "needs_next_step"
+    assert saved.current_step_id == "reply"
+    step = store.get_plan_steps(run.id)[0]
+    assert step.status == "completed"
+    assert step.output["worker_status"] == "completed"
+    assert step.output["summary"] == "Found the answer."
+    assert step.output["tools_used"] == ["web_fetch"]
+    assert step.output["output"] == {"artifact_summary": {"durable_paths": ["reports/research.md"]}}
+
+
+def test_plan_service_fails_worker_step_from_result(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    service = PlanRunService(store)
+    run = service.create_run(
+        goal="Run checks",
+        chat_id=123,
+        steps=[{"id": "checks", "kind": "worker", "title": "Run checks"}],
+    )
+    service.bind_worker_step(run.id, "checks", "worker-123")
+
+    service.update_worker_step_result(
+        worker_run_id="worker-123",
+        chat_id=123,
+        result_status="failed",
+        summary="Checks failed.",
+        output={"error": "pytest failed"},
+    )
+
+    saved = store.get_plan_run(run.id)
+    assert saved is not None
+    assert saved.status == "failed"
+    step = store.get_plan_steps(run.id)[0]
+    assert step.status == "failed"
+    assert step.error == "pytest failed"
+    assert step.output["worker_status"] == "failed"
+    assert step.output["output"] == {"error": "pytest failed"}
+
+
+def test_plan_service_keeps_instruction_request_step_active(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    service = PlanRunService(store)
+    run = service.create_run(
+        goal="Investigate",
+        chat_id=123,
+        steps=[{"id": "ask", "kind": "worker", "title": "Ask worker"}],
+    )
+    service.bind_worker_step(run.id, "ask", "worker-123")
+
+    service.update_worker_step_result(
+        worker_run_id="worker-123",
+        chat_id=123,
+        result_status="awaiting_instruction",
+        summary="Need a decision.",
+        output={"instruction_request": {"request_id": "req-1"}},
+        questions=["Which path?"],
+    )
+
+    saved = store.get_plan_run(run.id)
+    assert saved is not None
+    assert saved.status == "awaiting_worker"
+    step = store.get_plan_steps(run.id)[0]
+    assert step.status == "awaiting_worker"
+    assert step.output["worker_status"] == "awaiting_instruction"
+    assert step.output["questions"] == ["Which path?"]
+    assert store.list_plan_events(run.id)[-1].event_type == "step.worker_instruction_requested"
+
+
+def test_followup_pipeline_syncs_runtime_plan_before_routing(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    service = PlanRunService(store)
+    run = service.create_run(
+        goal="Collect data",
+        chat_id=42,
+        steps=[
+            {"id": "collect", "kind": "worker", "title": "Collect"},
+            {"id": "summarize", "kind": "final", "title": "Summarize"},
+        ],
+    )
+    service.bind_worker_step(run.id, "collect", "worker-123")
+
+    _sync_runtime_plan_with_worker_result(
+        SimpleNamespace(store=store),
+        42,
+        worker_id="worker-123",
+        result=WorkerResult(status="completed", summary="Data collected."),
+    )
+
+    saved = store.get_plan_run(run.id)
+    assert saved is not None
+    assert saved.status == "needs_next_step"
+    assert saved.current_step_id == "summarize"

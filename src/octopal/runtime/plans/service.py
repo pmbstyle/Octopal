@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from octopal.infrastructure.observability.helpers import safe_preview
 from octopal.infrastructure.store.base import Store
 from octopal.infrastructure.store.models import (
     PlanEventRecord,
@@ -203,6 +204,49 @@ class PlanRunService:
         )
         self.append_event(run_id, "step.failed", step_id=step_id, data={"error": error})
 
+    def update_worker_step_result(
+        self,
+        *,
+        worker_run_id: str,
+        result_status: str,
+        summary: str,
+        chat_id: int | None = None,
+        output: dict[str, Any] | None = None,
+        questions: list[str] | None = None,
+        tools_used: list[str] | None = None,
+    ) -> PlanStepRecord | None:
+        step = self.store.get_plan_step_by_worker_run_id(worker_run_id, chat_id=chat_id)
+        if step is None:
+            return None
+        normalized_status = str(result_status or "completed").strip().lower()
+        plan_output = self._build_worker_step_output(
+            status=normalized_status,
+            summary=summary,
+            output=output,
+            questions=questions,
+            tools_used=tools_used,
+        )
+        if normalized_status == "awaiting_instruction":
+            self.store.update_plan_step(
+                step.run_id,
+                step.step_id,
+                output=plan_output,
+            )
+            self.append_event(
+                step.run_id,
+                "step.worker_instruction_requested",
+                step_id=step.step_id,
+                data={"worker_run_id": worker_run_id},
+            )
+            return step
+        if normalized_status == "failed":
+            error = self._worker_result_error(summary=summary, output=output)
+            self.fail_step(step.run_id, step.step_id, error=error)
+            self.store.update_plan_step(step.run_id, step.step_id, output=plan_output)
+            return step
+        self.complete_step(step.run_id, step.step_id, output=plan_output)
+        return step
+
     def append_event(
         self,
         run_id: str,
@@ -228,6 +272,45 @@ class PlanRunService:
             statuses=sorted(PLAN_ACTIVE_STATUSES),
             limit=limit,
         )
+
+    def _build_worker_step_output(
+        self,
+        *,
+        status: str,
+        summary: str,
+        output: dict[str, Any] | None,
+        questions: list[str] | None,
+        tools_used: list[str] | None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "worker_status": status,
+            "summary": safe_preview(summary or "", limit=1200),
+        }
+        if questions:
+            payload["questions"] = list(questions)
+        if tools_used:
+            payload["tools_used"] = list(tools_used)
+        if isinstance(output, dict):
+            selected: dict[str, Any] = {}
+            for key in (
+                "artifact_summary",
+                "instruction_request",
+                "error",
+                "primary_report_path",
+                "durable_paths",
+            ):
+                if key in output:
+                    selected[key] = output[key]
+            if selected:
+                payload["output"] = selected
+        return payload
+
+    def _worker_result_error(self, *, summary: str, output: dict[str, Any] | None) -> str:
+        if isinstance(output, dict):
+            raw_error = output.get("error")
+            if raw_error is not None and str(raw_error).strip():
+                return safe_preview(str(raw_error), limit=500)
+        return safe_preview(summary or "worker failed", limit=500) or "worker failed"
 
     def _normalize_steps(self, steps: list[dict[str, Any] | PlanStepSpec]) -> list[PlanStepSpec]:
         normalized: list[PlanStepSpec] = []

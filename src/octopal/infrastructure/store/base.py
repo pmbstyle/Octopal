@@ -149,6 +149,13 @@ class Store(Protocol):
 
     def get_plan_steps(self, run_id: str) -> list[PlanStepRecord]: ...
 
+    def get_plan_step_by_worker_run_id(
+        self,
+        worker_run_id: str,
+        *,
+        chat_id: int | None = None,
+    ) -> PlanStepRecord | None: ...
+
     def update_plan_step(
         self,
         run_id: str,

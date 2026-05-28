@@ -104,8 +104,7 @@ class SQLiteStore(Store):
         self._init_schema()
 
     def _init_schema(self) -> None:
-        self._conn.executescript(
-            """
+        self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS workers (
                 id TEXT PRIMARY KEY,
                 status TEXT NOT NULL,
@@ -315,15 +314,13 @@ class SQLiteStore(Store):
                 ON plan_steps (worker_run_id);
             CREATE INDEX IF NOT EXISTS ix_plan_events_run_created
                 ON plan_events (run_id, created_at ASC);
-            """
-        )
+            """)
         self._conn.commit()
         self._ensure_schema_upgrades()
 
     def _ensure_schema_upgrades(self) -> None:
         try:
-            self._conn.execute(
-                """
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS memory_embeddings (
                     entry_uuid TEXT PRIMARY KEY,
                     model TEXT NOT NULL,
@@ -331,10 +328,8 @@ class SQLiteStore(Store):
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(entry_uuid) REFERENCES memory_entries(uuid) ON DELETE CASCADE
                 )
-                """
-            )
-            self._conn.execute(
-                """
+                """)
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS canon_embeddings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     filename TEXT NOT NULL,
@@ -344,11 +339,11 @@ class SQLiteStore(Store):
                     vector_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
-            self._conn.execute("CREATE INDEX IF NOT EXISTS ix_canon_embeddings_filename ON canon_embeddings (filename)")
+                """)
             self._conn.execute(
-                """
+                "CREATE INDEX IF NOT EXISTS ix_canon_embeddings_filename ON canon_embeddings (filename)"
+            )
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS memory_facts (
                     id TEXT PRIMARY KEY,
                     owner_id TEXT NOT NULL,
@@ -367,8 +362,7 @@ class SQLiteStore(Store):
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
+                """)
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_memory_facts_owner_subject_key_status ON memory_facts (owner_id, subject, key, status)"
             )
@@ -378,8 +372,7 @@ class SQLiteStore(Store):
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_memory_facts_source ON memory_facts (source_kind, source_ref, status)"
             )
-            self._conn.execute(
-                """
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS memory_fact_sources (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     fact_id TEXT NOT NULL,
@@ -389,11 +382,11 @@ class SQLiteStore(Store):
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(fact_id) REFERENCES memory_facts(id) ON DELETE CASCADE
                 )
-                """
-            )
-            self._conn.execute("CREATE INDEX IF NOT EXISTS ix_memory_fact_sources_fact_id ON memory_fact_sources (fact_id)")
+                """)
             self._conn.execute(
-                """
+                "CREATE INDEX IF NOT EXISTS ix_memory_fact_sources_fact_id ON memory_fact_sources (fact_id)"
+            )
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS octo_diary_entries (
                     id TEXT PRIMARY KEY,
                     owner_id TEXT NOT NULL,
@@ -403,8 +396,7 @@ class SQLiteStore(Store):
                     details_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
+                """)
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_octo_diary_entries_owner_chat_created ON octo_diary_entries (owner_id, chat_id, created_at DESC)"
             )
@@ -413,7 +405,9 @@ class SQLiteStore(Store):
             pass
 
         try:
-            self._conn.execute("ALTER TABLE permits ADD COLUMN intent_type TEXT NOT NULL DEFAULT ''")
+            self._conn.execute(
+                "ALTER TABLE permits ADD COLUMN intent_type TEXT NOT NULL DEFAULT ''"
+            )
             self._conn.commit()
         except sqlite3.OperationalError:
             pass
@@ -434,7 +428,9 @@ class SQLiteStore(Store):
         except sqlite3.OperationalError:
             pass
         try:
-            self._conn.execute("CREATE INDEX IF NOT EXISTS ix_memory_entries_owner_id_id ON memory_entries (owner_id, id DESC)")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_memory_entries_owner_id_id ON memory_entries (owner_id, id DESC)"
+            )
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_memory_entries_owner_chat_id_id ON memory_entries (owner_id, chat_id, id DESC)"
             )
@@ -445,8 +441,8 @@ class SQLiteStore(Store):
         # Migration for memory_entries table for robust ordering
         try:
             cursor = self._conn.execute("PRAGMA table_info(memory_entries)")
-            columns = [row['name'] for row in cursor.fetchall()]
-            is_old_schema = 'uuid' not in columns and 'id' in columns
+            columns = [row["name"] for row in cursor.fetchall()]
+            is_old_schema = "uuid" not in columns and "id" in columns
 
             if is_old_schema:
                 self._conn.executescript("""
@@ -474,19 +470,19 @@ class SQLiteStore(Store):
         except Exception as e:
             # This might fail if run in a transaction, but we commit after.
             # It's a complex operation, so we log if it fails.
-            logging.getLogger(__name__).warning("Memory schema migration failed (this may be ok if table was empty): %s", e)
+            logging.getLogger(__name__).warning(
+                "Memory schema migration failed (this may be ok if table was empty): %s", e
+            )
 
         try:
-            self._conn.execute(
-                """
+            self._conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS memory_entries_fts USING fts5(
                     content,
                     owner_id UNINDEXED,
                     chat_id UNINDEXED,
                     entry_uuid UNINDEXED
                 )
-                """
-            )
+                """)
             self._conn.commit()
         except sqlite3.OperationalError:
             pass
@@ -531,7 +527,9 @@ class SQLiteStore(Store):
         except sqlite3.OperationalError:
             pass
         try:
-            self._conn.execute("ALTER TABLE workers ADD COLUMN spawn_depth INTEGER NOT NULL DEFAULT 0")
+            self._conn.execute(
+                "ALTER TABLE workers ADD COLUMN spawn_depth INTEGER NOT NULL DEFAULT 0"
+            )
             self._conn.commit()
         except sqlite3.OperationalError:
             pass
@@ -637,7 +635,9 @@ class SQLiteStore(Store):
         )
         return [self._row_to_worker(row) for row in cursor.fetchall()]
 
-    def cleanup_old_workers(self, keep_recent_hours: int = 24, keep_completed_count: int = 100) -> int:
+    def cleanup_old_workers(
+        self, keep_recent_hours: int = 24, keep_completed_count: int = 100
+    ) -> int:
         """
         Cleanup old worker records to prevent database bloat and reduce context confusion.
 
@@ -849,7 +849,7 @@ class SQLiteStore(Store):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                entry.id, # The dataclass id is the UUID
+                entry.id,  # The dataclass id is the UUID
                 entry.role,
                 entry.content,
                 json.dumps(entry.embedding) if entry.embedding is not None else None,
@@ -869,7 +869,7 @@ class SQLiteStore(Store):
                 """,
                 (
                     entry.id,
-                    "openai-text-embedding-3-small", # TODO: Get this from settings/provider
+                    "openai-text-embedding-3-small",  # TODO: Get this from settings/provider
                     json.dumps(entry.embedding),
                     entry.created_at.isoformat(),
                 ),
@@ -934,8 +934,7 @@ class SQLiteStore(Store):
         if not trimmed:
             return []
 
-        query_sql = (
-            """
+        query_sql = """
             SELECT m.*, e.vector_json as new_embedding_json
             FROM memory_entries_fts f
             JOIN memory_entries m ON m.uuid = f.entry_uuid
@@ -943,7 +942,6 @@ class SQLiteStore(Store):
             WHERE f.content MATCH ?
               AND m.owner_id = ?
             """
-        )
         params: list[Any] = [trimmed, owner_id]
         if exclude_chat_id is not None:
             query_sql += " AND (m.chat_id IS NULL OR m.chat_id != ?)"
@@ -957,7 +955,9 @@ class SQLiteStore(Store):
             return []
         return [self._row_to_memory(row) for row in cursor.fetchall()]
 
-    def add_canon_embedding(self, filename: str, chunk_index: int, content: str, model: str, vector: list[float]) -> None:
+    def add_canon_embedding(
+        self, filename: str, chunk_index: int, content: str, model: str, vector: list[float]
+    ) -> None:
         self._conn.execute(
             """
             INSERT INTO canon_embeddings (filename, chunk_index, content, model, vector_json, created_at)
@@ -973,7 +973,9 @@ class SQLiteStore(Store):
 
     def list_canon_embeddings(self, filename: str | None = None) -> list[dict[str, Any]]:
         if filename:
-            cursor = self._conn.execute("SELECT * FROM canon_embeddings WHERE filename = ?", (filename,))
+            cursor = self._conn.execute(
+                "SELECT * FROM canon_embeddings WHERE filename = ?", (filename,)
+            )
         else:
             cursor = self._conn.execute("SELECT * FROM canon_embeddings")
 
@@ -1051,7 +1053,9 @@ class SQLiteStore(Store):
         cursor = self._conn.execute(" ".join(query), tuple(params))
         return [self._row_to_memory_fact(row) for row in cursor.fetchall()]
 
-    def invalidate_memory_fact(self, fact_id: str, valid_to: datetime, status: str = "invalidated") -> None:
+    def invalidate_memory_fact(
+        self, fact_id: str, valid_to: datetime, status: str = "invalidated"
+    ) -> None:
         self._conn.execute(
             """
             UPDATE memory_facts
@@ -1257,6 +1261,30 @@ class SQLiteStore(Store):
             (run_id,),
         )
         return [self._row_to_plan_step(row) for row in cursor.fetchall()]
+
+    def get_plan_step_by_worker_run_id(
+        self,
+        worker_run_id: str,
+        *,
+        chat_id: int | None = None,
+    ) -> PlanStepRecord | None:
+        normalized_worker_run_id = str(worker_run_id or "").strip()
+        if not normalized_worker_run_id:
+            return None
+        params: list[Any] = [normalized_worker_run_id]
+        query = """
+            SELECT plan_steps.*
+            FROM plan_steps
+            JOIN plan_runs ON plan_runs.id = plan_steps.run_id
+            WHERE plan_steps.worker_run_id = ?
+        """
+        if chat_id is not None:
+            query += " AND plan_runs.chat_id = ?"
+            params.append(chat_id)
+        query += " ORDER BY plan_steps.updated_at DESC LIMIT 1"
+        cursor = self._conn.execute(query, params)
+        row = cursor.fetchone()
+        return self._row_to_plan_step(row) if row else None
 
     def update_plan_step(
         self,
