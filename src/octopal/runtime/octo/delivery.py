@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -8,6 +9,11 @@ from octopal.runtime.workers.contracts import WorkerResult
 from octopal.utils import (
     sanitize_user_facing_text_preserving_reaction,
     should_suppress_user_delivery,
+)
+
+_suppress_user_delivery_var: ContextVar[bool] = ContextVar(
+    "octopal_suppress_user_delivery",
+    default=False,
 )
 
 
@@ -29,17 +35,29 @@ class DeliveryDecision:
         return self.mode in {DeliveryMode.DEFERRED, DeliveryMode.IMMEDIATE}
 
 
+def suppress_user_delivery() -> Token:
+    return _suppress_user_delivery_var.set(True)
+
+
+def restore_user_delivery(token: Token) -> None:
+    _suppress_user_delivery_var.reset(token)
+
+
+def user_delivery_is_suppressed() -> bool:
+    return bool(_suppress_user_delivery_var.get())
+
+
 def resolve_user_delivery(
     text: str,
     *,
     followup_required: bool = False,
 ) -> DeliveryDecision:
     value = sanitize_user_facing_text_preserving_reaction(str(text or ""))
-    if should_suppress_user_delivery(value):
+    if user_delivery_is_suppressed() or should_suppress_user_delivery(value):
         return DeliveryDecision(
             mode=DeliveryMode.SILENT,
             text=value,
-            reason="control_or_empty",
+            reason="delivery_suppressed" if user_delivery_is_suppressed() else "control_or_empty",
             followup_required=False,
         )
     return DeliveryDecision(

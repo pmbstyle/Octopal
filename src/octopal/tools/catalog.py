@@ -2498,7 +2498,11 @@ async def _tool_octo_self_queue_add(args, ctx) -> str:
 
 
 async def _tool_octo_continue_from_control_route(args, ctx) -> str:
-    from octopal.runtime.octo.delivery import resolve_user_delivery
+    from octopal.runtime.octo.delivery import (
+        resolve_user_delivery,
+        restore_user_delivery,
+        suppress_user_delivery,
+    )
     from octopal.runtime.octo.reply import OctoReply
 
     args = args or {}
@@ -2531,7 +2535,14 @@ async def _tool_octo_continue_from_control_route(args, ctx) -> str:
         route_notify_policy = normalize_notify_user_policy(ctx.get("control_route_notify_user"))
         notify_user = route_notify_policy not in {"never", "if_significant"}
     elif "notify_user" in args:
-        notify_user = bool(args.get("notify_user"))
+        raw_notify = args.get("notify_user")
+        if isinstance(raw_notify, bool):
+            notify_user = raw_notify
+        else:
+            notify_user = normalize_notify_user_policy(raw_notify) not in {
+                "never",
+                "if_significant",
+            }
     else:
         notify_user = True
 
@@ -2552,6 +2563,7 @@ async def _tool_octo_continue_from_control_route(args, ctx) -> str:
         )
 
     token = correlation_id_var.set(f"control-handoff-{uuid4()}")
+    delivery_token = suppress_user_delivery() if not notify_user else None
     try:
         reply = await octo.handle_message(
             handoff_text,
@@ -2563,6 +2575,8 @@ async def _tool_octo_continue_from_control_route(args, ctx) -> str:
             background_delivery=True,
         )
     finally:
+        if delivery_token is not None:
+            restore_user_delivery(delivery_token)
         correlation_id_var.reset(token)
 
     reply_text = str(reply.immediate or "") if isinstance(reply, OctoReply) else str(reply or "")

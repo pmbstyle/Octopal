@@ -10,6 +10,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
+from octopal.runtime.octo.delivery import user_delivery_is_suppressed
 from octopal.tools.filesystem.path_safety import WorkspacePathError, resolve_workspace_path
 
 
@@ -66,6 +67,9 @@ async def _download_to_tmp(
 
 
 async def send_file_to_user(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    if user_delivery_is_suppressed():
+        return _error("user delivery is suppressed for this continuation")
+
     octo = ctx.get("octo")
     if octo is None:
         return _error("send_file_to_user requires octo context")
