@@ -18,6 +18,9 @@ from octopal.infrastructure.store.models import (
     MemoryFactSourceRecord,
     OctoDiaryEntryRecord,
     PermitRecord,
+    PlanEventRecord,
+    PlanRunRecord,
+    PlanStepRecord,
     WorkerRecord,
     WorkerTemplateRecord,
 )
@@ -254,10 +257,64 @@ class SQLiteStore(Store):
                 metadata_json TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS plan_runs (
+                id TEXT PRIMARY KEY,
+                goal TEXT NOT NULL,
+                status TEXT NOT NULL,
+                chat_id INTEGER,
+                source TEXT NOT NULL,
+                correlation_id TEXT,
+                current_step_id TEXT,
+                plan_json TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS plan_steps (
+                run_id TEXT NOT NULL,
+                step_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                task TEXT,
+                executor TEXT,
+                worker_run_id TEXT,
+                input_json TEXT NOT NULL,
+                output_json TEXT NOT NULL,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                PRIMARY KEY (run_id, step_id),
+                FOREIGN KEY(run_id) REFERENCES plan_runs(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS plan_events (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                step_id TEXT,
+                event_type TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES plan_runs(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS ix_workers_status_updated_at ON workers (status, updated_at);
             CREATE INDEX IF NOT EXISTS ix_audit_events_correlation_ts
                 ON audit_events (correlation_id, ts DESC);
             CREATE INDEX IF NOT EXISTS ix_memory_entries_id ON memory_entries (id);
+            CREATE INDEX IF NOT EXISTS ix_plan_runs_status_updated_at
+                ON plan_runs (status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_plan_runs_chat_status
+                ON plan_runs (chat_id, status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_plan_steps_worker_run_id
+                ON plan_steps (worker_run_id);
+            CREATE INDEX IF NOT EXISTS ix_plan_events_run_created
+                ON plan_events (run_id, created_at ASC);
             """
         )
         self._conn.commit()
@@ -1073,6 +1130,202 @@ class SQLiteStore(Store):
             )
         return [self._row_to_octo_diary_entry(row) for row in cursor.fetchall()]
 
+    def create_plan_run(self, run: PlanRunRecord, steps: list[PlanStepRecord]) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO plan_runs (
+                    id, goal, status, chat_id, source, correlation_id,
+                    current_step_id, plan_json, metadata_json,
+                    created_at, updated_at, completed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run.id,
+                    run.goal,
+                    run.status,
+                    run.chat_id,
+                    run.source,
+                    run.correlation_id,
+                    run.current_step_id,
+                    _safe_json_dumps(run.plan),
+                    _safe_json_dumps(run.metadata),
+                    run.created_at.isoformat(),
+                    run.updated_at.isoformat(),
+                    run.completed_at.isoformat() if run.completed_at else None,
+                ),
+            )
+            for step in steps:
+                self._conn.execute(
+                    """
+                    INSERT INTO plan_steps (
+                        run_id, step_id, seq, kind, title, status, task, executor,
+                        worker_run_id, input_json, output_json, error,
+                        created_at, updated_at, started_at, completed_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        step.run_id,
+                        step.step_id,
+                        step.seq,
+                        step.kind,
+                        step.title,
+                        step.status,
+                        step.task,
+                        step.executor,
+                        step.worker_run_id,
+                        _safe_json_dumps(step.input),
+                        _safe_json_dumps(step.output),
+                        step.error,
+                        step.created_at.isoformat(),
+                        step.updated_at.isoformat(),
+                        step.started_at.isoformat() if step.started_at else None,
+                        step.completed_at.isoformat() if step.completed_at else None,
+                    ),
+                )
+            self._conn.commit()
+
+    def update_plan_run(
+        self,
+        run_id: str,
+        *,
+        status: str | None = None,
+        current_step_id: str | None = None,
+        plan: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        completed_at: datetime | None = None,
+    ) -> None:
+        updates = ["updated_at = ?"]
+        params: list[Any] = [utc_now().isoformat()]
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if current_step_id is not None:
+            updates.append("current_step_id = ?")
+            params.append(current_step_id)
+        if plan is not None:
+            updates.append("plan_json = ?")
+            params.append(_safe_json_dumps(plan))
+        if metadata is not None:
+            updates.append("metadata_json = ?")
+            params.append(_safe_json_dumps(metadata))
+        if completed_at is not None:
+            updates.append("completed_at = ?")
+            params.append(completed_at.isoformat())
+        params.append(run_id)
+        self._conn.execute(
+            f"UPDATE plan_runs SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        self._conn.commit()
+
+    def get_plan_run(self, run_id: str) -> PlanRunRecord | None:
+        cursor = self._conn.execute("SELECT * FROM plan_runs WHERE id = ?", (run_id,))
+        row = cursor.fetchone()
+        return self._row_to_plan_run(row) if row else None
+
+    def list_plan_runs(
+        self,
+        *,
+        chat_id: int | None = None,
+        statuses: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[PlanRunRecord]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if chat_id is not None:
+            clauses.append("chat_id = ?")
+            params.append(chat_id)
+        normalized_statuses = [str(item).strip() for item in (statuses or []) if str(item).strip()]
+        if normalized_statuses:
+            placeholders = ", ".join("?" for _ in normalized_statuses)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(normalized_statuses)
+        query = "SELECT * FROM plan_runs"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        cursor = self._conn.execute(query, params)
+        return [self._row_to_plan_run(row) for row in cursor.fetchall()]
+
+    def get_plan_steps(self, run_id: str) -> list[PlanStepRecord]:
+        cursor = self._conn.execute(
+            "SELECT * FROM plan_steps WHERE run_id = ? ORDER BY seq ASC",
+            (run_id,),
+        )
+        return [self._row_to_plan_step(row) for row in cursor.fetchall()]
+
+    def update_plan_step(
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        status: str | None = None,
+        worker_run_id: str | None = None,
+        output: dict[str, Any] | None = None,
+        error: str | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+    ) -> None:
+        updates = ["updated_at = ?"]
+        params: list[Any] = [utc_now().isoformat()]
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if worker_run_id is not None:
+            updates.append("worker_run_id = ?")
+            params.append(worker_run_id)
+        if output is not None:
+            updates.append("output_json = ?")
+            params.append(_safe_json_dumps(output))
+        if error is not None:
+            updates.append("error = ?")
+            params.append(error)
+        if started_at is not None:
+            updates.append("started_at = ?")
+            params.append(started_at.isoformat())
+        if completed_at is not None:
+            updates.append("completed_at = ?")
+            params.append(completed_at.isoformat())
+        params.extend([run_id, step_id])
+        self._conn.execute(
+            f"UPDATE plan_steps SET {', '.join(updates)} WHERE run_id = ? AND step_id = ?",
+            params,
+        )
+        self._conn.commit()
+
+    def append_plan_event(self, event: PlanEventRecord) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO plan_events (id, run_id, step_id, event_type, data_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.id,
+                event.run_id,
+                event.step_id,
+                event.event_type,
+                _safe_json_dumps(event.data),
+                event.created_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def list_plan_events(self, run_id: str, limit: int = 100) -> list[PlanEventRecord]:
+        cursor = self._conn.execute(
+            """
+            SELECT * FROM plan_events
+            WHERE run_id = ?
+            ORDER BY created_at ASC, rowid ASC
+            LIMIT ?
+            """,
+            (run_id, max(1, int(limit))),
+        )
+        return [self._row_to_plan_event(row) for row in cursor.fetchall()]
+
     def cleanup_old_memory(self, keep_days: int = 30, keep_count: int = 1000) -> int:
         """
         Cleanup old memory entries to prevent database bloat.
@@ -1101,12 +1354,10 @@ class SQLiteStore(Store):
         )
         deleted_count = cursor.rowcount
         with suppress(sqlite3.OperationalError):
-            self._conn.execute(
-                """
+            self._conn.execute("""
                 DELETE FROM memory_entries_fts
                 WHERE entry_uuid NOT IN (SELECT uuid FROM memory_entries)
-                """
-            )
+                """)
         self._conn.commit()
         return deleted_count
 
@@ -1134,12 +1385,10 @@ class SQLiteStore(Store):
 
         deleted_count = cursor.rowcount
         with suppress(sqlite3.OperationalError):
-            self._conn.execute(
-                """
+            self._conn.execute("""
                 DELETE FROM memory_entries_fts
                 WHERE entry_uuid NOT IN (SELECT uuid FROM memory_entries)
-                """
-            )
+                """)
         self._conn.commit()
         return deleted_count
 
@@ -1185,10 +1434,18 @@ class SQLiteStore(Store):
         )
         self._conn.commit()
 
-    def upsert_scheduled_task(self, task_id: str, name: str, frequency: str, task_text: str,
-                             description: str | None = None, worker_id: str | None = None,
-                             inputs: dict | None = None, enabled: bool = True,
-                             metadata: dict[str, Any] | None = None) -> None:
+    def upsert_scheduled_task(
+        self,
+        task_id: str,
+        name: str,
+        frequency: str,
+        task_text: str,
+        description: str | None = None,
+        worker_id: str | None = None,
+        inputs: dict | None = None,
+        enabled: bool = True,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         self._conn.execute(
             """
             INSERT INTO scheduled_tasks (id, name, description, frequency, worker_id, task_text, inputs_json, enabled, metadata_json)
@@ -1346,14 +1603,58 @@ class SQLiteStore(Store):
             created_at=_parse_dt(row["created_at"]),
         )
 
+    def _row_to_plan_run(self, row: sqlite3.Row) -> PlanRunRecord:
+        return PlanRunRecord(
+            id=row["id"],
+            goal=row["goal"],
+            status=row["status"],
+            chat_id=_row_get(row, "chat_id"),
+            source=row["source"],
+            correlation_id=_row_get(row, "correlation_id"),
+            current_step_id=_row_get(row, "current_step_id"),
+            plan=_loads_json(row["plan_json"], {}),
+            metadata=_loads_json(row["metadata_json"], {}),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
+            completed_at=_parse_dt(row["completed_at"]) if row["completed_at"] else None,
+        )
+
+    def _row_to_plan_step(self, row: sqlite3.Row) -> PlanStepRecord:
+        return PlanStepRecord(
+            run_id=row["run_id"],
+            step_id=row["step_id"],
+            seq=int(row["seq"]),
+            kind=row["kind"],
+            title=row["title"],
+            status=row["status"],
+            task=_row_get(row, "task"),
+            executor=_row_get(row, "executor"),
+            worker_run_id=_row_get(row, "worker_run_id"),
+            input=_loads_json(row["input_json"], {}),
+            output=_loads_json(row["output_json"], {}),
+            error=_row_get(row, "error"),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
+            started_at=_parse_dt(row["started_at"]) if row["started_at"] else None,
+            completed_at=_parse_dt(row["completed_at"]) if row["completed_at"] else None,
+        )
+
+    def _row_to_plan_event(self, row: sqlite3.Row) -> PlanEventRecord:
+        return PlanEventRecord(
+            id=row["id"],
+            run_id=row["run_id"],
+            step_id=_row_get(row, "step_id"),
+            event_type=row["event_type"],
+            data=_loads_json(row["data_json"], {}),
+            created_at=_parse_dt(row["created_at"]),
+        )
+
     def _backfill_memory_scope_columns(self) -> None:
-        cursor = self._conn.execute(
-            """
+        cursor = self._conn.execute("""
             SELECT id, metadata_json
             FROM memory_entries
             WHERE owner_id IS NULL OR owner_id = '' OR chat_id IS NULL
-            """
-        )
+            """)
         rows = cursor.fetchall()
         if not rows:
             return
@@ -1376,13 +1677,11 @@ class SQLiteStore(Store):
     def _rebuild_memory_fts(self) -> None:
         try:
             self._conn.execute("DELETE FROM memory_entries_fts")
-            self._conn.execute(
-                """
+            self._conn.execute("""
                 INSERT INTO memory_entries_fts (content, owner_id, chat_id, entry_uuid)
                 SELECT content, COALESCE(owner_id, 'default'), chat_id, uuid
                 FROM memory_entries
-                """
-            )
+                """)
             self._conn.commit()
         except sqlite3.OperationalError:
             pass

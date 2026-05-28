@@ -44,6 +44,7 @@ class IntentRecord(BaseModel):
 
 class WorkerTemplateRecord(BaseModel):
     """Worker template - pre-defined agent with system prompt."""
+
     model_config = ConfigDict(frozen=True)
 
     id: str
@@ -136,4 +137,53 @@ class OctoDiaryEntryRecord(BaseModel):
     kind: str
     summary: str
     details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class PlanRunRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    goal: str
+    status: str
+    chat_id: int | None = None
+    source: str = "adhoc"
+    correlation_id: str | None = None
+    current_step_id: str | None = None
+    plan: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+
+
+class PlanStepRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    run_id: str
+    step_id: str
+    seq: int
+    kind: str
+    title: str
+    status: str
+    task: str | None = None
+    executor: str | None = None
+    worker_run_id: str | None = None
+    input: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class PlanEventRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    run_id: str
+    event_type: str
+    step_id: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
