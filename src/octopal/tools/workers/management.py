@@ -946,10 +946,14 @@ async def _start_worker_common(
         message = f"Worker start returned status={status}."
     followup_required = status in {"started", "skipped_duplicate"} and bool(launched_worker_id or run_id)
     next_best_action = "wait_for_worker_progress" if followup_required else "continue_current_plan"
-    plan_binding = _bind_plan_step_for_worker_launch(
-        octo=octo,
-        args=args,
-        worker_run_id=str(launched_worker_id or run_id or "").strip(),
+    plan_binding = (
+        _bind_plan_step_for_worker_launch(
+            octo=octo,
+            args=args,
+            worker_run_id=str(launched_worker_id or "").strip(),
+        )
+        if status == "started"
+        else _skipped_plan_step_binding(args)
     )
 
     return json.dumps({
@@ -1015,6 +1019,19 @@ def _bind_plan_step_for_worker_launch(
         "run_id": plan_run_id,
         "step_id": plan_step_id,
         "worker_run_id": worker_run_id,
+    }
+
+
+def _skipped_plan_step_binding(args: dict[str, object]) -> dict[str, object] | None:
+    plan_run_id = str(args.get("plan_run_id") or "").strip()
+    plan_step_id = str(args.get("plan_step_id") or "").strip()
+    if not plan_run_id and not plan_step_id:
+        return None
+    return {
+        "status": "skipped",
+        "run_id": plan_run_id or None,
+        "step_id": plan_step_id or None,
+        "message": "worker was not started; plan step was not bound",
     }
 
 
