@@ -959,34 +959,42 @@ async def _execute_dashboard_action(
             "message": f"Cleared {cleared} pending control request(s).",
         }
     elif action == "retry_failed":
-        recent_workers = store.list_recent_workers(limit=250)
-        target = _select_retry_target(recent_workers, requested_worker_id=worker_id)
-        if target is None:
+        if not worker_id:
             result = {
                 "status": "error",
                 "action": action,
                 "at": now.isoformat(),
-                "message": "No failed worker available to retry.",
+                "message": "worker_id is required for retry_failed.",
             }
         else:
-            launch = await _launch_worker_from_record(app, target, reason=reason, requested_by=requested_by)
-            if launch.get("status") == "ok":
-                result = {
-                    "status": "ok",
-                    "action": action,
-                    "at": now.isoformat(),
-                    "worker_id": target.id,
-                    "new_worker_id": launch.get("new_worker_id"),
-                    "message": f"Retried failed worker {target.id}.",
-                }
-            else:
+            recent_workers = store.list_recent_workers(limit=250)
+            target = _select_retry_target(recent_workers, requested_worker_id=worker_id)
+            if target is None:
                 result = {
                     "status": "error",
                     "action": action,
                     "at": now.isoformat(),
-                    "worker_id": target.id,
-                    "message": str(launch.get("message", "Retry failed")),
+                    "message": f"Failed worker '{worker_id}' not found.",
                 }
+            else:
+                launch = await _launch_worker_from_record(app, target, reason=reason, requested_by=requested_by)
+                if launch.get("status") == "ok":
+                    result = {
+                        "status": "ok",
+                        "action": action,
+                        "at": now.isoformat(),
+                        "worker_id": target.id,
+                        "new_worker_id": launch.get("new_worker_id"),
+                        "message": f"Retried failed worker {target.id}.",
+                    }
+                else:
+                    result = {
+                        "status": "error",
+                        "action": action,
+                        "at": now.isoformat(),
+                        "worker_id": target.id,
+                        "message": str(launch.get("message", "Retry failed")),
+                    }
     elif action == "restart_worker":
         if not worker_id:
             result = {
@@ -1161,13 +1169,10 @@ async def _launch_worker_from_record(
 
 
 def _select_retry_target(workers: list[WorkerRecord], requested_worker_id: str | None) -> WorkerRecord | None:
-    if requested_worker_id:
-        for worker in workers:
-            if worker.id == requested_worker_id and str(worker.status).lower() == "failed":
-                return worker
+    if not requested_worker_id:
         return None
     for worker in workers:
-        if str(worker.status).lower() == "failed":
+        if worker.id == requested_worker_id and str(worker.status).lower() == "failed":
             return worker
     return None
 

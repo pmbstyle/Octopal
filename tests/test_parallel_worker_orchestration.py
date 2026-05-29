@@ -110,8 +110,8 @@ def test_start_workers_parallel_launches_multiple() -> None:
         payload = await _tool_start_workers_parallel(
             {
                 "tasks": [
-                    {"task": "search docs about apis", "worker_id": "auto"},
-                    {"task": "fix python bug in parser", "worker_id": "auto"},
+                    {"task": "search docs about apis", "worker_id": "web_researcher"},
+                    {"task": "fix python bug in parser", "worker_id": "coder"},
                 ],
                 "max_parallel": 2,
             },
@@ -160,7 +160,11 @@ def test_start_workers_parallel_forwards_allowed_paths_per_task() -> None:
             {
                 "tasks": [
                     {"task": "fix parser bug", "worker_id": "coder"},
-                    {"task": "edit shared module", "worker_id": "coder", "allowed_paths": ["src/parser.py"]},
+                    {
+                        "task": "edit shared module",
+                        "worker_id": "coder",
+                        "allowed_paths": ["src/parser.py"],
+                    },
                 ],
             },
             {"octo": octo, "chat_id": 123},

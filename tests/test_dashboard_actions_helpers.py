@@ -33,6 +33,11 @@ def test_select_retry_target_prefers_requested_failed_worker() -> None:
     assert picked.id == "w2"
 
 
+def test_select_retry_target_requires_requested_worker_id() -> None:
+    workers = [_worker("w1", "failed"), _worker("w2", "failed")]
+    assert _select_retry_target(workers, requested_worker_id=None) is None
+
+
 def test_clear_control_queue_requests_acks_only_pending(tmp_path) -> None:
     state_dir = tmp_path
     req_file = state_dir / "control_requests.jsonl"
