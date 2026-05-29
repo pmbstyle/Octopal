@@ -148,15 +148,15 @@ def get_worker_tools() -> list[ToolSpec]:
         ToolSpec(
             name="start_worker",
             description=(
-                "Start a worker task. If worker_id is omitted or set to 'auto', the worker specialization router "
-                f"selects the best template. {_ALLOWED_PATHS_GUIDANCE}"
+                "Start a worker task with an explicit worker template ID. Use list_workers first if you need "
+                f"to choose an executor. {_ALLOWED_PATHS_GUIDANCE}"
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "worker_id": {
                         "type": "string",
-                        "description": "Optional worker template ID (e.g., 'web_researcher'). Use 'auto' or omit to route automatically.",
+                        "description": "Worker template ID (e.g., 'web_researcher'). Required; automatic routing is disabled.",
                     },
                     "task": {
                         "type": "string",
@@ -208,7 +208,7 @@ def get_worker_tools() -> list[ToolSpec]:
                         ),
                     },
                 },
-                "required": ["task"],
+                "required": ["worker_id", "task"],
                 "additionalProperties": False,
             },
             permission="worker_manage",
@@ -226,7 +226,7 @@ def get_worker_tools() -> list[ToolSpec]:
                 "properties": {
                     "worker_id": {
                         "type": "string",
-                        "description": "Optional worker template ID (e.g., 'web_researcher'). Use 'auto' or omit to route automatically.",
+                        "description": "Worker template ID (e.g., 'web_researcher'). Required; automatic routing is disabled.",
                     },
                     "task": {
                         "type": "string",
@@ -267,7 +267,7 @@ def get_worker_tools() -> list[ToolSpec]:
                         ),
                     },
                 },
-                "required": ["task"],
+                "required": ["worker_id", "task"],
                 "additionalProperties": False,
             },
             permission="worker_manage",
@@ -277,7 +277,7 @@ def get_worker_tools() -> list[ToolSpec]:
         ToolSpec(
             name="start_workers_parallel",
             description=(
-                "Launch multiple worker tasks in parallel and return run IDs plus routing decisions. "
+                "Launch multiple explicitly selected worker tasks in parallel and return run IDs. "
                 "Each worker still gets its own scratch workspace. "
                 "For any shared project files, set allowed_paths per task with the smallest explicit path set."
             ),
@@ -286,7 +286,7 @@ def get_worker_tools() -> list[ToolSpec]:
                 "properties": {
                     "tasks": {
                         "type": "array",
-                        "description": "List of tasks to launch. Each item may include worker_id, task, inputs, tools, timeout_seconds, required_tools, required_permissions.",
+                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, tools, timeout_seconds, required_tools, required_permissions.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -306,7 +306,7 @@ def get_worker_tools() -> list[ToolSpec]:
                                     ),
                                 },
                             },
-                            "required": ["task"],
+                            "required": ["worker_id", "task"],
                             "additionalProperties": False,
                         },
                     },
@@ -885,9 +885,6 @@ async def _start_worker_common(
         return resolution
     template = resolution["template"]
     worker_id = str(resolution["worker_id"])
-    router_used = bool(resolution["router_used"])
-    route_reason = str(resolution["router_reason"])
-    route_score = float(resolution["router_score"]) if resolution["router_score"] is not None else None
 
     tool_validation_error = _validate_requested_worker_tools(
         requested_tools=tools,
@@ -933,13 +930,7 @@ async def _start_worker_common(
     launched_worker_id = launch.get("worker_id")
     run_id = launch.get("run_id")
     if status == "started" and launched_worker_id:
-        if router_used:
-            message = (
-                f"Worker router selected '{template.id}' ({template.name}) and started run {launched_worker_id}. "
-                "Use get_worker_status/get_worker_result with this worker_id."
-            )
-        else:
-            message = f"Worker '{template.name}' started as {launched_worker_id}. Use get_worker_status/get_worker_result with this worker_id."
+        message = f"Worker '{template.name}' started as {launched_worker_id}. Use get_worker_status/get_worker_result with this worker_id."
     elif status == "skipped_duplicate":
         message = "Duplicate worker task detected in this turn; skipped starting a new worker."
     else:
@@ -966,9 +957,6 @@ async def _start_worker_common(
         "parent_worker_id": launch.get("parent_worker_id"),
         "root_task_id": launch.get("root_task_id"),
         "spawn_depth": launch.get("spawn_depth"),
-        "router_used": router_used,
-        "router_reason": route_reason,
-        "router_score": route_score,
         "message": message,
         "followup_required": followup_required,
         "next_best_action": next_best_action,
@@ -1113,9 +1101,6 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
             "run_id": launch.get("run_id"),
             "worker_template_id": selected_worker_id,
             "worker_template_name": getattr(template, "name", selected_worker_id),
-            "router_used": bool(resolution["router_used"]),
-            "router_reason": str(resolution["router_reason"]),
-            "router_score": resolution["router_score"],
             "lineage_id": launch.get("lineage_id"),
             "parent_worker_id": launch.get("parent_worker_id"),
             "root_task_id": launch.get("root_task_id"),
@@ -1987,28 +1972,13 @@ def _resolve_worker_for_start(
     required_tools: list[str] | None = None,
     required_permissions: list[str] | None = None,
 ) -> dict[str, object] | str:
-    if not worker_id or worker_id.lower() in {"auto", "best", "router"}:
-        templates = octo.store.list_worker_templates()
-        selection = _select_worker_template(
-            templates=templates,
-            task=task,
-            required_tools=required_tools,
-            required_permissions=required_permissions,
+    if not worker_id:
+        return "start_worker error: worker_id is required. Use list_workers to choose an executor."
+    if worker_id.lower() in {"auto", "best", "router"}:
+        return (
+            "start_worker error: automatic worker routing is disabled. "
+            "Use list_workers to choose a specific worker_id."
         )
-        if selection is None:
-            return (
-                "start_worker error: no worker template satisfies the requested task capabilities. "
-                "Use a worker with the required tools/permissions, call the tool directly from Octo, "
-                "or provide a more specific worker_id."
-            )
-        template = selection["template"]
-        return {
-            "template": template,
-            "worker_id": template.id,
-            "router_used": True,
-            "router_reason": selection["reason"],
-            "router_score": selection["score"],
-        }
 
     template = octo.store.get_worker_template(worker_id)
     if not template:
@@ -2025,9 +1995,6 @@ def _resolve_worker_for_start(
     return {
         "template": template,
         "worker_id": worker_id,
-        "router_used": False,
-        "router_reason": "",
-        "router_score": None,
     }
 
 
@@ -2123,7 +2090,7 @@ def _validate_template_requirements(
     if _task_requests_workspace_write(task, _tokenize(task)) and not _template_supports_workspace_write(template):
         return (
             f"{error_prefix}: worker '{getattr(template, 'id', '')}' does not advertise workspace write "
-            "capability for this file/artifact task. Use worker_id='auto' or a worker template with "
+            "capability for this file/artifact task. Use list_workers and choose a worker template with "
             "fs_write/filesystem_write support."
         )
     return None
@@ -2165,104 +2132,3 @@ def _task_requests_workspace_write(task: str, task_tokens: set[str]) -> bool:
     has_write_verb = bool(task_tokens & _FILE_WRITE_TASK_TOKENS)
     has_artifact_hint = bool(task_tokens & _FILE_ARTIFACT_TASK_TOKENS)
     return has_write_verb and (has_artifact_hint or bool(_FILE_PATH_HINT_RE.search(task or "")))
-
-
-def _select_worker_template(
-    *,
-    templates: list[object],
-    task: str,
-    required_tools: list[str] | None = None,
-    required_permissions: list[str] | None = None,
-) -> dict[str, object] | None:
-    if not templates:
-        return None
-
-    required_tools = [t.lower() for t in (required_tools or [])]
-    required_permissions = _normalize_worker_permissions(required_permissions or [])
-    task_tokens = _tokenize(task)
-    if not task_tokens:
-        task_tokens = {"task"}
-    task_requests_workspace_write = _task_requests_workspace_write(task, task_tokens)
-
-    best: dict[str, object] | None = None
-    for template in templates:
-        if _validate_template_requirements(
-            template,
-            required_tools=required_tools,
-            required_permissions=required_permissions,
-            task=task,
-            error_prefix="start_worker error",
-        ):
-            continue
-
-        score = 0.0
-        reasons: list[str] = []
-        descriptor = " ".join(
-            [
-                str(getattr(template, "id", "")),
-                str(getattr(template, "name", "")),
-                str(getattr(template, "description", "")),
-                str(getattr(template, "system_prompt", "")),
-            ]
-        )
-        template_tokens = _tokenize(descriptor)
-        overlap = len(task_tokens & template_tokens)
-        if overlap:
-            score += overlap * 2.0
-            reasons.append(f"keyword_overlap={overlap}")
-
-        available_tools = [str(t).lower() for t in getattr(template, "available_tools", [])]
-        permissions = _normalize_worker_permissions(getattr(template, "required_permissions", []))
-        has_filesystem_write = (
-            bool(_FILESYSTEM_WRITE_TOOL_TOKENS & set(available_tools)) or "filesystem_write" in permissions
-        )
-
-        if required_tools:
-            matched_tools = sum(1 for t in required_tools if t in available_tools)
-            if matched_tools:
-                score += matched_tools * 5.0
-                reasons.append(f"required_tools={matched_tools}/{len(required_tools)}")
-        if required_permissions:
-            matched_perms = sum(1 for p in required_permissions if p in permissions)
-            if matched_perms:
-                score += matched_perms * 4.0
-                reasons.append(f"required_permissions={matched_perms}/{len(required_permissions)}")
-
-        if task_requests_workspace_write:
-            if has_filesystem_write:
-                score += 7.0
-                reasons.append("filesystem_write_bonus")
-            else:
-                score -= 5.0
-                reasons.append("filesystem_write_missing_penalty")
-        if "web" in task_tokens and any("web" in t for t in available_tools):
-            score += 3.0
-            reasons.append("web_tool_bonus")
-        if {"test", "pytest", "unit"} & task_tokens and "test_runner" in str(getattr(template, "id", "")):
-            score += 4.0
-            reasons.append("test_runner_bonus")
-        if {"deploy", "release", "rollback"} & task_tokens and "deploy" in str(getattr(template, "id", "")):
-            score += 4.0
-            reasons.append("deploy_bonus")
-        if {"code", "refactor", "bugfix", "python"} & task_tokens and "coder" in str(getattr(template, "id", "")):
-            score += 4.0
-            reasons.append("coder_bonus")
-
-        tie_key = str(getattr(template, "id", ""))
-        candidate = {
-            "template": template,
-            "score": score,
-            "reason": ", ".join(reasons) if reasons else "default selection",
-            "tie_key": tie_key,
-        }
-        if best is None:
-            best = candidate
-        else:
-            best_score = float(best["score"])
-            if score > best_score or (score == best_score and tie_key < str(best["tie_key"])):
-                best = candidate
-
-    if best is None:
-        return None
-    best.pop("tie_key", None)
-    return best

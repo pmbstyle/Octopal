@@ -11,7 +11,6 @@ from octopal.runtime.plans import PlanRunService
 from octopal.tools.workers.management import (
     _infer_allowed_paths_from_task,
     _infer_allowed_paths_from_values,
-    _select_worker_template,
     _tool_start_worker,
 )
 
@@ -49,85 +48,22 @@ def _template(
     )
 
 
-def test_select_worker_template_prefers_keyword_overlap() -> None:
-    templates = [
-        _template("coder", "Coder", "Handles code refactors and bugfixes", ["fs_read"], ["filesystem_read"]),
-        _template("web_researcher", "Web Researcher", "Searches the web and summarizes findings", ["web_search"], ["network"]),
-    ]
-    selected = _select_worker_template(templates=templates, task="Research latest web sources about APIs")
-    assert selected is not None
-    assert selected["template"].id == "web_researcher"
-
-
-def test_select_worker_template_respects_required_tools() -> None:
-    templates = [
-        _template("writer", "Writer", "Writes docs", ["fs_write"], ["filesystem_write"]),
-        _template("web_researcher", "Web Researcher", "Searches web", ["web_search"], ["network"]),
-    ]
-    selected = _select_worker_template(
-        templates=templates,
-        task="Summarize recent updates",
-        required_tools=["web_search"],
-    )
-    assert selected is not None
-    assert selected["template"].id == "web_researcher"
-
-
-def test_select_worker_template_rejects_missing_required_tools() -> None:
-    templates = [
-        _template("writer", "Writer", "Writes docs", ["fs_write"], ["filesystem_write"]),
-    ]
-    selected = _select_worker_template(
-        templates=templates,
-        task="Analyze an image using mcp_zai_analyze_image",
-        required_tools=["mcp_zai_analyze_image"],
-    )
-    assert selected is None
-
-
-def test_select_worker_template_prefers_filesystem_worker_for_file_write_task() -> None:
+def test_start_worker_rejects_missing_worker_id() -> None:
     templates = [
         _template(
-            "file_editor",
-            "File Editor",
-            "Safely edits text and config files in the workspace",
-            ["fs_read", "fs_write"],
-            ["filesystem_read", "filesystem_write"],
+            "coder",
+            "Coder",
+            "Handles code refactors and bugfixes",
+            ["fs_read"],
+            ["filesystem_read"],
         ),
         _template(
-            "web_search_ranked",
-            "Web Search Ranked",
-            "Search the web and return a ranked list of relevant sources",
+            "web_researcher",
+            "Web Researcher",
+            "Searches the web and summarizes findings",
             ["web_search"],
             ["network"],
         ),
-    ]
-    selected = _select_worker_template(
-        templates=templates,
-        task="Create a short markdown report at experiments/qa/marker-worker-report.md with risks and mitigations.",
-    )
-    assert selected is not None
-    assert selected["template"].id == "file_editor"
-    assert "filesystem_write_bonus" in selected["reason"]
-
-
-def test_select_worker_template_requires_image_capability_for_image_tasks() -> None:
-    templates = [
-        _template("moltbook_orchestrator", "Presence Manager", "Sequential task manager", ["fs_read"], ["filesystem_read"]),
-        _template("vision_worker", "Vision Worker", "Analyzes images", ["mcp_call"], ["network", "filesystem_read"]),
-    ]
-    selected = _select_worker_template(
-        templates=templates,
-        task="Analyze the image at tmp/telegram_images/img.jpg",
-    )
-    assert selected is not None
-    assert selected["template"].id == "vision_worker"
-
-
-def test_start_worker_auto_routes_and_returns_router_metadata() -> None:
-    templates = [
-        _template("coder", "Coder", "Handles code refactors and bugfixes", ["fs_read"], ["filesystem_read"]),
-        _template("web_researcher", "Web Researcher", "Searches the web and summarizes findings", ["web_search"], ["network"]),
     ]
 
     class _Store:
@@ -145,29 +81,79 @@ def test_start_worker_auto_routes_and_returns_router_metadata() -> None:
             self.store = _Store()
 
         async def _start_worker_async(self, **kwargs):
-            return {"status": "started", "worker_id": "run-1", "run_id": "run-1", **kwargs}
+            raise AssertionError("worker launch should have been rejected")
 
-    async def _scenario() -> dict:
-        payload = await _tool_start_worker(
+    async def _scenario() -> str:
+        return await _tool_start_worker(
+            {
+                "task": "Find latest web docs and summarize",
+            },
+            {"octo": _Octo(), "chat_id": 123},
+        )
+
+    result = asyncio.run(_scenario())
+    assert "worker_id is required" in result
+    assert "list_workers" in result
+
+
+def test_start_worker_rejects_auto_worker_id() -> None:
+    templates = [
+        _template(
+            "coder",
+            "Coder",
+            "Handles code refactors and bugfixes",
+            ["fs_read"],
+            ["filesystem_read"],
+        ),
+        _template(
+            "web_researcher",
+            "Web Researcher",
+            "Searches the web and summarizes findings",
+            ["web_search"],
+            ["network"],
+        ),
+    ]
+
+    class _Store:
+        def list_worker_templates(self):
+            return templates
+
+        def get_worker_template(self, worker_id: str):
+            for t in templates:
+                if t.id == worker_id:
+                    return t
+            return None
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+
+        async def _start_worker_async(self, **kwargs):
+            raise AssertionError("worker launch should have been rejected")
+
+    async def _scenario() -> str:
+        return await _tool_start_worker(
             {
                 "task": "Find latest web docs and summarize",
                 "worker_id": "auto",
             },
             {"octo": _Octo(), "chat_id": 123},
         )
-        return json.loads(payload)
 
     result = asyncio.run(_scenario())
-    assert result["router_used"] is True
-    assert result["worker_template_id"] == "web_researcher"
-    assert result["followup_required"] is True
-    assert result["next_best_action"] == "wait_for_worker_progress"
-    assert isinstance(result["router_reason"], str) and result["router_reason"]
+    assert "automatic worker routing is disabled" in result
+    assert "list_workers" in result
 
 
 def test_start_worker_passes_null_model_to_runtime() -> None:
     templates = [
-        _template("coder", "Coder", "Handles code refactors and bugfixes", ["fs_read"], ["filesystem_read"]),
+        _template(
+            "coder",
+            "Coder",
+            "Handles code refactors and bugfixes",
+            ["fs_read"],
+            ["filesystem_read"],
+        ),
     ]
 
     class _Store:
@@ -334,7 +320,13 @@ def test_start_worker_does_not_bind_duplicate_skip_to_plan_step(tmp_path: Path) 
 
 def test_start_worker_rejects_tools_outside_template_allowlist() -> None:
     templates = [
-        _template("coder", "Coder", "Handles code refactors and bugfixes", ["fs_read"], ["filesystem_read"]),
+        _template(
+            "coder",
+            "Coder",
+            "Handles code refactors and bugfixes",
+            ["fs_read"],
+            ["filesystem_read"],
+        ),
     ]
 
     class _Store:
@@ -422,7 +414,13 @@ def test_start_worker_allows_subset_tool_override() -> None:
 
 def test_start_worker_rejects_explicit_worker_without_image_capability() -> None:
     templates = [
-        _template("coder", "Coder", "Handles code refactors and bugfixes", ["fs_read"], ["filesystem_read"]),
+        _template(
+            "coder",
+            "Coder",
+            "Handles code refactors and bugfixes",
+            ["fs_read"],
+            ["filesystem_read"],
+        ),
     ]
 
     class _Store:
