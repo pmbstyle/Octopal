@@ -67,6 +67,60 @@ _IMAGE_CAPABILITY_TOKENS = {
     "mcp_exec",
     "analyze_image",
 }
+_IMAGE_ANALYSIS_ACTION_TOKENS = {
+    "analyse",
+    "analyze",
+    "caption",
+    "classify",
+    "compare",
+    "describe",
+    "detect",
+    "explain",
+    "extract",
+    "identify",
+    "inspect",
+    "ocr",
+    "read",
+    "recognize",
+    "review",
+    "transcribe",
+}
+_IMAGE_RESEARCH_CONTEXT_TOKENS = {
+    "about",
+    "api",
+    "apis",
+    "capability",
+    "capabilities",
+    "configure",
+    "docs",
+    "documentation",
+    "find",
+    "guide",
+    "guides",
+    "info",
+    "information",
+    "mcp",
+    "recognition",
+    "research",
+    "search",
+    "server",
+    "servers",
+    "setup",
+    "tool",
+    "tools",
+}
+_IMAGE_FILE_HINT_RE = re.compile(
+    r"(?:^|[\s\"'(<])(?:[\w./-]+/)?[\w.-]+\.(?:png|jpe?g|gif|webp|bmp|tiff?)(?:$|[\s\"')>,.:;])",
+    re.IGNORECASE,
+)
+_IMAGE_PATH_HINT_RE = re.compile(r"\btmp/(?:incoming_images|telegram_images|whatsapp_images)/", re.IGNORECASE)
+_DIRECT_IMAGE_REFERENCE_RE = re.compile(
+    r"\b(?:attached|uploaded|provided|saved|local|this|that)\s+"
+    r"(?:image|images|picture|pictures|photo|photos|screenshot|screenshots)\b"
+    r"|\b(?:image|images|picture|pictures|photo|photos|screenshot|screenshots)\s+"
+    r"(?:at|file|from|in|path)\b",
+    re.IGNORECASE,
+)
 _FILE_WRITE_TASK_TOKENS = {
     "append",
     "create",
@@ -2031,7 +2085,20 @@ def _normalize_tool_name_list(value: object) -> list[str]:
 
 def _task_mentions_image_analysis(task: str) -> bool:
     tokens = _tokenize(task)
-    return bool(tokens & _IMAGE_TASK_TOKENS)
+    if not tokens & _IMAGE_TASK_TOKENS and not _task_has_image_file_hint(task):
+        return False
+    if _task_has_image_file_hint(task):
+        return True
+    if not tokens & _IMAGE_ANALYSIS_ACTION_TOKENS:
+        return False
+    if _DIRECT_IMAGE_REFERENCE_RE.search(task or ""):
+        return True
+    research_tokens = tokens & _IMAGE_RESEARCH_CONTEXT_TOKENS
+    return not bool(research_tokens)
+
+
+def _task_has_image_file_hint(task: str) -> bool:
+    return bool(_IMAGE_FILE_HINT_RE.search(task or "") or _IMAGE_PATH_HINT_RE.search(task or ""))
 
 
 def _template_supports_image_analysis(template: object) -> bool:
