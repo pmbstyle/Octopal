@@ -453,6 +453,57 @@ def test_start_worker_rejects_explicit_worker_without_image_capability() -> None
     assert "does not advertise image/vision analysis capability" in result
 
 
+def test_start_worker_allows_research_about_image_recognition_without_image_capability() -> None:
+    templates = [
+        _template(
+            "web_researcher",
+            "Web Researcher",
+            "Searches web",
+            ["web_search"],
+            ["network"],
+        ),
+    ]
+
+    class _Store:
+        def list_worker_templates(self):
+            return templates
+
+        def get_worker_template(self, worker_id: str):
+            for t in templates:
+                if t.id == worker_id:
+                    return t
+            return None
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+            self.captured = None
+
+        async def _start_worker_async(self, **kwargs):
+            self.captured = kwargs
+            return {
+                "status": "started",
+                "worker_id": kwargs["worker_id"],
+                "run_id": "run-1",
+            }
+
+    async def _scenario() -> tuple[str, _Octo]:
+        octo = _Octo()
+        result = await _tool_start_worker(
+            {
+                "task": "Research MiniMax MCP servers that support web search and image recognition. Return setup instructions.",
+                "worker_id": "web_researcher",
+            },
+            {"octo": octo, "chat_id": 123},
+        )
+        return result, octo
+
+    result, octo = asyncio.run(_scenario())
+    assert "started" in result
+    assert octo.captured is not None
+    assert octo.captured["worker_id"] == "web_researcher"
+
+
 def test_start_worker_rejects_explicit_worker_without_workspace_write_capability() -> None:
     templates = [
         _template("web_researcher", "Web Researcher", "Searches web", ["web_search"], ["network"]),
