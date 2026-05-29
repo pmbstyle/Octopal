@@ -23,6 +23,7 @@ def resolve_workspace_path(
         raise WorkspacePathError("path contains null byte")
 
     root = base_dir.resolve()
+    raw = _strip_redundant_workspace_prefix(raw, root)
     candidate = Path(os.path.normpath(str(root / raw)))
     _assert_within(root, candidate)
 
@@ -37,11 +38,11 @@ def resolve_workspace_path(
         for p in allowed_paths:
             p_path = (root / p).resolve(strict=False)
             allowed_resolved.append(p_path)
-            
+
         # Check if candidate is within any of the allowed paths
         # or if it's the worker's own specific directory which isn't part of allowed_paths but should be implicit
         # Actually, worker's directory check is handled implicitly if it's not restricted or we just check allowed_paths
-        
+
         # We need to resolve candidate strictly if it exists, or loosely if it doesn't
         resolved_candidate = candidate.resolve(strict=False)
         is_allowed = False
@@ -49,7 +50,7 @@ def resolve_workspace_path(
             if resolved_candidate == allowed_root or allowed_root in resolved_candidate.parents:
                 is_allowed = True
                 break
-                
+
         if not is_allowed:
             raise WorkspacePathError(f"access denied: path '{raw}' is outside allowed paths")
 
@@ -96,3 +97,15 @@ def _assert_existing_ancestor_within(root: Path, candidate: Path) -> None:
     if ancestor.exists():
         resolved_ancestor = ancestor.resolve(strict=True)
         _assert_within(root, resolved_ancestor)
+
+
+def _strip_redundant_workspace_prefix(raw: str, root: Path) -> str:
+    if Path(raw).is_absolute():
+        return raw
+    normalized = raw.replace("\\", "/")
+    if normalized.startswith("/"):
+        return raw
+    parts = [part for part in normalized.split("/") if part and part != "."]
+    if root.name == "workspace" and parts[:1] == ["workspace"]:
+        return "/".join(parts[1:]) or "."
+    return raw

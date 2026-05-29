@@ -51,6 +51,19 @@ def test_fs_write_rejects_symlink_escape(tmp_path: Path) -> None:
     assert not (outside / "pwn.txt").exists()
 
 
+def test_fs_write_treats_leading_workspace_as_redundant_at_workspace_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    result = fs_write({"path": "workspace/config/mcp.json", "content": "{}"}, workspace)
+
+    assert result == "fs_write ok"
+    assert (workspace / "config" / "mcp.json").read_text(encoding="utf-8") == "{}"
+    assert not (workspace / "workspace" / "config" / "mcp.json").exists()
+
+
 def test_fs_delete_unlinks_symlink_without_touching_target(tmp_path: Path) -> None:
     _ensure_symlink_supported(tmp_path)
 

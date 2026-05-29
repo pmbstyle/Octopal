@@ -61,6 +61,17 @@ _MCP_SLOW_TOOL_HINTS = (
     "query",
 )
 
+
+def _extract_mcp_server_configs(config_data: Any) -> Any:
+    if not isinstance(config_data, dict):
+        return None
+    if isinstance(config_data.get("servers"), dict):
+        return config_data["servers"]
+    if isinstance(config_data.get("mcpServers"), dict):
+        return config_data["mcpServers"]
+    return config_data
+
+
 class MCPManager:
     def __init__(self, workspace_dir: Path):
         self.workspace_dir = workspace_dir
@@ -79,12 +90,19 @@ class MCPManager:
         self._shutdown_requested = False
         self.config_path = workspace_dir / "mcp_servers.json"
         self.legacy_config_path = workspace_dir / "config" / "mcp.json"
+        self.root_config_path = workspace_dir / "mcp.json"
+        self.claude_config_path = workspace_dir / ".mcp.json"
         self._configs_loaded = False
 
     def _config_paths(self) -> list[Path]:
-        # Keep supporting the newer flat mcp_servers.json layout while also
-        # reading the legacy workspace/config/mcp.json workspace file.
-        return [self.legacy_config_path, self.config_path]
+        # Read broad compatibility paths first, then let canonical Octopal
+        # config files override duplicates from imported MCP client configs.
+        return [
+            self.claude_config_path,
+            self.root_config_path,
+            self.legacy_config_path,
+            self.config_path,
+        ]
 
     def _load_configs_from_disk(self) -> dict[str, MCPServerConfig]:
         if self._configs_loaded:
@@ -97,8 +115,16 @@ class MCPManager:
         for config_path in self._config_paths():
             if not config_path.exists():
                 continue
-            config_data = json.loads(config_path.read_text(encoding="utf-8"))
-            server_configs = config_data.get("servers", config_data)
+            config_text = config_path.read_text(encoding="utf-8").strip()
+            if not config_text:
+                logger.warning("Skipping empty MCP config file", path=str(config_path))
+                continue
+            try:
+                config_data = json.loads(config_text)
+            except json.JSONDecodeError:
+                logger.warning("Skipping invalid MCP config file", path=str(config_path), exc_info=True)
+                continue
+            server_configs = _extract_mcp_server_configs(config_data)
             if not isinstance(server_configs, dict):
                 continue
             for server_id, cfg in server_configs.items():

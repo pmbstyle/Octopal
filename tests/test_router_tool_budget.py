@@ -8,8 +8,8 @@ from types import SimpleNamespace
 from octopal.infrastructure.config.models import A2AConfig, A2APeerConfig
 from octopal.infrastructure.providers.base import Message
 from octopal.runtime.octo.delivery import (
-    restore_user_delivery,
     resolve_user_delivery,
+    restore_user_delivery,
     suppress_user_delivery,
 )
 from octopal.runtime.octo.router import (
@@ -25,6 +25,7 @@ from octopal.runtime.octo.router import (
     _get_scheduled_octo_control_tools,
     _get_scheduler_tools,
     _get_worker_followup_tools,
+    _needs_action_or_blocked_retry,
     _normalize_worker_followup_reply,
     _recover_textual_tool_call,
     _sanitize_messages_for_complete,
@@ -32,8 +33,8 @@ from octopal.runtime.octo.router import (
     route_or_reply,
     route_worker_results_back_to_octo,
 )
-from octopal.tools.communication.send_file import send_file_to_user
 from octopal.runtime.workers.contracts import WorkerResult
+from octopal.tools.communication.send_file import send_file_to_user
 from octopal.tools.registry import ToolSpec
 from octopal.tools.tools import get_tools
 
@@ -985,21 +986,21 @@ def test_worker_followup_route_skips_planner_and_uses_narrow_tools(monkeypatch) 
 def test_normalize_worker_followup_reply_uses_structured_user_response() -> None:
     raw = """
     {
-      "user_response": "Брифинг готов.",
+      "user_response": "Briefing is ready.",
       "no_user_response": false,
       "actions_taken": [{"type": "get_worker_output_path", "summary": "checked output"}],
       "reason": "worker completed"
     }
     """
-    assert _normalize_worker_followup_reply(raw) == "Брифинг готов."
+    assert _normalize_worker_followup_reply(raw) == "Briefing is ready."
 
 
 def test_normalize_worker_followup_reply_strips_noisy_user_visible_wrapper() -> None:
     raw = (
         "I checked internal worker state and should only show the marked part.\n\n"
-        "<user_visible>Брифинг готов.</user_visible>"
+        "<user_visible>Briefing is ready.</user_visible>"
     )
-    assert _normalize_worker_followup_reply(raw) == "Брифинг готов."
+    assert _normalize_worker_followup_reply(raw) == "Briefing is ready."
 
 
 def test_normalize_worker_followup_reply_suppresses_structured_no_response() -> None:
@@ -1040,7 +1041,7 @@ def test_normalize_worker_followup_reply_suppresses_internal_mode_leak() -> None
 def test_normalize_worker_followup_reply_suppresses_a2a_mode_leak() -> None:
     raw = """
     {
-      "user_response": "I don't have the A2A messaging tools available in my current tool set. I need to send the message from my full orchestration context. Отправлю сообщение как только вернусь в полный режим — сейчас у меня нет доступа к A2A инструментам из этого контекста.",
+      "user_response": "I don't have the A2A messaging tools available in my current tool set. I need to send the message from my full orchestration context. I will send it once I am back in full mode.",
       "no_user_response": false,
       "actions_taken": [],
       "reason": "needs orchestration"
@@ -1504,7 +1505,7 @@ def test_route_retries_unbacked_action_commitment_with_tools(monkeypatch) -> Non
         async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
             self.calls += 1
             if self.calls == 1:
-                return {"content": "Проверю это сейчас.", "tool_calls": []}
+                return {"content": "I will take care of that.", "tool_calls": []}
             if self.calls == 2:
                 self.retry_prompt_seen = any(
                     "previous answer was classified as requiring concrete runtime action state"
@@ -1521,7 +1522,7 @@ def test_route_retries_unbacked_action_commitment_with_tools(monkeypatch) -> Non
                         }
                     ],
                 }
-            return {"content": "Проверила: ok.", "tool_calls": []}
+            return {"content": "Checked: ok.", "tool_calls": []}
 
     class DummyMemory:
         async def add_message(self, role, content, metadata=None):
@@ -1574,14 +1575,29 @@ def test_route_retries_unbacked_action_commitment_with_tools(monkeypatch) -> Non
             DummyOcto(),
             provider,
             DummyMemory(),
-            "проверь статус",
+            "check status",
             123,
             "",
         )
-        assert response == "Проверила: ok."
+        assert response == "Checked: ok."
         assert provider.calls == 3
         assert provider.verifier_seen is True
         assert provider.retry_prompt_seen is True
+
+    asyncio.run(scenario())
+
+
+def test_action_state_retry_catches_present_tense_action_commitment_without_verifier() -> None:
+    class DummyProvider:
+        async def complete(self, messages, **kwargs):
+            raise AssertionError("deterministic action heuristic should run before verifier")
+
+    async def scenario() -> None:
+        assert await _needs_action_or_blocked_retry(
+            provider=DummyProvider(),
+            messages=[Message(role="user", content="install mcp, then activate it")],
+            candidate="`uvx` is available. Installing MiniMax MCP...",
+        )
 
     asyncio.run(scenario())
 
@@ -2165,7 +2181,7 @@ def test_route_marks_structured_followup_requirement_from_tool_payload(monkeypat
                         }
                     ],
                 }
-            return {"content": "Проверяю и вернусь с итогом.", "tool_calls": []}
+            return {"content": "Checking now; I will follow up with the result.", "tool_calls": []}
 
     class DummyMemory:
         async def add_message(self, role, content, metadata=None):
@@ -2224,7 +2240,7 @@ def test_route_marks_structured_followup_requirement_from_tool_payload(monkeypat
             123,
             "",
         )
-        assert response == "Проверяю и вернусь с итогом."
+        assert response == "Checking now; I will follow up with the result."
         assert octo.followup_marked == 1
 
     asyncio.run(scenario())
