@@ -117,3 +117,34 @@ def test_plan_update_step_reports_unknown_step(tmp_path: Path) -> None:
         "run_id": created["run_id"],
         "step_id": "missing",
     }
+
+
+def test_plan_update_step_preserves_blocked_step_status(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    ctx = {"octo": SimpleNamespace(store=store), "chat_id": 42}
+    created = json.loads(
+        _tool("plan_create").handler(
+            {
+                "goal": "Ship a fix",
+                "steps": [{"id": "review", "kind": "approval", "title": "Need approval"}],
+            },
+            ctx,
+        )
+    )
+
+    updated = json.loads(
+        _tool("plan_update_step").handler(
+            {
+                "run_id": created["run_id"],
+                "step_id": "review",
+                "status": "blocked",
+                "error": "waiting on sign-off",
+            },
+            ctx,
+        )
+    )
+
+    assert updated["status"] == "ok"
+    assert updated["snapshot"]["run"]["status"] == "blocked"
+    assert updated["snapshot"]["steps"][0]["status"] == "blocked"
+    assert updated["snapshot"]["steps"][0]["error"] == "waiting on sign-off"

@@ -223,7 +223,7 @@ def _tool_plan_update_step(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         service.store.update_plan_step(
             run_id,
             step_id,
-            status="failed",
+            status="blocked",
             error=error,
             completed_at=utc_now(),
         )
