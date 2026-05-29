@@ -178,6 +178,14 @@ type DesktopDashboardSnapshot = {
   detail: string;
   generatedAt?: string;
   baseUrl?: string;
+  starting?: boolean;
+  attention?: {
+    title: string;
+    detail: string;
+    timestamp?: string;
+    service?: string;
+    level?: string;
+  };
   load?: {
     activeWorkers: number;
     queueDepth: number;
@@ -274,6 +282,8 @@ contextBridge.exposeInMainWorld("octopalDesktop", {
     ipcRenderer.invoke("desktop:update-octopal", installDir) as Promise<DesktopUpdateResult>,
   getDashboardSnapshot: (installDir: string) =>
     ipcRenderer.invoke("desktop:get-dashboard-snapshot", installDir) as Promise<DesktopDashboardSnapshot>,
+  openOctopalLogs: (installDir: string) =>
+    ipcRenderer.invoke("desktop:open-octopal-logs", installDir) as Promise<boolean>,
   getWorkerTemplates: (installDir: string) =>
     ipcRenderer.invoke("desktop:get-worker-templates", installDir) as Promise<DesktopWorkerTemplate[]>,
   saveWorkerTemplate: (installDir: string, template: DesktopWorkerTemplate, mode: "create" | "update") =>

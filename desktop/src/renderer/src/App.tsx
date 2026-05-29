@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { AnimatePresence } from "framer-motion";
-import { Download, Play, Square } from "lucide-react";
+import { Download, RotateCcw, Settings, Play, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 
@@ -860,6 +860,12 @@ export function App() {
     }
   }
 
+  function returnToInstallSetup() {
+    setInstallError("");
+    setStepIndex(0);
+    setScreen("wizard");
+  }
+
   async function startInstalledOctopal() {
     const installDir = savedInstallResult?.installDir || installState.installDir || values.installDir;
     if (!window.octopalDesktop || !installDir) {
@@ -1241,6 +1247,28 @@ export function App() {
             body={copy("installFailedBody")}
             events={installEvents}
             error={installError}
+            action={
+              <>
+                <Button
+                  type="button"
+                  variant="primary"
+                  className="status-action-button"
+                  onClick={() => void prepareInstall()}
+                >
+                  <RotateCcw data-icon="inline-start" />
+                  {copy("retryInstall")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="status-action-button"
+                  onClick={returnToInstallSetup}
+                >
+                  <Settings data-icon="inline-start" />
+                  {copy("changeInstallSetup")}
+                </Button>
+              </>
+            }
           />
         ) : null}
       </AnimatePresence>
