@@ -1,4 +1,4 @@
-import { Clock, Download, ExternalLink, Eye, FileJson, GitBranch, ListChecks, Pencil, Play, Plus, RotateCw, Square, Trash2, Wrench, X } from "lucide-react";
+import { AlertTriangle, Clock, Download, ExternalLink, Eye, FileJson, GitBranch, ListChecks, Pencil, Play, Plus, RotateCw, Square, Trash2, Wrench, X } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -14,6 +14,8 @@ type LoadPoint = {
   queueDepth: number;
   octoQueue: number;
 };
+
+type LoadMetricKey = keyof Omit<LoadPoint, "at">;
 
 type WorkerTemplateForm = {
   id: string;
@@ -107,6 +109,23 @@ function statusClass(status?: string): string {
     return "dashboard-status dashboard-status-bad";
   }
   return "dashboard-status";
+}
+
+function statusTextClass(status?: string): string {
+  const value = String(status ?? "").toLowerCase();
+  if (["running", "started", "thinking"].includes(value)) {
+    return "worker-detail-status worker-detail-status-live";
+  }
+  if (["completed", "ok", "connected"].includes(value)) {
+    return "worker-detail-status worker-detail-status-good";
+  }
+  if (["warning", "stopped", "awaiting_instruction", "waiting_for_children"].includes(value)) {
+    return "worker-detail-status worker-detail-status-warn";
+  }
+  if (["error", "failed", "critical"].includes(value)) {
+    return "worker-detail-status worker-detail-status-bad";
+  }
+  return "worker-detail-status";
 }
 
 function formatTime(value?: string | number): string {
@@ -208,22 +227,55 @@ function jsonPreview(value: unknown): string {
   }
 }
 
+function stripHtmlMarkup(value: string): string {
+  return value
+    .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+    .replace(/<\s*\/\s*(p|div|h[1-6]|center|li)\s*>/gi, "\n")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'");
+}
+
 function limitDisplayText(value: string, maxLength: number): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
+  const normalized = stripHtmlMarkup(value).replace(/\s+/g, " ").trim();
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3).trim()}...` : normalized;
 }
 
-function linePoints(points: LoadPoint[], key: keyof Omit<LoadPoint, "at">): string {
-  const values = points.length > 0 ? points.map((point) => point[key]) : [0];
-  const max = Math.max(1, ...values);
+function isTransientDashboardError(value: string): boolean {
+  return /fetch failed|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT/i.test(value);
+}
+
+function loadGraphMax(points: LoadPoint[]): number {
+  return Math.max(
+    1,
+    ...points.flatMap((point) => [point.activeWorkers, point.queueDepth, point.octoQueue].map((value) => Math.max(0, value))),
+  );
+}
+
+function linePoints(points: LoadPoint[], key: LoadMetricKey, max: number): string {
+  const values = points.length > 0 ? points.map((point) => Math.max(0, point[key])) : [0];
   const width = 1000;
   const height = 300;
-  const step = points.length > 1 ? width / (points.length - 1) : width;
+  const plotTop = 28;
+  const plotBottom = height - 28;
+  const plotHeight = plotBottom - plotTop;
+  const valueToY = (value: number) => {
+    const y = plotBottom - (Number(value) / Math.max(1, max)) * plotHeight;
+    return Math.max(plotTop, Math.min(plotBottom, y));
+  };
+  if (values.length === 1) {
+    const y = valueToY(values[0]);
+    return `0,${y} ${width},${y}`;
+  }
+  const step = width / (values.length - 1);
   return values
     .map((value, index) => {
       const x = index * step;
-      const y = height - (Number(value) / max) * 220 - 34;
-      return `${x},${Math.max(24, Math.min(height - 12, y))}`;
+      return `${x},${valueToY(value)}`;
     })
     .join(" ");
 }
@@ -287,6 +339,7 @@ export function DashboardScreen({
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
   const [templateForm, setTemplateForm] = useState<WorkerTemplateForm>(emptyTemplateForm);
   const [templateSaving, setTemplateSaving] = useState(false);
+  const [startedAt] = useState(() => Date.now());
 
   const refreshSnapshot = useCallback(async () => {
     if (!window.octopalDesktop || !installDir) {
@@ -295,6 +348,10 @@ export function DashboardScreen({
     const next = await window.octopalDesktop.getDashboardSnapshot(installDir);
     setSnapshot(next);
     if (!next.ok) {
+      if (isTransientDashboardError(next.detail) && Date.now() - startedAt < 45_000) {
+        setDashboardError("");
+        return;
+      }
       setDashboardError(next.detail);
       return;
     }
@@ -312,7 +369,7 @@ export function DashboardScreen({
         ].slice(-32),
       );
     }
-  }, [installDir]);
+  }, [installDir, startedAt]);
 
   const refreshTemplates = useCallback(async () => {
     if (!window.octopalDesktop || !installDir) {
@@ -340,30 +397,64 @@ export function DashboardScreen({
   }, [refreshTemplates]);
 
   const graphPoints = useMemo(() => {
-    if (history.length > 1) {
+    if (history.length > 0) {
       return history;
     }
     const load = snapshot?.load ?? { activeWorkers: 0, queueDepth: 0, octoQueue: 0 };
-    const shape = [0.72, 0.82, 0.9, 1.28, 1.14, 1.04, 1.18, 1.06, 0.98, 1.12];
-    return shape.map((ratio, index) => ({
-      at: Date.now() - (7 - index) * 4000,
-      activeWorkers: Math.max(0, Math.round(load.activeWorkers * ratio)),
-      queueDepth: Math.max(0, Math.round(load.queueDepth * (ratio + 0.12))),
-      octoQueue: Math.max(0, Math.round(load.octoQueue * (1.08 - (ratio - 1) / 2))),
-    }));
+    return [
+      {
+        at: Date.now(),
+        activeWorkers: Math.max(0, load.activeWorkers),
+        queueDepth: Math.max(0, load.queueDepth),
+        octoQueue: Math.max(0, load.octoQueue),
+      },
+    ];
   }, [history, snapshot?.load]);
+  const graphMax = loadGraphMax(graphPoints);
+  const currentLoad = graphPoints.at(-1) ?? { at: Date.now(), activeWorkers: 0, queueDepth: 0, octoQueue: 0 };
+  const loadMetrics: Array<{ key: LoadMetricKey; label: string; value: number; className: string }> = [
+    {
+      key: "activeWorkers",
+      label: copy("activeWorkers"),
+      value: currentLoad.activeWorkers,
+      className: "dashboard-load-swatch-active",
+    },
+    {
+      key: "queueDepth",
+      label: copy("workerQueue"),
+      value: currentLoad.queueDepth,
+      className: "dashboard-load-swatch-queue",
+    },
+    {
+      key: "octoQueue",
+      label: copy("octoQueue"),
+      value: currentLoad.octoQueue,
+      className: "dashboard-load-swatch-octo",
+    },
+  ];
 
   const recentWorkers = snapshot?.workers?.recent ?? [];
   const selectedWorker = selectedWorkerId
     ? recentWorkers.find((worker) => worker.id === selectedWorkerId) ?? null
     : null;
+  const attention = snapshot?.attention;
   const octoState = snapshot?.octo?.state || runtimeView.state || "idle";
+  const displayOctoState = attention ? "error" : octoState;
   const octoHeadlineRaw = snapshot?.octo?.headline || runtimeView.title;
   const octoDetailRaw = snapshot?.octo?.detail || runtimeView.detail || copy("octopalStarted");
   const latestActionRaw = snapshot?.octo?.latestAction || copy("octoLatestFallback");
-  const octoHeadline = limitDisplayText(octoHeadlineRaw, 74);
-  const octoDetail = limitDisplayText(octoDetailRaw, 120);
+  const octoHeadline = limitDisplayText(octoHeadlineRaw, 110);
+  const octoDetail = limitDisplayText(octoDetailRaw, 260);
   const latestAction = limitDisplayText(latestActionRaw, 130);
+  const octoNeedsAttention = ["error", "failed", "critical"].includes(String(displayOctoState).toLowerCase());
+  const attentionTitle = attention?.title || octoHeadlineRaw || copy("runtimeStatusError");
+  const attentionTitleText = limitDisplayText(attentionTitle, 160);
+  const attentionDetail = limitDisplayText(attention?.detail || dashboardError || octoDetailRaw, 520);
+  const attentionMeta = [attention?.service, attention?.level, attention?.timestamp ? formatDateTime(attention.timestamp) : ""]
+    .filter(Boolean)
+    .join(" · ");
+  const systemTitle = attention ? attentionTitleText : runtimeView.title;
+  const systemDetail = attention ? attentionDetail : runtimeView.detail || copy("systemBody");
   const services = snapshot?.system?.services ?? [];
   const logs = snapshot?.system?.logs ?? [];
   const editingTemplate = editingTemplateId
@@ -444,17 +535,24 @@ export function DashboardScreen({
     startEditTemplate(selectedWorkerTemplate);
   }
 
+  function openLogs(): void {
+    if (!window.octopalDesktop || !installDir) {
+      return;
+    }
+    void window.octopalDesktop.openOctopalLogs(installDir);
+  }
+
   function renderControl() {
     return (
       <section className="dashboard-control">
         <div className="dashboard-assistant-head">
           <div className="dashboard-octo-stack">
             <img className="octo dashboard-octo" src={octoImage} alt="Octopal mascot" />
-            <span className={statusClass(octoState)}>{octoState}</span>
+            <span className={statusClass(displayOctoState)}>{displayOctoState}</span>
           </div>
           <div className="dashboard-bubble">
             <h1 title={octoHeadlineRaw}>{octoHeadline}</h1>
-            <p title={octoDetailRaw}>{octoDetail}</p>
+            <p className="dashboard-octo-detail" title={octoDetailRaw}>{octoDetail}</p>
             <p className="dashboard-latest" title={latestActionRaw}>
               <strong>{copy("latestAction")}:</strong> {latestAction}
             </p>
@@ -468,19 +566,53 @@ export function DashboardScreen({
           ) : null}
         </div>
 
+        {attention || octoNeedsAttention || dashboardError ? (
+          <div className="dashboard-attention-panel" role="alert">
+            <AlertTriangle />
+            <div>
+              <span className="dashboard-attention-kicker">{copy("runtimeStatusError")}</span>
+              <h2 title={attentionTitle}>{attentionTitleText}</h2>
+              <p title={attentionDetail}>{attentionDetail}</p>
+              {attentionMeta ? <small>{attentionMeta}</small> : null}
+            </div>
+            <Button type="button" variant="secondary" onClick={openLogs}>
+              <FileJson data-icon="inline-start" />
+              {copy("openLogs")}
+            </Button>
+          </div>
+        ) : null}
+
         <div className="dashboard-panel">
           <div className="dashboard-panel-head">
             <div>
               <h2>{copy("liveLoad")}</h2>
               <p>{copy("liveLoadBody")}</p>
             </div>
-            <span className="dashboard-pill">{copy("lastSamples")}</span>
+            <div className="dashboard-chart-pills">
+              <span className="dashboard-pill">{copy("lastSamples")}</span>
+              <span className="dashboard-pill">{copy("chartScale")} 0-{graphMax}</span>
+            </div>
           </div>
-          <div className="dashboard-chart" aria-label={copy("liveLoad")}>
+          <div className="dashboard-load-summary">
+            {loadMetrics.map((metric) => (
+              <div className="dashboard-load-chip" key={metric.key}>
+                <span className={`dashboard-load-swatch ${metric.className}`} />
+                <span>{metric.label}</span>
+                <strong>{metric.value}</strong>
+              </div>
+            ))}
+          </div>
+          <div
+            className="dashboard-chart"
+            aria-label={`${copy("liveLoad")}: ${loadMetrics.map((metric) => `${metric.label} ${metric.value}`).join(", ")}`}
+          >
+            <span className="dashboard-chart-y dashboard-chart-y-max">{graphMax}</span>
+            <span className="dashboard-chart-y dashboard-chart-y-zero">0</span>
+            {history.length <= 1 ? <span className="dashboard-chart-samples">{copy("collectingSamples")}</span> : null}
             <svg viewBox="0 0 1000 300" preserveAspectRatio="none">
-              <polyline points={linePoints(graphPoints, "activeWorkers")} fill="none" stroke="var(--accent)" strokeWidth="7" />
-              <polyline points={linePoints(graphPoints, "queueDepth")} fill="none" stroke="#f4b84f" strokeWidth="5" />
-              <polyline points={linePoints(graphPoints, "octoQueue")} fill="none" stroke="var(--success)" strokeWidth="4" />
+              <polyline points={linePoints(graphPoints, "activeWorkers", graphMax)} fill="none" stroke="var(--accent)" strokeWidth="7" />
+              <polyline points={linePoints(graphPoints, "queueDepth", graphMax)} fill="none" stroke="#f4b84f" strokeWidth="5" />
+              <polyline points={linePoints(graphPoints, "octoQueue", graphMax)} fill="none" stroke="var(--success)" strokeWidth="4" />
             </svg>
           </div>
           {dashboardError ? <p className="dashboard-inline-error">{dashboardError}</p> : null}
@@ -590,10 +722,25 @@ export function DashboardScreen({
         <div className="dashboard-assistant-head dashboard-assistant-head-compact">
           <img className="octo dashboard-octo-small" src={octoImage} alt="Octopal mascot" />
           <div className="dashboard-bubble">
-            <h1>{runtimeView.title}</h1>
-            <p>{runtimeView.detail || copy("systemBody")}</p>
+            <h1 title={systemTitle}>{systemTitle}</h1>
+            <p className="dashboard-octo-detail" title={systemDetail}>{systemDetail}</p>
           </div>
         </div>
+        {attention || dashboardError ? (
+          <div className="dashboard-attention-panel" role="alert">
+            <AlertTriangle />
+            <div>
+              <span className="dashboard-attention-kicker">{copy("runtimeStatusError")}</span>
+              <h2 title={attentionTitle}>{attentionTitleText}</h2>
+              <p title={attentionDetail}>{attentionDetail}</p>
+              {attentionMeta ? <small>{attentionMeta}</small> : null}
+            </div>
+            <Button type="button" variant="secondary" onClick={openLogs}>
+              <FileJson data-icon="inline-start" />
+              {copy("openLogs")}
+            </Button>
+          </div>
+        ) : null}
         <div className="system-grid">
           <div className="dashboard-panel system-card">
             <h2>{copy("runtime")}</h2>
@@ -752,7 +899,7 @@ export function DashboardScreen({
             <div>
               <ListChecks />
               <span>Status</span>
-              <strong className={statusClass(selectedWorker.status)}>{selectedWorker.status ?? "unknown"}</strong>
+              <strong className={statusTextClass(selectedWorker.status)}>{selectedWorker.status ?? "unknown"}</strong>
             </div>
           </div>
 

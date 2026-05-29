@@ -96,6 +96,14 @@ type DesktopDashboardSnapshot = {
   detail: string;
   generatedAt?: string;
   baseUrl?: string;
+  starting?: boolean;
+  attention?: {
+    title: string;
+    detail: string;
+    timestamp?: string;
+    service?: string;
+    level?: string;
+  };
   load?: {
     activeWorkers: number;
     queueDepth: number;
@@ -392,6 +400,114 @@ function compactOctoEvent(event: unknown): string {
   return title.length > 80 ? `${title.slice(0, 77).trim()}...` : title;
 }
 
+function stripHtmlMarkup(value: string): string {
+  return value
+    .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+    .replace(/<\s*\/\s*(p|div|h[1-6]|center|li)\s*>/gi, "\n")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function compactErrorDetail(value: unknown): string {
+  const raw = stringValue(value);
+  if (!raw) {
+    return "";
+  }
+
+  const redacted = stripHtmlMarkup(raw)
+    .replace(/\bGOCSPX-[A-Za-z0-9_-]{12,}\b/g, "[redacted-key]")
+    .replace(/\b\d{7,12}:[A-Za-z0-9_-]{20,}\b/g, "[redacted-token]")
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted-key]");
+  const lines = redacted
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const meaningful = lines.filter(
+    (line) =>
+      !line.startsWith("File ") &&
+      !line.startsWith("Traceback ") &&
+      !line.startsWith("During handling ") &&
+      !line.startsWith("The above exception ") &&
+      !/^\^+$/.test(line) &&
+      !/^\.\.\.</.test(line),
+  );
+  const httpStatusLine = meaningful.find((line) => /HTTPStatusError|Client error .* for url/i.test(line));
+  const preferred = httpStatusLine ?? [...meaningful]
+    .reverse()
+    .find((line) => /\b(error|exception|failed|not found|timeout|unauthorized|forbidden)\b/i.test(line));
+  const detail = preferred ?? meaningful.at(-1) ?? lines.at(-1) ?? redacted;
+  return detail.length > 520 ? `${detail.slice(0, 517).trim()}...` : detail;
+}
+
+async function readLatestAttentionLog(installDir: string): Promise<DesktopDashboardSnapshot["attention"] | null> {
+  const logPath = join(installDir, "data", "logs", "octopal.log");
+  let raw = "";
+  try {
+    raw = await readFile(logPath, "utf8");
+  } catch {
+    return null;
+  }
+
+  const lines = raw.split(/\r?\n/).filter(Boolean).slice(-300).reverse();
+  for (const line of lines) {
+    let entry: Record<string, unknown>;
+    try {
+      entry = recordValue(JSON.parse(line));
+    } catch {
+      continue;
+    }
+
+    const level = stringValue(entry.level, stringValue(entry.log_level, "info")).toLowerCase();
+    if (!["error", "critical"].includes(level)) {
+      continue;
+    }
+    const timestamp = stringValue(entry.timestamp);
+    const parsedTimestamp = timestamp ? Date.parse(timestamp) : Number.NaN;
+    if (Number.isFinite(parsedTimestamp) && Date.now() - parsedTimestamp > 60 * 60 * 1000) {
+      continue;
+    }
+
+    const title = compactOctoEvent(entry.event);
+    const detail =
+      compactErrorDetail(entry.error) ||
+      compactErrorDetail(entry.exception) ||
+      compactErrorDetail(entry.detail) ||
+      compactErrorDetail(entry.message);
+    return {
+      title,
+      detail: detail || title,
+      timestamp,
+      service: stringValue(entry.logger, stringValue(entry.service, "runtime")),
+      level,
+    };
+  }
+
+  return null;
+}
+
+function isAttentionState(value: unknown): boolean {
+  return ["error", "failed", "critical"].includes(stringValue(value).toLowerCase());
+}
+
+function parseTimestampMs(value: unknown): number | null {
+  const raw = stringValue(value);
+  if (!raw) {
+    return null;
+  }
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isWithinStartupGrace(startedAt: unknown, graceMs = 45_000): boolean {
+  const startedMs = parseTimestampMs(startedAt);
+  return startedMs !== null && Date.now() - startedMs < graceMs;
+}
+
 async function loadRawConfigForInstall(installDir: string): Promise<Record<string, unknown>> {
   const configPath = join(installDir, "config.json");
   return cloneJsonRecord(JSON.parse(await readFile(configPath, "utf8")));
@@ -615,10 +731,12 @@ async function getDesktopDashboardSnapshot(installDir: string): Promise<DesktopD
     const workersNode = recordValue(workers.workers);
     const octoNode = recordValue(octo.octo);
     const octoHealth = recordValue(octo.health);
+    const systemNode = recordValue(system.system);
     const systemLogs = listValue(system.logs) as Array<Record<string, unknown>>;
     const recentOctoLog =
       systemLogs.find((entry) => stringValue(entry.service).toLowerCase().includes("octo")) ?? systemLogs[0];
     const recentOctoEvent = recentOctoLog ? compactOctoEvent(recentOctoLog.event) : "";
+    const recentOctoLevel = recentOctoLog ? stringValue(recentOctoLog.level, "info").toLowerCase() : "";
     const services = listValue(system.services).map((entry, index) => {
       const service = recordValue(entry);
       return {
@@ -629,24 +747,33 @@ async function getDesktopDashboardSnapshot(installDir: string): Promise<DesktopD
       };
     });
     const config = await loadRawConfigForInstall(installDir);
+    const attention = await readLatestAttentionLog(installDir);
+    const octoState = stringValue(octoNode.state, "idle");
+    const schedulerFailed = stringValue(systemNode.last_scheduler_tick_status).toLowerCase() === "error";
+    const startupGrace = isWithinStartupGrace(systemNode.started_at);
+    const shouldSurfaceAttention = Boolean(attention) && !startupGrace && (isAttentionState(octoState) || schedulerFailed);
+    const visibleOctoEvent =
+      shouldSurfaceAttention || !["error", "critical"].includes(recentOctoLevel) ? recentOctoEvent : "";
 
     return {
       ok: true,
-      detail: stringValue(overviewHealth.summary, "Dashboard data loaded."),
+      detail: shouldSurfaceAttention ? attention?.detail || "" : stringValue(overviewHealth.summary, "Dashboard data loaded."),
       generatedAt: stringValue(overview.generated_at),
       baseUrl: dashboardBaseUrl(config),
+      starting: startupGrace,
+      attention: shouldSurfaceAttention ? attention ?? undefined : undefined,
       load: {
         activeWorkers: numberValue(workersNode.running),
         queueDepth: numberValue(recordValue(kpis.queue_depth).value),
         octoQueue: numberValue(octoNode.followup_queues) + numberValue(octoNode.internal_queues),
       },
       octo: {
-        state: stringValue(octoNode.state, "idle"),
-        headline: recentOctoEvent || stringValue(octoHealth.summary, "Octo is idle"),
-        detail: recentOctoLog
+        state: octoState,
+        headline: shouldSurfaceAttention ? attention?.title || visibleOctoEvent : visibleOctoEvent || stringValue(octoHealth.summary, "Octo is idle"),
+        detail: shouldSurfaceAttention ? attention?.detail || "" : (visibleOctoEvent && recentOctoLog
           ? `${stringValue(recentOctoLog.service, "runtime")} · ${stringValue(recentOctoLog.level, "info")}`
-          : listValue(octoHealth.reasons).map((item) => String(item)).join(" · "),
-        latestAction: recentOctoEvent || "No recent activity",
+          : listValue(octoHealth.reasons).map((item) => String(item)).join(" · ")),
+        latestAction: shouldSurfaceAttention ? attention?.title || visibleOctoEvent || "No recent activity" : visibleOctoEvent || "No recent activity",
       },
       workers: {
         recent: listValue(workersNode.recent).map((entry) => recordValue(entry) as DashboardWorkerRun),
@@ -905,6 +1032,13 @@ ipcMain.handle("desktop:window-control", (event, action: "close" | "minimize" | 
   } else {
     window.maximize();
   }
+});
+
+ipcMain.handle("desktop:open-octopal-logs", async (_event, installDir: string): Promise<boolean> => {
+  const logPath = join(installDir, "data", "logs", "octopal.log");
+  const target = (await pathExists(logPath)) ? logPath : join(installDir, "data", "logs");
+  const error = await shell.openPath(target);
+  return !error;
 });
 
 ipcMain.handle("desktop:check-prerequisites", async (): Promise<PrerequisiteCheck[]> => {

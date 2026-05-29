@@ -1,4 +1,5 @@
 import { motion } from "framer-motion";
+import type { ReactNode } from "react";
 
 import octoImage from "../../../../assets/octo.png";
 
@@ -12,12 +13,14 @@ export function InstallProgressScreen({
   events,
   busy,
   error,
+  action,
 }: {
   title: string;
   body: string;
   events: DesktopInstallEvent[];
   busy?: boolean;
   error?: string;
+  action?: ReactNode;
 }) {
   const visibleEvents = events.filter((event) => event.message.trim()).slice(-10);
 
@@ -39,6 +42,7 @@ export function InstallProgressScreen({
       ) : (
         <p>{body}</p>
       )}
+      {action ? <div className="status-actions install-progress-actions">{action}</div> : null}
 
       {visibleEvents.length > 0 ? (
         <div className="install-events" aria-live="polite">

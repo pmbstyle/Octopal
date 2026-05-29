@@ -208,6 +208,24 @@ def test_build_launcher_auto_builds_missing_worker_image(monkeypatch, tmp_path: 
     assert any("io.octopal.worker-image-fingerprint=fingerprint-1" in part for cmd in commands for part in cmd)
 
 
+def test_passive_status_does_not_block_later_auto_build(monkeypatch, tmp_path: Path) -> None:
+    commands = _mock_docker_with_autobuild(monkeypatch, build_succeeds=True)
+    settings = Settings(
+        OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
+        OCTOPAL_WORKER_LAUNCHER="docker",
+        OCTOPAL_WORKER_DOCKER_IMAGE="octopal-worker:latest",
+    )
+
+    passive_status = get_worker_launcher_status(settings)
+    ensured_status = ensure_worker_launcher_status(settings)
+
+    assert passive_status.effective_launcher == "same_env"
+    assert "build-worker-image" in passive_status.reason
+    assert ensured_status.effective_launcher == "docker"
+    assert "built automatically" in ensured_status.reason
+    assert any(cmd[1] == "build" for cmd in commands)
+
+
 def test_build_launcher_falls_back_when_auto_build_fails(monkeypatch, tmp_path: Path) -> None:
     commands = _mock_docker_with_autobuild(monkeypatch, build_succeeds=False)
     settings = Settings(

@@ -54,6 +54,7 @@ def _get_worker_launcher_status(settings: Settings, *, auto_build_image: bool) -
         str(settings.worker_docker_image or "").strip(),
         str(settings.worker_docker_host_workspace or settings.workspace_dir),
         image_fingerprint,
+        "ensure" if auto_build_image else "status",
     )
     cached = _docker_status_cache.get(cache_key)
     now = time.monotonic()

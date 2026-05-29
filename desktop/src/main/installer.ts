@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 
 const REPO_URL = "https://github.com/pmbstyle/Octopal.git";
 const LATEST_RELEASE_API_URL = "https://api.github.com/repos/pmbstyle/Octopal/releases/latest";
+const IGNORED_INSTALL_DIR_ENTRIES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
 
 export type InstallEvent = {
   kind: "step" | "log" | "warning" | "error" | "done";
@@ -717,13 +718,22 @@ async function getLatestReleaseTag(emit: (event: InstallEvent) => void): Promise
   return firstTag;
 }
 
-async function isDirectoryEmpty(path: string): Promise<boolean> {
+async function directoryBlockingEntries(path: string): Promise<string[]> {
   try {
     const entries = await readdir(path);
-    return entries.length === 0;
+    return entries.filter((entry) => !IGNORED_INSTALL_DIR_ENTRIES.has(entry));
   } catch {
-    return true;
+    return [];
   }
+}
+
+async function clearIgnoredInstallDirEntries(path: string): Promise<void> {
+  const entries = await readdir(path).catch(() => []);
+  await Promise.all(
+    entries
+      .filter((entry) => IGNORED_INSTALL_DIR_ENTRIES.has(entry))
+      .map((entry) => rm(join(path, entry), { force: true, recursive: true })),
+  );
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -740,8 +750,13 @@ async function cloneOrCheckoutRelease(installDir: string, releaseTag: string, em
   const hasGit = existsSync(join(installDir, ".git"));
   const hasProject = existsSync(join(installDir, "pyproject.toml"));
 
-  if (!exists || (await isDirectoryEmpty(installDir))) {
+  const blockingEntries = exists ? await directoryBlockingEntries(installDir) : [];
+
+  if (!exists || blockingEntries.length === 0) {
     await mkdir(dirname(installDir), { recursive: true });
+    if (exists) {
+      await clearIgnoredInstallDirEntries(installDir);
+    }
     emitStep(emit, `Downloading Octopal ${releaseTag}`, installDir);
     await runCommand(
       "git",

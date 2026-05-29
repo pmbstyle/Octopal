@@ -204,6 +204,14 @@ type DesktopDashboardSnapshot = {
   detail: string;
   generatedAt?: string;
   baseUrl?: string;
+  starting?: boolean;
+  attention?: {
+    title: string;
+    detail: string;
+    timestamp?: string;
+    service?: string;
+    level?: string;
+  };
   load?: {
     activeWorkers: number;
     queueDepth: number;
@@ -271,6 +279,7 @@ type OctopalDesktopApi = {
   checkOctopalUpdate: (installDir: string) => Promise<DesktopUpdateStatus>;
   updateOctopal: (installDir: string) => Promise<DesktopUpdateResult>;
   getDashboardSnapshot: (installDir: string) => Promise<DesktopDashboardSnapshot>;
+  openOctopalLogs: (installDir: string) => Promise<boolean>;
   getWorkerTemplates: (installDir: string) => Promise<DesktopWorkerTemplate[]>;
   saveWorkerTemplate: (
     installDir: string,
