@@ -1,7 +1,10 @@
 import { AlertTriangle, Clock, Download, ExternalLink, Eye, FileJson, GitBranch, ListChecks, Pencil, Play, Plus, RotateCw, Square, Trash2, Wrench, X } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 
+import octoIdleSprite from "../../../../assets/octo-idle-sprite.png";
+import octoThinkingSprite from "../../../../assets/octo-thinking-sprite.png";
 import octoImage from "../../../../assets/octo.png";
 import type { CopyFn } from "../lib/appTypes";
 import { Button } from "./Button";
@@ -126,6 +129,24 @@ function statusTextClass(status?: string): string {
     return "worker-detail-status worker-detail-status-bad";
   }
   return "worker-detail-status";
+}
+
+function isIdleOctoState(status?: string): boolean {
+  return String(status ?? "").toLowerCase() === "idle";
+}
+
+function isThinkingOctoState(status?: string): boolean {
+  return String(status ?? "").toLowerCase() === "thinking";
+}
+
+function animatedOctoForState(status?: string): { className: string; sprite: string } | null {
+  if (isIdleOctoState(status)) {
+    return { className: "dashboard-octo-idle", sprite: octoIdleSprite };
+  }
+  if (isThinkingOctoState(status)) {
+    return { className: "dashboard-octo-thinking", sprite: octoThinkingSprite };
+  }
+  return null;
 }
 
 function formatTime(value?: string | number): string {
@@ -467,6 +488,7 @@ export function DashboardScreen({
   const selectedWorkerTemplate = selectedWorker?.template_id
     ? templates.find((template) => template.id === selectedWorker.template_id) ?? null
     : null;
+  const animatedOcto = animatedOctoForState(displayOctoState);
 
   function startCreateTemplate(): void {
     setEditingTemplateId("");
@@ -545,29 +567,68 @@ export function DashboardScreen({
     void window.octopalDesktop.openOctopalLogs(installDir);
   }
 
+  function renderDashboardHeader({
+    title,
+    titleRaw = title,
+    detail,
+    detailRaw = detail,
+    latest,
+    latestRaw = latest,
+    actions,
+  }: {
+    title: string;
+    titleRaw?: string;
+    detail: string;
+    detailRaw?: string;
+    latest?: string;
+    latestRaw?: string;
+    actions?: ReactNode;
+  }) {
+    return (
+      <div className="dashboard-assistant-head">
+        <div className="dashboard-octo-stack">
+          {animatedOcto ? (
+            <span
+              className={`octo dashboard-octo ${animatedOcto.className}`}
+              role="img"
+              aria-label="Octopal mascot"
+              style={{ backgroundImage: `url(${animatedOcto.sprite})` }}
+            />
+          ) : (
+            <img className="octo dashboard-octo" src={octoImage} alt="Octopal mascot" />
+          )}
+          <span className={statusClass(displayOctoState)}>{displayOctoState}</span>
+        </div>
+        <div className="dashboard-bubble">
+          <h1 title={titleRaw}>{title}</h1>
+          <p className="dashboard-octo-detail" title={detailRaw}>{detail}</p>
+          {latest ? (
+            <p className="dashboard-latest" title={latestRaw}>
+              <strong>{copy("latestAction")}:</strong> {latest}
+            </p>
+          ) : null}
+        </div>
+        {actions ? <div className="dashboard-actions">{actions}</div> : null}
+      </div>
+    );
+  }
+
   function renderControl() {
     return (
       <section className="dashboard-control">
-        <div className="dashboard-assistant-head">
-          <div className="dashboard-octo-stack">
-            <img className="octo dashboard-octo" src={octoImage} alt="Octopal mascot" />
-            <span className={statusClass(displayOctoState)}>{displayOctoState}</span>
-          </div>
-          <div className="dashboard-bubble">
-            <h1 title={octoHeadlineRaw}>{octoHeadline}</h1>
-            <p className="dashboard-octo-detail" title={octoDetailRaw}>{octoDetail}</p>
-            <p className="dashboard-latest" title={latestActionRaw}>
-              <strong>{copy("latestAction")}:</strong> {latestAction}
-            </p>
-          </div>
-          {updateAvailable || desktopUpdateAvailable ? (
-            <div className="dashboard-actions">
-              <Button type="button" variant="ghost" onClick={() => setView("system")}>
-                {copy("updateReady")}
-              </Button>
-            </div>
-          ) : null}
-        </div>
+        {renderDashboardHeader({
+          title: octoHeadline,
+          titleRaw: octoHeadlineRaw,
+          detail: octoDetail,
+          detailRaw: octoDetailRaw,
+          latest: latestAction,
+          latestRaw: latestActionRaw,
+          actions: updateAvailable || desktopUpdateAvailable ? (
+            <Button type="button" variant="ghost" onClick={() => setView("system")}>
+              {copy("updateReady")}
+            </Button>
+          ) : null,
+        })}
 
         {attention || octoNeedsAttention || dashboardError ? (
           <div className="dashboard-attention-panel" role="alert">
@@ -672,13 +733,12 @@ export function DashboardScreen({
   function renderWorkers() {
     return (
       <section className="dashboard-workers-view">
-        <div className="dashboard-assistant-head dashboard-assistant-head-compact">
-          <img className="octo dashboard-octo-small" src={octoImage} alt="Octopal mascot" />
-          <div className="dashboard-bubble">
-            <h1>{copy("workerTemplates")}</h1>
-            <p>{copy("workerTemplatesBody")}</p>
-          </div>
-        </div>
+        {renderDashboardHeader({
+          title: copy("workerTemplates"),
+          detail: copy("workerTemplatesBody"),
+          latest: latestAction,
+          latestRaw: latestActionRaw,
+        })}
         {templateError ? <p className="dashboard-inline-error">{templateError}</p> : null}
         {templateNotice ? <p className="dashboard-inline-notice">{templateNotice}</p> : null}
         <div className="worker-studio-grid">
@@ -723,13 +783,12 @@ export function DashboardScreen({
   function renderSystem() {
     return (
       <section className="dashboard-system-view">
-        <div className="dashboard-assistant-head dashboard-assistant-head-compact">
-          <img className="octo dashboard-octo-small" src={octoImage} alt="Octopal mascot" />
-          <div className="dashboard-bubble">
-            <h1 title={systemTitle}>{systemTitle}</h1>
-            <p className="dashboard-octo-detail" title={systemDetail}>{systemDetail}</p>
-          </div>
-        </div>
+        {renderDashboardHeader({
+          title: systemTitle,
+          detail: systemDetail,
+          latest: latestAction,
+          latestRaw: latestActionRaw,
+        })}
         {attention || dashboardError ? (
           <div className="dashboard-attention-panel" role="alert">
             <AlertTriangle />

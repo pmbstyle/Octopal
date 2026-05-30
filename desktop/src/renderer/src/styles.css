@@ -2093,27 +2093,29 @@ p {
   padding-right: 210px;
 }
 
-.dashboard-assistant-head-compact {
-  grid-template-columns: 76px minmax(0, 1fr);
-  padding-right: 220px;
-}
-
 .dashboard-octo {
   width: 92px;
   height: 92px;
   object-fit: contain;
 }
 
+.dashboard-octo-idle,
+.dashboard-octo-thinking {
+  display: block;
+  background-repeat: no-repeat;
+  background-position: 0 0;
+  background-size: 1500% 100%;
+  animation: octo-sprite-frames 4.8s steps(15) infinite;
+}
+
+.dashboard-octo-thinking {
+  animation-duration: 9.6s;
+}
+
 .dashboard-octo-stack {
   display: grid;
   justify-items: center;
   gap: 6px;
-}
-
-.dashboard-octo-small {
-  width: 68px;
-  height: 68px;
-  object-fit: contain;
 }
 
 .dashboard-bubble {
@@ -3263,6 +3265,12 @@ p {
   }
 }
 
+@keyframes octo-sprite-frames {
+  to {
+    background-position-x: 107.142857%;
+  }
+}
+
 @media (max-width: 860px) {
   .titlebar {
     height: 52px;
@@ -3470,15 +3478,13 @@ p {
     flex: 1 0 auto;
   }
 
-  .dashboard-assistant-head,
-  .dashboard-assistant-head-compact {
+  .dashboard-assistant-head {
     grid-template-columns: 76px minmax(0, 1fr);
     gap: 14px;
     padding-right: 0;
   }
 
-  .dashboard-octo,
-  .dashboard-octo-small {
+  .dashboard-octo {
     width: 68px;
     height: 68px;
   }
@@ -3562,5 +3568,10 @@ p {
     animation-duration: 1ms !important;
     scroll-behavior: auto !important;
     transition-duration: 1ms !important;
+  }
+
+  .dashboard-octo-idle,
+  .dashboard-octo-thinking {
+    animation: none !important;
   }
 }
