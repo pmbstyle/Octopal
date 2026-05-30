@@ -456,6 +456,9 @@ export function DashboardScreen({
   const systemTitle = attention ? attentionTitleText : runtimeView.title;
   const systemDetail = attention ? attentionDetail : runtimeView.detail || copy("systemBody");
   const services = snapshot?.system?.services ?? [];
+  const connectedMcpServers = (snapshot?.system?.mcpServers ?? []).filter(
+    (server) => String(server.status).toLowerCase() === "connected",
+  );
   const logs = snapshot?.system?.logs ?? [];
   const editingTemplate = editingTemplateId
     ? templates.find((template) => template.id === editingTemplateId) ?? null
@@ -590,7 +593,6 @@ export function DashboardScreen({
             </div>
             <div className="dashboard-chart-pills">
               <span className="dashboard-pill">{copy("lastSamples")}</span>
-              <span className="dashboard-pill">{copy("chartScale")} 0-{graphMax}</span>
             </div>
           </div>
           <div className="dashboard-load-summary">
@@ -744,7 +746,7 @@ export function DashboardScreen({
           </div>
         ) : null}
         <div className="system-grid">
-          <div className="dashboard-panel system-card">
+          <div className="dashboard-panel system-card system-card-half">
             <h2>{copy("runtime")}</h2>
             <p>{copy("runtimeBody")}</p>
             <div className="system-actions">
@@ -765,7 +767,7 @@ export function DashboardScreen({
                   {copy("startOctopal")}
                 </Button>
               )}
-              {snapshot?.baseUrl ? (
+              {snapshot?.dashboardEnabled && snapshot?.baseUrl ? (
                 <Button type="button" variant="ghost" onClick={() => window.open(snapshot.baseUrl, "_blank")}>
                   <ExternalLink data-icon="inline-start" />
                   {copy("openDashboardUrl")}
@@ -774,7 +776,7 @@ export function DashboardScreen({
             </div>
           </div>
 
-          <div className="dashboard-panel system-card">
+          <div className="dashboard-panel system-card system-card-half">
             <h2>{copy("updates")}</h2>
             <p>{copy("updatesBody")}</p>
             <div className="system-actions">
@@ -802,6 +804,34 @@ export function DashboardScreen({
                 ))
               )}
             </div>
+          </div>
+
+          <div className="dashboard-panel system-card">
+            <h2>{copy("connectedMcpServers")}</h2>
+            {connectedMcpServers.length === 0 ? (
+              <p>{copy("noConnectedMcpServers")}</p>
+            ) : (
+              <div className="mcp-server-list">
+                {connectedMcpServers.map((server) => (
+                  <article className="mcp-server-card" key={server.id} title={server.reason || server.id}>
+                    <div>
+                      <strong>{server.name}</strong>
+                      <span>{server.id}</span>
+                    </div>
+                    <dl>
+                      <div>
+                        <dt>{copy("availableTools")}</dt>
+                        <dd>{server.toolCount}</dd>
+                      </div>
+                      <div>
+                        <dt>{copy("transport")}</dt>
+                        <dd>{server.transport}</dd>
+                      </div>
+                    </dl>
+                  </article>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="dashboard-panel system-card">

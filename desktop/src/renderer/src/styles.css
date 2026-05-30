@@ -2982,9 +2982,23 @@ p {
   margin-top: 2px;
 }
 
+.system-card .system-actions .button {
+  min-height: 44px;
+}
+
 .system-grid {
   display: grid;
   gap: 16px;
+}
+
+@media (min-width: 900px) {
+  .system-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .system-card:not(.system-card-half) {
+    grid-column: 1 / -1;
+  }
 }
 
 .service-pills {
@@ -2992,6 +3006,81 @@ p {
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 14px;
+}
+
+.mcp-server-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.mcp-server-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--success) 34%, var(--border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+}
+
+.mcp-server-card strong,
+.mcp-server-card span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server-card strong {
+  color: var(--foreground);
+  font-size: 14px;
+}
+
+.mcp-server-card span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mcp-server-card dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+  justify-content: flex-end;
+}
+
+.mcp-server-card dl div {
+  min-width: 86px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-strong) 74%, transparent);
+}
+
+.mcp-server-card dt,
+.mcp-server-card dd {
+  margin: 0;
+}
+
+.mcp-server-card dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.mcp-server-card dd {
+  margin-top: 3px;
+  max-width: 140px;
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .log-list {
