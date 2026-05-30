@@ -13,7 +13,6 @@ from octopal.runtime.octo import followup_delivery as _followup_delivery
 from octopal.runtime.octo.control_replies import (
     _SCHEDULED_OCTO_CONTROL_BLOCKED,
     _SCHEDULED_OCTO_CONTROL_DONE,
-    _looks_like_scheduled_octo_control_route_block,
     _normalize_scheduled_octo_control_notify_policy,
     _normalize_scheduled_octo_control_reply,
 )
@@ -446,10 +445,7 @@ class OctoScheduledRuntimeMixin:
             chat_id=chat_id,
         )
         normalized_reply = await _normalize_scheduled_octo_control_reply(self.provider, reply_text)
-        route_blocked = normalized_reply == _SCHEDULED_OCTO_CONTROL_BLOCKED or (
-            normalized_reply == "NO_USER_RESPONSE"
-            and _looks_like_scheduled_octo_control_route_block(reply_text)
-        )
+        route_blocked = normalized_reply == _SCHEDULED_OCTO_CONTROL_BLOCKED
         if route_blocked:
             backoff_seconds = _scheduled_octo_control_backoff_seconds()
             self._set_scheduled_octo_control_backoff(task_id, reason="blocked_by_route")
@@ -564,10 +560,7 @@ class OctoScheduledRuntimeMixin:
             reply_text,
             bounded_control=False,
         )
-        route_blocked = normalized_reply == _SCHEDULED_OCTO_CONTROL_BLOCKED or (
-            normalized_reply in {_SCHEDULED_OCTO_CONTROL_DONE, "NO_USER_RESPONSE"}
-            and _looks_like_scheduled_octo_control_route_block(reply_text)
-        )
+        route_blocked = normalized_reply == _SCHEDULED_OCTO_CONTROL_BLOCKED
         if route_blocked:
             logger.warning(
                 "Scheduled Octo task reported blocked",

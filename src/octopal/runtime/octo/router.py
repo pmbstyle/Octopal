@@ -1556,63 +1556,22 @@ def _normalize_worker_followup_reply(raw: str) -> str:
 
     payload = _extract_json_object(value)
     if isinstance(payload, dict):
+        if bool(payload.get("no_user_response")):
+            return "NO_USER_RESPONSE"
         response = payload.get("user_response")
         if response is None:
             response = payload.get("response")
         if response is None:
             response = payload.get("message")
         response_text = sanitize_user_facing_text_preserving_reaction(str(response or ""))
-        if _looks_like_internal_worker_followup_leak(response_text):
-            return "NO_USER_RESPONSE"
         if response_text and not should_suppress_user_delivery(response_text):
             return response_text
-        if bool(payload.get("no_user_response")):
-            return "NO_USER_RESPONSE"
         return "NO_USER_RESPONSE"
 
     cleaned = sanitize_user_facing_text_preserving_reaction(value)
-    if _looks_like_internal_worker_followup_leak(cleaned):
-        return "NO_USER_RESPONSE"
     if should_suppress_user_delivery(cleaned):
         return "NO_USER_RESPONSE"
     return cleaned
-
-
-def _looks_like_internal_worker_followup_leak(text: str) -> bool:
-    value = (text or "").casefold()
-    if not value:
-        return False
-    internal_phrases = (
-        "bounded worker-result follow-up mode",
-        "worker-result follow-up mode",
-        "full orchestration mode",
-        "full orchestration context",
-        "current tool set",
-        "bounded route",
-        "on the next turn",
-    )
-    orchestration_phrases = (
-        "can't modify",
-        "cannot modify",
-        "can't schedule",
-        "cannot schedule",
-        "i'm in",
-        "i am in",
-        "i'll do this on",
-        "i will do this on",
-    )
-    if any(phrase in value for phrase in internal_phrases):
-        return True
-    return any(phrase in value for phrase in orchestration_phrases) and any(
-        phrase in value
-        for phrase in (
-            "bounded",
-            "orchestration",
-            "worker-result",
-            "follow-up mode",
-            "next turn",
-        )
-    )
 
 
 def _normalize_proactive_reply(raw: str) -> str:

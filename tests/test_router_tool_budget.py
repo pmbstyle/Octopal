@@ -1028,11 +1028,11 @@ def test_normalize_worker_followup_reply_suppresses_embedded_no_response_json() 
     assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
 
 
-def test_normalize_worker_followup_reply_suppresses_internal_mode_leak() -> None:
+def test_normalize_worker_followup_reply_honors_structured_no_response_over_text() -> None:
     raw = """
     {
       "user_response": "I'm in bounded worker-result follow-up mode and can't modify the schedule from here. I'll do this on the next turn.",
-      "no_user_response": false,
+      "no_user_response": true,
       "actions_taken": [],
       "reason": "needs orchestration"
     }
@@ -1040,7 +1040,7 @@ def test_normalize_worker_followup_reply_suppresses_internal_mode_leak() -> None
     assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
 
 
-def test_normalize_worker_followup_reply_suppresses_a2a_mode_leak() -> None:
+def test_normalize_worker_followup_reply_uses_structured_response_without_phrase_guessing() -> None:
     raw = """
     {
       "user_response": "I don't have the A2A messaging tools available in my current tool set. I need to send the message from my full orchestration context. I will send it once I am back in full mode.",
@@ -1049,7 +1049,11 @@ def test_normalize_worker_followup_reply_suppresses_a2a_mode_leak() -> None:
       "reason": "needs orchestration"
     }
     """
-    assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
+    assert _normalize_worker_followup_reply(raw) == (
+        "I don't have the A2A messaging tools available in my current tool set. "
+        "I need to send the message from my full orchestration context. "
+        "I will send it once I am back in full mode."
+    )
 
 
 def test_build_worker_result_payload_keeps_preview_text_for_large_output() -> None:

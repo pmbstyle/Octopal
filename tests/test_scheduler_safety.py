@@ -537,18 +537,6 @@ def test_route_blocked_octo_control_stays_not_ready_after_backoff_expires(
     assert described[0]["due_now"] is False
 
 
-def test_scheduled_octo_control_route_block_marker_is_generic() -> None:
-    assert octo_core._looks_like_scheduled_octo_control_route_block(
-        "The task has no direct tools available in this bounded route."
-    )
-    assert octo_core._looks_like_scheduled_octo_control_route_block(
-        "У меня нет `a2a_send_message` в текущем bounded route — не могу отправить peer message."
-    )
-    assert not octo_core._looks_like_scheduled_octo_control_route_block(
-        "The task mentioned weather but completed successfully."
-    )
-
-
 def test_scheduler_sync_to_markdown_shows_suggested_execution_mode_for_blocked_tasks(tmp_path: Path) -> None:
     blocked_until = utc_now() + timedelta(minutes=30)
     store = _StoreStub(
@@ -2264,7 +2252,7 @@ async def test_octo_dispatch_due_scheduled_tasks_runs_full_octo_tasks(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_octo_dispatch_due_scheduled_tasks_requires_explicit_octo_control_completion_signal(monkeypatch):
+async def test_octo_dispatch_due_scheduled_tasks_does_not_infer_octo_control_block_from_text(monkeypatch):
     scheduler = SchedulerService(
         store=_StoreStub(
             tasks=[
@@ -2294,12 +2282,24 @@ async def test_octo_dispatch_due_scheduled_tasks_requires_explicit_octo_control_
     monkeypatch.setattr(
         octo_router,
         "route_scheduled_octo_control",
-        lambda octo, task, *, chat_id=0: asyncio.sleep(0, result="NO_USER_RESPONSE"),
+        lambda octo, task, *, chat_id=0: asyncio.sleep(
+            0,
+            result=(
+                "This task has no direct tools available from the bounded route and "
+                "requires another execution path."
+            ),
+        ),
     )
     monkeypatch.setattr(
         octo_core,
         "route_scheduled_octo_control",
-        lambda octo, task, *, chat_id=0: asyncio.sleep(0, result="NO_USER_RESPONSE"),
+        lambda octo, task, *, chat_id=0: asyncio.sleep(
+            0,
+            result=(
+                "This task has no direct tools available from the bounded route and "
+                "requires another execution path."
+            ),
+        ),
     )
 
     octo = Octo(
@@ -2326,6 +2326,7 @@ async def test_octo_dispatch_due_scheduled_tasks_requires_explicit_octo_control_
         "errors": 1,
     }
     assert scheduler.store.marked_task_ids == []
+    assert scheduler.store.metadata_updates == []
 
 
 @pytest.mark.asyncio
@@ -2356,10 +2357,7 @@ async def test_octo_dispatch_due_scheduled_tasks_backs_off_blocked_octo_control_
 
     async def _route_scheduled_octo_control(octo, task, *, chat_id=0):
         route_calls["count"] += 1
-        return (
-            "This task requires external network access which cannot be performed "
-            "from the bounded `octo_control` route."
-        )
+        return "SCHEDULED_TASK_BLOCKED"
 
     monkeypatch.setattr(octo_core.Octo, "_start_worker_async", _start_worker_async)
     monkeypatch.setattr(octo_router, "route_scheduled_octo_control", _route_scheduled_octo_control)

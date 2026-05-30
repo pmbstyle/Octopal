@@ -43,9 +43,6 @@ from octopal.runtime.octo.context_runtime import OctoContextRuntimeMixin
 from octopal.runtime.octo.control_replies import (
     _coerce_control_plane_reply as _coerce_control_plane_reply,
 )
-from octopal.runtime.octo.control_replies import (
-    _looks_like_scheduled_octo_control_route_block as _looks_like_scheduled_octo_control_route_block,
-)
 from octopal.runtime.octo.message_runtime import OctoMessageRuntimeMixin
 from octopal.runtime.octo.output_runtime import OctoOutputRuntimeMixin
 from octopal.runtime.octo.prompt_builder import (
