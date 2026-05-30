@@ -178,6 +178,7 @@ type DesktopDashboardSnapshot = {
   detail: string;
   generatedAt?: string;
   baseUrl?: string;
+  dashboardEnabled?: boolean;
   starting?: boolean;
   attention?: {
     title: string;
@@ -232,6 +233,16 @@ type DesktopDashboardSnapshot = {
   };
   system?: {
     services: Array<{ id: string; name: string; status: string; reason: string }>;
+    mcpServers: Array<{
+      id: string;
+      name: string;
+      status: string;
+      reason: string;
+      transport: string;
+      toolCount: number;
+      reconnectAttempts: number;
+      error?: string;
+    }>;
     logs: Array<{ timestamp?: string; level?: string; service?: string; event?: string }>;
   };
 };

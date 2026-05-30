@@ -91,11 +91,23 @@ type DashboardWorkerRun = {
   }>;
 };
 
+type DesktopMcpServer = {
+  id: string;
+  name: string;
+  status: string;
+  reason: string;
+  transport: string;
+  toolCount: number;
+  reconnectAttempts: number;
+  error?: string;
+};
+
 type DesktopDashboardSnapshot = {
   ok: boolean;
   detail: string;
   generatedAt?: string;
   baseUrl?: string;
+  dashboardEnabled?: boolean;
   starting?: boolean;
   attention?: {
     title: string;
@@ -120,6 +132,7 @@ type DesktopDashboardSnapshot = {
   };
   system?: {
     services: Array<{ id: string; name: string; status: string; reason: string }>;
+    mcpServers: DesktopMcpServer[];
     logs: Array<{ timestamp?: string; level?: string; service?: string; event?: string }>;
   };
 };
@@ -521,6 +534,10 @@ function dashboardBaseUrl(config: Record<string, unknown>): string {
   return `http://${reachableHost}:${port}`;
 }
 
+function dashboardWebappEnabled(config: Record<string, unknown>): boolean {
+  return recordValue(config.gateway).webapp_enabled !== false;
+}
+
 async function fetchDashboardJson<T>(installDir: string, path: string, init?: RequestInit): Promise<T> {
   const config = await loadRawConfigForInstall(installDir);
   const gateway = recordValue(config.gateway);
@@ -576,6 +593,25 @@ function normalizeStringList(items: unknown): string[] {
     out.push(value);
   }
   return out;
+}
+
+function normalizeMcpServers(value: unknown): DesktopMcpServer[] {
+  const servers = recordValue(value);
+  return Object.entries(servers)
+    .map(([id, payload]) => {
+      const server = recordValue(payload);
+      return {
+        id,
+        name: stringValue(server.name, id),
+        status: stringValue(server.status, "unknown"),
+        reason: stringValue(server.reason),
+        transport: stringValue(server.transport, "auto"),
+        toolCount: numberValue(server.tool_count),
+        reconnectAttempts: numberValue(server.reconnect_attempts),
+        error: stringValue(server.error) || undefined,
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 }
 
 function normalizeDesktopWorkerTemplate(
@@ -732,6 +768,7 @@ async function getDesktopDashboardSnapshot(installDir: string): Promise<DesktopD
     const octoNode = recordValue(octo.octo);
     const octoHealth = recordValue(octo.health);
     const systemNode = recordValue(system.system);
+    const connectivityNode = recordValue(system.connectivity);
     const systemLogs = listValue(system.logs) as Array<Record<string, unknown>>;
     const recentOctoLog =
       systemLogs.find((entry) => stringValue(entry.service).toLowerCase().includes("octo")) ?? systemLogs[0];
@@ -760,6 +797,7 @@ async function getDesktopDashboardSnapshot(installDir: string): Promise<DesktopD
       detail: shouldSurfaceAttention ? attention?.detail || "" : stringValue(overviewHealth.summary, "Dashboard data loaded."),
       generatedAt: stringValue(overview.generated_at),
       baseUrl: dashboardBaseUrl(config),
+      dashboardEnabled: dashboardWebappEnabled(config),
       starting: startupGrace,
       attention: shouldSurfaceAttention ? attention ?? undefined : undefined,
       load: {
@@ -780,6 +818,7 @@ async function getDesktopDashboardSnapshot(installDir: string): Promise<DesktopD
       },
       system: {
         services,
+        mcpServers: normalizeMcpServers(recordValue(connectivityNode.mcp_servers)),
         logs: systemLogs.slice(0, 12).map((entry) => ({
           timestamp: stringValue(entry.timestamp),
           level: stringValue(entry.level, "info"),
