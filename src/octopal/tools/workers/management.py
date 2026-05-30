@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from octopal.runtime.octo.core import Octo
 
 _WORKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-_TOKEN_RE = re.compile(r"[a-z0-9_]+")
 _MAX_PARALLEL_BATCH = 10
 _WORKER_BLOCKED_TOOL_NAMES = {
     "send_file_to_user",
@@ -45,127 +44,6 @@ _ALLOWED_PATHS_GUIDANCE = (
 
 def _infer_allowed_paths_from_task(task: str) -> list[str] | None:
     return _infer_allowed_paths_from_values(task)
-
-
-_IMAGE_TASK_TOKENS = {
-    "image",
-    "images",
-    "picture",
-    "pictures",
-    "photo",
-    "photos",
-    "screenshot",
-    "screenshots",
-    "vision",
-    "visual",
-}
-_IMAGE_CAPABILITY_TOKENS = {
-    "image",
-    "vision",
-    "visual",
-    "mcp_call",
-    "mcp_exec",
-    "analyze_image",
-}
-_IMAGE_ANALYSIS_ACTION_TOKENS = {
-    "analyse",
-    "analyze",
-    "caption",
-    "classify",
-    "compare",
-    "describe",
-    "detect",
-    "explain",
-    "extract",
-    "identify",
-    "inspect",
-    "ocr",
-    "read",
-    "recognize",
-    "review",
-    "transcribe",
-}
-_IMAGE_RESEARCH_CONTEXT_TOKENS = {
-    "about",
-    "api",
-    "apis",
-    "capability",
-    "capabilities",
-    "configure",
-    "docs",
-    "documentation",
-    "find",
-    "guide",
-    "guides",
-    "info",
-    "information",
-    "mcp",
-    "recognition",
-    "research",
-    "search",
-    "server",
-    "servers",
-    "setup",
-    "tool",
-    "tools",
-}
-_IMAGE_FILE_HINT_RE = re.compile(
-    r"(?:^|[\s\"'(<])(?:[\w./-]+/)?[\w.-]+\.(?:png|jpe?g|gif|webp|bmp|tiff?)(?:$|[\s\"')>,.:;])",
-    re.IGNORECASE,
-)
-_IMAGE_PATH_HINT_RE = re.compile(r"\btmp/(?:incoming_images|telegram_images|whatsapp_images)/", re.IGNORECASE)
-_DIRECT_IMAGE_REFERENCE_RE = re.compile(
-    r"\b(?:attached|uploaded|provided|saved|local|this|that)\s+"
-    r"(?:image|images|picture|pictures|photo|photos|screenshot|screenshots)\b"
-    r"|\b(?:image|images|picture|pictures|photo|photos|screenshot|screenshots)\s+"
-    r"(?:at|file|from|in|path)\b",
-    re.IGNORECASE,
-)
-_FILE_WRITE_TASK_TOKENS = {
-    "append",
-    "create",
-    "created",
-    "creates",
-    "draft",
-    "edit",
-    "edits",
-    "save",
-    "saved",
-    "update",
-    "updates",
-    "write",
-    "writes",
-    "writing",
-}
-_FILE_ARTIFACT_TASK_TOKENS = {
-    "artifact",
-    "config",
-    "csv",
-    "doc",
-    "document",
-    "draft",
-    "file",
-    "files",
-    "json",
-    "markdown",
-    "md",
-    "note",
-    "notes",
-    "path",
-    "report",
-    "text",
-    "toml",
-    "workspace",
-    "yaml",
-    "yml",
-}
-_FILESYSTEM_WRITE_TOOL_TOKENS = {"fs_write", "write_file"}
-_FILE_PATH_HINT_RE = re.compile(
-    r"(?:^|[\s`'\"])[\w./\\-]+\."
-    r"(?:cfg|conf|csv|html|ini|json|log|md|py|toml|txt|ya?ml)"
-    r"(?:$|[\s`'\",.:;])",
-    re.IGNORECASE,
-)
 
 
 def get_worker_tools() -> list[ToolSpec]:
@@ -245,12 +123,17 @@ def get_worker_tools() -> list[ToolSpec]:
                     "required_tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional tool capabilities the selected worker should support.",
+                        "description": "Explicit tool capabilities the selected worker must support.",
                     },
                     "required_permissions": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional permissions the selected worker should include.",
+                    },
+                    "required_tool_calls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tool calls that must happen before the worker may complete.",
                     },
                     "allowed_paths": {
                         "type": "array",
@@ -303,12 +186,17 @@ def get_worker_tools() -> list[ToolSpec]:
                     "required_tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional tool capabilities the selected worker should support.",
+                        "description": "Explicit tool capabilities the selected worker must support.",
                     },
                     "required_permissions": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional permissions the selected worker should include.",
+                    },
+                    "required_tool_calls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tool calls that must happen before the worker may complete.",
                     },
                     "allowed_paths": {
                         "type": "array",
@@ -340,7 +228,7 @@ def get_worker_tools() -> list[ToolSpec]:
                 "properties": {
                     "tasks": {
                         "type": "array",
-                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, tools, timeout_seconds, required_tools, required_permissions.",
+                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, tools, timeout_seconds, required_tools, required_permissions, required_tool_calls.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -351,6 +239,7 @@ def get_worker_tools() -> list[ToolSpec]:
                                 "timeout_seconds": {"type": "number"},
                                 "required_tools": {"type": "array", "items": {"type": "string"}},
                                 "required_permissions": {"type": "array", "items": {"type": "string"}},
+                                "required_tool_calls": {"type": "array", "items": {"type": "string"}},
                                 "allowed_paths": {
                                     "type": "array",
                                     "items": {"type": "string"},
@@ -922,6 +811,7 @@ async def _start_worker_common(
     tools = args.get("tools") if isinstance(args.get("tools"), list) else None
     required_tools = _normalize_str_list(args.get("required_tools"))
     required_permissions = _normalize_str_list(args.get("required_permissions"))
+    required_tool_calls = _normalize_tool_name_list(args.get("required_tool_calls"))
     timeout_seconds = int(args.get("timeout_seconds")) if args.get("timeout_seconds") else None
     scheduled_task_id = str(args.get("scheduled_task_id", "")).strip() or None
 
@@ -931,8 +821,7 @@ async def _start_worker_common(
     resolution = _resolve_worker_for_start(
         octo=octo,
         worker_id=worker_id,
-        task=task,
-        required_tools=required_tools,
+        required_tools=_merge_tool_requirements(required_tools, required_tool_calls),
         required_permissions=required_permissions,
     )
     if isinstance(resolution, str):
@@ -947,6 +836,14 @@ async def _start_worker_common(
     )
     if tool_validation_error:
         return tool_validation_error
+    required_call_validation_error = _validate_required_tool_calls_available(
+        required_tool_calls=required_tool_calls,
+        requested_tools=tools,
+        template_tools=getattr(template, "available_tools", []),
+        error_prefix="start_child_worker error" if require_worker_context else "start_worker error",
+    )
+    if required_call_validation_error:
+        return required_call_validation_error
 
     child_ctx = _extract_child_context(caller_worker)
     if child_ctx is not None:
@@ -974,6 +871,7 @@ async def _start_worker_common(
         model=None,
         timeout_seconds=timeout_seconds,
         scheduled_task_id=scheduled_task_id,
+        required_tool_calls=required_tool_calls,
         parent_worker_id=child_ctx["run_id"] if child_ctx else None,
         lineage_id=child_ctx["lineage_id"] if child_ctx else None,
         root_task_id=child_ctx["root_task_id"] if child_ctx else None,
@@ -1105,12 +1003,12 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
         timeout_seconds = int(item.get("timeout_seconds")) if item.get("timeout_seconds") else None
         required_tools = _normalize_str_list(item.get("required_tools"))
         required_permissions = _normalize_str_list(item.get("required_permissions"))
+        required_tool_calls = _normalize_tool_name_list(item.get("required_tool_calls"))
 
         resolution = _resolve_worker_for_start(
             octo=octo,
             worker_id=worker_id,
-            task=task_text,
-            required_tools=required_tools,
+            required_tools=_merge_tool_requirements(required_tools, required_tool_calls),
             required_permissions=required_permissions,
         )
         if isinstance(resolution, str):
@@ -1118,6 +1016,14 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
 
         selected_worker_id = str(resolution["worker_id"])
         template = resolution["template"]
+        tool_validation_error = _validate_required_tool_calls_available(
+            required_tool_calls=required_tool_calls,
+            requested_tools=tools,
+            template_tools=getattr(template, "available_tools", []),
+            error_prefix="start_workers_parallel error",
+        )
+        if tool_validation_error:
+            return {"index": index, "status": "error", "error": tool_validation_error}
         if child_ctx is not None:
             policy_error = _validate_child_spawn_policy(
                 octo=octo,
@@ -1137,6 +1043,7 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
                 model=None,
                 timeout_seconds=timeout_seconds,
                 scheduled_task_id=None,
+                required_tool_calls=required_tool_calls,
                 parent_worker_id=child_ctx["run_id"] if child_ctx else None,
                 lineage_id=child_ctx["lineage_id"] if child_ctx else None,
                 root_task_id=child_ctx["root_task_id"] if child_ctx else None,
@@ -2022,7 +1929,6 @@ def _resolve_worker_for_start(
     *,
     octo: Octo,
     worker_id: str,
-    task: str,
     required_tools: list[str] | None = None,
     required_permissions: list[str] | None = None,
 ) -> dict[str, object] | str:
@@ -2041,7 +1947,6 @@ def _resolve_worker_for_start(
         template,
         required_tools=required_tools,
         required_permissions=required_permissions,
-        task=task,
         error_prefix="start_worker error",
     )
     if requirement_error:
@@ -2083,43 +1988,17 @@ def _normalize_tool_name_list(value: object) -> list[str]:
     return normalized
 
 
-def _task_mentions_image_analysis(task: str) -> bool:
-    tokens = _tokenize(task)
-    if not tokens & _IMAGE_TASK_TOKENS and not _task_has_image_file_hint(task):
-        return False
-    if _task_has_image_file_hint(task):
-        return True
-    if not tokens & _IMAGE_ANALYSIS_ACTION_TOKENS:
-        return False
-    if _DIRECT_IMAGE_REFERENCE_RE.search(task or ""):
-        return True
-    research_tokens = tokens & _IMAGE_RESEARCH_CONTEXT_TOKENS
-    return not bool(research_tokens)
-
-
-def _task_has_image_file_hint(task: str) -> bool:
-    return bool(_IMAGE_FILE_HINT_RE.search(task or "") or _IMAGE_PATH_HINT_RE.search(task or ""))
-
-
-def _template_supports_image_analysis(template: object) -> bool:
-    available_tools = {str(t).lower() for t in getattr(template, "available_tools", [])}
-    if available_tools & _IMAGE_CAPABILITY_TOKENS:
-        return True
-    descriptor = " ".join(
-        [
-            str(getattr(template, "id", "")),
-            str(getattr(template, "name", "")),
-            str(getattr(template, "description", "")),
-            str(getattr(template, "system_prompt", "")),
-        ]
-    ).lower()
-    return any(token in descriptor for token in ("image", "vision", "visual"))
-
-
-def _template_supports_workspace_write(template: object) -> bool:
-    available_tools = {str(t).lower() for t in getattr(template, "available_tools", [])}
-    permissions = set(_normalize_worker_permissions(getattr(template, "required_permissions", [])))
-    return bool(_FILESYSTEM_WRITE_TOOL_TOKENS & available_tools) or "filesystem_write" in permissions
+def _merge_tool_requirements(*values: list[str] | None) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for value in values:
+        for item in value or []:
+            tool_name = str(item).strip().lower()
+            if not tool_name or tool_name in seen:
+                continue
+            seen.add(tool_name)
+            merged.append(tool_name)
+    return merged
 
 
 def _validate_template_requirements(
@@ -2127,7 +2006,6 @@ def _validate_template_requirements(
     *,
     required_tools: list[str] | None,
     required_permissions: list[str] | None,
-    task: str,
     error_prefix: str,
 ) -> str | None:
     available_tools = {str(t).lower() for t in getattr(template, "available_tools", [])}
@@ -2147,18 +2025,6 @@ def _validate_template_requirements(
         return (
             f"{error_prefix}: worker '{getattr(template, 'id', '')}' does not provide required "
             f"permission(s): {', '.join(missing_permissions)}."
-        )
-    if _task_mentions_image_analysis(task) and not _template_supports_image_analysis(template):
-        return (
-            f"{error_prefix}: worker '{getattr(template, 'id', '')}' does not advertise image/vision "
-            "analysis capability. Use a vision-capable model/tool directly or a worker template with "
-            "image, vision, mcp_call, or mcp_exec support."
-        )
-    if _task_requests_workspace_write(task, _tokenize(task)) and not _template_supports_workspace_write(template):
-        return (
-            f"{error_prefix}: worker '{getattr(template, 'id', '')}' does not advertise workspace write "
-            "capability for this file/artifact task. Use list_workers and choose a worker template with "
-            "fs_write/filesystem_write support."
         )
     return None
 
@@ -2191,11 +2057,25 @@ def _validate_requested_worker_tools(
     return None
 
 
-def _tokenize(text: str) -> set[str]:
-    return set(_TOKEN_RE.findall((text or "").lower()))
-
-
-def _task_requests_workspace_write(task: str, task_tokens: set[str]) -> bool:
-    has_write_verb = bool(task_tokens & _FILE_WRITE_TASK_TOKENS)
-    has_artifact_hint = bool(task_tokens & _FILE_ARTIFACT_TASK_TOKENS)
-    return has_write_verb and (has_artifact_hint or bool(_FILE_PATH_HINT_RE.search(task or "")))
+def _validate_required_tool_calls_available(
+    *,
+    required_tool_calls: list[str],
+    requested_tools: object,
+    template_tools: object,
+    error_prefix: str,
+) -> str | None:
+    if not required_tool_calls:
+        return None
+    effective_tools = (
+        _normalize_tool_name_list(requested_tools)
+        if requested_tools is not None
+        else _effective_template_tool_names(template_tools)
+    )
+    available = set(effective_tools)
+    missing = sorted(tool_name for tool_name in required_tool_calls if tool_name not in available)
+    if missing:
+        return (
+            f"{error_prefix}: required tool call(s) are not available in this worker run "
+            f"({', '.join(missing)}). Include them in tools or choose another worker template."
+        )
+    return None

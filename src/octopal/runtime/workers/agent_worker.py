@@ -15,7 +15,6 @@ import inspect
 import json
 import os
 import random
-import re
 import time
 import traceback
 from pathlib import Path
@@ -139,50 +138,6 @@ _SKILL_TOOL_NAMES = {
     "run_skill_script",
     "use_skill",
 }
-_WRITE_TASK_TOKENS = {
-    "append",
-    "create",
-    "created",
-    "creates",
-    "draft",
-    "edit",
-    "edits",
-    "save",
-    "saved",
-    "update",
-    "updates",
-    "write",
-    "writes",
-    "writing",
-}
-_FILE_TASK_TOKENS = {
-    "artifact",
-    "config",
-    "csv",
-    "doc",
-    "document",
-    "draft",
-    "file",
-    "files",
-    "json",
-    "markdown",
-    "md",
-    "note",
-    "notes",
-    "path",
-    "report",
-    "text",
-    "toml",
-    "workspace",
-    "yaml",
-    "yml",
-}
-_FILE_PATH_HINT_RE = re.compile(
-    r"(?:^|[\s`'\"])[\w./\\-]+\."
-    r"(?:cfg|conf|csv|html|ini|json|log|md|py|toml|txt|ya?ml)"
-    r"(?:$|[\s`'\",.:;])",
-    re.IGNORECASE,
-)
 
 
 def _parse_positive_int_env(name: str, default: int) -> int:
@@ -219,27 +174,13 @@ def _parse_bool_env(name: str, default: bool) -> bool:
     return default
 
 
-def _tokenize_task(text: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9_]+", (text or "").lower()))
-
-
-def _task_requires_workspace_write(task: str) -> bool:
-    tokens = _tokenize_task(task)
-    return bool(tokens & _WRITE_TASK_TOKENS) and (
-        bool(tokens & _FILE_TASK_TOKENS) or bool(_FILE_PATH_HINT_RE.search(task or ""))
-    )
-
-
-def _fs_write_completion_missing(
-    task: str, available_tools: list[str], tools_used: list[str]
+def _required_tool_call_missing(
+    required_tool_calls: list[str], tools_used: list[str], tool_name: str
 ) -> bool:
-    normalized_available = {str(tool).strip().lower() for tool in available_tools}
+    normalized_required = {str(tool).strip().lower() for tool in required_tool_calls}
     normalized_used = {str(tool).strip().lower() for tool in tools_used}
-    return (
-        "fs_write" in normalized_available
-        and "fs_write" not in normalized_used
-        and _task_requires_workspace_write(task)
-    )
+    normalized_tool = str(tool_name).strip().lower()
+    return normalized_tool in normalized_required and normalized_tool not in normalized_used
 
 
 def _force_tool_choice(tool_name: str) -> dict[str, dict[str, str] | str]:
@@ -277,9 +218,18 @@ def _tool_names(tools: list[Any]) -> set[str]:
     return {str(getattr(tool, "name", "")).strip() for tool in tools if getattr(tool, "name", "")}
 
 
-def _build_worker_file_write_prompt(tools: list[Any]) -> str:
+def _build_worker_file_write_prompt(
+    tools: list[Any], required_tool_calls: list[str] | None = None
+) -> str:
     if "fs_write" not in _tool_names(tools):
         return ""
+    required = {str(tool).strip().lower() for tool in required_tool_calls or []}
+    if "fs_write" in required:
+        return (
+            "This task has an explicit required_tool_calls contract for fs_write. "
+            "Call fs_write before returning a result, and do not claim completion until "
+            "the fs_write tool returns successfully."
+        )
     return (
         "If the task asks you to create, write, save, update, or edit a workspace file, "
         "you must call fs_write before returning a result. Do not claim a file was written "
@@ -982,7 +932,7 @@ async def execute_agent_task(
         part
         for part in (
             "Use available tools through normal tool calls. Do not emit ad-hoc JSON tool_use blocks.",
-            _build_worker_file_write_prompt(filtered_tools),
+            _build_worker_file_write_prompt(filtered_tools, spec.required_tool_calls),
             coordination_prompt,
             _build_worker_skill_usage_prompt(filtered_tools),
         )
@@ -1070,10 +1020,10 @@ Available tools:
             tools=filtered_tools,
             step=thinking_steps,
         )
-        force_fs_write = _fs_write_completion_missing(
-            spec.task,
-            list(spec.available_tools or []),
+        force_fs_write = _required_tool_call_missing(
+            spec.required_tool_calls,
             tools_used,
+            "fs_write",
         )
         try:
             response = await _call_llm(
@@ -1386,9 +1336,7 @@ Available tools:
             # Try to parse structured JSON result, including fenced JSON blocks.
             result_block = _extract_result_block(content)
             if result_block is not None:
-                if _fs_write_completion_missing(
-                    spec.task, list(spec.available_tools or []), tools_used
-                ):
+                if _required_tool_call_missing(spec.required_tool_calls, tools_used, "fs_write"):
                     messages.append({"role": "assistant", "content": content})
                     messages.append(
                         {
@@ -1420,9 +1368,7 @@ Available tools:
 
             # If model produced plain text with no tool call, treat it as completion.
             if content:
-                if _fs_write_completion_missing(
-                    spec.task, list(spec.available_tools or []), tools_used
-                ):
+                if _required_tool_call_missing(spec.required_tool_calls, tools_used, "fs_write"):
                     messages.append({"role": "assistant", "content": content})
                     messages.append(
                         {

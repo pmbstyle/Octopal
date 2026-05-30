@@ -7,29 +7,19 @@ from octopal.runtime.workers.agent_worker import (
     _build_worker_task_prompt,
     _build_worker_tool_inventory_prompt,
     _force_tool_choice,
-    _fs_write_completion_missing,
     _make_request_instruction_tool,
     _record_worker_llm_context_snapshot,
     _record_worker_tool_result_context,
-    _task_requires_workspace_write,
+    _required_tool_call_missing,
     _tool_schema_chars,
 )
 from octopal.tools.registry import ToolSpec
 
 
-def test_workspace_write_task_detection_requires_write_intent_and_file_hint() -> None:
-    assert _task_requires_workspace_write(
-        "Create a short markdown report at experiments/qa/marker-worker-report.md"
-    )
-    assert not _task_requires_workspace_write("Summarize the latest provider news")
-
-
-def test_fs_write_completion_missing_requires_available_but_unused_tool() -> None:
-    task = "Write the report to experiments/qa/marker-worker-report.md"
-
-    assert _fs_write_completion_missing(task, ["fs_read", "fs_write"], [])
-    assert not _fs_write_completion_missing(task, ["fs_read", "fs_write"], ["fs_write"])
-    assert not _fs_write_completion_missing(task, ["web_search"], [])
+def test_required_tool_call_missing_uses_explicit_contract() -> None:
+    assert _required_tool_call_missing(["fs_write"], [], "fs_write")
+    assert not _required_tool_call_missing(["fs_write"], ["fs_write"], "fs_write")
+    assert not _required_tool_call_missing([], [], "fs_write")
 
 
 def test_force_tool_choice_uses_openai_function_shape() -> None:
