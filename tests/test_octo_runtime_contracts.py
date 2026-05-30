@@ -13,6 +13,14 @@ def test_octo_output_channel_uses_owner_lease() -> None:
         async def add_message(self, role: str, content: str, metadata: dict):
             return None
 
+    async def channel_send(chat_id: int, text: str) -> None:
+        return None
+
+    ws_events: list[dict] = []
+
+    async def ws_message_event(chat_id: int, payload: dict) -> None:
+        ws_events.append(payload)
+
     octo = Octo(
         provider=object(),
         store=object(),
@@ -21,11 +29,24 @@ def test_octo_output_channel_uses_owner_lease() -> None:
         approvals=object(),
         memory=_Memory(),
         canon=object(),
+        internal_send=channel_send,
     )
 
-    assert octo.set_output_channel(True, owner_id="ws-a")
+    assert octo.set_output_channel(True, owner_id="ws-a", message_event=ws_message_event)
+    assert octo.internal_send is channel_send
     assert not octo.set_output_channel(True, owner_id="ws-b")
     assert not octo.set_output_channel(False, owner_id="ws-b")
+    asyncio.run(
+        octo.emit_ws_chat_event(
+            direction="inbound",
+            role="user",
+            channel="telegram",
+            chat_id=123,
+            text="hello",
+        )
+    )
+    assert ws_events[-1]["type"] == "chat_message"
+    assert ws_events[-1]["channel"] == "telegram"
     assert octo.set_output_channel(False, owner_id="ws-a")
 
 
@@ -100,6 +121,62 @@ def test_octo_passes_approval_requester_to_runtime(monkeypatch) -> None:
         assert runtime.captured is requester
 
     asyncio.run(scenario())
+
+
+def test_octo_accepts_channel_messages_while_websocket_mirror_is_active(monkeypatch) -> None:
+    class DummyMemory:
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, str, dict]] = []
+
+        async def add_message(self, role: str, text: str, metadata: dict):
+            self.messages.append((role, text, metadata))
+            return None
+
+    async def fake_bootstrap_context(store, chat_id: int):
+        from octopal.runtime.octo.prompt_builder import BootstrapContext
+
+        return BootstrapContext(content="", hash="", files=[])
+
+    async def fake_route_or_reply(
+        octo,
+        provider,
+        memory,
+        user_text: str,
+        chat_id: int,
+        bootstrap_context: str,
+        **kwargs,
+    ):
+        return f"reply:{user_text}"
+
+    import octopal.runtime.octo.core as octo_core
+
+    monkeypatch.setattr(octo_core, "build_bootstrap_context_prompt", fake_bootstrap_context)
+    monkeypatch.setattr(octo_core, "route_or_reply", fake_route_or_reply)
+
+    ws_events: list[dict] = []
+
+    async def ws_message_event(chat_id: int, payload: dict) -> None:
+        ws_events.append(payload)
+
+    octo = Octo(
+        provider=object(),
+        store=object(),
+        policy=object(),
+        runtime=object(),
+        approvals=object(),
+        memory=DummyMemory(),
+        canon=object(),
+    )
+    assert octo.set_output_channel(True, owner_id="desktop", message_event=ws_message_event)
+
+    async def scenario() -> None:
+        reply = await octo.handle_message("hello", 123, source_channel="telegram")
+        assert reply.immediate == "reply:hello"
+
+    asyncio.run(scenario())
+
+    assert [event["role"] for event in ws_events] == ["user", "assistant"]
+    assert {event["channel"] for event in ws_events} == {"telegram"}
 
 
 def test_octo_does_not_forward_worker_model_override(monkeypatch) -> None:
@@ -320,7 +397,9 @@ def test_octo_handle_message_preserves_react_tag_for_channels(monkeypatch) -> No
         reply = await octo.handle_message("hello", 123)
         assert reply.immediate == "<react>✅</react> All done."
         assert reply.reaction == "✅"
-        assistant_messages = [text for role, text, _metadata in memory.messages if role == "assistant"]
+        assistant_messages = [
+            text for role, text, _metadata in memory.messages if role == "assistant"
+        ]
         assert assistant_messages == ["<react>✅</react> All done."]
 
     asyncio.run(scenario())
@@ -542,7 +621,9 @@ def test_start_worker_async_emits_failed_progress_when_store_marks_failed(monkey
     assert final_meta["worker_status"] == "failed"
 
 
-def test_start_worker_async_emits_failed_progress_when_failed_result_has_no_worker_record(monkeypatch) -> None:
+def test_start_worker_async_emits_failed_progress_when_failed_result_has_no_worker_record(
+    monkeypatch,
+) -> None:
     class _Memory:
         async def add_message(self, role: str, content: str, metadata: dict):
             return None
@@ -599,7 +680,10 @@ def test_start_worker_async_emits_failed_progress_when_failed_result_has_no_work
     assert "failed" in final_text.lower()
     assert final_meta["worker_status"] == "failed"
 
-def test_start_worker_async_infers_longer_timeout_for_context_heavy_network_tasks(monkeypatch) -> None:
+
+def test_start_worker_async_infers_longer_timeout_for_context_heavy_network_tasks(
+    monkeypatch,
+) -> None:
     class _Memory:
         async def add_message(self, role: str, content: str, metadata: dict):
             return None

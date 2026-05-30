@@ -52,6 +52,29 @@ def test_build_octo_prompt_includes_current_datetime_system_message() -> None:
     asyncio.run(scenario())
 
 
+def test_build_octo_prompt_does_not_add_voice_rules_for_websocket() -> None:
+    async def scenario() -> None:
+        messages = await build_octo_prompt(
+            store=object(),
+            memory=DummyMemory(),
+            canon=DummyCanon(),
+            user_text="hello from desktop",
+            chat_id=123,
+            bootstrap_context="",
+            is_ws=True,
+        )
+
+        system_text = "\n".join(
+            str(message.content)
+            for message in messages
+            if message.role == "system" and isinstance(message.content, str)
+        )
+        assert "VOICE COMMUNICATION MODE" not in system_text
+        assert "Voice (STT/TTS)" not in system_text
+
+    asyncio.run(scenario())
+
+
 def test_build_control_plane_prompt_includes_current_datetime_system_message() -> None:
     async def scenario() -> None:
         messages = await build_control_plane_prompt(

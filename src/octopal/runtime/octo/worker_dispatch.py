@@ -556,13 +556,14 @@ class OctoWorkerDispatchMixin:
         text: str,
         meta: dict[str, Any] | None = None,
     ) -> None:
+        payload = meta or {}
         sender = self.internal_progress_send
-        if not sender:
-            return
-        try:
-            await sender(chat_id, state, text, meta or {})
-        except Exception:
-            logger.debug("Progress emit failed", exc_info=True)
+        if sender:
+            try:
+                await sender(chat_id, state, text, payload)
+            except Exception:
+                logger.debug("Progress emit failed", exc_info=True)
+        await self.emit_ws_progress(chat_id, state, text, payload)
 
     async def _emit_worker_event(
         self,
@@ -570,10 +571,11 @@ class OctoWorkerDispatchMixin:
         event: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
+        event_payload = payload or {}
         sender = self.internal_worker_event_send
-        if not sender:
-            return
-        try:
-            await sender(chat_id, event, payload or {})
-        except Exception:
-            logger.debug("Worker event emit failed", exc_info=True)
+        if sender:
+            try:
+                await sender(chat_id, event, event_payload)
+            except Exception:
+                logger.debug("Worker event emit failed", exc_info=True)
+        await self.emit_ws_worker_event(chat_id, event, event_payload)

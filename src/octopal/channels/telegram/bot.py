@@ -10,8 +10,8 @@ from octopal.channels.telegram.approvals import ApprovalManager
 from octopal.channels.telegram.handlers import register_handlers
 from octopal.infrastructure.config.settings import Settings
 from octopal.runtime.app import build_octo
-from octopal.runtime.octo.delivery import DeliveryMode
 from octopal.runtime.octo.core import Octo, OctoReply
+from octopal.runtime.octo.delivery import DeliveryMode
 from octopal.utils import is_control_response
 
 logger = structlog.get_logger(__name__)
@@ -50,6 +50,7 @@ async def _heartbeat_poker(octo: Octo, interval_seconds: int, chat_id: int):
                 track_progress=False,
                 include_wakeup=False,
                 background_delivery=True,
+                source_channel="telegram",
             )
             if isinstance(reply, OctoReply):
                 text = (reply.immediate or "").strip()
@@ -62,8 +63,20 @@ async def _heartbeat_poker(octo: Octo, interval_seconds: int, chat_id: int):
                         )
                     elif octo.internal_send:
                         await octo.internal_send(chat_id, text)
+                        await octo.emit_ws_chat_event(
+                            direction="outbound",
+                            role="assistant",
+                            channel="telegram",
+                            chat_id=chat_id,
+                            text=text,
+                            meta={"delivery_source": "heartbeat"},
+                        )
                         octo.note_user_visible_delivery(chat_id, text)
-                        logger.info("Heartbeat delivered user-visible update", chat_id=chat_id, text_len=len(text))
+                        logger.info(
+                            "Heartbeat delivered user-visible update",
+                            chat_id=chat_id,
+                            text_len=len(text),
+                        )
                     else:
                         logger.warning(
                             "Heartbeat produced user-visible update but no sender is attached",
@@ -71,7 +84,10 @@ async def _heartbeat_poker(octo: Octo, interval_seconds: int, chat_id: int):
                             preview=text[:200],
                         )
                 elif is_control_response(text):
-                    logger.debug("Heartbeat processed successfully (control response acknowledged)", response=text)
+                    logger.debug(
+                        "Heartbeat processed successfully (control response acknowledged)",
+                        response=text,
+                    )
                 elif not text:
                     logger.warning("Heartbeat produced empty response")
                 else:
@@ -109,10 +125,14 @@ async def run_bot(settings: Settings, existing_octo: Octo | None = None) -> None
     if settings.allowed_telegram_chat_ids:
         try:
             allowed_chat_ids = [
-                int(cid.strip()) for cid in settings.allowed_telegram_chat_ids.split(",") if cid.strip()
+                int(cid.strip())
+                for cid in settings.allowed_telegram_chat_ids.split(",")
+                if cid.strip()
             ]
         except ValueError:
-            logger.error("Invalid ALLOWED_TELEGRAM_CHAT_IDS format - must be comma-separated integers")
+            logger.error(
+                "Invalid ALLOWED_TELEGRAM_CHAT_IDS format - must be comma-separated integers"
+            )
 
     # Initialize octo system before starting polling
     logger.info("Initializing octo system")

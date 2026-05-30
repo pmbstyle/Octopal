@@ -52,17 +52,19 @@ async def _download_to_tmp(
     tmp_dir = resolve_workspace_path(base_dir, "tmp/outbound_files")
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            inferred_name = _sanitize_filename(
-                filename or _infer_filename_from_url(url, response.headers.get("content-type"))
-            )
-            final_name = f"{uuid.uuid4()}_{inferred_name}"
-            save_path = resolve_workspace_path(base_dir, f"tmp/outbound_files/{final_name}")
-            with open(save_path, "wb") as handle:
-                async for chunk in response.aiter_bytes():
-                    handle.write(chunk)
+    async with (
+        httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client,
+        client.stream("GET", url) as response,
+    ):
+        response.raise_for_status()
+        inferred_name = _sanitize_filename(
+            filename or _infer_filename_from_url(url, response.headers.get("content-type"))
+        )
+        final_name = f"{uuid.uuid4()}_{inferred_name}"
+        save_path = resolve_workspace_path(base_dir, f"tmp/outbound_files/{final_name}")
+        with open(save_path, "wb") as handle:
+            async for chunk in response.aiter_bytes():
+                handle.write(chunk)
     return save_path
 
 
@@ -101,9 +103,14 @@ async def send_file_to_user(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         else:
             if urlparse(raw_url).scheme not in {"http", "https"}:
                 return _error("url must use http or https")
-            file_path = await _download_to_tmp(base_dir=base_dir, url=raw_url, filename=requested_filename)
+            file_path = await _download_to_tmp(
+                base_dir=base_dir, url=raw_url, filename=requested_filename
+            )
             source = "url"
         await sender(chat_id, str(file_path), caption=caption)
+        mirror_sender = getattr(octo, "emit_ws_file", None)
+        if callable(mirror_sender):
+            await mirror_sender(chat_id, str(file_path), caption)
     except WorkspacePathError as exc:
         return _error(f"unsafe file path: {exc}")
     except httpx.HTTPStatusError as exc:

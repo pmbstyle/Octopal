@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
@@ -24,10 +26,11 @@ class OctoOutputRuntimeMixin:
         progress: callable | None = None,
         worker_event: callable | None = None,
         typing: callable | None = None,
+        message_event: callable | None = None,
         owner_id: str | None = None,
         force: bool = False,
     ) -> bool:
-        """Switch between Telegram and WebSocket output channels."""
+        """Attach or detach the WebSocket mirror without changing the primary channel."""
         if is_ws:
             if self._ws_active and self._ws_owner and owner_id and self._ws_owner != owner_id:
                 if force:
@@ -61,21 +64,23 @@ class OctoOutputRuntimeMixin:
 
         self._ws_active = is_ws
         if is_ws:
-            self.internal_send = send
-            self.internal_send_file = send_file
-            self.internal_progress_send = progress
-            self.internal_worker_event_send = worker_event
-            self.internal_typing_control = typing
+            self._ws_send = send
+            self._ws_send_file = send_file
+            self._ws_progress = progress
+            self._ws_worker_event = worker_event
+            self._ws_typing = typing
+            self._ws_message_event = message_event
             self._ws_owner = owner_id or "ws-default"
-            logger.info("Octo switched to WebSocket output channel")
+            logger.info("Octo attached WebSocket mirror channel")
         else:
-            self.internal_send = self._tg_send
-            self.internal_send_file = self._tg_send_file
-            self.internal_progress_send = self._tg_progress
-            self.internal_worker_event_send = self._tg_worker_event
-            self.internal_typing_control = self._tg_typing
+            self._ws_send = None
+            self._ws_send_file = None
+            self._ws_progress = None
+            self._ws_worker_event = None
+            self._ws_typing = None
+            self._ws_message_event = None
             self._ws_owner = None
-            logger.info("Octo switched to Telegram output channel")
+            logger.info("Octo detached WebSocket mirror channel")
 
         # Update system status file if possible
         try:
@@ -84,7 +89,7 @@ class OctoOutputRuntimeMixin:
 
             settings = load_settings()
             status_data = read_status(settings) or {}
-            status_data["active_channel"] = "WebSocket" if is_ws else "Telegram"
+            status_data["websocket_mirror_active"] = is_ws
             _status_path(settings).write_text(
                 json.dumps(status_data, indent=2),
                 encoding="utf-8",
@@ -92,6 +97,86 @@ class OctoOutputRuntimeMixin:
         except Exception:
             logger.debug("Failed to update status file with active channel", exc_info=True)
         return True
+
+    async def emit_ws_chat_event(
+        self,
+        *,
+        direction: str,
+        role: str,
+        channel: str,
+        chat_id: int,
+        text: str,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        if not self._ws_active or not callable(self._ws_message_event):
+            return
+        payload = {
+            "type": "chat_message",
+            "direction": direction,
+            "role": role,
+            "channel": channel,
+            "chat_id": chat_id,
+            "text": text,
+            "meta": meta or {},
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        try:
+            await self._ws_message_event(chat_id, payload)
+        except Exception:
+            logger.debug(
+                "Failed to emit WebSocket chat mirror event", chat_id=chat_id, exc_info=True
+            )
+
+    async def emit_ws_progress(
+        self,
+        chat_id: int,
+        state: str,
+        text: str,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        if not self._ws_active or not callable(self._ws_progress):
+            return
+        try:
+            await self._ws_progress(chat_id, state, text, meta or {})
+        except Exception:
+            logger.debug(
+                "Failed to emit WebSocket progress mirror event", chat_id=chat_id, exc_info=True
+            )
+
+    async def emit_ws_worker_event(
+        self,
+        chat_id: int,
+        event: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        if not self._ws_active or not callable(self._ws_worker_event):
+            return
+        try:
+            await self._ws_worker_event(chat_id, event, payload or {})
+        except Exception:
+            logger.debug(
+                "Failed to emit WebSocket worker mirror event", chat_id=chat_id, exc_info=True
+            )
+
+    async def emit_ws_file(self, chat_id: int, file_path: str, caption: str | None = None) -> None:
+        if not self._ws_active or not callable(self._ws_send_file):
+            return
+        try:
+            await self._ws_send_file(chat_id, file_path, caption)
+        except Exception:
+            logger.debug(
+                "Failed to emit WebSocket file mirror event", chat_id=chat_id, exc_info=True
+            )
+
+    async def emit_ws_typing(self, chat_id: int, active: bool) -> None:
+        if not self._ws_active or not callable(self._ws_typing):
+            return
+        try:
+            await self._ws_typing(chat_id, active)
+        except Exception:
+            logger.debug(
+                "Failed to emit WebSocket typing mirror event", chat_id=chat_id, exc_info=True
+            )
 
     async def set_thinking(self, active: bool) -> None:
         """Toggle global thinking indicator."""
@@ -113,3 +198,4 @@ class OctoOutputRuntimeMixin:
                     active=active,
                     exc_info=True,
                 )
+        await self.emit_ws_typing(chat_id, active)

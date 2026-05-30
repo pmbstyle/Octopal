@@ -106,13 +106,8 @@ class OctoMessageRuntimeMixin:
         track_progress: bool = True,
         include_wakeup: bool = True,
         background_delivery: bool = False,
+        source_channel: str | None = None,
     ) -> OctoReply:
-        if not is_ws and self._ws_active:
-            logger.info("Ignoring Telegram message while WebSocket is active", chat_id=chat_id)
-            return OctoReply(
-                immediate="I'm currently active on WebSocket. Please use the WebSocket client or wait until it's closed.",
-                followup=None,
-            )
         correlation_token = None
         correlation_id = correlation_id_var.get()
         trace_bind_token = None
@@ -120,8 +115,9 @@ class OctoMessageRuntimeMixin:
         trace_started_at_ms = now_ms()
         trace_status = "ok"
         trace_output: dict[str, Any] | None = None
+        channel = (source_channel or ("desktop" if is_ws else "chat")).strip() or "chat"
         trace_metadata: dict[str, Any] = {
-            "channel": "ws" if is_ws else "telegram",
+            "channel": channel,
             "message_kind": "heartbeat" if not track_progress else "user",
             "text_len": len(text),
             "has_images": bool(images),
@@ -176,6 +172,19 @@ class OctoMessageRuntimeMixin:
                 route_mode=route_request.mode.value,
             )
             logger.debug("Received message text", text_len=len(text), text=text[:500])
+            if track_progress:
+                await self.emit_ws_chat_event(
+                    direction="inbound",
+                    role="user",
+                    channel=channel,
+                    chat_id=chat_id,
+                    text=text,
+                    meta={
+                        "has_images": bool(images),
+                        "has_files": bool(saved_file_paths),
+                        "saved_file_paths": list(saved_file_paths or []),
+                    },
+                )
             if not track_progress:
                 self.suppress_turn_followups(correlation_id)
             if persist_to_memory:
@@ -335,6 +344,18 @@ class OctoMessageRuntimeMixin:
                     },
                 )
             if delivery.user_visible and track_progress:
+                await self.emit_ws_chat_event(
+                    direction="outbound",
+                    role="assistant",
+                    channel=channel,
+                    chat_id=chat_id,
+                    text=delivery.text,
+                    meta={
+                        "delivery_mode": delivery.mode,
+                        "followup_required": delivery.followup_required,
+                        "reaction": reaction_emoji,
+                    },
+                )
                 self.note_user_visible_delivery(chat_id, delivery.text)
                 if not delivery.followup_required:
                     finalized_visible_reply = True

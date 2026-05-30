@@ -31,6 +31,18 @@ def test_resolve_ws_chat_id_uses_first_allowed_id_when_valid() -> None:
     assert _resolve_ws_chat_id(settings) == 42
 
 
+def test_resolve_ws_chat_id_uses_primary_whatsapp_chat_when_configured() -> None:
+    from octopal.channels.whatsapp.ids import whatsapp_chat_id
+
+    settings = SimpleNamespace(
+        user_channel="whatsapp",
+        allowed_whatsapp_numbers="+15551234567,+15557654321",
+        allowed_telegram_chat_ids="42",
+    )
+
+    assert _resolve_ws_chat_id(settings) == whatsapp_chat_id("+15551234567")
+
+
 def test_websocket_client_host_helper_rejects_lan_addresses() -> None:
     assert _is_local_ws_client("127.0.0.1")
     assert _is_local_ws_client("::1")

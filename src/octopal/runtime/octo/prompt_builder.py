@@ -376,18 +376,6 @@ async def build_octo_prompt(
 
     system_prompt = await _load_system_prompt_file()
 
-    if is_ws:
-        voice_instructions = (
-            "\n\n## VOICE COMMUNICATION MODE (ACTIVE)\n"
-            "You are currently communicating via Voice (STT/TTS). Follow these rules:\n"
-            "1. Be conversational and human-like. Use natural speech patterns.\n"
-            "2. Keep responses concise and easy to follow by ear. Avoid long lists, tables, or complex formatting.\n"
-            "3. Do not drop technical details entirely, but summarize them simply. If the user needs a deep dive, mention you can provide more details if asked.\n"
-            "4. Avoid reading out long file contents, logs, or large code blocks. Summarize what changed or what was found instead.\n"
-            "5. If a worker is running a long task, give a brief conversational update on what it's doing.\n"
-        )
-        system_prompt += voice_instructions
-
     persona_prompt_lines = await build_persona_prompt()
 
     datetime_prompt = _current_datetime_prompt()

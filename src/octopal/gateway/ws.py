@@ -100,8 +100,24 @@ def _serialize_worker_snapshot(rows: list[Any]) -> list[dict[str, Any]]:
 
 
 def _resolve_ws_chat_id(settings: Any) -> int:
-    if settings.allowed_telegram_chat_ids:
-        first = settings.allowed_telegram_chat_ids.split(",")[0].strip()
+    if str(getattr(settings, "user_channel", "") or "").strip().lower() == "whatsapp":
+        try:
+            from octopal.channels.whatsapp.ids import (
+                parse_allowed_whatsapp_numbers,
+                whatsapp_chat_id,
+            )
+
+            numbers = parse_allowed_whatsapp_numbers(
+                str(getattr(settings, "allowed_whatsapp_numbers", "") or "")
+            )
+            if numbers:
+                return whatsapp_chat_id(numbers[0])
+        except Exception:
+            logger.debug("Failed to resolve WhatsApp chat id for WebSocket session", exc_info=True)
+
+    allowed_telegram_chat_ids = str(getattr(settings, "allowed_telegram_chat_ids", "") or "")
+    if allowed_telegram_chat_ids:
+        first = allowed_telegram_chat_ids.split(",")[0].strip()
         if first:
             try:
                 value = int(first)
@@ -246,6 +262,14 @@ def register_ws_routes(app: FastAPI) -> None:
                 chat_id=chat_id,
             )
 
+        async def _ws_chat_message(chat_id: int, payload: dict[str, Any]) -> None:
+            await _ws_send_json(
+                session,
+                payload,
+                event_name="chat_message",
+                chat_id=chat_id,
+            )
+
         # A newer WS client takes over the interactive channel from any older session.
         async with app.state.ws_session_lock:
             previous_session: _ActiveWsSession | None = getattr(
@@ -299,6 +323,7 @@ def register_ws_routes(app: FastAPI) -> None:
                 progress=_ws_progress,
                 typing=_ws_typing,
                 worker_event=_ws_worker_event,
+                message_event=_ws_chat_message,
                 owner_id=connection_id,
                 force=True,
             )
@@ -388,15 +413,25 @@ async def _handle_message(
     text = str(payload.get("text", ""))
     try:
         async with message_lock:
+            emit_typing = getattr(octo, "emit_ws_typing", None)
+            if callable(emit_typing):
+                await emit_typing(chat_id, True)
             response = await octo.handle_message(
                 text,
                 chat_id,
                 approval_requester=approvals.request_approval,
                 is_ws=True,
+                show_typing=False,
+                source_channel="desktop",
             )
+            if callable(emit_typing):
+                await emit_typing(chat_id, False)
     except Exception as exc:
         logger.exception("Octo failed to handle WS message")
         response = f"Error: {exc}"
+        emit_typing = getattr(octo, "emit_ws_typing", None)
+        if callable(emit_typing):
+            await emit_typing(chat_id, False)
 
     text_out = response.immediate if isinstance(response, OctoReply) else str(response)
     decision = resolve_user_delivery(text_out)

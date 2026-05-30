@@ -102,6 +102,7 @@ def register_a2a_routes(app: FastAPI) -> None:
                 is_ws=True,
                 saved_file_paths=saved_file_paths,
                 include_wakeup=False,
+                source_channel="a2a",
             )
         finally:
             correlation_id_var.reset(correlation_token)

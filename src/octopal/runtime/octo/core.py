@@ -182,6 +182,12 @@ class Octo(
     _thinking_count: int = 0
     _ws_active: bool = False
     _ws_owner: str | None = None
+    _ws_send: callable | None = None
+    _ws_send_file: callable | None = None
+    _ws_progress: callable | None = None
+    _ws_worker_event: callable | None = None
+    _ws_typing: callable | None = None
+    _ws_message_event: callable | None = None
     _tg_send: callable | None = None
     _tg_send_file: callable | None = None
     _tg_progress: callable | None = None
