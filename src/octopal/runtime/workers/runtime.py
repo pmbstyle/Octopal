@@ -199,6 +199,27 @@ class WorkerRuntime:
                 summary=f"Worker tool validation failed: {exc}",
                 output={"error": "invalid_worker_tool_override", "detail": str(exc)},
             )
+        required_tool_calls = _normalize_name_list(task_request.required_tool_calls)
+        missing_required_tool_calls = sorted(
+            tool_name
+            for tool_name in required_tool_calls
+            if tool_name not in set(requested_tool_names)
+        )
+        if missing_required_tool_calls:
+            return await self._preflight_failure(
+                task_request,
+                template=template,
+                granted_capabilities=granted,
+                status="failed",
+                summary=(
+                    "Worker tool validation failed: required tool call(s) are not available "
+                    f"({', '.join(missing_required_tool_calls)})"
+                ),
+                output={
+                    "error": "missing_required_tool_calls",
+                    "tools": missing_required_tool_calls,
+                },
+            )
         has_requested_mcp_tools = any(
             str(tool_name).startswith("mcp_") for tool_name in requested_tool_names
         )
@@ -298,6 +319,7 @@ class WorkerRuntime:
             inputs=task_request.inputs,
             system_prompt=template.system_prompt,
             available_tools=requested_tool_names,
+            required_tool_calls=required_tool_calls,
             mcp_tools=mcp_tools_data,
             model=template.model,
             llm_config=llm_config,

@@ -273,6 +273,14 @@ class _WorkerArtifactSummary:
         }
 
 
+@dataclass(frozen=True)
+class RuntimeActionContract:
+    run_id: str
+    step_id: str
+    kind: str
+    title: str = ""
+
+
 def _is_vision_tool_compatibility_error(exc: Exception) -> bool:
     err = str(exc).lower()
     return "invalid api parameter" in err or "'code': '1210'" in err or '"code": "1210"' in err
@@ -948,6 +956,8 @@ async def _complete_route_with_tools(
         structured_followup_required = False
         unbacked_action_retry_used = False
         auto_continuation_attempted = False
+        runtime_action_contracts: list[RuntimeActionContract] = []
+        runtime_action_retry_count = 0
 
         for _ in range(max_attempts):
             try:
@@ -1101,12 +1111,16 @@ async def _complete_route_with_tools(
                     tool_result, tool_meta = await _handle_octo_tool_call(
                         call, active_tool_specs, ctx
                     )
+                    tool_name = str(call.get("function", {}).get("name") or "")
+                    runtime_action_contracts = _update_runtime_action_contracts(
+                        runtime_action_contracts,
+                        tool_name=tool_name,
+                        tool_result=tool_result,
+                    )
                     if (
                         not internal_followup
                         and not structured_followup_required
-                        and _tool_result_requests_followup(
-                            call.get("function", {}).get("name"), tool_result
-                        )
+                        and _tool_result_requests_followup(tool_name, tool_result)
                     ):
                         structured_followup_required = True
                         marker = getattr(octo, "mark_structured_followup_required", None)
@@ -1136,7 +1150,6 @@ async def _complete_route_with_tools(
                                     ),
                                 )
                             )
-                    tool_name = str(call.get("function", {}).get("name") or "")
                     rendered_tool_result = render_tool_result_for_llm(
                         tool_result,
                         tool_name=tool_name,
@@ -1233,6 +1246,37 @@ async def _complete_route_with_tools(
                 continue
 
             if content_raw:
+                if runtime_action_contracts:
+                    if runtime_action_retry_count >= 2:
+                        logger.warning(
+                            "Runtime action contract still pending after retries; returning blocked status",
+                            pending_contracts=[
+                                contract.__dict__ for contract in runtime_action_contracts
+                            ],
+                        )
+                        return await _finalize_response(
+                            provider=provider,
+                            messages=messages,
+                            response_text=_runtime_action_contract_blocked_response(
+                                runtime_action_contracts
+                            ),
+                            internal_followup=internal_followup,
+                        )
+                    runtime_action_retry_count += 1
+                    logger.warning(
+                        "Runtime action contract pending; forcing execution-or-state retry",
+                        pending_contracts=[
+                            contract.__dict__ for contract in runtime_action_contracts
+                        ],
+                    )
+                    messages.append(Message(role="assistant", content=str(content_raw)))
+                    messages.append(
+                        Message(
+                            role="system",
+                            content=_runtime_action_contract_retry_prompt(runtime_action_contracts),
+                        )
+                    )
+                    continue
                 if (
                     not had_tool_calls
                     and not unbacked_action_retry_used
@@ -1512,63 +1556,22 @@ def _normalize_worker_followup_reply(raw: str) -> str:
 
     payload = _extract_json_object(value)
     if isinstance(payload, dict):
+        if bool(payload.get("no_user_response")):
+            return "NO_USER_RESPONSE"
         response = payload.get("user_response")
         if response is None:
             response = payload.get("response")
         if response is None:
             response = payload.get("message")
         response_text = sanitize_user_facing_text_preserving_reaction(str(response or ""))
-        if _looks_like_internal_worker_followup_leak(response_text):
-            return "NO_USER_RESPONSE"
         if response_text and not should_suppress_user_delivery(response_text):
             return response_text
-        if bool(payload.get("no_user_response")):
-            return "NO_USER_RESPONSE"
         return "NO_USER_RESPONSE"
 
     cleaned = sanitize_user_facing_text_preserving_reaction(value)
-    if _looks_like_internal_worker_followup_leak(cleaned):
-        return "NO_USER_RESPONSE"
     if should_suppress_user_delivery(cleaned):
         return "NO_USER_RESPONSE"
     return cleaned
-
-
-def _looks_like_internal_worker_followup_leak(text: str) -> bool:
-    value = (text or "").casefold()
-    if not value:
-        return False
-    internal_phrases = (
-        "bounded worker-result follow-up mode",
-        "worker-result follow-up mode",
-        "full orchestration mode",
-        "full orchestration context",
-        "current tool set",
-        "bounded route",
-        "on the next turn",
-    )
-    orchestration_phrases = (
-        "can't modify",
-        "cannot modify",
-        "can't schedule",
-        "cannot schedule",
-        "i'm in",
-        "i am in",
-        "i'll do this on",
-        "i will do this on",
-    )
-    if any(phrase in value for phrase in internal_phrases):
-        return True
-    return any(phrase in value for phrase in orchestration_phrases) and any(
-        phrase in value
-        for phrase in (
-            "bounded",
-            "orchestration",
-            "worker-result",
-            "follow-up mode",
-            "next turn",
-        )
-    )
 
 
 def _normalize_proactive_reply(raw: str) -> str:
@@ -3048,15 +3051,172 @@ def _record_octo_tool_call(
     )
 
 
-def _tool_result_requests_followup(tool_name: str | None, tool_result: Any) -> bool:
-    del tool_name
+_ACTIONABLE_PLAN_STEP_KINDS = {"octo", "tool", "worker"}
+_RESOLVED_PLAN_STEP_STATUSES = {
+    "awaiting_worker",
+    "awaiting_approval",
+    "awaiting_user",
+    "completed",
+    "failed",
+    "skipped",
+    "cancelled",
+    "blocked",
+}
+
+
+def _update_runtime_action_contracts(
+    contracts: list[RuntimeActionContract],
+    *,
+    tool_name: str,
+    tool_result: Any,
+) -> list[RuntimeActionContract]:
+    structured = _coerce_tool_result_dict(tool_result)
+    if structured is None:
+        return contracts
+
+    remaining = list(contracts)
+    if tool_name == "start_worker":
+        remaining = _resolve_contracts_from_worker_launch(remaining, structured)
+    elif tool_name == "plan_update_step":
+        remaining = _resolve_contracts_from_plan_snapshot(remaining, structured)
+
+    for contract in _contracts_created_by_tool_result(tool_name, structured):
+        if contract not in remaining:
+            remaining.append(contract)
+    return remaining
+
+
+def _coerce_tool_result_dict(tool_result: Any) -> dict[str, Any] | None:
     structured = tool_result
     if isinstance(tool_result, str):
         try:
             structured = json.loads(tool_result)
         except Exception:
-            return False
-    if not isinstance(structured, dict):
+            return None
+    if isinstance(structured, dict):
+        return structured
+    return None
+
+
+def _contracts_created_by_tool_result(
+    tool_name: str,
+    structured: dict[str, Any],
+) -> list[RuntimeActionContract]:
+    if tool_name not in {"plan_create", "plan_update_step"}:
+        return []
+    if str(structured.get("status") or "").lower() != "ok":
+        return []
+    snapshot = structured.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return []
+    next_step = snapshot.get("next_step")
+    if not isinstance(next_step, dict):
+        return []
+    kind = str(next_step.get("kind") or "").strip().lower()
+    status = str(next_step.get("status") or "").strip().lower()
+    if kind not in _ACTIONABLE_PLAN_STEP_KINDS or status != "pending":
+        return []
+    run = snapshot.get("run") if isinstance(snapshot.get("run"), dict) else {}
+    run_id = str(run.get("id") or next_step.get("run_id") or "").strip()
+    step_id = str(next_step.get("step_id") or next_step.get("id") or "").strip()
+    if not run_id or not step_id:
+        return []
+    return [
+        RuntimeActionContract(
+            run_id=run_id,
+            step_id=step_id,
+            kind=kind,
+            title=str(next_step.get("title") or "").strip(),
+        )
+    ]
+
+
+def _resolve_contracts_from_worker_launch(
+    contracts: list[RuntimeActionContract],
+    structured: dict[str, Any],
+) -> list[RuntimeActionContract]:
+    plan_binding = structured.get("plan_binding")
+    if not isinstance(plan_binding, dict):
+        return contracts
+    if str(plan_binding.get("status") or "").lower() != "ok":
+        return contracts
+    run_id = str(plan_binding.get("run_id") or "").strip()
+    step_id = str(plan_binding.get("step_id") or "").strip()
+    if not run_id or not step_id:
+        return contracts
+    return [
+        contract
+        for contract in contracts
+        if not (contract.run_id == run_id and contract.step_id == step_id)
+    ]
+
+
+def _resolve_contracts_from_plan_snapshot(
+    contracts: list[RuntimeActionContract],
+    structured: dict[str, Any],
+) -> list[RuntimeActionContract]:
+    if str(structured.get("status") or "").lower() != "ok":
+        return contracts
+    snapshot = structured.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return contracts
+    run = snapshot.get("run") if isinstance(snapshot.get("run"), dict) else {}
+    if str(run.get("status") or "").lower() in {"completed", "failed", "cancelled", "blocked"}:
+        run_id = str(run.get("id") or "").strip()
+        return [contract for contract in contracts if contract.run_id != run_id]
+
+    step_status_by_key: dict[tuple[str, str], str] = {}
+    for step in snapshot.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        run_id = str(step.get("run_id") or run.get("id") or "").strip()
+        step_id = str(step.get("step_id") or step.get("id") or "").strip()
+        if run_id and step_id:
+            step_status_by_key[(run_id, step_id)] = str(step.get("status") or "").lower()
+
+    return [
+        contract
+        for contract in contracts
+        if step_status_by_key.get((contract.run_id, contract.step_id), "pending")
+        not in _RESOLVED_PLAN_STEP_STATUSES
+    ]
+
+
+def _runtime_action_contract_retry_prompt(contracts: list[RuntimeActionContract]) -> str:
+    pending = "\n".join(
+        (
+            f"- plan_run_id={contract.run_id}, plan_step_id={contract.step_id}, "
+            f"kind={contract.kind}, title={contract.title or '(untitled)'}"
+        )
+        for contract in contracts
+    )
+    return (
+        "Runtime state still contains an actionable plan step that has not been started, "
+        "blocked, marked awaiting input/approval, or completed. Continue this same turn by "
+        "creating concrete runtime evidence for the pending step.\n"
+        f"{pending}\n"
+        "Valid resolutions include:\n"
+        "- for a worker step: call start_worker with the matching plan_run_id and plan_step_id;\n"
+        "- for a tool or octo step: perform the tool/runtime work, then call plan_update_step;\n"
+        "- if execution is impossible now: call plan_update_step with blocked, failed, awaiting_user, "
+        "or awaiting_approval.\n"
+        "Do not send a final user-visible status until the runtime state reflects one of those outcomes."
+    )
+
+
+def _runtime_action_contract_blocked_response(contracts: list[RuntimeActionContract]) -> str:
+    pending = ", ".join(f"{contract.run_id}/{contract.step_id}" for contract in contracts)
+    return (
+        "I created runtime plan state, but no executor or terminal state was recorded for "
+        f"the pending step(s): {pending}. I am stopping here instead of claiming that work "
+        "has started without runtime evidence."
+    )
+
+
+def _tool_result_requests_followup(tool_name: str | None, tool_result: Any) -> bool:
+    del tool_name
+    structured = _coerce_tool_result_dict(tool_result)
+    if structured is None:
         return False
     return bool(structured.get("followup_required"))
 
@@ -3644,8 +3804,6 @@ async def _needs_action_or_blocked_retry(
 ) -> bool:
     if not normalize_plain_text(candidate or "") or should_suppress_user_delivery(candidate):
         return False
-    if _looks_like_unbacked_action_commitment(candidate):
-        return True
     prompt = (
         "Classify whether the draft assistant response is safe to deliver as the final answer for this turn.\n"
         "Return JSON only with this shape:\n"
@@ -3681,37 +3839,6 @@ async def _needs_action_or_blocked_retry(
     except (TypeError, ValueError):
         confidence = 0.0
     return verdict == "requires_runtime_action_state" and confidence >= 0.55
-
-
-_UNBACKED_ACTION_BLOCKED_MARKERS = (
-    "blocked",
-    "cannot",
-    "can't",
-    "could not",
-    "i need",
-    "need you",
-    "please confirm",
-)
-
-_UNBACKED_ACTION_PATTERNS = (
-    re.compile(
-        r"\b(?:i(?:'m| am)\s+)?("
-        r"installing|activating|creating|starting|running|connecting|configuring|"
-        r"restarting|updating|saving|adding|writing|checking"
-        r")\b",
-        re.IGNORECASE,
-    ),
-)
-
-
-def _looks_like_unbacked_action_commitment(candidate: str) -> bool:
-    cleaned = normalize_plain_text(candidate or "")
-    if not cleaned:
-        return False
-    lowered = cleaned.lower()
-    if any(marker in lowered for marker in _UNBACKED_ACTION_BLOCKED_MARKERS):
-        return False
-    return any(pattern.search(cleaned) for pattern in _UNBACKED_ACTION_PATTERNS)
 
 
 async def _verify_final_response(

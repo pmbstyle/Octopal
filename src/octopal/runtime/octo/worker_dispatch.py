@@ -55,6 +55,7 @@ class OctoWorkerDispatchMixin:
         root_task_id: str | None = None,
         spawn_depth: int = 0,
         allowed_paths: list[str] | None = None,
+        required_tool_calls: list[str] | None = None,
     ) -> dict[str, Any]:
         trace_sink = self.trace_sink
         parent_trace_ctx = get_current_trace_context()
@@ -72,6 +73,7 @@ class OctoWorkerDispatchMixin:
             "root_task_id": root_task_id,
             "spawn_depth": spawn_depth,
             "allowed_paths_count": len(allowed_paths or []),
+            "required_tool_calls_count": len(required_tool_calls or []),
         }
         if trace_sink is not None and parent_trace_ctx is not None:
             dispatch_trace_ctx = await trace_sink.start_span(
@@ -224,6 +226,7 @@ class OctoWorkerDispatchMixin:
                 task=task,
                 inputs=inputs or {},
                 tools=tools,
+                required_tool_calls=required_tool_calls or [],
                 timeout_seconds=resolved_timeout_seconds,
                 run_id=run_id,
                 correlation_id=correlation_id,

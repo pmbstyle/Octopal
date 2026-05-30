@@ -835,7 +835,9 @@ def test_silent_control_route_suppresses_normal_route_reply_delivery() -> None:
 
 def test_send_file_to_user_respects_suppressed_delivery(tmp_path: Path) -> None:
     class DummyOcto:
-        async def internal_send_file(self, chat_id: int, path: str, caption: str | None = None) -> None:
+        async def internal_send_file(
+            self, chat_id: int, path: str, caption: str | None = None
+        ) -> None:
             raise AssertionError("file delivery should be blocked when user delivery is suppressed")
 
     token = suppress_user_delivery()
@@ -1026,11 +1028,11 @@ def test_normalize_worker_followup_reply_suppresses_embedded_no_response_json() 
     assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
 
 
-def test_normalize_worker_followup_reply_suppresses_internal_mode_leak() -> None:
+def test_normalize_worker_followup_reply_honors_structured_no_response_over_text() -> None:
     raw = """
     {
       "user_response": "I'm in bounded worker-result follow-up mode and can't modify the schedule from here. I'll do this on the next turn.",
-      "no_user_response": false,
+      "no_user_response": true,
       "actions_taken": [],
       "reason": "needs orchestration"
     }
@@ -1038,7 +1040,7 @@ def test_normalize_worker_followup_reply_suppresses_internal_mode_leak() -> None
     assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
 
 
-def test_normalize_worker_followup_reply_suppresses_a2a_mode_leak() -> None:
+def test_normalize_worker_followup_reply_uses_structured_response_without_phrase_guessing() -> None:
     raw = """
     {
       "user_response": "I don't have the A2A messaging tools available in my current tool set. I need to send the message from my full orchestration context. I will send it once I am back in full mode.",
@@ -1047,7 +1049,11 @@ def test_normalize_worker_followup_reply_suppresses_a2a_mode_leak() -> None:
       "reason": "needs orchestration"
     }
     """
-    assert _normalize_worker_followup_reply(raw) == "NO_USER_RESPONSE"
+    assert _normalize_worker_followup_reply(raw) == (
+        "I don't have the A2A messaging tools available in my current tool set. "
+        "I need to send the message from my full orchestration context. "
+        "I will send it once I am back in full mode."
+    )
 
 
 def test_build_worker_result_payload_keeps_preview_text_for_large_output() -> None:
@@ -1587,17 +1593,201 @@ def test_route_retries_unbacked_action_commitment_with_tools(monkeypatch) -> Non
     asyncio.run(scenario())
 
 
-def test_action_state_retry_catches_present_tense_action_commitment_without_verifier() -> None:
+def test_action_state_retry_uses_verifier_instead_of_keyword_heuristic() -> None:
     class DummyProvider:
+        def __init__(self) -> None:
+            self.verifier_seen = False
+
         async def complete(self, messages, **kwargs):
-            raise AssertionError("deterministic action heuristic should run before verifier")
+            self.verifier_seen = any(
+                "Classify whether the draft assistant response is safe to deliver"
+                in str(getattr(message, "content", "") or message.get("content", ""))
+                for message in messages
+            )
+            return '{"verdict":"requires_runtime_action_state","confidence":0.91,"reason":"draft needs action state"}'
 
     async def scenario() -> None:
+        provider = DummyProvider()
         assert await _needs_action_or_blocked_retry(
-            provider=DummyProvider(),
+            provider=provider,
             messages=[Message(role="user", content="install mcp, then activate it")],
             candidate="`uvx` is available. Installing MiniMax MCP...",
         )
+        assert provider.verifier_seen is True
+
+    asyncio.run(scenario())
+
+
+def test_route_forces_pending_runtime_plan_step_to_runtime_state(monkeypatch) -> None:
+    plan_result = {
+        "status": "ok",
+        "run_id": "plan-1",
+        "snapshot": {
+            "run": {"id": "plan-1", "status": "planned", "current_step_id": "step-1"},
+            "steps": [
+                {
+                    "run_id": "plan-1",
+                    "step_id": "step-1",
+                    "kind": "worker",
+                    "title": "Run worker",
+                    "status": "pending",
+                }
+            ],
+            "next_step": {
+                "run_id": "plan-1",
+                "step_id": "step-1",
+                "kind": "worker",
+                "title": "Run worker",
+                "status": "pending",
+            },
+        },
+    }
+
+    worker_result = {
+        "status": "started",
+        "worker_id": "worker-1",
+        "run_id": "worker-1",
+        "followup_required": True,
+        "plan_binding": {
+            "status": "ok",
+            "run_id": "plan-1",
+            "step_id": "step-1",
+            "worker_run_id": "worker-1",
+        },
+    }
+
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.retry_prompt_seen = False
+
+        async def complete(self, messages, **kwargs):
+            raise AssertionError("plain completion should not be used in this scenario")
+
+        async def complete_stream(self, messages, *, on_partial, **kwargs):
+            raise AssertionError("streaming should not be used in this scenario")
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-plan",
+                            "type": "function",
+                            "function": {"name": "plan_create", "arguments": "{}"},
+                        }
+                    ],
+                }
+            if self.calls == 2:
+                return {"content": "Plan is updated.", "tool_calls": []}
+            if self.calls == 3:
+                self.retry_prompt_seen = any(
+                    "Runtime state still contains an actionable plan step"
+                    in str(getattr(message, "content", ""))
+                    for message in messages
+                )
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-worker",
+                            "type": "function",
+                            "function": {
+                                "name": "start_worker",
+                                "arguments": json.dumps(
+                                    {
+                                        "plan_run_id": "plan-1",
+                                        "plan_step_id": "step-1",
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                }
+            return {"content": "Worker is recorded in runtime state.", "tool_calls": []}
+
+    class DummyMemory:
+        async def add_message(self, role, content, metadata=None):
+            return None
+
+    class DummyOcto:
+        store = object()
+        canon = object()
+        internal_progress_send = None
+        is_ws_active = False
+
+        def __init__(self) -> None:
+            self.followup_marked = 0
+
+        async def set_typing(self, chat_id: int, active: bool) -> None:
+            return None
+
+        async def set_thinking(self, active: bool) -> None:
+            return None
+
+        def peek_context_wakeup(self, chat_id: int) -> str:
+            return ""
+
+        def mark_structured_followup_required(self, correlation_id=None) -> None:
+            del correlation_id
+            self.followup_marked += 1
+
+    async def fake_build_octo_prompt(**kwargs):
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def fake_build_plan(provider, messages, has_tools):
+        return None
+
+    def fake_get_octo_tools(octo, chat_id):
+        def plan_create(args, ctx):
+            return json.dumps(plan_result)
+
+        def start_worker(args, ctx):
+            assert args["plan_run_id"] == "plan-1"
+            assert args["plan_step_id"] == "step-1"
+            return json.dumps(worker_result)
+
+        tools = [
+            ToolSpec(
+                name="plan_create",
+                description="Create plan",
+                parameters={"type": "object", "properties": {}, "additionalProperties": False},
+                permission="self_control",
+                handler=plan_create,
+            ),
+            ToolSpec(
+                name="start_worker",
+                description="Start worker",
+                parameters={"type": "object", "properties": {}, "additionalProperties": True},
+                permission="worker_manage",
+                handler=start_worker,
+            ),
+        ]
+        return tools, {"octo": octo, "chat_id": chat_id}
+
+    import octopal.runtime.octo.router as router
+
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(router, "_build_plan", fake_build_plan)
+    monkeypatch.setattr(router, "_get_octo_tools", fake_get_octo_tools)
+
+    async def scenario() -> None:
+        provider = DummyProvider()
+        octo = DummyOcto()
+        response = await router.route_or_reply(
+            octo,
+            provider,
+            DummyMemory(),
+            "do the task",
+            123,
+            "",
+        )
+        assert response == "Worker is recorded in runtime state."
+        assert provider.calls == 4
+        assert provider.retry_prompt_seen is True
+        assert octo.followup_marked == 1
 
     asyncio.run(scenario())
 

@@ -17,22 +17,6 @@ logger = structlog.get_logger(__name__)
 
 _SCHEDULED_OCTO_CONTROL_DONE = "SCHEDULED_TASK_DONE"
 _SCHEDULED_OCTO_CONTROL_BLOCKED = "SCHEDULED_TASK_BLOCKED"
-_SCHEDULED_OCTO_CONTROL_BLOCKED_MARKERS = (
-    "bounded `octo_control` route",
-    "bounded octo_control route",
-    "current bounded route",
-    "requires external network access",
-    "cannot be performed from the bounded",
-    "no workers may be launched",
-    "no direct tools available",
-    "requires a worker",
-    "no `a2a_send_message`",
-    "нет `a2a_send_message`",
-    "a2a messaging tools available in my current tool set",
-    "full orchestration context",
-    "полный режим",
-    "нет доступа к a2a",
-)
 
 
 def _coerce_control_plane_reply(text: str) -> str:
@@ -92,13 +76,6 @@ async def _normalize_heartbeat_delivery_reply(provider: InferenceProvider | None
     if explicit:
         return explicit
     return _coerce_control_plane_reply(rewritten)
-
-
-def _looks_like_scheduled_octo_control_route_block(text: str) -> bool:
-    value = normalize_plain_text(text or "").casefold()
-    if not value:
-        return False
-    return any(marker in value for marker in _SCHEDULED_OCTO_CONTROL_BLOCKED_MARKERS)
 
 
 def _coerce_scheduled_octo_control_reply(text: str) -> str:

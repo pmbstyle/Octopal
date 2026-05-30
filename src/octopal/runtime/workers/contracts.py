@@ -37,6 +37,7 @@ class TaskRequest(BaseModel):
     task: str  # Natural language task description
     inputs: dict[str, Any] = Field(default_factory=dict)  # Task-specific inputs
     tools: list[str] | None = None  # Override default tools if needed
+    required_tool_calls: list[str] = Field(default_factory=list)
     timeout_seconds: int | None = None  # Override default timeout
     run_id: str | None = None  # Optional caller-provided execution id
     correlation_id: str | None = None
@@ -59,6 +60,7 @@ class WorkerSpec(BaseModel):
     inputs: dict[str, Any]
     system_prompt: str
     available_tools: list[str]
+    required_tool_calls: list[str] = Field(default_factory=list)
     mcp_tools: list[dict[str, Any]] = Field(default_factory=list)
     model: str | None = None
     llm_config: LLMConfig | None = None

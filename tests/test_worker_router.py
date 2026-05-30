@@ -412,7 +412,7 @@ def test_start_worker_allows_subset_tool_override() -> None:
     assert octo.captured["tools"] == ["fs_read"]
 
 
-def test_start_worker_rejects_explicit_worker_without_image_capability() -> None:
+def test_start_worker_rejects_explicit_required_image_tool_without_capability() -> None:
     templates = [
         _template(
             "coder",
@@ -445,12 +445,13 @@ def test_start_worker_rejects_explicit_worker_without_image_capability() -> None
             {
                 "task": "Analyze the image at tmp/telegram_images/img_test.jpg",
                 "worker_id": "coder",
+                "required_tools": ["analyze_image"],
             },
             {"octo": _Octo(), "chat_id": 123},
         )
 
     result = asyncio.run(_scenario())
-    assert "does not advertise image/vision analysis capability" in result
+    assert "does not provide required tool(s): analyze_image" in result
 
 
 def test_start_worker_allows_research_about_image_recognition_without_image_capability() -> None:
@@ -504,7 +505,7 @@ def test_start_worker_allows_research_about_image_recognition_without_image_capa
     assert octo.captured["worker_id"] == "web_researcher"
 
 
-def test_start_worker_rejects_explicit_worker_without_workspace_write_capability() -> None:
+def test_start_worker_rejects_explicit_required_file_write_tool_without_capability() -> None:
     templates = [
         _template("web_researcher", "Web Researcher", "Searches web", ["web_search"], ["network"]),
     ]
@@ -531,13 +532,58 @@ def test_start_worker_rejects_explicit_worker_without_workspace_write_capability
             {
                 "task": "Create a short markdown report at experiments/qa/marker-worker-report.md.",
                 "worker_id": "web_researcher",
+                "required_tool_calls": ["fs_write"],
             },
             {"octo": _Octo(), "chat_id": 123},
         )
 
     result = asyncio.run(_scenario())
-    assert "does not advertise workspace write capability" in result
-    assert "fs_write/filesystem_write" in result
+    assert "does not provide required tool(s): fs_write" in result
+
+
+def test_start_worker_does_not_infer_workspace_write_requirement_from_task_text() -> None:
+    templates = [
+        _template("web_researcher", "Web Researcher", "Searches web", ["web_search"], ["network"]),
+    ]
+
+    class _Store:
+        def list_worker_templates(self):
+            return templates
+
+        def get_worker_template(self, worker_id: str):
+            for t in templates:
+                if t.id == worker_id:
+                    return t
+            return None
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+            self.captured = None
+
+        async def _start_worker_async(self, **kwargs):
+            self.captured = kwargs
+            return {
+                "status": "started",
+                "worker_id": kwargs["worker_id"],
+                "run_id": "run-1",
+            }
+
+    async def _scenario() -> tuple[str, _Octo]:
+        octo = _Octo()
+        result = await _tool_start_worker(
+            {
+                "task": "Create a short markdown report at experiments/qa/marker-worker-report.md.",
+                "worker_id": "web_researcher",
+            },
+            {"octo": octo, "chat_id": 123},
+        )
+        return result, octo
+
+    result, octo = asyncio.run(_scenario())
+    assert "started" in result
+    assert octo.captured is not None
+    assert octo.captured["required_tool_calls"] == []
 
 
 def test_start_worker_infers_existing_workspace_paths(monkeypatch, tmp_path) -> None:
