@@ -650,7 +650,9 @@ export function DashboardScreen({
                   <strong>{shortId(worker.id)}</strong>
                   <span className={statusClass(worker.status)}>{worker.status ?? "unknown"}</span>
                   <span>{worker.template_name ?? worker.template_id ?? "-"}</span>
-                  <span>{worker.task ?? worker.result_preview ?? worker.summary ?? worker.error ?? "-"}</span>
+                  <span className="dashboard-worker-task" title={worker.task ?? worker.result_preview ?? worker.summary ?? worker.error ?? ""}>
+                    {worker.task ?? worker.result_preview ?? worker.summary ?? worker.error ?? "-"}
+                  </span>
                   <span>{formatTime(worker.updated_at)}</span>
                   <span className="worker-row-open">
                     <Eye />
@@ -855,7 +857,6 @@ export function DashboardScreen({
             <div>
               <p className="worker-detail-kicker">Worker run</p>
               <h2>{selectedWorker.template_name ?? selectedWorker.template_id ?? shortId(selectedWorker.id)}</h2>
-              <p>{selectedWorker.task ?? preview}</p>
             </div>
             <div className="worker-detail-header-actions">
               {selectedWorkerTemplate ? (
