@@ -235,6 +235,55 @@ def test_mcp_manager_reads_legacy_workspace_mcp_config(tmp_path) -> None:
     assert resolved == ["AgentMail"]
 
 
+def test_mcp_manager_reads_claude_style_mcp_servers_config(tmp_path) -> None:
+    (tmp_path / ".mcp.json").write_text(
+        """
+{
+  "mcpServers": {
+    "minimax": {
+      "command": "uvx",
+      "args": ["minimax-coding-plan-mcp"],
+      "tools": ["mcp_minimax_web_search"]
+    }
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    manager = MCPManager(tmp_path)
+
+    resolved = manager.resolve_configured_server_ids_for_tools(["mcp_minimax_web_search"])
+
+    assert resolved == ["minimax"]
+
+
+def test_mcp_manager_skips_empty_compat_config_and_reads_canonical(tmp_path) -> None:
+    (tmp_path / ".mcp.json").write_text("", encoding="utf-8")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "mcp.json").write_text(
+        """
+{
+  "servers": {
+    "docs": {
+      "command": "uvx",
+      "args": ["docs-mcp"],
+      "tools": ["mcp_docs_search"]
+    }
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    manager = MCPManager(tmp_path)
+
+    resolved = manager.resolve_configured_server_ids_for_tools(["mcp_docs_search"])
+
+    assert resolved == ["docs"]
+
+
 def test_resolve_configured_server_id_for_tool_name_is_case_insensitive(tmp_path) -> None:
     configs = {
         "AgentMail": MCPServerConfig(

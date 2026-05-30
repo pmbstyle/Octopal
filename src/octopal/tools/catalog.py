@@ -1336,7 +1336,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Workspace-relative path to write.",
+                        "description": "Workspace-relative path to write, for example config/mcp.json instead of workspace/config/mcp.json.",
                     },
                     "content": {"type": "string", "description": "File contents."},
                 },

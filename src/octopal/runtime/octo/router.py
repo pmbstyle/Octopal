@@ -1546,9 +1546,6 @@ def _looks_like_internal_worker_followup_leak(text: str) -> bool:
         "current tool set",
         "bounded route",
         "on the next turn",
-        "полный режим",
-        "нет доступа к a2a",
-        "нет `a2a_send_message`",
     )
     orchestration_phrases = (
         "can't modify",
@@ -3647,6 +3644,8 @@ async def _needs_action_or_blocked_retry(
 ) -> bool:
     if not normalize_plain_text(candidate or "") or should_suppress_user_delivery(candidate):
         return False
+    if _looks_like_unbacked_action_commitment(candidate):
+        return True
     prompt = (
         "Classify whether the draft assistant response is safe to deliver as the final answer for this turn.\n"
         "Return JSON only with this shape:\n"
@@ -3682,6 +3681,37 @@ async def _needs_action_or_blocked_retry(
     except (TypeError, ValueError):
         confidence = 0.0
     return verdict == "requires_runtime_action_state" and confidence >= 0.55
+
+
+_UNBACKED_ACTION_BLOCKED_MARKERS = (
+    "blocked",
+    "cannot",
+    "can't",
+    "could not",
+    "i need",
+    "need you",
+    "please confirm",
+)
+
+_UNBACKED_ACTION_PATTERNS = (
+    re.compile(
+        r"\b(?:i(?:'m| am)\s+)?("
+        r"installing|activating|creating|starting|running|connecting|configuring|"
+        r"restarting|updating|saving|adding|writing|checking"
+        r")\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _looks_like_unbacked_action_commitment(candidate: str) -> bool:
+    cleaned = normalize_plain_text(candidate or "")
+    if not cleaned:
+        return False
+    lowered = cleaned.lower()
+    if any(marker in lowered for marker in _UNBACKED_ACTION_BLOCKED_MARKERS):
+        return False
+    return any(pattern.search(cleaned) for pattern in _UNBACKED_ACTION_PATTERNS)
 
 
 async def _verify_final_response(
