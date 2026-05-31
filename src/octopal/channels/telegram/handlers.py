@@ -871,6 +871,7 @@ def _flush_pending_turn_factory(
                     chat_id,
                     images=images,
                     saved_file_paths=saved_file_paths,
+                    source_channel="telegram",
                 )
             except Exception:
                 logger.exception("Failed to handle aggregated message", chat_id=chat_id)
@@ -937,13 +938,17 @@ def _flush_pending_turn_factory(
                         )
 
                 if final_text:
-                    await _enqueue_send(bot, chat_id, final_text, reply_to_message_id=reply_to_message_id)
+                    await _enqueue_send(
+                        bot, chat_id, final_text, reply_to_message_id=reply_to_message_id
+                    )
                 return
 
         update_last_message(settings)
         decision = resolve_user_delivery(str(reply))
         if decision.user_visible:
-            await _enqueue_send(bot, chat_id, decision.text, reply_to_message_id=reply_to_message_id)
+            await _enqueue_send(
+                bot, chat_id, decision.text, reply_to_message_id=reply_to_message_id
+            )
 
     return _flush_pending_turn
 

@@ -58,6 +58,19 @@ async def _send_worker_followup(
             return
         if octo.internal_send:
             await octo.internal_send(chat_id, decision.text)
+            emit_ws_chat_event = getattr(octo, "emit_ws_chat_event", None)
+            if callable(emit_ws_chat_event):
+                await emit_ws_chat_event(
+                    direction="outbound",
+                    role="assistant",
+                    channel="runtime",
+                    chat_id=chat_id,
+                    text=decision.text,
+                    meta={
+                        "delivery_source": "worker_followup",
+                        "batched_count": batched_count,
+                    },
+                )
             octo.note_user_visible_delivery(chat_id, decision.text)
             octo.clear_pending_conversational_closure(correlation_id)
             trace_output = {
@@ -151,6 +164,19 @@ async def _send_scheduler_control_update(
             return
         if octo.internal_send:
             await octo.internal_send(chat_id, decision.text)
+            emit_ws_chat_event = getattr(octo, "emit_ws_chat_event", None)
+            if callable(emit_ws_chat_event):
+                await emit_ws_chat_event(
+                    direction="outbound",
+                    role="assistant",
+                    channel="runtime",
+                    chat_id=chat_id,
+                    text=decision.text,
+                    meta={
+                        "delivery_source": "scheduled_control",
+                        "task_id": task_id,
+                    },
+                )
             octo.note_user_visible_delivery(chat_id, decision.text)
             trace_output = {
                 "status": "sent",

@@ -309,6 +309,7 @@ class WhatsAppRuntime:
                 chat_id,
                 images=images,
                 saved_file_paths=saved_file_paths,
+                source_channel="whatsapp",
             )
         update_last_message(self.settings)
         immediate = getattr(reply, "immediate", "")

@@ -4089,7 +4089,9 @@ def _build_partial_callback(
 ) -> Callable[[str], Awaitable[None]] | None:
     if chat_id <= 0 or not getattr(octo, "is_ws_active", False):
         return None
-    sender = getattr(octo, "internal_progress_send", None)
+    sender = getattr(octo, "emit_ws_progress", None)
+    if not callable(sender):
+        sender = getattr(octo, "internal_progress_send", None)
     if not callable(sender):
         return None
 

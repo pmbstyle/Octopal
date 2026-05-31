@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import mimetypes
+import os
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -85,6 +87,59 @@ def _build_ws_file_payload(file_path: str, caption: str | None = None) -> dict[s
     }
 
 
+def _resolve_ws_attachment_roots(settings: Any | None = None) -> tuple[Path, ...]:
+    workspace_dir = getattr(settings, "workspace_dir", None)
+    if workspace_dir is None:
+        workspace_dir = os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace")
+    return ((Path(workspace_dir).expanduser().resolve() / "tmp" / "desktop_chat"),)
+
+
+def _path_is_inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _extract_ws_saved_file_paths(
+    payload: dict[str, Any],
+    *,
+    allowed_roots: Iterable[Path | str] | None = None,
+) -> list[str]:
+    attachments = payload.get("attachments")
+    if not isinstance(attachments, list):
+        return []
+
+    roots = tuple(Path(root).expanduser().resolve() for root in (allowed_roots or ()))
+    if not roots:
+        roots = _resolve_ws_attachment_roots()
+
+    saved_paths: list[str] = []
+    for attachment in attachments[:8]:
+        raw_path: Any = None
+        if isinstance(attachment, str):
+            raw_path = attachment
+        elif isinstance(attachment, dict):
+            raw_path = attachment.get("path")
+        path_text = str(raw_path or "").strip()
+        if not path_text:
+            continue
+        path = Path(path_text).expanduser().resolve()
+        if not any(_path_is_inside(path, root) for root in roots):
+            logger.warning(
+                "Ignoring WebSocket attachment outside allowed roots",
+                path=str(path),
+                allowed_roots=[str(root) for root in roots],
+            )
+            continue
+        if not path.is_file():
+            logger.warning("Ignoring missing WebSocket attachment", path=str(path))
+            continue
+        saved_paths.append(str(path))
+    return saved_paths
+
+
 def _serialize_worker_snapshot(rows: list[Any]) -> list[dict[str, Any]]:
     snapshot: list[dict[str, Any]] = []
     for row in rows:
@@ -100,8 +155,24 @@ def _serialize_worker_snapshot(rows: list[Any]) -> list[dict[str, Any]]:
 
 
 def _resolve_ws_chat_id(settings: Any) -> int:
-    if settings.allowed_telegram_chat_ids:
-        first = settings.allowed_telegram_chat_ids.split(",")[0].strip()
+    if str(getattr(settings, "user_channel", "") or "").strip().lower() == "whatsapp":
+        try:
+            from octopal.channels.whatsapp.ids import (
+                parse_allowed_whatsapp_numbers,
+                whatsapp_chat_id,
+            )
+
+            numbers = parse_allowed_whatsapp_numbers(
+                str(getattr(settings, "allowed_whatsapp_numbers", "") or "")
+            )
+            if numbers:
+                return whatsapp_chat_id(numbers[0])
+        except Exception:
+            logger.debug("Failed to resolve WhatsApp chat id for WebSocket session", exc_info=True)
+
+    allowed_telegram_chat_ids = str(getattr(settings, "allowed_telegram_chat_ids", "") or "")
+    if allowed_telegram_chat_ids:
+        first = allowed_telegram_chat_ids.split(",")[0].strip()
         if first:
             try:
                 value = int(first)
@@ -119,6 +190,7 @@ class _ActiveWsSession:
     socket: WebSocket
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closed: asyncio.Event = field(default_factory=asyncio.Event)
+    mirrored_assistant_messages: int = 0
 
 
 @dataclass
@@ -246,6 +318,16 @@ def register_ws_routes(app: FastAPI) -> None:
                 chat_id=chat_id,
             )
 
+        async def _ws_chat_message(chat_id: int, payload: dict[str, Any]) -> None:
+            await _ws_send_json(
+                session,
+                payload,
+                event_name="chat_message",
+                chat_id=chat_id,
+            )
+            if payload.get("direction") == "outbound" and payload.get("role") == "assistant":
+                session.mirrored_assistant_messages += 1
+
         # A newer WS client takes over the interactive channel from any older session.
         async with app.state.ws_session_lock:
             previous_session: _ActiveWsSession | None = getattr(
@@ -299,6 +381,7 @@ def register_ws_routes(app: FastAPI) -> None:
                 progress=_ws_progress,
                 typing=_ws_typing,
                 worker_event=_ws_worker_event,
+                message_event=_ws_chat_message,
                 owner_id=connection_id,
                 force=True,
             )
@@ -333,6 +416,7 @@ def register_ws_routes(app: FastAPI) -> None:
         approvals = WsApprovalManager(
             send=lambda payload: _ws_send_json(session, payload, event_name="approval_request")
         )
+        attachment_roots = _resolve_ws_attachment_roots(settings)
         message_lock = asyncio.Lock()
         tasks: set[asyncio.Task] = set()
 
@@ -349,7 +433,15 @@ def register_ws_routes(app: FastAPI) -> None:
                         chat_id = payload_chat_id
 
                     task = asyncio.create_task(
-                        _handle_message(session, octo, approvals, message, chat_id, message_lock)
+                        _handle_message(
+                            session,
+                            octo,
+                            approvals,
+                            message,
+                            chat_id,
+                            message_lock,
+                            attachment_roots,
+                        )
                     )
                     tasks.add(task)
                     task.add_done_callback(lambda t: tasks.discard(t))
@@ -384,24 +476,43 @@ async def _handle_message(
     payload: dict[str, Any],
     chat_id: int,
     message_lock: asyncio.Lock,
+    attachment_roots: Iterable[Path | str] | None = None,
 ) -> None:
     text = str(payload.get("text", ""))
+    saved_file_paths = _extract_ws_saved_file_paths(payload, allowed_roots=attachment_roots)
+    mirrored_before = session.mirrored_assistant_messages
     try:
         async with message_lock:
+            emit_typing = getattr(octo, "emit_ws_typing", None)
+            if callable(emit_typing):
+                await emit_typing(chat_id, True)
             response = await octo.handle_message(
                 text,
                 chat_id,
                 approval_requester=approvals.request_approval,
                 is_ws=True,
+                saved_file_paths=saved_file_paths,
+                show_typing=False,
+                source_channel="desktop",
             )
+            if callable(emit_typing):
+                await emit_typing(chat_id, False)
     except Exception as exc:
         logger.exception("Octo failed to handle WS message")
         response = f"Error: {exc}"
+        emit_typing = getattr(octo, "emit_ws_typing", None)
+        if callable(emit_typing):
+            await emit_typing(chat_id, False)
 
     text_out = response.immediate if isinstance(response, OctoReply) else str(response)
     decision = resolve_user_delivery(text_out)
     if not decision.user_visible:
         logger.debug("Suppressed control response for WebSocket reply", chat_id=chat_id)
+        return
+    if session.mirrored_assistant_messages > mirrored_before:
+        logger.debug(
+            "Skipped legacy final WebSocket reply after mirrored assistant event", chat_id=chat_id
+        )
         return
     logger.info(
         "Sending final WebSocket reply",
