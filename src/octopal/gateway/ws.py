@@ -85,6 +85,29 @@ def _build_ws_file_payload(file_path: str, caption: str | None = None) -> dict[s
     }
 
 
+def _extract_ws_saved_file_paths(payload: dict[str, Any]) -> list[str]:
+    attachments = payload.get("attachments")
+    if not isinstance(attachments, list):
+        return []
+
+    saved_paths: list[str] = []
+    for attachment in attachments[:8]:
+        raw_path: Any = None
+        if isinstance(attachment, str):
+            raw_path = attachment
+        elif isinstance(attachment, dict):
+            raw_path = attachment.get("path")
+        path_text = str(raw_path or "").strip()
+        if not path_text:
+            continue
+        path = Path(path_text).expanduser().resolve()
+        if not path.is_file():
+            logger.warning("Ignoring missing WebSocket attachment", path=str(path))
+            continue
+        saved_paths.append(str(path))
+    return saved_paths
+
+
 def _serialize_worker_snapshot(rows: list[Any]) -> list[dict[str, Any]]:
     snapshot: list[dict[str, Any]] = []
     for row in rows:
@@ -135,6 +158,7 @@ class _ActiveWsSession:
     socket: WebSocket
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closed: asyncio.Event = field(default_factory=asyncio.Event)
+    mirrored_assistant_messages: int = 0
 
 
 @dataclass
@@ -269,6 +293,8 @@ def register_ws_routes(app: FastAPI) -> None:
                 event_name="chat_message",
                 chat_id=chat_id,
             )
+            if payload.get("direction") == "outbound" and payload.get("role") == "assistant":
+                session.mirrored_assistant_messages += 1
 
         # A newer WS client takes over the interactive channel from any older session.
         async with app.state.ws_session_lock:
@@ -411,6 +437,8 @@ async def _handle_message(
     message_lock: asyncio.Lock,
 ) -> None:
     text = str(payload.get("text", ""))
+    saved_file_paths = _extract_ws_saved_file_paths(payload)
+    mirrored_before = session.mirrored_assistant_messages
     try:
         async with message_lock:
             emit_typing = getattr(octo, "emit_ws_typing", None)
@@ -421,6 +449,7 @@ async def _handle_message(
                 chat_id,
                 approval_requester=approvals.request_approval,
                 is_ws=True,
+                saved_file_paths=saved_file_paths,
                 show_typing=False,
                 source_channel="desktop",
             )
@@ -437,6 +466,11 @@ async def _handle_message(
     decision = resolve_user_delivery(text_out)
     if not decision.user_visible:
         logger.debug("Suppressed control response for WebSocket reply", chat_id=chat_id)
+        return
+    if session.mirrored_assistant_messages > mirrored_before:
+        logger.debug(
+            "Skipped legacy final WebSocket reply after mirrored assistant event", chat_id=chat_id
+        )
         return
     logger.info(
         "Sending final WebSocket reply",
