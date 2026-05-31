@@ -367,12 +367,12 @@ export function ChatView({ active, installDir }: ChatViewProps) {
   }
 
   async function chooseFiles(): Promise<void> {
-    if (!window.octopalDesktop || sending) {
+    if (!window.octopalDesktop || !installDir || sending) {
       return;
     }
     setSendError("");
     try {
-      const chosen = await window.octopalDesktop.chooseChatFiles();
+      const chosen = await window.octopalDesktop.chooseChatFiles(installDir);
       appendAttachments(chosen);
     } catch (error) {
       setSendError(

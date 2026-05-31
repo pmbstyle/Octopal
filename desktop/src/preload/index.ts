@@ -392,9 +392,10 @@ contextBridge.exposeInMainWorld("octopalDesktop", {
     ipcRenderer.invoke(
       "desktop:chat-disconnect",
     ) as Promise<DesktopChatConnectionStatus>,
-  chooseChatFiles: () =>
+  chooseChatFiles: (installDir: string) =>
     ipcRenderer.invoke(
       "desktop:chat-choose-files",
+      installDir,
     ) as Promise<DesktopChatAttachment[]>,
   savePastedChatImage: (installDir: string, image: DesktopPastedChatImage) =>
     ipcRenderer.invoke(

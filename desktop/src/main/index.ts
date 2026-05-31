@@ -11,6 +11,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
   access,
+  copyFile,
   mkdir,
   readdir,
   readFile,
@@ -57,6 +58,8 @@ import {
 
 const execFileAsync = promisify(execFile);
 const EXISTING_SECRET_VALUE = "__OCTOPAL_DESKTOP_EXISTING_SECRET__";
+const DESKTOP_CHAT_ATTACHMENT_LIMIT = 8;
+const DESKTOP_CHAT_PREVIEW_MAX_BYTES = 25 * 1024 * 1024;
 
 type DesktopSettings = {
   language: "en" | "fr" | "es" | "zh";
@@ -1422,19 +1425,23 @@ function sendDesktopChatPayload(payload: DesktopChatClientEvent): void {
   socket.send(JSON.stringify(payload));
 }
 
-async function desktopChatAttachmentForPath(filePath: string): Promise<DesktopChatAttachment | null> {
+async function desktopChatAttachmentForPath(
+  filePath: string,
+  displayName?: string,
+): Promise<DesktopChatAttachment | null> {
   const path = resolve(String(filePath || ""));
   const info = await stat(path);
   if (!info.isFile()) {
     return null;
   }
   const mimeType = imageMimeTypeForPath(path);
-  const previewUrl = mimeType
+  const previewUrl = mimeType && info.size <= DESKTOP_CHAT_PREVIEW_MAX_BYTES
     ? `data:${mimeType};base64,${(await readFile(path)).toString("base64")}`
     : undefined;
+  const name = String(displayName || basename(path)).trim() || basename(path);
   return {
     path,
-    name: basename(path),
+    name,
     sizeBytes: info.size,
     ...(previewUrl ? { previewUrl } : {}),
   };
@@ -1478,6 +1485,37 @@ function imageExtensionForMimeType(mimeType: string): string {
   }
 }
 
+async function resolveDesktopChatAttachmentDir(installDir: string): Promise<string> {
+  const normalizedInstallDir = resolve(String(installDir || ""));
+  const config = await loadRawConfigForInstall(normalizedInstallDir);
+  return join(resolveConfiguredWorkspaceDir(normalizedInstallDir, config), "tmp", "desktop_chat");
+}
+
+function safeDesktopChatFileName(name: string, fallback: string): string {
+  const safeName = String(name || fallback)
+    .replace(/[\\/]/g, "_")
+    .replace(/^\.+$/, "")
+    .trim();
+  return safeName || fallback;
+}
+
+async function stageDesktopChatFile(
+  installDir: string,
+  sourcePath: string,
+): Promise<DesktopChatAttachment | null> {
+  const source = resolve(String(sourcePath || ""));
+  const info = await stat(source);
+  if (!info.isFile()) {
+    return null;
+  }
+  const targetDir = await resolveDesktopChatAttachmentDir(installDir);
+  await mkdir(targetDir, { recursive: true });
+  const name = safeDesktopChatFileName(basename(source), `attachment-${randomUUID()}`);
+  const targetPath = join(targetDir, `${randomUUID()}-${name}`);
+  await copyFile(source, targetPath);
+  return desktopChatAttachmentForPath(targetPath, name);
+}
+
 async function saveDesktopChatPastedImage(
   installDir: string,
   image: DesktopPastedChatImage,
@@ -1506,25 +1544,28 @@ async function saveDesktopChatPastedImage(
     throw new Error("Clipboard image is too large.");
   }
 
-  const config = await loadRawConfigForInstall(normalizedInstallDir);
-  const targetDir = join(resolveConfiguredWorkspaceDir(normalizedInstallDir, config), "tmp", "desktop_chat");
+  const targetDir = await resolveDesktopChatAttachmentDir(normalizedInstallDir);
   await mkdir(targetDir, { recursive: true });
   const extension = imageExtensionForMimeType(match.groups.mime || mimeType);
-  const name = stringValue(image.name, `pasted-image-${randomUUID()}${extension}`)
-    .replace(/[\\/]/g, "_")
-    .replace(/^\.+$/, "");
+  const name = safeDesktopChatFileName(
+    stringValue(image.name, `pasted-image-${randomUUID()}${extension}`),
+    `pasted-image-${randomUUID()}${extension}`,
+  );
   const fileName = name.includes(".") ? name : `${name}${extension}`;
   const filePath = join(targetDir, `${randomUUID()}-${fileName}`);
   await writeFile(filePath, binary);
 
-  const attachment = await desktopChatAttachmentForPath(filePath);
+  const attachment = await desktopChatAttachmentForPath(filePath, fileName);
   if (!attachment) {
     throw new Error("Unable to save pasted image.");
   }
   return attachment;
 }
 
-async function chooseDesktopChatFiles(window: BrowserWindow | null): Promise<DesktopChatAttachment[]> {
+async function chooseDesktopChatFiles(
+  window: BrowserWindow | null,
+  installDir: string,
+): Promise<DesktopChatAttachment[]> {
   const options: OpenDialogOptions = {
     title: "Attach files",
     properties: ["openFile", "multiSelections"],
@@ -1537,9 +1578,9 @@ async function chooseDesktopChatFiles(window: BrowserWindow | null): Promise<Des
   }
 
   const attachments: DesktopChatAttachment[] = [];
-  for (const filePath of result.filePaths.slice(0, 8)) {
+  for (const filePath of result.filePaths.slice(0, DESKTOP_CHAT_ATTACHMENT_LIMIT)) {
     try {
-      const attachment = await desktopChatAttachmentForPath(filePath);
+      const attachment = await stageDesktopChatFile(installDir, filePath);
       if (attachment) {
         attachments.push(attachment);
       }
@@ -1906,8 +1947,8 @@ ipcMain.handle("desktop:chat-connect", async (event, installDir: string) =>
   connectDesktopChat(installDir, BrowserWindow.fromWebContents(event.sender)),
 );
 ipcMain.handle("desktop:chat-disconnect", async () => closeChatSocket());
-ipcMain.handle("desktop:chat-choose-files", async (event) =>
-  chooseDesktopChatFiles(BrowserWindow.fromWebContents(event.sender)),
+ipcMain.handle("desktop:chat-choose-files", async (event, installDir: string) =>
+  chooseDesktopChatFiles(BrowserWindow.fromWebContents(event.sender), installDir),
 );
 ipcMain.handle(
   "desktop:chat-save-pasted-image",

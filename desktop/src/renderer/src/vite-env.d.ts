@@ -343,7 +343,7 @@ type OctopalDesktopApi = {
   getWorkerTemplates: (installDir: string) => Promise<DesktopWorkerTemplate[]>;
   connectChat: (installDir: string) => Promise<DesktopChatConnectionStatus>;
   disconnectChat: () => Promise<DesktopChatConnectionStatus>;
-  chooseChatFiles: () => Promise<DesktopChatAttachment[]>;
+  chooseChatFiles: (installDir: string) => Promise<DesktopChatAttachment[]>;
   savePastedChatImage: (
     installDir: string,
     image: DesktopPastedChatImage,

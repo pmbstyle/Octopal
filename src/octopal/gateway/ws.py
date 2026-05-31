@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import mimetypes
+import os
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -85,10 +87,33 @@ def _build_ws_file_payload(file_path: str, caption: str | None = None) -> dict[s
     }
 
 
-def _extract_ws_saved_file_paths(payload: dict[str, Any]) -> list[str]:
+def _resolve_ws_attachment_roots(settings: Any | None = None) -> tuple[Path, ...]:
+    workspace_dir = getattr(settings, "workspace_dir", None)
+    if workspace_dir is None:
+        workspace_dir = os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace")
+    return ((Path(workspace_dir).expanduser().resolve() / "tmp" / "desktop_chat"),)
+
+
+def _path_is_inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _extract_ws_saved_file_paths(
+    payload: dict[str, Any],
+    *,
+    allowed_roots: Iterable[Path | str] | None = None,
+) -> list[str]:
     attachments = payload.get("attachments")
     if not isinstance(attachments, list):
         return []
+
+    roots = tuple(Path(root).expanduser().resolve() for root in (allowed_roots or ()))
+    if not roots:
+        roots = _resolve_ws_attachment_roots()
 
     saved_paths: list[str] = []
     for attachment in attachments[:8]:
@@ -101,6 +126,13 @@ def _extract_ws_saved_file_paths(payload: dict[str, Any]) -> list[str]:
         if not path_text:
             continue
         path = Path(path_text).expanduser().resolve()
+        if not any(_path_is_inside(path, root) for root in roots):
+            logger.warning(
+                "Ignoring WebSocket attachment outside allowed roots",
+                path=str(path),
+                allowed_roots=[str(root) for root in roots],
+            )
+            continue
         if not path.is_file():
             logger.warning("Ignoring missing WebSocket attachment", path=str(path))
             continue
@@ -384,6 +416,7 @@ def register_ws_routes(app: FastAPI) -> None:
         approvals = WsApprovalManager(
             send=lambda payload: _ws_send_json(session, payload, event_name="approval_request")
         )
+        attachment_roots = _resolve_ws_attachment_roots(settings)
         message_lock = asyncio.Lock()
         tasks: set[asyncio.Task] = set()
 
@@ -400,7 +433,15 @@ def register_ws_routes(app: FastAPI) -> None:
                         chat_id = payload_chat_id
 
                     task = asyncio.create_task(
-                        _handle_message(session, octo, approvals, message, chat_id, message_lock)
+                        _handle_message(
+                            session,
+                            octo,
+                            approvals,
+                            message,
+                            chat_id,
+                            message_lock,
+                            attachment_roots,
+                        )
                     )
                     tasks.add(task)
                     task.add_done_callback(lambda t: tasks.discard(t))
@@ -435,9 +476,10 @@ async def _handle_message(
     payload: dict[str, Any],
     chat_id: int,
     message_lock: asyncio.Lock,
+    attachment_roots: Iterable[Path | str] | None = None,
 ) -> None:
     text = str(payload.get("text", ""))
-    saved_file_paths = _extract_ws_saved_file_paths(payload)
+    saved_file_paths = _extract_ws_saved_file_paths(payload, allowed_roots=attachment_roots)
     mirrored_before = session.mirrored_assistant_messages
     try:
         async with message_lock:

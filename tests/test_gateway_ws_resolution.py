@@ -120,8 +120,12 @@ def test_build_ws_file_payload_includes_base64_metadata(tmp_path: Path) -> None:
     assert payload["path"] == str(file_path.resolve())
 
 
-def test_extract_ws_saved_file_paths_keeps_existing_files(tmp_path: Path) -> None:
-    file_path = tmp_path / "report.txt"
+def test_extract_ws_saved_file_paths_keeps_existing_files_inside_allowed_root(
+    tmp_path: Path,
+) -> None:
+    allowed_root = tmp_path / "workspace" / "tmp" / "desktop_chat"
+    allowed_root.mkdir(parents=True)
+    file_path = allowed_root / "report.txt"
     file_path.write_text("hello ws", encoding="utf-8")
 
     paths = _extract_ws_saved_file_paths(
@@ -131,10 +135,25 @@ def test_extract_ws_saved_file_paths_keeps_existing_files(tmp_path: Path) -> Non
                 {"path": str(tmp_path / "missing.txt")},
                 "",
             ]
-        }
+        },
+        allowed_roots=[allowed_root],
     )
 
     assert paths == [str(file_path.resolve())]
+
+
+def test_extract_ws_saved_file_paths_rejects_files_outside_allowed_root(tmp_path: Path) -> None:
+    allowed_root = tmp_path / "workspace" / "tmp" / "desktop_chat"
+    allowed_root.mkdir(parents=True)
+    file_path = tmp_path / "report.txt"
+    file_path.write_text("hello ws", encoding="utf-8")
+
+    paths = _extract_ws_saved_file_paths(
+        {"attachments": [{"path": str(file_path)}]},
+        allowed_roots=[allowed_root],
+    )
+
+    assert paths == []
 
 
 def test_websocket_message_is_delivered_as_client_expects() -> None:
@@ -229,7 +248,9 @@ async def test_websocket_message_handler_passes_attachment_paths(tmp_path: Path)
             self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
             return OctoReply(immediate="got it", followup=None, followup_required=False)
 
-    file_path = tmp_path / "report.txt"
+    attachment_root = tmp_path / "workspace" / "tmp" / "desktop_chat"
+    attachment_root.mkdir(parents=True)
+    file_path = attachment_root / "report.txt"
     file_path.write_text("hello ws", encoding="utf-8")
     socket = FakeSocket()
     session = _ActiveWsSession(connection_id="test", socket=socket)  # type: ignore[arg-type]
@@ -243,6 +264,7 @@ async def test_websocket_message_handler_passes_attachment_paths(tmp_path: Path)
         {"type": "message", "text": "read this", "attachments": [{"path": str(file_path)}]},
         42,
         asyncio.Lock(),
+        [attachment_root],
     )
 
     assert octo.calls[0]["kwargs"]["saved_file_paths"] == [str(file_path.resolve())]
