@@ -4091,6 +4091,8 @@ def _build_partial_callback(
         return None
     sender = getattr(octo, "emit_ws_progress", None)
     if not callable(sender):
+        sender = getattr(octo, "internal_progress_send", None)
+    if not callable(sender):
         return None
 
     async def _on_partial(text: str) -> None:

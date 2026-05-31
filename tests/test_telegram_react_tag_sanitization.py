@@ -47,7 +47,9 @@ def test_extract_edge_reaction_fallback_handles_short_confirmation_text() -> Non
 
 def test_telegram_uses_reply_reaction_fallback_when_immediate_loses_tag(tmp_path) -> None:
     class DummyOcto:
-        async def handle_message(self, text: str, chat_id: int, images=None, saved_file_paths=None):
+        async def handle_message(
+            self, text: str, chat_id: int, images=None, saved_file_paths=None, **kwargs
+        ):
             return OctoReply(
                 immediate="Поставила! Посмотрим, появится ли 👻",
                 followup=None,
@@ -63,13 +65,17 @@ def test_telegram_uses_reply_reaction_fallback_when_immediate_loses_tag(tmp_path
         async def set_message_reaction(self, chat_id: int, message_id: int, reaction):
             self.reactions.append((chat_id, message_id, reaction[0].emoji))
 
-        async def send_message(self, chat_id: int, text: str, parse_mode=None, reply_to_message_id=None):
+        async def send_message(
+            self, chat_id: int, text: str, parse_mode=None, reply_to_message_id=None
+        ):
             self.messages.append((chat_id, text, reply_to_message_id))
             return None
 
     queued_messages: list[tuple[int, str, int | None]] = []
 
-    async def fake_enqueue_send(bot, chat_id: int, text: str, reply_to_message_id: int | None = None) -> None:
+    async def fake_enqueue_send(
+        bot, chat_id: int, text: str, reply_to_message_id: int | None = None
+    ) -> None:
         queued_messages.append((chat_id, text, reply_to_message_id))
 
     original_enqueue = telegram_handlers._enqueue_send
@@ -84,6 +90,7 @@ def test_telegram_uses_reply_reaction_fallback_when_immediate_loses_tag(tmp_path
     flush = _flush_pending_turn_factory(DummyOcto(), settings, bot)
 
     try:
+
         async def scenario() -> None:
             await flush(
                 211619002,
@@ -108,7 +115,9 @@ def test_telegram_uses_reply_reaction_fallback_when_immediate_loses_tag(tmp_path
 
 def test_telegram_infers_reaction_from_short_text_edge_emoji(tmp_path) -> None:
     class DummyOcto:
-        async def handle_message(self, text: str, chat_id: int, images=None, saved_file_paths=None):
+        async def handle_message(
+            self, text: str, chat_id: int, images=None, saved_file_paths=None, **kwargs
+        ):
             return OctoReply(
                 immediate="Поставила! 👻",
                 followup=None,
@@ -124,13 +133,17 @@ def test_telegram_infers_reaction_from_short_text_edge_emoji(tmp_path) -> None:
         async def set_message_reaction(self, chat_id: int, message_id: int, reaction):
             self.reactions.append((chat_id, message_id, reaction[0].emoji))
 
-        async def send_message(self, chat_id: int, text: str, parse_mode=None, reply_to_message_id=None):
+        async def send_message(
+            self, chat_id: int, text: str, parse_mode=None, reply_to_message_id=None
+        ):
             self.messages.append((chat_id, text, reply_to_message_id))
             return None
 
     queued_messages: list[tuple[int, str, int | None]] = []
 
-    async def fake_enqueue_send(bot, chat_id: int, text: str, reply_to_message_id: int | None = None) -> None:
+    async def fake_enqueue_send(
+        bot, chat_id: int, text: str, reply_to_message_id: int | None = None
+    ) -> None:
         queued_messages.append((chat_id, text, reply_to_message_id))
 
     original_enqueue = telegram_handlers._enqueue_send
@@ -145,6 +158,7 @@ def test_telegram_infers_reaction_from_short_text_edge_emoji(tmp_path) -> None:
     flush = _flush_pending_turn_factory(DummyOcto(), settings, bot)
 
     try:
+
         async def scenario() -> None:
             await flush(
                 211619002,
