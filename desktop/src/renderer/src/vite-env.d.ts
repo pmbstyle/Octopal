@@ -85,7 +85,15 @@ type DesktopUpdateResult = {
 
 type DesktopAppUpdateStatus = {
   ok: boolean;
-  status: "idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "installing" | "error";
+  status:
+    | "idle"
+    | "checking"
+    | "available"
+    | "not-available"
+    | "downloading"
+    | "downloaded"
+    | "installing"
+    | "error";
   currentVersion: string;
   latestVersion?: string;
   releaseName?: string;
@@ -228,7 +236,12 @@ type DesktopDashboardSnapshot = {
     recent: DesktopDashboardWorkerRun[];
   };
   system?: {
-    services: Array<{ id: string; name: string; status: string; reason: string }>;
+    services: Array<{
+      id: string;
+      name: string;
+      status: string;
+      reason: string;
+    }>;
     mcpServers: Array<{
       id: string;
       name: string;
@@ -239,7 +252,12 @@ type DesktopDashboardSnapshot = {
       reconnectAttempts: number;
       error?: string;
     }>;
-    logs: Array<{ timestamp?: string; level?: string; service?: string; event?: string }>;
+    logs: Array<{
+      timestamp?: string;
+      level?: string;
+      service?: string;
+      event?: string;
+    }>;
   };
 };
 
@@ -257,6 +275,31 @@ type DesktopWorkerTemplate = {
   allowed_child_templates: string[];
   created_at?: string;
   updated_at?: string;
+};
+
+type DesktopChatConnectionStatus = {
+  ok: boolean;
+  state: "idle" | "connecting" | "connected" | "disconnected" | "error";
+  detail: string;
+  installDir?: string;
+  url?: string;
+};
+
+type DesktopChatEvent = Record<string, unknown> & {
+  type?: string;
+};
+
+type DesktopChatAttachment = {
+  path: string;
+  name: string;
+  sizeBytes: number;
+  previewUrl?: string;
+};
+
+type DesktopPastedChatImage = {
+  name?: string;
+  mimeType?: string;
+  dataUrl?: string;
 };
 
 type OctopalDesktopApi = {
@@ -284,26 +327,57 @@ type OctopalDesktopApi = {
   saveOctopalConfig: (config: unknown) => Promise<DesktopInstallState>;
   writeInstallPlan: (payload: unknown) => Promise<{ planPath: string }>;
   installOctopal: (payload: unknown) => Promise<DesktopInstallResult>;
-  startOctopal: (installDir: string) => Promise<DesktopStartResult | DesktopStartFailure>;
-  stopOctopal: (installDir: string) => Promise<DesktopStopResult | DesktopStopFailure>;
+  startOctopal: (
+    installDir: string,
+  ) => Promise<DesktopStartResult | DesktopStartFailure>;
+  stopOctopal: (
+    installDir: string,
+  ) => Promise<DesktopStopResult | DesktopStopFailure>;
   getOctopalStatus: (installDir: string) => Promise<DesktopRuntimeStatus>;
   checkOctopalUpdate: (installDir: string) => Promise<DesktopUpdateStatus>;
   updateOctopal: (installDir: string) => Promise<DesktopUpdateResult>;
-  getDashboardSnapshot: (installDir: string) => Promise<DesktopDashboardSnapshot>;
+  getDashboardSnapshot: (
+    installDir: string,
+  ) => Promise<DesktopDashboardSnapshot>;
   openOctopalLogs: (installDir: string) => Promise<boolean>;
   getWorkerTemplates: (installDir: string) => Promise<DesktopWorkerTemplate[]>;
+  connectChat: (installDir: string) => Promise<DesktopChatConnectionStatus>;
+  disconnectChat: () => Promise<DesktopChatConnectionStatus>;
+  chooseChatFiles: () => Promise<DesktopChatAttachment[]>;
+  savePastedChatImage: (
+    installDir: string,
+    image: DesktopPastedChatImage,
+  ) => Promise<DesktopChatAttachment>;
+  sendChatMessage: (payload: {
+    text?: string;
+    chatId?: number | null;
+    attachments?: DesktopChatAttachment[];
+  }) => Promise<{ ok: boolean }>;
+  sendChatApprovalResponse: (
+    intentId: string,
+    approved: boolean,
+  ) => Promise<{ ok: boolean }>;
+  pingChat: () => Promise<{ ok: boolean }>;
   saveWorkerTemplate: (
     installDir: string,
     template: DesktopWorkerTemplate,
     mode: "create" | "update",
   ) => Promise<DesktopWorkerTemplate>;
-  deleteWorkerTemplate: (installDir: string, templateId: string) => Promise<void>;
+  deleteWorkerTemplate: (
+    installDir: string,
+    templateId: string,
+  ) => Promise<void>;
   getAppUpdateStatus: () => Promise<DesktopAppUpdateStatus>;
   checkAppUpdate: () => Promise<DesktopAppUpdateStatus>;
   downloadAppUpdate: () => Promise<DesktopAppUpdateStatus>;
   installAppUpdate: () => Promise<DesktopAppUpdateStatus>;
-  getConnectorStatus: (installDir: string) => Promise<DesktopConnectorStatusResult>;
-  authorizeConnector: (installDir: string, payload: DesktopConnectorAuthPayload) => Promise<DesktopConnectorActionResult>;
+  getConnectorStatus: (
+    installDir: string,
+  ) => Promise<DesktopConnectorStatusResult>;
+  authorizeConnector: (
+    installDir: string,
+    payload: DesktopConnectorAuthPayload,
+  ) => Promise<DesktopConnectorActionResult>;
   disconnectConnector: (
     installDir: string,
     name: DesktopConnectorName,
@@ -314,11 +388,23 @@ type OctopalDesktopApi = {
   disconnectCodexAuth: () => Promise<{ success: boolean; error?: string }>;
   listCodexModels: () => Promise<DesktopCodexModelListResult>;
   startWhatsAppLink: (installDir: string) => Promise<DesktopWhatsAppLinkStatus>;
-  getWhatsAppLinkStatus: (installDir: string) => Promise<DesktopWhatsAppLinkStatus>;
+  getWhatsAppLinkStatus: (
+    installDir: string,
+  ) => Promise<DesktopWhatsAppLinkStatus>;
   stopWhatsAppLink: (installDir: string) => Promise<DesktopWhatsAppLinkStatus>;
-  onInstallEvent: (callback: (event: DesktopInstallEvent) => void) => () => void;
-  onAppUpdateStatus: (callback: (status: DesktopAppUpdateStatus) => void) => () => void;
-  onCodexAuthStatus: (callback: (status: DesktopCodexAuthStatus) => void) => () => void;
+  onInstallEvent: (
+    callback: (event: DesktopInstallEvent) => void,
+  ) => () => void;
+  onAppUpdateStatus: (
+    callback: (status: DesktopAppUpdateStatus) => void,
+  ) => () => void;
+  onChatStatus: (
+    callback: (status: DesktopChatConnectionStatus) => void,
+  ) => () => void;
+  onChatEvent: (callback: (event: DesktopChatEvent) => void) => () => void;
+  onCodexAuthStatus: (
+    callback: (status: DesktopCodexAuthStatus) => void,
+  ) => () => void;
   onCodexAuthUpdated: (callback: () => void) => () => void;
 };
 
