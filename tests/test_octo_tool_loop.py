@@ -161,6 +161,56 @@ async def test_handle_octo_tool_call_captures_tool_exceptions() -> None:
     assert meta["had_error"] is True
 
 
+@pytest.mark.asyncio
+async def test_handle_octo_tool_call_emits_ws_tool_start_event() -> None:
+    class DummyOcto:
+        is_ws_active = True
+
+        def __init__(self) -> None:
+            self.progress: list[dict[str, object]] = []
+
+        async def emit_ws_progress(
+            self,
+            chat_id: int,
+            state: str,
+            text: str,
+            meta: dict,
+        ) -> None:
+            self.progress.append({"chat_id": chat_id, "state": state, "text": text, "meta": meta})
+
+    octo = DummyOcto()
+    result, meta = await _handle_octo_tool_call(
+        {"function": {"name": "fs_read", "arguments": '{"path":"README.md"}'}},
+        [_tool("fs_read", handler=lambda _args, _ctx: {"ok": True})],
+        {"octo": octo, "chat_id": 42},
+    )
+
+    assert result == {"ok": True}
+    assert meta["had_error"] is False
+    assert octo.progress == [
+        {
+            "chat_id": 42,
+            "state": "tool_start",
+            "text": "Octo using fs_read",
+            "meta": {
+                "tool_name": "fs_read",
+                "args_preview": '{"path": "README.md"}',
+            },
+        }
+    ]
+
+    octo.progress.clear()
+    result, meta = await _handle_octo_tool_call(
+        {"function": {"name": "start_worker", "arguments": '{"worker_id":"coder"}'}},
+        [_tool("start_worker", handler=lambda _args, _ctx: {"status": "started"})],
+        {"octo": octo, "chat_id": 42},
+    )
+
+    assert result == {"status": "started"}
+    assert meta["had_error"] is False
+    assert octo.progress[0]["text"] == "Octo starting coder worker"
+
+
 def test_record_octo_tool_call_returns_warning_for_repeated_no_progress() -> None:
     history: list[dict[str, str]] = []
     call = {"function": {"name": "web_search", "arguments": '{"query":"same"}'}}

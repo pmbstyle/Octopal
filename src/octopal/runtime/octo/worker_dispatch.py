@@ -199,7 +199,7 @@ class OctoWorkerDispatchMixin:
             await self._emit_progress(
                 chat_id,
                 "queued",
-                f"Queued worker '{worker_id}' as {run_id}.",
+                f"Queued {worker_id} worker.",
                 {
                     "worker_id": run_id,
                     "worker_template_id": worker_id,
@@ -259,7 +259,7 @@ class OctoWorkerDispatchMixin:
                     await self._emit_progress(
                         chat_id,
                         "running",
-                        f"Worker {run_id} is running.",
+                        f"{worker_id} worker is running.",
                         {"worker_id": run_id, "worker_template_id": worker_id},
                     )
                     await self._emit_worker_event(
@@ -300,11 +300,11 @@ class OctoWorkerDispatchMixin:
                                 worker_status=worker_status,
                             )
                     progress_state = "completed"
-                    progress_text = f"Worker {run_id} completed."
+                    progress_text = f"{worker_id} worker completed."
                     if failed:
                         normalized_status = str(worker_status or "failed").strip().lower()
                         progress_state = "stopped" if normalized_status == "stopped" else "failed"
-                        progress_text = f"Worker {run_id} {normalized_status}."
+                        progress_text = f"{worker_id} worker {normalized_status}."
                     else:
                         self._register_progress(chat_id, "worker_completed")
                     dispatch_trace_output = {
@@ -358,7 +358,7 @@ class OctoWorkerDispatchMixin:
                     await self._emit_progress(
                         chat_id,
                         "failed",
-                        f"Worker {run_id} failed: {exc}",
+                        f"{worker_id} worker failed: {exc}",
                         {"worker_id": run_id, "worker_template_id": worker_id},
                     )
                     await self._emit_worker_event(
@@ -412,7 +412,7 @@ class OctoWorkerDispatchMixin:
             await self._emit_progress(
                 chat_id,
                 "worker_started",
-                f"Worker started: {run_id}",
+                f"{worker_id} worker started.",
                 {
                     "worker_id": run_id,
                     "worker_template_id": worker_id,

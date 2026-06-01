@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from octopal.gateway.ws import (
+    DESKTOP_WS_CHAT_ID,
     WsApprovalManager,
     _ActiveWsSession,
     _build_ws_file_payload,
@@ -17,14 +19,17 @@ from octopal.gateway.ws import (
     _handle_message,
     _is_local_ws_client,
     _resolve_ws_chat_id,
+    _serialize_ws_chat_history,
     register_ws_routes,
 )
+from octopal.infrastructure.store.models import MemoryEntry
 from octopal.runtime.octo.core import OctoReply
 
 
 def test_resolve_ws_chat_id_returns_positive_when_no_allowlist() -> None:
     settings = SimpleNamespace(allowed_telegram_chat_ids="")
-    assert _resolve_ws_chat_id(settings) > 0
+    assert _resolve_ws_chat_id(settings) == DESKTOP_WS_CHAT_ID
+    assert _resolve_ws_chat_id(settings) == _resolve_ws_chat_id(settings)
 
 
 def test_resolve_ws_chat_id_uses_first_allowed_id_when_valid() -> None:
@@ -154,6 +159,71 @@ def test_extract_ws_saved_file_paths_rejects_files_outside_allowed_root(tmp_path
     )
 
     assert paths == []
+
+
+def test_serialize_ws_chat_history_uses_recent_persisted_messages() -> None:
+    def entry(
+        entry_id: str,
+        role: str,
+        content: str,
+        *,
+        channel: str = "telegram",
+        heartbeat: bool = False,
+    ) -> MemoryEntry:
+        return MemoryEntry(
+            id=entry_id,
+            role=role,
+            content=content,
+            embedding=None,
+            created_at=datetime(2026, 6, 1, 12, int(entry_id), tzinfo=UTC),
+            metadata={"chat_id": 42, "channel": channel, "heartbeat": heartbeat},
+        )
+
+    class DummyStore:
+        def list_memory_entries_by_chat(self, chat_id: int, limit: int = 50):
+            assert chat_id == 42
+            assert limit == 50
+            return [
+                entry("4", "assistant", "new reply", channel="desktop"),
+                entry("3", "assistant", "hidden heartbeat", heartbeat=True),
+                entry("2", "user", "old question", channel="telegram"),
+                entry("1", "system", "hidden system"),
+            ]
+
+    history = _serialize_ws_chat_history(SimpleNamespace(store=DummyStore()), 42, limit=10)
+
+    assert [(item["role"], item["text"], item["channel"]) for item in history] == [
+        ("user", "old question", "telegram"),
+        ("assistant", "new reply", "desktop"),
+    ]
+    assert all(item["type"] == "chat_message" for item in history)
+    assert all(item["meta"]["history"] is True for item in history)
+
+
+@pytest.mark.asyncio
+async def test_ws_approval_manager_resolves_pending_intent_once() -> None:
+    sent: list[dict] = []
+
+    async def send(payload: dict) -> None:
+        sent.append(payload)
+
+    manager = WsApprovalManager(send=send)
+    intent = SimpleNamespace(
+        id="intent-1",
+        type="exec.run",
+        payload={"command": "echo ok"},
+        risk="high",
+        requires_approval=True,
+        model_dump=lambda: {"id": "intent-1"},
+    )
+
+    task = asyncio.create_task(manager.request_approval(intent))
+    await asyncio.sleep(0)
+
+    assert sent[0]["type"] == "approval_request"
+    assert manager.resolve("intent-1", True) is True
+    assert await task is True
+    assert manager.resolve("intent-1", False) is False
 
 
 def test_websocket_message_is_delivered_as_client_expects() -> None:

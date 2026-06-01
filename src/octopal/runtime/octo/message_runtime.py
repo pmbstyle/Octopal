@@ -198,6 +198,7 @@ class OctoMessageRuntimeMixin:
                     user_memory_content,
                     {
                         "chat_id": chat_id,
+                        "channel": channel,
                         "has_images": bool(images),
                         "has_files": bool(saved_file_paths),
                         "saved_file_paths": list(saved_file_paths or []),
@@ -330,6 +331,7 @@ class OctoMessageRuntimeMixin:
                     delivery.text,
                     {
                         "chat_id": chat_id,
+                        "channel": channel,
                         "background_delivery": True,
                         "heartbeat": not track_progress,
                     },
@@ -340,6 +342,7 @@ class OctoMessageRuntimeMixin:
                     delivery.text,
                     {
                         "chat_id": chat_id,
+                        "channel": channel,
                         "heartbeat": not track_progress,
                     },
                 )

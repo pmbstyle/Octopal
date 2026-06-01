@@ -1984,9 +1984,13 @@ ipcMain.handle(
 ipcMain.handle(
   "desktop:chat-approval-response",
   async (_event, intentId: string, approved: boolean) => {
+    const normalizedIntentId = String(intentId || "").trim();
+    if (!normalizedIntentId) {
+      throw new Error("Approval request id is missing.");
+    }
     sendDesktopChatPayload({
       type: "approval_response",
-      intent_id: String(intentId || ""),
+      intent_id: normalizedIntentId,
       approved: Boolean(approved),
     });
     return { ok: true };
