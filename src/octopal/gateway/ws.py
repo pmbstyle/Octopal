@@ -19,6 +19,7 @@ from octopal.runtime.octo.delivery import resolve_user_delivery
 from octopal.utils import get_tailscale_ips, should_suppress_user_delivery
 
 logger = structlog.get_logger(__name__)
+DESKTOP_WS_CHAT_ID = 1_000_000_000
 
 
 def _is_local_ws_client(client_host: str) -> bool:
@@ -154,6 +155,65 @@ def _serialize_worker_snapshot(rows: list[Any]) -> list[dict[str, Any]]:
     return snapshot
 
 
+def _is_ws_history_entry(entry: Any) -> bool:
+    role = str(getattr(entry, "role", "") or "").strip().lower()
+    if role not in {"user", "assistant"}:
+        return False
+    content = str(getattr(entry, "content", "") or "").strip()
+    if not content:
+        return False
+    metadata = getattr(entry, "metadata", None) or {}
+    internal_flags = (
+        "heartbeat",
+        "worker_result",
+        "planner",
+        "scheduler",
+        "control_plane",
+    )
+    return not any(bool(metadata.get(flag)) for flag in internal_flags)
+
+
+def _serialize_ws_chat_history(octo: Octo, chat_id: int, limit: int = 10) -> list[dict[str, Any]]:
+    store = getattr(octo, "store", None)
+    list_entries = getattr(store, "list_memory_entries_by_chat", None)
+    if not callable(list_entries):
+        return []
+
+    try:
+        entries = list_entries(chat_id, limit=max(limit * 5, 50))
+    except Exception:
+        logger.debug("Failed to load WebSocket chat history", chat_id=chat_id, exc_info=True)
+        return []
+
+    history_entries = [entry for entry in entries if _is_ws_history_entry(entry)][:limit]
+    history_entries.reverse()
+    history: list[dict[str, Any]] = []
+    for entry in history_entries:
+        role = str(getattr(entry, "role", "") or "").strip().lower()
+        metadata = getattr(entry, "metadata", None) or {}
+        channel = str(metadata.get("channel") or metadata.get("source_channel") or "chat").strip()
+        created_at = getattr(entry, "created_at", None)
+        history.append(
+            {
+                "id": str(getattr(entry, "id", "") or ""),
+                "type": "chat_message",
+                "direction": "inbound" if role == "user" else "outbound",
+                "role": role,
+                "channel": channel or "chat",
+                "chat_id": chat_id,
+                "text": str(getattr(entry, "content", "") or ""),
+                "meta": {
+                    "history": True,
+                    "saved_file_paths": list(metadata.get("saved_file_paths") or []),
+                    "has_images": bool(metadata.get("has_images")),
+                    "has_files": bool(metadata.get("has_files")),
+                },
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else None,
+            }
+        )
+    return history
+
+
 def _resolve_ws_chat_id(settings: Any) -> int:
     if str(getattr(settings, "user_channel", "") or "").strip().lower() == "whatsapp":
         try:
@@ -180,8 +240,8 @@ def _resolve_ws_chat_id(settings: Any) -> int:
                     return value
             except ValueError:
                 pass
-    # Keep WS-only sessions on a positive ID so worker follow-ups are not suppressed.
-    return 1_000_000_000 + (uuid.uuid4().int % 100_000_000)
+    # Keep WS-only sessions on a stable positive ID so desktop chat history survives reconnects.
+    return DESKTOP_WS_CHAT_ID
 
 
 @dataclass
@@ -412,6 +472,22 @@ def register_ws_routes(app: FastAPI) -> None:
             },
             event_name="workers_snapshot",
         )
+        chat_history = await asyncio.to_thread(
+            _serialize_ws_chat_history,
+            octo,
+            session_chat_id,
+            10,
+        )
+        if chat_history:
+            await _ws_send_json(
+                session,
+                {
+                    "type": "chat_history",
+                    "messages": chat_history,
+                },
+                event_name="chat_history",
+                chat_id=session_chat_id,
+            )
 
         approvals = WsApprovalManager(
             send=lambda payload: _ws_send_json(session, payload, event_name="approval_request")
@@ -448,9 +524,23 @@ def register_ws_routes(app: FastAPI) -> None:
                     continue
 
                 if msg_type == "approval_response":
-                    approvals.resolve(
-                        str(message.get("intent_id")),
-                        bool(message.get("approved")),
+                    intent_id = str(message.get("intent_id") or "").strip()
+                    approved = bool(message.get("approved"))
+                    resolved = approvals.resolve(intent_id, approved) if intent_id else False
+                    await _ws_send_json(
+                        session,
+                        {
+                            "type": "approval_result",
+                            "intent_id": intent_id,
+                            "approved": approved,
+                            "ok": resolved,
+                            "message": (
+                                "Approval response accepted."
+                                if resolved
+                                else "Approval request is no longer pending."
+                            ),
+                        },
+                        event_name="approval_result",
                     )
                     continue
 

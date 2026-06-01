@@ -29,6 +29,7 @@ type ChatItem = {
   text: string;
   createdAt: string;
   meta?: Record<string, unknown>;
+  technical?: boolean;
   attachments?: DesktopChatAttachment[];
   intentId?: string;
   raw?: DesktopChatEvent;
@@ -48,6 +49,14 @@ function recordValue(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function recordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value
+        .filter((item) => item !== null && typeof item === "object" && !Array.isArray(item))
+        .map((item) => item as Record<string, unknown>)
+    : [];
 }
 
 function eventMeta(event: DesktopChatEvent): Record<string, unknown> {
@@ -120,10 +129,67 @@ function eventChannel(event: DesktopChatEvent): string {
   );
 }
 
+function isTechnicalEvent(event: DesktopChatEvent): boolean {
+  const type = stringValue(event.type);
+  return type === "progress";
+}
+
 function isWebSocketTakeoverNotice(text: string): boolean {
   return text
     .toLowerCase()
     .includes("another websocket client connected and took over this session");
+}
+
+function workerSnapshotName(worker: Record<string, unknown>): string {
+  return (
+    stringValue(worker.template_id) ||
+    stringValue(worker.worker_template_id) ||
+    stringValue(worker.template_name) ||
+    stringValue(worker.name) ||
+    stringValue(worker.id, "worker")
+  );
+}
+
+function workerSnapshotText(worker: Record<string, unknown>): string {
+  const name = workerSnapshotName(worker);
+  const status = stringValue(worker.status, "unknown").toLowerCase();
+  if (status === "running") {
+    return `${name} worker is running.`;
+  }
+  if (status === "waiting_for_children") {
+    return `${name} worker is waiting for child workers.`;
+  }
+  if (status === "awaiting_instruction") {
+    return `${name} worker is awaiting instruction.`;
+  }
+  if (["started", "completed", "failed", "stopped"].includes(status)) {
+    return `${name} worker ${status}.`;
+  }
+  return `${name} worker status: ${status}.`;
+}
+
+function chatItemFromWorkerSnapshot(
+  worker: Record<string, unknown>,
+  index: number,
+): ChatItem {
+  const createdAt =
+    stringValue(worker.updated_at) ||
+    stringValue(worker.created_at) ||
+    new Date().toISOString();
+  const workerId = stringValue(worker.id, `worker-${index}`);
+  const status = stringValue(worker.status, "unknown");
+  return {
+    id: `worker-${workerId}-${status}-${createdAt}`,
+    kind: "event",
+    type: "worker_snapshot",
+    role: "system",
+    direction: "event",
+    channel: "runtime",
+    text: workerSnapshotText(worker),
+    createdAt,
+    meta: worker,
+    technical: true,
+  };
 }
 
 function chatItemFromEvent(
@@ -132,7 +198,9 @@ function chatItemFromEvent(
 ): ChatItem | null {
   const type = stringValue(event.type, "event");
   const createdAt = stringValue(event.created_at) || new Date().toISOString();
-  const baseId = `${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`;
+  const eventId = stringValue(event.id);
+  const baseId =
+    eventId || `${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`;
   const text = eventText(event);
 
   if (type === "chat_message" || type === "message") {
@@ -167,7 +235,7 @@ function chatItemFromEvent(
     };
   }
 
-  if (["workers_snapshot", "pong", "typing"].includes(type)) {
+  if (["workers_snapshot", "pong", "typing", "worker_event"].includes(type)) {
     return null;
   }
 
@@ -175,7 +243,7 @@ function chatItemFromEvent(
     return null;
   }
 
-  if (["progress", "worker_event", "file", "warning", "error"].includes(type)) {
+  if (["progress", "file", "warning", "error"].includes(type)) {
     return {
       id: baseId,
       kind: "event",
@@ -186,12 +254,42 @@ function chatItemFromEvent(
       text,
       createdAt,
       meta: eventMeta(event),
+      technical: isTechnicalEvent(event),
       attachments: type === "file" ? fileAttachmentFromEvent(event) : undefined,
       raw: event,
     };
   }
 
   return null;
+}
+
+function chatItemsFromEvent(
+  event: DesktopChatEvent,
+  index: number,
+): ChatItem[] {
+  const type = stringValue(event.type);
+  if (type === "chat_history") {
+    return recordArray(event.messages)
+      .map((message, messageIndex) =>
+        chatItemFromEvent(message as DesktopChatEvent, index + messageIndex),
+      )
+      .filter((item): item is ChatItem => item !== null);
+  }
+  if (type === "workers_snapshot") {
+    return recordArray(event.workers).map((worker, workerIndex) =>
+      chatItemFromWorkerSnapshot(worker, index + workerIndex),
+    );
+  }
+  const item = chatItemFromEvent(event, index);
+  return item ? [item] : [];
+}
+
+function mergeUniqueItems(current: ChatItem[], next: ChatItem[]): ChatItem[] {
+  if (next.length === 0) {
+    return current;
+  }
+  const nextIds = new Set(next.map((item) => item.id));
+  return [...current.filter((item) => !nextIds.has(item.id)), ...next].slice(-300);
 }
 
 function localUserMessage(
@@ -229,6 +327,10 @@ function isDuplicateLocalEcho(item: ChatItem, event: DesktopChatEvent): boolean 
     (eventText(event) === item.text ||
       item.text.startsWith(`${eventText(event)}\n\nAttached:`))
   );
+}
+
+function approvalResolution(item: ChatItem): string {
+  return stringValue(item.meta?.resolved);
 }
 
 function formatTime(value: string): string {
@@ -322,19 +424,61 @@ export function ChatView({ active, installDir }: ChatViewProps) {
         return;
       }
 
-      eventCount.current += 1;
-      const item = chatItemFromEvent(event, eventCount.current);
-      if (!item) {
+      if (stringValue(event.type) === "approval_result") {
+        const intentId = stringValue(event.intent_id);
+        if (!intentId) {
+          return;
+        }
+        const resolved = Boolean(event.ok)
+          ? Boolean(event.approved)
+            ? "approved"
+            : "denied"
+          : "failed";
+        setItems((current) =>
+          current.map((item) =>
+            item.intentId === intentId
+              ? {
+                  ...item,
+                  meta: {
+                    ...(item.meta ?? {}),
+                    resolved,
+                    approval_result_message: stringValue(event.message),
+                  },
+                }
+              : item,
+          ),
+        );
+        if (!event.ok) {
+          setSendError(
+            stringValue(event.message, "Approval request is no longer pending."),
+          );
+        }
         return;
       }
-      if (item.role === "assistant" || item.type === "error") {
+
+      eventCount.current += 1;
+      const nextItems = chatItemsFromEvent(event, eventCount.current);
+      if (nextItems.length === 0) {
+        return;
+      }
+      if (nextItems.some((item) => item.role === "assistant" || item.type === "error")) {
         setThinking(false);
       }
       setItems((current) => {
-        if (current.some((existing) => isDuplicateLocalEcho(existing, event))) {
+        if (
+          nextItems.length === 1 &&
+          current.some((existing) => isDuplicateLocalEcho(existing, event))
+        ) {
           return current;
         }
-        return [...current, item].slice(-300);
+        if (stringValue(event.type) === "chat_history") {
+          const nextIds = new Set(nextItems.map((item) => item.id));
+          return [
+            ...nextItems,
+            ...current.filter((item) => !nextIds.has(item.id)),
+          ].slice(-300);
+        }
+        return mergeUniqueItems(current, nextItems);
       });
     });
 
@@ -481,13 +625,6 @@ export function ChatView({ active, installDir }: ChatViewProps) {
       className={active ? "chat-view" : "chat-view chat-view-hidden"}
       aria-label="Desktop chat"
     >
-      <header className="chat-header">
-        <div>
-          <p className="chat-kicker">Desktop channel</p>
-          <h1>Chat</h1>
-        </div>
-      </header>
-
       <div ref={scrollRef} className="chat-transcript">
         {sortedItems.length === 0 ? (
           <div className="chat-empty">
@@ -502,14 +639,16 @@ export function ChatView({ active, installDir }: ChatViewProps) {
             className={
               item.kind === "message"
                 ? `chat-bubble chat-bubble-${item.role === "user" ? "user" : "assistant"}`
-                : `chat-event chat-event-${item.type}`
+                : `chat-event chat-event-${item.type}${item.technical ? " chat-event-technical" : ""}`
             }
           >
-            <div className="chat-item-meta">
-              <span>{senderLabel(item)}</span>
-              {item.kind === "message" ? null : <span>{item.type}</span>}
-              <span>{formatTime(item.createdAt)}</span>
-            </div>
+            {item.technical ? null : (
+              <div className="chat-item-meta">
+                <span>{senderLabel(item)}</span>
+                {item.kind === "message" ? null : <span>{item.type}</span>}
+                <span>{formatTime(item.createdAt)}</span>
+              </div>
+            )}
             <MessageMarkdown text={item.text} />
             {item.attachments?.some(isImageAttachment) ? (
               <div className="chat-image-previews">
@@ -524,7 +663,18 @@ export function ChatView({ active, installDir }: ChatViewProps) {
                 )}
               </div>
             ) : null}
-            {item.kind === "approval" && item.intentId ? (
+            {item.kind === "approval" && approvalResolution(item) ? (
+              <p className="chat-approval-resolution">
+                {approvalResolution(item) === "approved"
+                  ? "Approved"
+                  : approvalResolution(item) === "denied"
+                    ? "Denied"
+                    : stringValue(
+                        item.meta?.approval_result_message,
+                        "Approval request is no longer pending.",
+                      )}
+              </p>
+            ) : item.kind === "approval" && item.intentId ? (
               <div className="chat-approval-actions">
                 <Button
                   type="button"
