@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from octopal.infrastructure.store.models import MemoryEntry
@@ -56,6 +57,42 @@ def test_memory_owner_filter(tmp_path: Path) -> None:
     rows = store.list_memory_entries_for_owner("default", limit=20)
     assert len(rows) == 1
     assert rows[0].content == "owned by default"
+
+
+def test_memory_chat_history_orders_by_created_at_not_uuid(tmp_path: Path) -> None:
+    store = SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
+    base = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    entries = [
+        MemoryEntry(
+            id="ffffeeee-dddd-cccc-bbbb-aaaaaaaaaaaa",
+            role="user",
+            content="oldest",
+            embedding=None,
+            created_at=base,
+            metadata={"owner_id": "default", "chat_id": 7},
+        ),
+        MemoryEntry(
+            id="11112222-3333-4444-5555-666677778888",
+            role="assistant",
+            content="newest",
+            embedding=None,
+            created_at=base + timedelta(minutes=2),
+            metadata={"owner_id": "default", "chat_id": 7},
+        ),
+        MemoryEntry(
+            id="9999aaaa-bbbb-cccc-dddd-eeeeffffffff",
+            role="user",
+            content="middle",
+            embedding=None,
+            created_at=base + timedelta(minutes=1),
+            metadata={"owner_id": "default", "chat_id": 7},
+        ),
+    ]
+    for entry in entries:
+        store.add_memory_entry(entry)
+
+    rows = store.list_memory_entries_by_chat(7, limit=3)
+    assert [row.content for row in rows] == ["newest", "middle", "oldest"]
 
 
 def test_canon_event_log_and_compaction(tmp_path: Path) -> None:
