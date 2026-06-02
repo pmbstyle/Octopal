@@ -918,7 +918,7 @@ class SQLiteStore(Store):
 
     def list_memory_entries_by_chat(self, chat_id: int, limit: int = 50) -> list[MemoryEntry]:
         cursor = self._conn.execute(
-            "SELECT * FROM memory_entries WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT * FROM memory_entries WHERE chat_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
             (chat_id, limit),
         )
         return [self._row_to_memory(row) for row in cursor.fetchall()]
