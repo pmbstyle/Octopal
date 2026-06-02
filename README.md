@@ -3,50 +3,36 @@
 </p>
 
 <p align="center">
-  <strong>A safer personal AI operator that can actually get work done.</strong>
+  <strong>A safer personal AI agent that can actually get work done</strong>
 </p>
 
 <p align="center">
    <img src="https://img.shields.io/github/v/release/pmbstyle/Octopal">
-   <img src="https://img.shields.io/github/last-commit/pmbstyle/Octopal?svg=true">
    <a href="LICENSE"><img src="https://img.shields.io/github/license/pmbstyle/Octopal?svg=true"></a>
    <a href="https://deepwiki.com/pmbstyle/Octopal"><img src="https://deepwiki.com/badge.svg"></a>
 </p>
 
-Octopal is a local AI agent platform for people who want broad, real-world automation with a design that makes powerful actions safer and easier to predict.
+## 🐙 Why Octopal
 
-It lives in Telegram or WhatsApp; remembers long-running context; schedules recurring work; uses tools, MCP servers, skills, browser/search, files, and connectors; and sends hands-on work to short-lived agents instead of letting one always-on process both know everything about you and browse the web.
+Octopal is your local autonomous AI agent - Octo, who can live on your computer or on a server. You can communicate with Octo through Telegram, WhatsApp, or a dedicated desktop app.
 
-If you like the promise of projects like OpenClaw, Hermes Agent, and NanoClaw, but want an isolation-first default with a stronger coordinator/worker boundary, Octopal is built for that exact taste.
+Octopal is built to perform any task, run scheduled activities, host automation pipelines, research the web, work with API, MCP, A2A, skills, and much more.
 
-<p align="center">
-   <img alt="Octopal dashboard" src="https://github.com/user-attachments/assets/55360901-a319-4c8c-932b-df3c519da375" />
-</p>
+The core Octopal idea is to have an AI agent that you can trust. 
 
-## Why Octopal Exists
+Octo, as the main reasoning agent, lives inside your system and dedicates outside-world communication to specialized workers (sub-agents). Octo can create new workers or use predefined ones. Workers are short-lived disposable agents that spawn only to achieve a particular task goal. They live in isolated environments (docker) and don't hold system / private context. After the worker finishes their task, their instance gets deleted.
 
-Personal AI agents are finally useful enough to keep running.
-
-That is exactly why their design has to be careful.
-
-An always-on agent reads messages, remembers preferences, opens web pages, runs tools, touches files, and follows instructions from places you do not fully control. A malicious web page, poisoned document, unsafe script, or compromised skill should not get the same trust boundary as the assistant that knows your private context.
-
-Octopal's core idea is simple:
-
-- **Octo thinks.** It holds memory, policy, user context, and the long-running conversation.
-- **Workers act.** They receive scoped tasks, limited context, explicit permissions, and disposable execution environments.
-- **Smart choosing what gets shared.** When a task needs files, Octo gives access to the specific places it should use. It does not start with your whole workspace in its hands.
-- **Hands-on work happens in a separate place by default.** Octopal normally runs risky actions in a disposable container; direct host execution is only a fallback when containers are unavailable.
-
-So the pitch is not "AI can do anything." The pitch is better:
+This architecture prevents context poisoning, prompt injections, and hostile environment actions. Even if a worker installs and runs the miliscues code, it will stay inside its container and will not hurt the main system.
 
 **give the agent real hands, but do not hand it your whole house.**
 
-## Quick Start
+## 🚀 Quick Start
 
 ### Desktop App
 
 Download the latest desktop build from the [Octopal releases page](https://github.com/pmbstyle/Octopal/releases/latest).
+
+<img alt="Octopal Desktop" src="https://github.com/user-attachments/assets/a995f7ab-28a6-45ee-b63a-2a7c45dedd3b" />
 
 <!-- STABLE_DOWNLOADS -->
 | Platform | Download |
@@ -56,11 +42,6 @@ Download the latest desktop build from the [Octopal releases page](https://githu
 | **macOS Apple Silicon** | [Octopal-Desktop-2026.5.29-mac-arm64.dmg](https://github.com/pmbstyle/Octopal/releases/download/v2026.05.29/Octopal-Desktop-2026.5.29-mac-arm64.dmg) |
 | **Linux** | [Octopal-Desktop-2026.5.29-linux-x86_64.AppImage](https://github.com/pmbstyle/Octopal/releases/download/v2026.05.29/Octopal-Desktop-2026.5.29-linux-x86_64.AppImage) |
 <!-- STABLE_DOWNLOADS_END -->
-
-<p align="center">
-   <img alt="Octopal Desktop" src="https://github.com/user-attachments/assets/a995f7ab-28a6-45ee-b63a-2a7c45dedd3b" />
-   <img alt="Octopal Desktop Control" src="https://github.com/user-attachments/assets/b35e016c-3d53-44f3-b664-340c49602c9c" />
-</p>
 
 
 ### Server Install
@@ -118,18 +99,20 @@ octopal configure
 octopal start
 ```
 
-## Model Providers
+<img alt="Octopal dashboard" src="https://github.com/user-attachments/assets/55360901-a319-4c8c-932b-df3c519da375" />
+
+
+## 🤖 Model Providers
 
 Octopal lets you choose one model provider for Octo and, when useful, a different provider for workers. That makes it easy to keep the coordinator on the model you trust most while sending cheaper, faster, or more specialized tasks to worker agents.
 
 Supported provider catalog:
 
-- **Frontier APIs:** OpenAI, Anthropic, Google Gemini, Mistral AI.
-- **Model routers and hosted inference:** OpenRouter, Together AI, Groq.
-- **Subscription and plan-based routes:** ChatGPT Codex, Z.ai, Minimax.
+- **Frontier APIs:** OpenAI, Anthropic, Google Gemini, Mistral, OpenRouter, Together AI, Groq
+- **Subscription and plan-based routes:** Codex, Z.ai, Minimax.
 - **Local and custom routes:** Ollama, Custom OpenAI-compatible.
 
-## What You Can Use It For
+## What You Can Use Octopal For
 
 | Use case | What Octopal does |
 |:--|:--|
@@ -168,9 +151,9 @@ Octo:
 4. Keeps the routine visible in the dashboard.
 ```
 
-## Agent-To-Agent Collaboration
+## 💬 Agent-To-Agent Collaboration
 
-Octopal can expose an invite-only A2A surface so trusted agents can talk to Octo as peers instead of forcing every automation through a human chat window.
+Octo can communicate with other instances of Octopal or other agents via A2A.
 
 That turns separate agents into a working team:
 
@@ -181,9 +164,11 @@ That turns separate agents into a working team:
 - Specialized agents can hand off work to each other instead of duplicating every connector, skill, and long-running routine.
 - Multi-agent workflows can stay autonomous while still keeping clear trust boundaries around which peers are allowed to call in.
 
-The current A2A integration is intentionally private by default. Peers are configured explicitly, authenticate with bearer tokens, discover Octopal through its agent card, and exchange text plus explicitly allowed structured JSON, file URL, and raw file parts over the A2A HTTP+JSON interface. See [docs/a2a_setup.md](docs/a2a_setup.md) for a step-by-step private Tailscale setup.
+The current A2A integration is intentionally private by default. Peers are configured explicitly, authenticate with bearer tokens, discover Octopal through its agent card, and exchange text plus explicitly allowed structured JSON, file URL, and raw file parts over the A2A HTTP+JSON interface.
 
-## How It Compares
+See [docs/a2a_setup.md](docs/a2a_setup.md) for a step-by-step private Tailscale setup.
+
+## 🧩 How It Compares
 
 Octopal lives in the same neighborhood as OpenClaw, Hermes Agent, NanoClaw, OpenHands, and other autonomous agent runtimes. The difference is the default posture.
 
@@ -198,7 +183,7 @@ If you want the smallest possible codebase, NanoClaw may feel cleaner. If you wa
 
 Octopal is for the person who wants an always-reachable AI operator with a serious execution boundary, visible operations, and enough built-in runtime to trust it with real ongoing work.
 
-## Architecture
+## 🏗️ Architecture
 
 ```text
 User
@@ -233,7 +218,7 @@ Prebuilt worker templates include:
 - Repo Researcher
 - Bug Investigator
 
-## Security Model
+## 🔒 Security Model
 
 Octopal is designed around a coordinator/worker split:
 
@@ -273,7 +258,7 @@ uv run octopal restart
 
 See [docs/worker_isolation.md](docs/worker_isolation.md) for the detailed worker isolation model.
 
-## Memory That Feels Useful
+## 🧠 Memory That Feels Useful
 
 Octopal keeps memory in layers so the assistant can stay personal without turning every prompt into a junk drawer:
 
@@ -285,13 +270,13 @@ Octopal keeps memory in layers so the assistant can stay personal without turnin
 
 See [docs/memory.md](docs/memory.md).
 
-## Channels And Dashboard
+## 📡 Channels And Dashboard
 
 Octopal can talk through:
 
 - Telegram
 - WhatsApp
-- WebSocket gateway for custom clients
+- Desktop app
 
 Channels support text, image/file attachments, reactions where supported, and a short grace window so follow-up messages can be folded into the same turn before Octo starts executing.
 
@@ -334,7 +319,7 @@ Then set:
 }
 ```
 
-## Skills And Connectors
+## 🦾 Skills And Connectors
 
 Octopal supports workspace-local skill bundles under `workspace/skills/<skill-id>/`.
 
@@ -363,7 +348,7 @@ Connectors are the integration layer for external services. The current connecto
 
 See [docs/connectors.md](docs/connectors.md).
 
-## Core Commands
+## 📋 Core Commands
 
 ```bash
 uv run octopal configure
@@ -397,7 +382,7 @@ uv run octopal memory stats
 uv run octopal memory cleanup --dry-run
 ```
 
-## Development
+## 💻 Development
 
 ```bash
 uv sync
@@ -417,7 +402,7 @@ npm run build
 
 GitHub releases use date-based versions in `src/octopal/_version.py` and tags like `vYYYY.MM.DD` or `vYYYY.MM.DD.N`.
 
-## Troubleshooting
+## ⁉️ Troubleshooting
 
 ### Telegram bot starts but does not reply
 
