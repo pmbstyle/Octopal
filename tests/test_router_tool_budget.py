@@ -110,6 +110,9 @@ def test_get_octo_tools_uses_small_core_and_defers_mcp_tools(monkeypatch) -> Non
     assert "repair_scheduled_tasks" in names
     assert "exec_run" in names
     assert "git_ops" in names
+    assert "list_skills" in names
+    assert "use_skill" in names
+    assert "run_skill_script" in names
     assert "octo_restart_self" in names
     assert "octo_check_update" in names
     assert "octo_update_self" in names

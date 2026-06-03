@@ -172,6 +172,9 @@ _ALWAYS_INCLUDE_TOOL_NAMES = {
     "exec_run",
     "git_ops",
     "mcp_call",
+    "list_skills",
+    "use_skill",
+    "run_skill_script",
 }
 _A2A_TOOL_NAMES = {
     "a2a_list_peers",

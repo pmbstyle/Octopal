@@ -520,6 +520,17 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
         capabilities=("skill_read",),
         profile_tags=("ops",),
     ),
+    "use_skill": ToolMetadata(
+        category="skills",
+        capabilities=("skill_use",),
+        profile_tags=("ops", "research", "coding"),
+    ),
+    "run_skill_script": ToolMetadata(
+        category="skills",
+        risk="guarded",
+        capabilities=("skill_exec",),
+        profile_tags=("ops", "research", "coding"),
+    ),
     "add_skill": ToolMetadata(
         category="skills",
         risk="guarded",

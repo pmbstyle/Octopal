@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from octopal.runtime.workers.agent_worker import _tool_schema_chars
-from octopal.tools.catalog import get_tools
+from octopal.tools.catalog import _tool_catalog_search, get_tools
 from octopal.tools.inventory import annotate_tool_specs, resolve_tool_metadata
 from octopal.tools.registry import ToolSpec, filter_tools
 
@@ -56,6 +58,29 @@ def test_catalog_returns_annotated_tools() -> None:
     assert tools["web_search"].metadata.category == "web"
     assert tools["start_worker"].metadata.category == "workers"
     assert tools["worker_yield"].metadata.category == "workers"
+    assert tools["use_skill"].metadata.category == "skills"
+    assert "skill_use" in tools["use_skill"].metadata.capabilities
+    assert tools["run_skill_script"].metadata.category == "skills"
+    assert "skill_exec" in tools["run_skill_script"].metadata.capabilities
+
+
+def test_tool_catalog_filters_find_generic_skill_tools() -> None:
+    tools = get_tools(mcp_manager=None)
+    report = type("Report", (), {"available_tools": tools})()
+    ctx = {
+        "tool_resolution_report": report,
+        "all_tool_specs": tools,
+        "active_tool_specs": [],
+    }
+
+    by_category = json.loads(_tool_catalog_search({"category": "skills"}, ctx))
+    by_use_capability = json.loads(_tool_catalog_search({"capability": "skill_use"}, ctx))
+    by_exec_capability = json.loads(_tool_catalog_search({"capability": "skill_exec"}, ctx))
+
+    category_names = {item["name"] for item in by_category["results"]}
+    assert {"list_skills", "use_skill", "run_skill_script"}.issubset(category_names)
+    assert "use_skill" in {item["name"] for item in by_use_capability["results"]}
+    assert "run_skill_script" in {item["name"] for item in by_exec_capability["results"]}
 
 
 def test_web_search_schema_stays_compact_without_contract_loss() -> None:
