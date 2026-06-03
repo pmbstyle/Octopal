@@ -121,6 +121,37 @@ def test_render_tool_result_default_budget_still_compacts_large_fetch_snippet() 
     assert "truncated" in rendered.text
 
 
+def test_render_tool_result_preserves_requested_skill_guidance() -> None:
+    guidance = "skill guidance\n" + ("x" * 80_000)
+    payload = {
+        "skill_id": "writer",
+        "truncated": False,
+        "guidance": guidance,
+    }
+
+    rendered = render_tool_result_for_llm(payload, tool_name="use_skill")
+
+    assert rendered.was_compacted is False
+    assert len(rendered.text) > 80_000
+    assert '"truncated":false' in rendered.text
+    assert "skill guidance" in rendered.text
+    assert "__octopal_compaction__" not in rendered.text
+
+
+def test_render_tool_result_preserves_dynamic_skill_guidance() -> None:
+    payload = {
+        "skill_id": "writer",
+        "truncated": False,
+        "guidance": "x" * 80_000,
+    }
+
+    rendered = render_tool_result_for_llm(payload, tool_name="skill_writer")
+
+    assert rendered.was_compacted is False
+    assert len(rendered.text) > 80_000
+    assert "__octopal_compaction__" not in rendered.text
+
+
 def test_render_tool_result_preserves_larger_mcp_thread_payload() -> None:
     payload = {
         "thread_id": "thr_123",
