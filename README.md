@@ -12,6 +12,15 @@
    <a href="https://deepwiki.com/pmbstyle/Octopal"><img src="https://deepwiki.com/badge.svg"></a>
 </p>
 
+➡️ <em>AI agents are cool</em>
+
+➡️ <em>AI agents are productive</em>
+
+➡️ <em>AI agents makes your life easier</em>
+
+➡️ <em>AI agents are not safe and trustworthy ... here is where Octopal comes in</em>
+
+
 ## 🐙 Why Octopal
 
 Octopal is your local autonomous AI agent - Octo, who can live on your computer or on a server. You can communicate with Octo through Telegram, WhatsApp, or a dedicated desktop app.
