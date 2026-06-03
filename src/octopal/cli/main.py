@@ -52,6 +52,7 @@ from octopal.tools.registry import ToolPolicy, ToolPolicyPipelineStep, ToolSpec
 from octopal.tools.skills.installer import (
     install_skill_from_source,
     update_installed_skill,
+    verify_installed_skill,
 )
 from octopal.tools.skills.management import list_skill_inventory, remove_skill, set_skill_trust
 from octopal.tools.skills.runtime_envs import (
@@ -2155,6 +2156,38 @@ def skill_trust(
         return
 
     console.print(f"[bold green][V] Trusted skill[/bold green] {payload['skill_id']}")
+
+
+@skill_app.command("verify")
+def skill_verify(
+    skill_id: str = typer.Argument(..., help="Installer-managed skill id."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Re-scan an installer-managed skill bundle."""
+    settings = load_settings()
+    try:
+        payload = verify_installed_skill(
+            skill_id,
+            workspace_dir=settings.workspace_dir.resolve(),
+        )
+    except Exception as exc:
+        if json_output:
+            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+        else:
+            console.print(f"[bold red]Skill verify failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from None
+
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    console.print(f"[bold green][V] Verified skill[/bold green] {payload['skill_id']}")
+    scan = payload.get("script_scan")
+    if isinstance(scan, dict):
+        console.print(f"[dim]Scan:[/dim] {scan.get('status', '-')}")
+        findings = scan.get("findings", [])
+        if isinstance(findings, list) and findings:
+            console.print(f"[yellow]Findings:[/yellow] {len(findings)}")
 
 
 @skill_app.command("untrust")

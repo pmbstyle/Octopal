@@ -113,7 +113,7 @@ def get_skill_env_status(skill_id: str, *, workspace_dir: Path) -> dict[str, Any
             "next_step": "",
         }
 
-    prepared = bool(manifest) and _is_env_manifest_usable(manifest, env_dir)
+    prepared = bool(manifest) and _is_env_manifest_usable(manifest, env_dir, runtime)
     status = "prepared" if prepared else "missing"
     next_step = f"uv run octopal skill prepare-env {skill_id}" if runtime["recommended"] else ""
     reason = runtime["reason"]
@@ -432,13 +432,29 @@ def _node_env_process_env(env_dir: Path) -> dict[str, str]:
     return env
 
 
-def _is_env_manifest_usable(manifest: dict[str, Any], env_dir: Path) -> bool:
+def _is_env_manifest_usable(manifest: dict[str, Any], env_dir: Path, runtime: dict[str, Any]) -> bool:
     kind = str(manifest.get("kind", "")).strip()
+    if kind != str(runtime.get("kind", "")).strip():
+        return False
     if kind == "python":
-        return _python_env_executable(env_dir).exists()
+        return (
+            _python_env_executable(env_dir).exists()
+            and _manifest_list(manifest.get("python_packages")) == _manifest_list(runtime.get("python_packages"))
+        )
     if kind == "node":
-        return (env_dir / "package.json").exists()
+        return (
+            (env_dir / "package.json").exists()
+            and _manifest_list(manifest.get("node_packages")) == _manifest_list(runtime.get("node_packages"))
+            and str(manifest.get("package_manager", "")).strip()
+            == str(runtime.get("package_manager", "")).strip()
+        )
     return False
+
+
+def _manifest_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 
 
 def _replace_skill_env_dir(target_dir: Path, staging_dir: Path) -> None:

@@ -15,6 +15,8 @@ _MAX_STRING_CHARS = 16_000
 _CONTENT_HEAVY_MAX_RENDER_CHARS = 64_000
 _CONTENT_HEAVY_MAX_CONTAINER_ITEMS = 96
 _CONTENT_HEAVY_MAX_STRING_CHARS = 32_000
+_SKILL_GUIDANCE_MAX_RENDER_CHARS = 200_000
+_SKILL_GUIDANCE_MAX_STRING_CHARS = 200_000
 _CONTENT_HEAVY_TOOL_NAMES = {
     "browser_extract",
     "markdown_new_fetch",
@@ -78,9 +80,16 @@ _CONTENT_HEAVY_BUDGET = ToolRenderBudget(
     max_depth=_MAX_DEPTH,
     max_string_chars=_CONTENT_HEAVY_MAX_STRING_CHARS,
 )
+_SKILL_GUIDANCE_BUDGET = ToolRenderBudget(
+    max_chars=_SKILL_GUIDANCE_MAX_RENDER_CHARS,
+    max_container_items=_MAX_CONTAINER_ITEMS,
+    max_depth=_MAX_DEPTH,
+    max_string_chars=_SKILL_GUIDANCE_MAX_STRING_CHARS,
+)
 _EXACT_TOOL_BUDGET_OVERRIDES: dict[str, ToolRenderBudget] = {
     "browser_extract": _CONTENT_HEAVY_BUDGET,
     "markdown_new_fetch": _CONTENT_HEAVY_BUDGET,
+    "use_skill": _SKILL_GUIDANCE_BUDGET,
     "web_fetch": _CONTENT_HEAVY_BUDGET,
 }
 
@@ -129,11 +138,12 @@ def _budget_for_tool(tool_name: str | None, *, max_chars: int | None) -> ToolRen
     normalized_name = str(tool_name or "").strip().lower()
     base_budget = _EXACT_TOOL_BUDGET_OVERRIDES.get(normalized_name)
     if base_budget is None:
-        base_budget = (
-            _CONTENT_HEAVY_BUDGET
-            if _is_content_heavy_tool_name(normalized_name)
-            else _DEFAULT_BUDGET
-        )
+        if normalized_name.startswith("skill_"):
+            base_budget = _SKILL_GUIDANCE_BUDGET
+        elif _is_content_heavy_tool_name(normalized_name):
+            base_budget = _CONTENT_HEAVY_BUDGET
+        else:
+            base_budget = _DEFAULT_BUDGET
     if max_chars is None:
         return base_budget
     return ToolRenderBudget(
@@ -169,7 +179,10 @@ def _is_content_heavy_tool_name(normalized_name: str) -> bool:
 
 def _raw_text_field_names_for_tool(tool_name: str | None) -> frozenset[str]:
     normalized_name = str(tool_name or "").strip().lower()
-    return frozenset(_RAW_TEXT_FIELDS_BY_TOOL_NAME.get(normalized_name, ()))
+    field_names = set(_RAW_TEXT_FIELDS_BY_TOOL_NAME.get(normalized_name, ()))
+    if normalized_name == "use_skill" or normalized_name.startswith("skill_"):
+        field_names.add("guidance")
+    return frozenset(field_names)
 
 
 def _render_raw_text_result(value: str, *, max_chars: int) -> RenderedToolResult:

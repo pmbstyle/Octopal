@@ -14,6 +14,7 @@ from octopal.tools.skills.management import (
     _tool_use_skill,
     get_registered_skill_tools,
     get_skill_management_tools,
+    list_skill_inventory,
     remove_skill,
     set_skill_trust,
 )
@@ -132,6 +133,28 @@ scope: worker
     assert inventory[0]["scripts_dir"].endswith("skills/job-search/scripts") or inventory[0]["scripts_dir"].endswith(
         "skills\\job-search\\scripts"
     )
+
+
+def test_list_skill_inventory_uses_explicit_workspace_for_runtime_status(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "tool.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.delenv("OCTOPAL_WORKSPACE_DIR", raising=False)
+
+    payload = list_skill_inventory(workspace_dir)
+
+    assert payload["skills"][0]["runtime_kind"] == "python"
+    assert payload["skills"][0]["runtime_required"] is True
 
 
 def test_load_skill_inventory_keeps_legacy_registry_skill(tmp_path: Path, monkeypatch) -> None:
