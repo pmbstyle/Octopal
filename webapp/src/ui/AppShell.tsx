@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { Activity, Settings2, Siren, Wrench } from "lucide-react";
+import { Activity, Puzzle, Settings2, Siren, Wrench } from "lucide-react";
 
 import octopalLogo from "../assets/octopal-logo.png";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,7 @@ const navGroups: { title: string; items: NavItem[] }[] = [
     title: "Workspace",
     items: [
       { to: "/workers", label: "Workers", description: "Templates and worker setup", icon: Wrench },
+      { to: "/skills", label: "Skills", description: "Installed skill library", icon: Puzzle },
       { to: "/system", label: "System", description: "Host, queues, and stability", icon: Settings2 },
     ],
   },

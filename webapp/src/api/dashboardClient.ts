@@ -150,6 +150,77 @@ export type WorkerTemplate = {
   updated_at?: string;
 };
 
+export type DashboardSkill = {
+  id: string;
+  name: string;
+  description: string;
+  scope: string;
+  enabled: boolean;
+  ready: boolean;
+  status: string;
+  reasons: string[];
+  origin: string;
+  source: {
+    kind: string;
+    label: string;
+    path: string;
+    installer_managed: boolean;
+    auto_discovered: boolean;
+  };
+  trust: {
+    trusted: boolean;
+    has_scripts: boolean;
+    scan_status: string;
+    scan_findings_count: number;
+  };
+  runtime: {
+    kind: string;
+    required: boolean;
+    recommended: boolean;
+    prepared: boolean;
+    next_step: string;
+  };
+  requirements: {
+    missing_bins: string[];
+    missing_env: string[];
+    missing_config: string[];
+  };
+  actions: {
+    can_enable: boolean;
+    can_disable: boolean;
+    can_remove: boolean;
+    can_install: boolean;
+  };
+};
+
+export type DashboardSkillsResponse = {
+  contract_version: string;
+  count: number;
+  registry_path: string;
+  skills: DashboardSkill[];
+  install: {
+    supported_sources: string[];
+    default_clawhub_site: string;
+  };
+};
+
+export type DashboardSkillInstallPayload = {
+  source: string;
+  clawhub_site?: string;
+};
+
+export type DashboardSkillMutationResponse = {
+  status: string;
+  skill_id: string;
+  skill: DashboardSkill;
+};
+
+export type DashboardSkillDeleteResponse = {
+  status: string;
+  skill_id: string;
+  skills: DashboardSkillsResponse;
+};
+
 export type DashboardQueryParams = {
   windowMinutes: 15 | 60 | 240 | 1440;
   service: "all" | "gateway" | "octo" | "telegram" | "exec_run" | "mcp" | "workers";
@@ -193,6 +264,18 @@ async function mutateJson<T>(url: string, method: "POST" | "PUT" | "DELETE", tok
   });
   if (!response.ok) {
     const detail = await response.text();
+    let parsedDetail = "";
+    try {
+      const parsed = JSON.parse(detail) as { detail?: unknown };
+      if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+        parsedDetail = parsed.detail;
+      }
+    } catch {
+      // Plain-text errors are common for failed local gateway requests.
+    }
+    if (parsedDetail) {
+      throw new Error(parsedDetail);
+    }
     throw new Error(detail || `Request failed: ${response.status}`);
   }
   return (await response.json()) as T;
@@ -271,6 +354,37 @@ export async function updateWorkerTemplate(payload: WorkerTemplate, token?: stri
 export async function deleteWorkerTemplate(templateId: string, token?: string): Promise<void> {
   await mutateJson<{ status: string }>(
     `/api/dashboard/worker-templates/${encodeURIComponent(templateId)}`,
+    "DELETE",
+    token,
+  );
+}
+
+export async function fetchSkills(token?: string): Promise<DashboardSkillsResponse> {
+  return fetchJson<DashboardSkillsResponse>("/api/dashboard/skills", token);
+}
+
+export async function installSkill(
+  payload: DashboardSkillInstallPayload,
+  token?: string,
+): Promise<DashboardSkillMutationResponse> {
+  return mutateJson<DashboardSkillMutationResponse>("/api/dashboard/skills/install", "POST", token, payload);
+}
+
+export async function setSkillEnabled(
+  skillId: string,
+  enabled: boolean,
+  token?: string,
+): Promise<DashboardSkillMutationResponse> {
+  return mutateJson<DashboardSkillMutationResponse>(
+    `/api/dashboard/skills/${encodeURIComponent(skillId)}/${enabled ? "enable" : "disable"}`,
+    "POST",
+    token,
+  );
+}
+
+export async function deleteSkill(skillId: string, token?: string): Promise<DashboardSkillDeleteResponse> {
+  return mutateJson<DashboardSkillDeleteResponse>(
+    `/api/dashboard/skills/${encodeURIComponent(skillId)}`,
     "DELETE",
     token,
   );

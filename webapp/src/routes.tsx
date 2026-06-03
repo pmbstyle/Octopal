@@ -2,6 +2,7 @@ import { createBrowserRouter, Navigate } from "react-router-dom";
 
 import { ControlCenterPage } from "./pages/ControlCenterPage";
 import { IncidentsPage } from "./pages/IncidentsPage";
+import { SkillsPage } from "./pages/SkillsPage";
 import { SystemPage } from "./pages/SystemPage";
 import { WorkersPage } from "./pages/WorkersPage";
 import { AppShell } from "./ui/AppShell";
@@ -24,6 +25,10 @@ export const appRouter = createBrowserRouter([
       {
         path: "workers",
         element: <WorkersPage />,
+      },
+      {
+        path: "skills",
+        element: <SkillsPage />,
       },
       {
         path: "system",
