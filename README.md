@@ -37,10 +37,10 @@ Download the latest desktop build from the [Octopal releases page](https://githu
 <!-- STABLE_DOWNLOADS -->
 | Platform | Download |
 |----------|----------|
-| **Windows** | [Octopal-Desktop-2026.5.29-win-x64.exe](https://github.com/pmbstyle/Octopal/releases/download/v2026.05.29/Octopal-Desktop-2026.5.29-win-x64.exe) |
-| **macOS Intel** | [Octopal-Desktop-2026.5.29-mac-x64.dmg](https://github.com/pmbstyle/Octopal/releases/download/v2026.05.29/Octopal-Desktop-2026.5.29-mac-x64.dmg) |
-| **macOS Apple Silicon** | [Octopal-Desktop-2026.5.29-mac-arm64.dmg](https://github.com/pmbstyle/Octopal/releases/download/v2026.05.29/Octopal-Desktop-2026.5.29-mac-arm64.dmg) |
-| **Linux** | [Octopal-Desktop-2026.5.29-linux-x86_64.AppImage](https://github.com/pmbstyle/Octopal/releases/download/v2026.05.29/Octopal-Desktop-2026.5.29-linux-x86_64.AppImage) |
+| **Windows** | [Octopal-Desktop-2026.6.3-win-x64.exe](https://github.com/pmbstyle/Octopal/releases/download/v2026.06.03/Octopal-Desktop-2026.6.3-win-x64.exe) |
+| **macOS Intel** | [Octopal-Desktop-2026.6.3-mac-x64.dmg](https://github.com/pmbstyle/Octopal/releases/download/v2026.06.03/Octopal-Desktop-2026.6.3-mac-x64.dmg) |
+| **macOS Apple Silicon** | [Octopal-Desktop-2026.6.3-mac-arm64.dmg](https://github.com/pmbstyle/Octopal/releases/download/v2026.06.03/Octopal-Desktop-2026.6.3-mac-arm64.dmg) |
+| **Linux** | [Octopal-Desktop-2026.6.3-linux-x86_64.AppImage](https://github.com/pmbstyle/Octopal/releases/download/v2026.06.03/Octopal-Desktop-2026.6.3-linux-x86_64.AppImage) |
 <!-- STABLE_DOWNLOADS_END -->
 
 
