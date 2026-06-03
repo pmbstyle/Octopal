@@ -324,6 +324,30 @@ description: Helps write copy
     assert [tool.name for tool in get_registered_skill_tools()] == ["skill_writer"]
 
 
+def test_registered_skill_tool_rechecks_enabled_state_after_disable(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+
+# Writer
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(workspace_dir))
+
+    tools = get_registered_skill_tools()
+    handler = next(tool.handler for tool in tools if tool.name == "skill_writer")
+
+    set_skill_enabled("writer", workspace_dir=workspace_dir, enabled=False)
+
+    assert handler({}, {"worker": object()}) == "skill error: skill 'writer' is disabled."
+
+
 def test_tool_set_skill_enabled_updates_registry_override(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "writer"

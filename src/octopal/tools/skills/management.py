@@ -488,16 +488,22 @@ def _tool_run_skill_script(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 def _run_skill(skill_data: dict[str, Any], args: dict[str, Any], ctx: dict[str, Any]) -> str:
     workspace_dir = _workspace_root()
-    scope = str(skill_data.get("scope", "both")).strip().lower() or "both"
+    current_skill = _refresh_skill_state(workspace_dir, skill_data)
+    if current_skill is None:
+        return f"skill error: skill '{skill_data.get('id', '<unknown>')}' not found."
+    if not bool(current_skill.get("enabled", True)):
+        return f"skill error: skill '{current_skill.get('id', '<unknown>')}' is disabled."
+
+    scope = str(current_skill.get("scope", "both")).strip().lower() or "both"
     caller_scope = _caller_scope(ctx)
     if scope == "octo" and caller_scope == "worker":
         return "skill error: this skill is scoped to octo only."
     if scope == "worker" and caller_scope == "octo":
         return "skill error: this skill is scoped to worker only."
 
-    skill_path = _resolve_registered_skill_path(workspace_dir, skill_data)
+    skill_path = _resolve_registered_skill_path(workspace_dir, current_skill)
     if skill_path is None or not skill_path.exists():
-        return f"skill error: missing SKILL.md for '{skill_data.get('id', '<unknown>')}'."
+        return f"skill error: missing SKILL.md for '{current_skill.get('id', '<unknown>')}'."
 
     max_chars = _bounded_int(args.get("max_chars"), default=_DEFAULT_MAX_CHARS, low=200, high=_MAX_CHARS_LIMIT)
     task = str(args.get("task", "")).strip()
@@ -514,41 +520,48 @@ def _run_skill(skill_data: dict[str, Any], args: dict[str, Any], ctx: dict[str, 
         truncated = True
 
     payload = {
-        "skill_id": str(skill_data.get("id", "")),
-        "name": str(skill_data.get("name", "")),
-        "description": str(skill_data.get("description", "")),
+        "skill_id": str(current_skill.get("id", "")),
+        "name": str(current_skill.get("name", "")),
+        "description": str(current_skill.get("description", "")),
         "scope": scope,
-        "path": str(skill_data.get("path", "")),
-        "source": str(skill_data.get("source", "registry")),
-        "installer_managed": bool(skill_data.get("installer_managed", False)),
-        "trusted": bool(skill_data.get("trusted", True)),
-        "has_scripts": bool(skill_data.get("has_scripts", False)),
-        "installed_source": str(skill_data.get("installed_source", "")),
-        "installed_source_kind": str(skill_data.get("installed_source_kind", "")),
-        "scan_status": str(skill_data.get("scan_status", "")),
-        "scan_findings_count": int(skill_data.get("scan_findings_count", 0)),
-        "runtime_kind": str(skill_data.get("runtime_kind", "")),
-        "runtime_required": bool(skill_data.get("runtime_required", False)),
-        "runtime_recommended": bool(skill_data.get("runtime_recommended", False)),
-        "runtime_prepared": bool(skill_data.get("runtime_prepared", False)),
-        "runtime_next_step": str(skill_data.get("runtime_next_step", "")),
-        "scripts_available": bool(skill_data.get("has_scripts", False)),
+        "path": str(current_skill.get("path", "")),
+        "source": str(current_skill.get("source", "registry")),
+        "installer_managed": bool(current_skill.get("installer_managed", False)),
+        "trusted": bool(current_skill.get("trusted", True)),
+        "has_scripts": bool(current_skill.get("has_scripts", False)),
+        "installed_source": str(current_skill.get("installed_source", "")),
+        "installed_source_kind": str(current_skill.get("installed_source_kind", "")),
+        "scan_status": str(current_skill.get("scan_status", "")),
+        "scan_findings_count": int(current_skill.get("scan_findings_count", 0)),
+        "runtime_kind": str(current_skill.get("runtime_kind", "")),
+        "runtime_required": bool(current_skill.get("runtime_required", False)),
+        "runtime_recommended": bool(current_skill.get("runtime_recommended", False)),
+        "runtime_prepared": bool(current_skill.get("runtime_prepared", False)),
+        "runtime_next_step": str(current_skill.get("runtime_next_step", "")),
+        "scripts_available": bool(current_skill.get("has_scripts", False)),
         "usage_hint": (
             "Skills are internal Octopal tools, not MCP servers. Read this guidance first. "
             "If the skill includes scripts, run them with run_skill_script instead of exec_run."
         ),
         "script_usage_hint": (
-            f"Use run_skill_script with skill_id='{skill_data.get('id', '')}'."
-            if bool(skill_data.get("has_scripts", False))
+            f"Use run_skill_script with skill_id='{current_skill.get('id', '')}'."
+            if bool(current_skill.get("has_scripts", False))
             else ""
         ),
-        **_evaluate_skill_status(skill_data),
+        **_evaluate_skill_status(current_skill),
         "task": task,
         "input": input_payload if isinstance(input_payload, (dict, list, str, int, float, bool)) else None,
         "truncated": truncated,
         "guidance": content,
     }
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _refresh_skill_state(workspace_dir: Path, skill_data: dict[str, Any]) -> dict[str, Any] | None:
+    skill_id = str(skill_data.get("id", "")).strip()
+    if not _SKILL_ID_RE.fullmatch(skill_id):
+        return skill_data
+    return next((item for item in _load_skill_inventory(workspace_dir) if str(item.get("id", "")) == skill_id), None)
 
 
 def _caller_scope(ctx: dict[str, Any]) -> str:
