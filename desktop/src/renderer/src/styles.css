@@ -2101,6 +2101,7 @@ p {
 }
 
 .dashboard-control,
+.dashboard-connectors-view,
 .dashboard-skills-view,
 .dashboard-workers-view,
 .dashboard-system-view {
@@ -2846,6 +2847,68 @@ p {
 .dashboard-inline-notice {
   border-color: color-mix(in srgb, var(--success) 48%, var(--border));
   background: color-mix(in srgb, var(--success) 8%, var(--surface-strong));
+}
+
+.connector-management-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.connector-management-panel {
+  align-self: start;
+  overflow: hidden;
+}
+
+.connector-management-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.connector-enable-row {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  color: var(--muted-strong);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.connector-enable-row input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--primary);
+}
+
+.connector-runtime-message {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-height: 52px;
+  padding: 12px 13px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-strong) 76%, transparent);
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.connector-runtime-message svg {
+  width: 18px;
+  height: 18px;
+  color: var(--primary);
+}
+
+.connector-management-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .dashboard-worker-table {
@@ -4199,6 +4262,15 @@ p {
 
   .dashboard-actions {
     grid-column: 1 / -1;
+  }
+
+  .connector-management-grid,
+  .connector-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .connector-management-actions .button {
+    flex: 1 1 160px;
   }
 
   .dashboard-attention-panel {

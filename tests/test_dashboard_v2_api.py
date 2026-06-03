@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from octopal.gateway.app import build_app
-from octopal.infrastructure.config.models import OctopalConfig
+from octopal.infrastructure.config.models import ConnectorInstanceConfig, OctopalConfig
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.store.models import AuditEvent, WorkerRecord
 from octopal.infrastructure.store.sqlite import SQLiteStore
@@ -153,6 +153,65 @@ description: Imported copy helper
     listed = client.get("/api/dashboard/skills")
     assert listed.json()["count"] == 1
     assert listed.json()["skills"][0]["id"] == "imported_writer"
+
+
+
+
+def test_dashboard_connector_apply_reloads_config_and_reconciles_runtime(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(
+        TELEGRAM_BOT_TOKEN="123:abc",
+        OCTOPAL_STATE_DIR=tmp_path / "state",
+        OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
+    )
+    app = build_app(settings)
+    next_config = OctopalConfig()
+    next_config.connectors.instances["github"] = ConnectorInstanceConfig(
+        enabled=True,
+        enabled_services=["repos"],
+        auth={"authorized_services": ["repos"], "access_token": "ghp_test"},
+    )
+
+    class _Connector:
+        async def get_status(self):
+            return {
+                "status": "ready",
+                "services": ["repos"],
+                "message": "GitHub connector is ready.",
+            }
+
+    class _ConnectorManager:
+        def __init__(self) -> None:
+            self.config = None
+            self.octo_config = None
+            self.reconciled: list[str] = []
+            self.connector = _Connector()
+
+        def get_connector(self, name: str):
+            return self.connector if name == "github" else None
+
+        async def reconcile_connector_runtime(self, name: str) -> None:
+            self.reconciled.append(name)
+
+        async def load_and_start_all(self) -> None:
+            self.reconciled.append("*")
+
+        async def get_all_statuses(self):
+            return {"github": await self.connector.get_status()}
+
+    manager = _ConnectorManager()
+    app.state.octo = type("_Octo", (), {"connector_manager": manager})()
+    monkeypatch.setattr("octopal.gateway.dashboard.load_config", lambda: next_config)
+
+    client = TestClient(app)
+    response = client.post("/api/dashboard/connectors/apply", json={"name": "github"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "applied"
+    assert payload["connectors"]["github"]["status"] == "ready"
+    assert manager.config is next_config.connectors
+    assert manager.octo_config is next_config
+    assert manager.reconciled == ["github"]
 
 
 def test_dashboard_v2_stream_route_is_registered(tmp_path) -> None:

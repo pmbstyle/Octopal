@@ -1,13 +1,20 @@
 import {
   Activity,
   AlertTriangle,
+  CalendarDays,
+  CheckCircle2,
   Clock,
   Download,
   ExternalLink,
   Eye,
   FileJson,
+  Folder,
   GitBranch,
+  Github,
+  Info,
+  KeyRound,
   ListChecks,
+  Mail,
   MessageCircle,
   Pencil,
   Play,
@@ -19,6 +26,7 @@ import {
   Settings2,
   Square,
   Trash2,
+  Unplug,
   Wrench,
   X,
 } from "lucide-react";
@@ -30,10 +38,18 @@ import octoIdleSprite from "../../../../assets/octo-idle-sprite.png";
 import octoThinkingSprite from "../../../../assets/octo-thinking-sprite.png";
 import octoImage from "../../../../assets/octo.png";
 import type { CopyFn } from "../lib/appTypes";
+import {
+  buildOctopalConfig,
+  connectorProviders,
+  formValuesFromOctopalConfig,
+  isExistingSecret,
+  type InstallForm,
+} from "../lib/install";
 import { Button } from "./Button";
 import { ChatView } from "./ChatView";
+import { Field as SetupField, Input } from "./Field";
 
-type DashboardView = "chat" | "control" | "skills" | "workers" | "system";
+type DashboardView = "chat" | "control" | "connectors" | "skills" | "workers" | "system";
 
 type LoadPoint = {
   at: number;
@@ -56,6 +72,12 @@ type WorkerTemplateForm = {
   default_timeout_seconds: string;
   can_spawn_children: boolean;
   allowed_child_templates: string;
+};
+
+type ConnectorStatus = {
+  status?: string;
+  message?: string;
+  services?: string[];
 };
 
 const emptyTemplateForm: WorkerTemplateForm = {
@@ -244,6 +266,43 @@ function statusTextClass(status?: string): string {
     return "worker-detail-status worker-detail-status-bad";
   }
   return "worker-detail-status";
+}
+
+function connectorStatusFor(
+  statuses: DesktopConnectorStatusResult | null,
+  name: DesktopConnectorName,
+): ConnectorStatus | null {
+  const raw = statuses?.connectors[name];
+  return raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as ConnectorStatus)
+    : null;
+}
+
+function connectorStatusClass(status?: string): string {
+  const value = String(status ?? "").toLowerCase();
+  if (value === "ready") {
+    return "dashboard-status dashboard-status-good";
+  }
+  if (["needs_auth", "needs_reauth", "misconfigured", "unsupported_service_configuration"].includes(value)) {
+    return "dashboard-status dashboard-status-warn";
+  }
+  if (["error", "failed"].includes(value)) {
+    return "dashboard-status dashboard-status-bad";
+  }
+  return "dashboard-status";
+}
+
+function connectorServiceIcon(serviceId: string) {
+  if (serviceId === "gmail") {
+    return <Mail />;
+  }
+  if (serviceId === "calendar") {
+    return <CalendarDays />;
+  }
+  if (serviceId === "drive") {
+    return <Folder />;
+  }
+  return <Github />;
 }
 
 function isIdleOctoState(status?: string): boolean {
@@ -511,6 +570,15 @@ export function DashboardScreen({
   const [templateForm, setTemplateForm] =
     useState<WorkerTemplateForm>(emptyTemplateForm);
   const [templateSaving, setTemplateSaving] = useState(false);
+  const [connectorValues, setConnectorValues] = useState<InstallForm | null>(
+    null,
+  );
+  const [connectorStatus, setConnectorStatus] =
+    useState<DesktopConnectorStatusResult | null>(null);
+  const [connectorBusy, setConnectorBusy] =
+    useState<DesktopConnectorName | null>(null);
+  const [connectorError, setConnectorError] = useState("");
+  const [connectorNotice, setConnectorNotice] = useState("");
   const [startedAt] = useState(() => Date.now());
 
   const refreshSnapshot = useCallback(async () => {
@@ -596,6 +664,25 @@ export function DashboardScreen({
     [copy, installDir],
   );
 
+  const refreshConnectors = useCallback(async () => {
+    if (!window.octopalDesktop || !installDir) {
+      return;
+    }
+    try {
+      const [config, status] = await Promise.all([
+        window.octopalDesktop.loadOctopalConfig(),
+        window.octopalDesktop.getConnectorStatus(installDir),
+      ]);
+      setConnectorValues(formValuesFromOctopalConfig(config, installDir));
+      setConnectorStatus(status);
+      setConnectorError(status.ok ? "" : status.detail);
+    } catch (error) {
+      setConnectorError(
+        error instanceof Error ? error.message : "Could not load connectors.",
+      );
+    }
+  }, [installDir]);
+
   useEffect(() => {
     void refreshSnapshot();
     const timer = window.setInterval(() => {
@@ -613,6 +700,13 @@ export function DashboardScreen({
       void refreshSkills();
     }
   }, [refreshSkills, view]);
+
+  useEffect(() => {
+    if (view !== "connectors") {
+      return;
+    }
+    void refreshConnectors();
+  }, [refreshConnectors, view]);
 
   const graphPoints = useMemo(() => {
     if (history.length > 0) {
@@ -705,6 +799,8 @@ export function DashboardScreen({
   const connectedMcpServers = (snapshot?.system?.mcpServers ?? []).filter(
     (server) => String(server.status).toLowerCase() === "connected",
   );
+  const googleConnectorStatus = connectorStatusFor(connectorStatus, "google");
+  const githubConnectorStatus = connectorStatusFor(connectorStatus, "github");
   const logs = snapshot?.system?.logs ?? [];
   const editingTemplate = editingTemplateId
     ? (templates.find((template) => template.id === editingTemplateId) ?? null)
@@ -911,6 +1007,216 @@ export function DashboardScreen({
       return;
     }
     void window.octopalDesktop.openOctopalLogs(installDir);
+  }
+
+  function updateConnectorValue<K extends keyof InstallForm>(
+    key: K,
+    value: InstallForm[K],
+  ): void {
+    setConnectorValues((current) =>
+      current ? { ...current, [key]: value } : current,
+    );
+    setConnectorError("");
+    setConnectorNotice("");
+  }
+
+  function toggleConnectorEnabled(name: DesktopConnectorName): void {
+    if (!connectorValues) {
+      return;
+    }
+    if (name === "google") {
+      updateConnectorValue(
+        "googleConnectorEnabled",
+        !connectorValues.googleConnectorEnabled,
+      );
+      return;
+    }
+    updateConnectorValue(
+      "githubConnectorEnabled",
+      !connectorValues.githubConnectorEnabled,
+    );
+  }
+
+  function toggleConnectorService(
+    name: DesktopConnectorName,
+    serviceId: string,
+  ): void {
+    if (!connectorValues) {
+      return;
+    }
+    if (name === "google") {
+      const current = connectorValues.googleConnectorServices;
+      updateConnectorValue(
+        "googleConnectorServices",
+        current.includes(serviceId as (typeof current)[number])
+          ? current.filter((item) => item !== serviceId)
+          : [...current, serviceId as (typeof current)[number]],
+      );
+      return;
+    }
+
+    const current = connectorValues.githubConnectorServices;
+    updateConnectorValue(
+      "githubConnectorServices",
+      current.includes(serviceId as (typeof current)[number])
+        ? current.filter((item) => item !== serviceId)
+        : [...current, serviceId as (typeof current)[number]],
+    );
+  }
+
+  function connectorValidationError(name: DesktopConnectorName): string {
+    if (!connectorValues) {
+      return "Connector settings are still loading.";
+    }
+    if (name === "google") {
+      if (!connectorValues.googleConnectorEnabled) {
+        return "Enable Google first.";
+      }
+      if (connectorValues.googleConnectorServices.length === 0) {
+        return "Select at least one Google service.";
+      }
+      if (!(connectorValues.googleClientId ?? "").trim()) {
+        return "Google client ID is required.";
+      }
+      if (
+        !(connectorValues.googleClientSecret ?? "").trim() &&
+        !isExistingSecret(connectorValues.googleClientSecret)
+      ) {
+        return "Google client secret is required.";
+      }
+      return "";
+    }
+
+    if (!connectorValues.githubConnectorEnabled) {
+      return "Enable GitHub first.";
+    }
+    if (connectorValues.githubConnectorServices.length === 0) {
+      return "Select at least one GitHub service.";
+    }
+    if (
+      !(connectorValues.githubToken ?? "").trim() &&
+      !isExistingSecret(connectorValues.githubToken)
+    ) {
+      return "GitHub token is required.";
+    }
+    return "";
+  }
+
+  async function saveConnectorSettings(
+    name: DesktopConnectorName,
+    options: { apply?: boolean } = { apply: true },
+  ): Promise<boolean> {
+    if (!window.octopalDesktop || !connectorValues) {
+      return false;
+    }
+    setConnectorBusy(name);
+    setConnectorError("");
+    setConnectorNotice("");
+    try {
+      await window.octopalDesktop.saveOctopalConfig(
+        buildOctopalConfig(connectorValues),
+      );
+      let notice = "Connector settings saved.";
+      if (options.apply) {
+        const applied = await window.octopalDesktop.applyConnectorRuntime(
+          installDir,
+          name,
+        );
+        notice = applied.ok ? applied.message : applied.message;
+      }
+      setConnectorNotice(notice);
+      await refreshConnectors();
+      return true;
+    } catch (error) {
+      setConnectorError(
+        error instanceof Error ? error.message : "Could not save connector settings.",
+      );
+      return false;
+    } finally {
+      setConnectorBusy(null);
+    }
+  }
+
+  async function authorizeDashboardConnector(
+    name: DesktopConnectorName,
+  ): Promise<void> {
+    if (!window.octopalDesktop || !connectorValues) {
+      return;
+    }
+    const validationError = connectorValidationError(name);
+    if (validationError) {
+      setConnectorError(validationError);
+      setConnectorNotice("");
+      return;
+    }
+
+    setConnectorBusy(name);
+    setConnectorError("");
+    setConnectorNotice("");
+    try {
+      await window.octopalDesktop.saveOctopalConfig(
+        buildOctopalConfig(connectorValues),
+      );
+      const result = await window.octopalDesktop.authorizeConnector(
+        installDir,
+        name === "google"
+          ? {
+              name,
+              clientId: connectorValues.googleClientId,
+              clientSecret: connectorValues.googleClientSecret,
+            }
+          : {
+              name,
+              token: connectorValues.githubToken,
+            },
+      );
+      if (!result.ok) {
+        setConnectorError(result.message);
+        return;
+      }
+      const applied = await window.octopalDesktop.applyConnectorRuntime(
+        installDir,
+        name,
+      );
+      setConnectorNotice(applied.ok ? result.message : applied.message);
+      await refreshConnectors();
+    } catch (error) {
+      setConnectorError(
+        error instanceof Error ? error.message : "Connector authorization failed.",
+      );
+    } finally {
+      setConnectorBusy(null);
+    }
+  }
+
+  async function disconnectDashboardConnector(
+    name: DesktopConnectorName,
+  ): Promise<void> {
+    if (!window.octopalDesktop) {
+      return;
+    }
+    setConnectorBusy(name);
+    setConnectorError("");
+    setConnectorNotice("");
+    try {
+      const result = await window.octopalDesktop.disconnectConnector(
+        installDir,
+        name,
+        false,
+      );
+      const applied = await window.octopalDesktop.applyConnectorRuntime(
+        installDir,
+        name,
+      );
+      setConnectorNotice(result.ok && applied.ok ? result.message : applied.message);
+      await refreshConnectors();
+    } catch (error) {
+      setConnectorError(
+        error instanceof Error ? error.message : "Connector disconnect failed.",
+      );
+    } finally {
+      setConnectorBusy(null);
+    }
   }
 
   function renderDashboardHeader({
@@ -1445,6 +1751,223 @@ export function DashboardScreen({
               <p className="dashboard-empty-row">{copy("selectSkill")}</p>
             )}
           </div>
+        </div>
+      </section>
+    );
+  }
+
+
+  function renderConnectorPanel(name: DesktopConnectorName) {
+    if (!connectorValues) {
+      return (
+        <div className="dashboard-panel connector-management-panel">
+          <p className="dashboard-empty-row">Loading connector settings...</p>
+        </div>
+      );
+    }
+
+    const isGoogle = name === "google";
+    const provider = connectorProviders[isGoogle ? 0 : 1];
+    const enabled = isGoogle
+      ? connectorValues.googleConnectorEnabled
+      : connectorValues.githubConnectorEnabled;
+    const services = isGoogle
+      ? connectorValues.googleConnectorServices
+      : connectorValues.githubConnectorServices;
+    const status = isGoogle ? googleConnectorStatus : githubConnectorStatus;
+
+    return (
+      <div className="dashboard-panel connector-management-panel">
+        <div className="dashboard-panel-head">
+          <div>
+            <h2>{provider.label}</h2>
+            <p>{isGoogle ? copy("googleConnectorBody") : copy("githubConnectorBody")}</p>
+          </div>
+          <span className={connectorStatusClass(status?.status)}>
+            {status?.status ?? "unknown"}
+          </span>
+        </div>
+        <div className="connector-management-body">
+          <label className="connector-enable-row">
+            <input
+              checked={enabled}
+              type="checkbox"
+              onChange={() => toggleConnectorEnabled(name)}
+            />
+            <span>Enabled</span>
+          </label>
+
+          <div className="connector-services" aria-label={copy("connectorServices")}>
+            {provider.services.map((service) => (
+              <label key={service.id} className="service-checkbox">
+                <input
+                  checked={services.some((item) => item === service.id)}
+                  type="checkbox"
+                  onChange={() => toggleConnectorService(name, service.id)}
+                />
+                <span>{connectorServiceIcon(service.id)}</span>
+                {service.label}
+              </label>
+            ))}
+          </div>
+
+          {isGoogle ? (
+            <div className="connector-form">
+              <SetupField label={copy("googleClientId")}>
+                <Input
+                  value={connectorValues.googleClientId ?? ""}
+                  onChange={(event) =>
+                    updateConnectorValue("googleClientId", event.target.value)
+                  }
+                />
+              </SetupField>
+              <SetupField
+                label={copy("googleClientSecret")}
+                hint={
+                  isExistingSecret(connectorValues.googleClientSecret)
+                    ? copy("configured")
+                    : copy("required")
+                }
+              >
+                <Input
+                  value={connectorValues.googleClientSecret ?? ""}
+                  type="password"
+                  onChange={(event) =>
+                    updateConnectorValue(
+                      "googleClientSecret",
+                      event.target.value,
+                    )
+                  }
+                />
+              </SetupField>
+            </div>
+          ) : (
+            <div className="connector-form connector-form-single">
+              <SetupField
+                label={copy("githubToken")}
+                hint={
+                  isExistingSecret(connectorValues.githubToken)
+                    ? copy("configured")
+                    : copy("required")
+                }
+              >
+                <Input
+                  value={connectorValues.githubToken ?? ""}
+                  type="password"
+                  onChange={(event) =>
+                    updateConnectorValue("githubToken", event.target.value)
+                  }
+                />
+              </SetupField>
+            </div>
+          )}
+
+          <div className="connector-runtime-message">
+            {status?.status === "ready" ? <CheckCircle2 /> : <Info />}
+            <span>{status?.message ?? "Connector status has not been loaded yet."}</span>
+          </div>
+
+          <div className="connector-management-actions">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={connectorBusy !== null}
+              onClick={() => void saveConnectorSettings(name)}
+            >
+              <RotateCw data-icon="inline-start" />
+              Save & apply
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={connectorBusy !== null}
+              onClick={() => void authorizeDashboardConnector(name)}
+            >
+              <KeyRound data-icon="inline-start" />
+              {connectorBusy === name ? copy("authorizingConnector") : copy("authorizeConnector")}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={connectorBusy !== null}
+              onClick={() => void disconnectDashboardConnector(name)}
+            >
+              <Unplug data-icon="inline-start" />
+              Disconnect
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderConnectors() {
+    const connectorServers = (snapshot?.system?.mcpServers ?? []).filter(
+      (server) =>
+        server.id.startsWith("google-") || server.id.startsWith("github-"),
+    );
+
+    return (
+      <section className="dashboard-connectors-view">
+        {renderDashboardHeader({
+          title: copy("connectorsTitle"),
+          detail:
+            "Configure connector accounts and apply them to the running instance.",
+          latest:
+            connectorServers.length > 0
+              ? `${connectorServers.length} connector MCP server${connectorServers.length === 1 ? "" : "s"} visible`
+              : "No connector MCP servers visible yet",
+          actions: (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={connectorBusy !== null}
+              onClick={() => void refreshConnectors()}
+            >
+              <RotateCw data-icon="inline-start" />
+              Refresh
+            </Button>
+          ),
+        })}
+
+        {connectorError ? (
+          <p className="dashboard-inline-error">{connectorError}</p>
+        ) : null}
+        {connectorNotice ? (
+          <p className="dashboard-inline-notice">{connectorNotice}</p>
+        ) : null}
+
+        <div className="connector-management-grid">
+          {renderConnectorPanel("google")}
+          {renderConnectorPanel("github")}
+        </div>
+
+        <div className="dashboard-panel system-card">
+          <h2>Runtime connector servers</h2>
+          {connectorServers.length === 0 ? (
+            <p>No connector-backed MCP servers are currently connected.</p>
+          ) : (
+            <div className="mcp-server-list">
+              {connectorServers.map((server) => (
+                <article className="mcp-server-card" key={server.id}>
+                  <div>
+                    <strong>{server.name}</strong>
+                    <span>{server.id}</span>
+                  </div>
+                  <dl>
+                    <div>
+                      <dt>{copy("availableTools")}</dt>
+                      <dd>{server.toolCount}</dd>
+                    </div>
+                    <div>
+                      <dt>{copy("transport")}</dt>
+                      <dd>{server.transport}</dd>
+                    </div>
+                  </dl>
+                </article>
+              ))}
+            </div>
+          )}
         </div>
       </section>
     );
@@ -1988,6 +2511,18 @@ export function DashboardScreen({
         <button
           type="button"
           className={
+            view === "connectors"
+              ? "dashboard-tab dashboard-tab-active"
+              : "dashboard-tab"
+          }
+          onClick={() => setView("connectors")}
+        >
+          <Mail data-icon="inline-start" />
+          Connectors
+        </button>
+        <button
+          type="button"
+          className={
             view === "system"
               ? "dashboard-tab dashboard-tab-active"
               : "dashboard-tab"
@@ -2004,6 +2539,7 @@ export function DashboardScreen({
         {view === "control" ? renderControl() : null}
         {view === "workers" ? renderWorkers() : null}
         {view === "skills" ? renderSkills() : null}
+        {view === "connectors" ? renderConnectors() : null}
         {view === "system" ? renderSystem() : null}
       </div>
 
