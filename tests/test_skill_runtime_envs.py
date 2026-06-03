@@ -209,6 +209,88 @@ description: Run TS helpers
     assert status["node_packages"] == ["chalk@^5.4.0", "tsx@^4.19.0"]
 
 
+def test_get_skill_env_status_marks_python_env_missing_when_requirements_change(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "reporter"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: reporter
+description: Build reports
+---
+""",
+        encoding="utf-8",
+    )
+    (skill_dir / "requirements.txt").write_text("requests==2.32.0\n", encoding="utf-8")
+    (scripts_dir / "report.py").write_text("print('ok')\n", encoding="utf-8")
+    env_dir = workspace_dir / ".skill-envs" / "reporter"
+    bin_dir = env_dir / ("Scripts" if __import__("os").name == "nt" else "bin")
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    python_name = "python.exe" if __import__("os").name == "nt" else "python"
+    (bin_dir / python_name).write_text("", encoding="utf-8")
+    (env_dir / "env.json").write_text(
+        json.dumps(
+            {
+                "kind": "python",
+                "python_packages": ["requests==2.31.0"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = get_skill_env_status("reporter", workspace_dir=workspace_dir)
+
+    assert status["prepared"] is False
+    assert status["status"] == "missing"
+    assert "prepare-env reporter" in status["next_step"]
+
+
+def test_get_skill_env_status_marks_node_env_missing_when_packages_change(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "ui-helper"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: ui-helper
+description: Run TS helpers
+---
+""",
+        encoding="utf-8",
+    )
+    (skill_dir / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "ui-helper",
+                "dependencies": {"chalk": "^5.4.0"},
+                "devDependencies": {"tsx": "^4.19.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (scripts_dir / "helper.ts").write_text("console.log('ok')\n", encoding="utf-8")
+    env_dir = workspace_dir / ".skill-envs" / "ui-helper"
+    env_dir.mkdir(parents=True)
+    (env_dir / "package.json").write_text("{}", encoding="utf-8")
+    (env_dir / "env.json").write_text(
+        json.dumps(
+            {
+                "kind": "node",
+                "node_packages": ["tsx@^4.19.0"],
+                "package_manager": "npm",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = get_skill_env_status("ui-helper", workspace_dir=workspace_dir)
+
+    assert status["prepared"] is False
+    assert status["status"] == "missing"
+    assert "prepare-env ui-helper" in status["next_step"]
+
+
 def test_get_skill_env_status_requires_env_for_python_script_without_deps(tmp_path: Path) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "writer"

@@ -238,6 +238,7 @@ def _tool_use_skill(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 def list_skill_inventory(workspace_dir: Path, *, include_disabled: bool = True) -> dict[str, Any]:
+    workspace_dir = workspace_dir.resolve()
     listed: list[dict[str, Any]] = []
     for raw in _load_skill_inventory(workspace_dir):
         enabled = bool(raw.get("enabled", True))
@@ -619,6 +620,7 @@ def _skill_path_exists(workspace_dir: Path, skill_data: dict[str, Any]) -> bool:
 
 
 def _load_skill_inventory(workspace_dir: Path) -> list[dict[str, Any]]:
+    workspace_dir = workspace_dir.resolve()
     registry = _load_registry(workspace_dir)
     installed_manifest = _load_installed_manifest(workspace_dir)
     installed_by_id = {
@@ -640,11 +642,12 @@ def _load_skill_inventory(workspace_dir: Path) -> list[dict[str, Any]]:
                 auto_discovered=False,
             )
             record["trusted"] = bool(raw.get("trusted", True))
-            inventory_by_id[bundle.id] = _merge_installed_metadata(record, installed_by_id.get(bundle.id))
+            inventory_by_id[bundle.id] = _merge_installed_metadata(workspace_dir, record, installed_by_id.get(bundle.id))
             continue
         if not _SKILL_ID_RE.fullmatch(skill_id):
             continue
         inventory_by_id[skill_id] = _merge_installed_metadata(
+            workspace_dir,
             _skill_record_from_registry(workspace_dir, raw),
             installed_by_id.get(skill_id),
         )
@@ -654,6 +657,7 @@ def _load_skill_inventory(workspace_dir: Path) -> list[dict[str, Any]]:
         if bundle is None or bundle.id in inventory_by_id:
             continue
         inventory_by_id[bundle.id] = _merge_installed_metadata(
+            workspace_dir,
             _skill_record_from_bundle(
                 workspace_dir,
                 bundle,
@@ -796,8 +800,12 @@ def _evaluate_skill_status(skill_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _merge_installed_metadata(skill_data: dict[str, Any], installed_record: dict[str, Any] | None) -> dict[str, Any]:
-    _merge_runtime_metadata(skill_data)
+def _merge_installed_metadata(
+    workspace_dir: Path,
+    skill_data: dict[str, Any],
+    installed_record: dict[str, Any] | None,
+) -> dict[str, Any]:
+    _merge_runtime_metadata(workspace_dir, skill_data)
     if not isinstance(installed_record, dict):
         skill_data.setdefault("installer_managed", False)
         skill_data.setdefault("trusted", True)
@@ -1013,8 +1021,8 @@ def _write_installed_manifest(workspace_dir: Path, payload: dict[str, Any]) -> N
             pass
 
 
-def _merge_runtime_metadata(skill_data: dict[str, Any]) -> None:
-    workspace_dir = _workspace_root()
+def _merge_runtime_metadata(workspace_dir: Path, skill_data: dict[str, Any]) -> None:
+    workspace_dir = workspace_dir.resolve()
     skill_id = str(skill_data.get("id", "")).strip()
     if not skill_id:
         return

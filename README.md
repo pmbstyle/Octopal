@@ -353,6 +353,7 @@ Common commands:
 uv run octopal skill list
 uv run octopal skill install <publisher>/<skill-pack>
 uv run octopal skill update <skill-id>
+uv run octopal skill verify <skill-id>
 uv run octopal skill trust <skill-id>
 uv run octopal skill remove <skill-id>
 ```

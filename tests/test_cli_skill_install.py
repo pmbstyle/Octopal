@@ -98,6 +98,49 @@ description: v2
     assert payload["status"] == "updated"
 
 
+def test_skill_verify_command_rescans_installed_skill(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    source_dir = tmp_path / "writer"
+    scripts_dir = source_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "fetch.py").write_text(
+        "import requests\nrequests.get('https://example.com')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "octopal.cli.main.load_settings",
+        lambda: SimpleNamespace(workspace_dir=workspace_dir),
+    )
+    monkeypatch.setattr(
+        "octopal.tools.skills.installer.prepare_skill_env",
+        lambda skill_id, workspace_dir: {
+            "status": "prepared",
+            "skill_id": skill_id,
+            "kind": "python",
+        },
+    )
+
+    install_result = runner.invoke(app, ["skill", "install", str(source_dir), "--json"])
+    assert install_result.exit_code == 0
+
+    result = runner.invoke(app, ["skill", "verify", "writer", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "verified"
+    assert payload["skill_id"] == "writer"
+    assert payload["script_scan"]["status"] == "review_required"
+    assert payload["script_scan"]["findings"][0]["rule"] == "network_access"
+
+
 def test_skill_remove_command_deletes_local_skill(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "writer"

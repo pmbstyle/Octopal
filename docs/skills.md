@@ -113,6 +113,7 @@ Lifecycle commands:
 uv run octopal skill install <source>
 uv run octopal skill list
 uv run octopal skill update <skill-id>
+uv run octopal skill verify <skill-id>
 uv run octopal skill trust <skill-id>
 uv run octopal skill untrust <skill-id>
 uv run octopal skill remove <skill-id>
@@ -188,6 +189,7 @@ Octopal treats imported script-backed skills more carefully than local ones.
 When you want to allow script execution for an imported skill:
 
 ```bash
+uv run octopal skill verify <skill-id>
 uv run octopal skill trust <skill-id>
 ```
 
