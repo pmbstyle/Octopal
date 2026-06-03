@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import urlparse
 
@@ -370,9 +370,39 @@ def _download_to_path(url: str, target_path: Path) -> None:
 def _extract_archive(archive_path: Path, destination: Path) -> None:
     try:
         with zipfile.ZipFile(archive_path, "r") as archive:
-            archive.extractall(destination)
+            destination.mkdir(parents=True, exist_ok=True)
+            destination_root = destination.resolve()
+            for member in archive.infolist():
+                target_path = _safe_archive_member_path(destination_root, member.filename)
+                if member.is_dir():
+                    target_path.mkdir(parents=True, exist_ok=True)
+                    continue
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member, "r") as source, target_path.open("wb") as target:
+                    shutil.copyfileobj(source, target)
     except Exception as exc:
         raise ValueError(f"failed to extract skill archive: {exc}") from exc
+
+
+def _safe_archive_member_path(destination_root: Path, member_name: str) -> Path:
+    normalized = str(member_name or "").replace("\\", "/")
+    path = PurePosixPath(normalized)
+    windows_path = PureWindowsPath(str(member_name or ""))
+    parts = [part for part in path.parts if part not in {"", "."}]
+    if (
+        not parts
+        or path.is_absolute()
+        or windows_path.is_absolute()
+        or any(part == ".." for part in parts)
+        or ":" in parts[0]
+    ):
+        raise ValueError(f"unsafe archive path: {member_name}")
+    target_path = destination_root.joinpath(*parts).resolve()
+    try:
+        target_path.relative_to(destination_root)
+    except ValueError as exc:
+        raise ValueError(f"unsafe archive path: {member_name}") from exc
+    return target_path
 
 
 def _discover_bundle_root(root: Path) -> Path:

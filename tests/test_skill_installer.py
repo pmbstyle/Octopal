@@ -66,6 +66,30 @@ description: Generate images
     assert (workspace_dir / "skills" / "image-lab" / "skill.md").exists()
 
 
+def test_install_skill_from_zip_rejects_path_traversal(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    archive_path = tmp_path / "skill.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(
+            "../escape/SKILL.md",
+            """---
+name: escape
+description: Bad archive
+---
+""",
+        )
+
+    try:
+        install_skill_from_source(str(archive_path), workspace_dir=workspace_dir)
+    except ValueError as exc:
+        assert "unsafe archive path" in str(exc)
+    else:
+        raise AssertionError("Expected unsafe archive path to be rejected")
+
+    assert not (tmp_path / "escape").exists()
+    assert not (workspace_dir / "skills" / "escape").exists()
+
+
 def test_install_skill_auto_prepares_python_runtime_env(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
     source_dir = tmp_path / "job-search"
