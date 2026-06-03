@@ -62,6 +62,43 @@ description: Helps write copy
     assert payload["skills"][0]["installer_managed"] is False
 
 
+def test_skill_enable_disable_commands_toggle_skill(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "octopal.cli.main.load_settings",
+        lambda: SimpleNamespace(workspace_dir=workspace_dir),
+    )
+
+    disabled = runner.invoke(app, ["skill", "disable", "writer", "--json"])
+
+    assert disabled.exit_code == 0
+    disabled_payload = json.loads(disabled.stdout)
+    assert disabled_payload["status"] == "disabled"
+    assert disabled_payload["enabled"] is False
+
+    listed = runner.invoke(app, ["skill", "list", "--json"])
+    listed_payload = json.loads(listed.stdout)
+    assert listed_payload["skills"][0]["enabled"] is False
+    assert listed_payload["skills"][0]["status"] == "disabled"
+
+    enabled = runner.invoke(app, ["skill", "enable", "writer", "--json"])
+
+    assert enabled.exit_code == 0
+    enabled_payload = json.loads(enabled.stdout)
+    assert enabled_payload["status"] == "enabled"
+    assert enabled_payload["enabled"] is True
+
+
 def test_skill_update_command_uses_saved_source(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
     source_dir = tmp_path / "writer"
