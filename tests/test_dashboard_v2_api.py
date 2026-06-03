@@ -65,6 +65,96 @@ def test_dashboard_v2_routes_require_token_when_configured(tmp_path) -> None:
     assert authorized.json()["contract_version"] == "dashboard.v2.overview"
 
 
+def test_dashboard_skills_route_requires_token_when_configured(tmp_path) -> None:
+    client = _make_client(tmp_path, token="secret-token")
+
+    unauthorized = client.get("/api/dashboard/skills")
+    assert unauthorized.status_code == 401
+
+    authorized = client.get(
+        "/api/dashboard/skills",
+        headers={"x-octopal-token": "secret-token"},
+    )
+    assert authorized.status_code == 200
+    assert authorized.json()["contract_version"] == "dashboard.skills.v1"
+
+
+def test_dashboard_skills_api_manages_local_skill(tmp_path) -> None:
+    client = _make_client(tmp_path)
+    skill_dir = tmp_path / "workspace" / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: Writer
+description: Helps write copy
+---
+
+# Writer
+""",
+        encoding="utf-8",
+    )
+
+    listed = client.get("/api/dashboard/skills")
+
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert payload["contract_version"] == "dashboard.skills.v1"
+    assert payload["count"] == 1
+    skill = payload["skills"][0]
+    assert skill["id"] == "writer"
+    assert skill["name"] == "Writer"
+    assert skill["description"] == "Helps write copy"
+    assert skill["enabled"] is True
+    assert skill["actions"]["can_disable"] is True
+
+    disabled = client.post("/api/dashboard/skills/writer/disable")
+
+    assert disabled.status_code == 200
+    disabled_skill = disabled.json()["skill"]
+    assert disabled_skill["enabled"] is False
+    assert disabled_skill["status"] == "disabled"
+    assert disabled_skill["actions"]["can_enable"] is True
+
+    enabled = client.post("/api/dashboard/skills/writer/enable")
+
+    assert enabled.status_code == 200
+    assert enabled.json()["skill"]["enabled"] is True
+
+    deleted = client.delete("/api/dashboard/skills/writer")
+
+    assert deleted.status_code == 200
+    assert deleted.json()["skills"]["count"] == 0
+    assert not skill_dir.exists()
+
+
+def test_dashboard_skills_api_installs_local_skill_source(tmp_path) -> None:
+    client = _make_client(tmp_path)
+    source_dir = tmp_path / "source-writer"
+    source_dir.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        """---
+name: Imported Writer
+description: Imported copy helper
+---
+""",
+        encoding="utf-8",
+    )
+
+    installed = client.post("/api/dashboard/skills/install", json={"source": str(source_dir)})
+
+    assert installed.status_code == 200
+    payload = installed.json()
+    assert payload["status"] == "installed"
+    assert payload["skill_id"] == "imported_writer"
+    assert payload["install"]["source_kind"] == "local_dir"
+    assert payload["skill"]["name"] == "Imported Writer"
+    assert payload["skill"]["origin"] == "installed"
+
+    listed = client.get("/api/dashboard/skills")
+    assert listed.json()["count"] == 1
+    assert listed.json()["skills"][0]["id"] == "imported_writer"
+
+
 def test_dashboard_v2_stream_route_is_registered(tmp_path) -> None:
     client = _make_client(tmp_path)
     schema = client.get("/openapi.json")
