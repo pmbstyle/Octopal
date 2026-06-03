@@ -127,6 +127,21 @@ def get_skill_management_tools() -> list[ToolSpec]:
             handler=_tool_remove_skill,
         ),
         ToolSpec(
+            name="set_skill_enabled",
+            description="Enable or disable an internal skill without deleting its bundle.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Skill id to update."},
+                    "enabled": {"type": "boolean", "description": "Whether the skill should be enabled."},
+                },
+                "required": ["id", "enabled"],
+                "additionalProperties": False,
+            },
+            permission="skill_manage",
+            handler=_tool_set_skill_enabled,
+        ),
+        ToolSpec(
             name="run_skill_script",
             description="Run a script from a Octopal skill bundle scripts/ directory without invoking a shell. Prefer this over exec_run for skill scripts.",
             parameters={
@@ -350,6 +365,24 @@ def _tool_remove_skill(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         payload = remove_skill(skill_id, workspace_dir=workspace_dir)
     except ValueError as exc:
         return f"remove_skill error: {exc}"
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _tool_set_skill_enabled(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    workspace_dir = _workspace_root()
+    skill_id = str(args.get("id", "")).strip()
+    if not _SKILL_ID_RE.fullmatch(skill_id):
+        return "set_skill_enabled error: id must match ^[a-z0-9][a-z0-9_-]*$."
+    if "enabled" not in args:
+        return "set_skill_enabled error: enabled is required."
+    try:
+        payload = set_skill_enabled(
+            skill_id,
+            workspace_dir=workspace_dir,
+            enabled=bool(args.get("enabled")),
+        )
+    except ValueError as exc:
+        return f"set_skill_enabled error: {exc}"
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -848,6 +881,30 @@ def set_skill_trust(
     return _set_local_skill_trust(skill_data, workspace_dir=workspace_dir, trusted=trusted)
 
 
+def set_skill_enabled(skill_id: str, *, workspace_dir: Path, enabled: bool) -> dict[str, Any]:
+    skill_id = str(skill_id).strip()
+    if not _SKILL_ID_RE.fullmatch(skill_id):
+        raise ValueError("skill id must match ^[a-z0-9][a-z0-9_-]*$")
+
+    inventory = _load_skill_inventory(workspace_dir)
+    skill_data = next((item for item in inventory if str(item.get("id", "")) == skill_id), None)
+    if skill_data is None:
+        raise ValueError(f"skill '{skill_id}' not found")
+
+    _upsert_registry_skill_override(
+        skill_data,
+        workspace_dir=workspace_dir,
+        updates={"enabled": bool(enabled)},
+    )
+    return {
+        "status": "enabled" if enabled else "disabled",
+        "skill_id": skill_id,
+        "enabled": bool(enabled),
+        "installer_managed": bool(skill_data.get("installer_managed", False)),
+        "manifest_path": str(_registry_path(workspace_dir)),
+    }
+
+
 def remove_skill(skill_id: str, *, workspace_dir: Path) -> dict[str, Any]:
     skill_id = str(skill_id).strip()
     if not _SKILL_ID_RE.fullmatch(skill_id):
@@ -861,53 +918,32 @@ def remove_skill(skill_id: str, *, workspace_dir: Path) -> dict[str, Any]:
     if bool(skill_data.get("installer_managed", False)):
         payload = _remove_installed_skill(skill_id, workspace_dir=workspace_dir)
         env_payload = remove_skill_env(skill_id, workspace_dir=workspace_dir)
+        registry_removed = _remove_registry_skill_override(skill_id, workspace_dir=workspace_dir)
         payload["removed_env"] = bool(env_payload.get("removed", False))
+        payload["removed_registry_override"] = registry_removed
         return payload
 
     removed_path = _remove_local_skill_path(skill_data, workspace_dir=workspace_dir)
     env_payload = remove_skill_env(skill_id, workspace_dir=workspace_dir)
-    registry = _load_registry(workspace_dir)
-    registry["skills"] = [
-        item
-        for item in registry.get("skills", [])
-        if not isinstance(item, dict) or str(item.get("id", "")).strip() != skill_id
-    ]
-    _write_registry(workspace_dir, registry)
+    registry_removed = _remove_registry_skill_override(skill_id, workspace_dir=workspace_dir)
     return {
         "status": "removed",
         "skill_id": skill_id,
         "removed_path": removed_path,
         "removed_env": bool(env_payload.get("removed", False)),
+        "removed_registry_override": registry_removed,
         "installer_managed": False,
         "manifest_path": str(_registry_path(workspace_dir)),
     }
 
 
 def _set_local_skill_trust(skill_data: dict[str, Any], *, workspace_dir: Path, trusted: bool) -> dict[str, Any]:
-    registry = _load_registry(workspace_dir)
-    skills = [item for item in registry.get("skills", []) if isinstance(item, dict)]
+    _upsert_registry_skill_override(
+        skill_data,
+        workspace_dir=workspace_dir,
+        updates={"trusted": bool(trusted)},
+    )
     skill_id = str(skill_data.get("id", "")).strip()
-    updated = False
-    for item in skills:
-        if str(item.get("id", "")).strip() != skill_id:
-            continue
-        item["trusted"] = bool(trusted)
-        updated = True
-        break
-    if not updated:
-        skills.append(
-            {
-                "id": skill_id,
-                "name": str(skill_data.get("name", "")).strip(),
-                "description": str(skill_data.get("description", "")).strip(),
-                "path": str(skill_data.get("path", "")).strip(),
-                "scope": _resolve_scope_value(skill_data.get("scope")),
-                "enabled": bool(skill_data.get("enabled", True)),
-                "trusted": bool(trusted),
-            }
-        )
-    registry["skills"] = sorted(skills, key=lambda item: str(item.get("id", "")))
-    _write_registry(workspace_dir, registry)
     return {
         "status": "trusted" if trusted else "untrusted",
         "skill_id": skill_id,
@@ -915,6 +951,55 @@ def _set_local_skill_trust(skill_data: dict[str, Any], *, workspace_dir: Path, t
         "installer_managed": False,
         "manifest_path": str(_registry_path(workspace_dir)),
     }
+
+
+def _upsert_registry_skill_override(
+    skill_data: dict[str, Any],
+    *,
+    workspace_dir: Path,
+    updates: dict[str, Any],
+) -> None:
+    registry = _load_registry(workspace_dir)
+    skills = [item for item in registry.get("skills", []) if isinstance(item, dict)]
+    skill_id = str(skill_data.get("id", "")).strip()
+    updated = False
+    for item in skills:
+        if str(item.get("id", "")).strip() != skill_id:
+            continue
+        item.setdefault("name", str(skill_data.get("name", "")).strip())
+        item.setdefault("description", str(skill_data.get("description", "")).strip())
+        item.setdefault("path", str(skill_data.get("path", "")).strip())
+        item.setdefault("scope", _resolve_scope_value(skill_data.get("scope")))
+        item.setdefault("enabled", bool(skill_data.get("enabled", True)))
+        item.setdefault("trusted", bool(skill_data.get("trusted", True)))
+        item.update(updates)
+        updated = True
+        break
+    if not updated:
+        record = {
+            "id": skill_id,
+            "name": str(skill_data.get("name", "")).strip(),
+            "description": str(skill_data.get("description", "")).strip(),
+            "path": str(skill_data.get("path", "")).strip(),
+            "scope": _resolve_scope_value(skill_data.get("scope")),
+            "enabled": bool(skill_data.get("enabled", True)),
+            "trusted": bool(skill_data.get("trusted", True)),
+        }
+        record.update(updates)
+        skills.append(record)
+    registry["skills"] = sorted(skills, key=lambda item: str(item.get("id", "")))
+    _write_registry(workspace_dir, registry)
+
+
+def _remove_registry_skill_override(skill_id: str, *, workspace_dir: Path) -> bool:
+    registry = _load_registry(workspace_dir)
+    skills = [item for item in registry.get("skills", []) if isinstance(item, dict)]
+    kept = [item for item in skills if str(item.get("id", "")).strip() != skill_id]
+    if len(kept) == len(skills):
+        return False
+    registry["skills"] = kept
+    _write_registry(workspace_dir, registry)
+    return True
 
 
 def _remove_local_skill_path(skill_data: dict[str, Any], *, workspace_dir: Path) -> bool:

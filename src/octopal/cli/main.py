@@ -54,7 +54,12 @@ from octopal.tools.skills.installer import (
     update_installed_skill,
     verify_installed_skill,
 )
-from octopal.tools.skills.management import list_skill_inventory, remove_skill, set_skill_trust
+from octopal.tools.skills.management import (
+    list_skill_inventory,
+    remove_skill,
+    set_skill_enabled,
+    set_skill_trust,
+)
 from octopal.tools.skills.runtime_envs import (
     prepare_skill_env,
     remove_skill_env,
@@ -2156,6 +2161,60 @@ def skill_trust(
         return
 
     console.print(f"[bold green][V] Trusted skill[/bold green] {payload['skill_id']}")
+
+
+@skill_app.command("enable")
+def skill_enable(
+    skill_id: str = typer.Argument(..., help="Skill id."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Enable a skill without reinstalling it."""
+    settings = load_settings()
+    try:
+        payload = set_skill_enabled(
+            skill_id,
+            workspace_dir=settings.workspace_dir.resolve(),
+            enabled=True,
+        )
+    except Exception as exc:
+        if json_output:
+            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+        else:
+            console.print(f"[bold red]Skill enable failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from None
+
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    console.print(f"[bold green][V] Enabled skill[/bold green] {payload['skill_id']}")
+
+
+@skill_app.command("disable")
+def skill_disable(
+    skill_id: str = typer.Argument(..., help="Skill id."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Disable a skill without deleting its bundle."""
+    settings = load_settings()
+    try:
+        payload = set_skill_enabled(
+            skill_id,
+            workspace_dir=settings.workspace_dir.resolve(),
+            enabled=False,
+        )
+    except Exception as exc:
+        if json_output:
+            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+        else:
+            console.print(f"[bold red]Skill disable failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from None
+
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    console.print(f"[bold green][V] Disabled skill[/bold green] {payload['skill_id']}")
 
 
 @skill_app.command("verify")

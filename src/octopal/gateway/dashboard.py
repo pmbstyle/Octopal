@@ -52,6 +52,12 @@ from octopal.runtime.workers.launcher_factory import (
     WorkerLauncherStatus,
     get_worker_launcher_status,
 )
+from octopal.tools.skills.installer import install_skill_from_source
+from octopal.tools.skills.management import (
+    list_skill_inventory,
+    remove_skill,
+    set_skill_enabled,
+)
 
 _WINDOW_CHOICES = {15, 60, 240, 1440}
 _SERVICE_CHOICES = {"all", "gateway", "octo", "telegram", "whatsapp", "exec_run", "mcp", "workers"}
@@ -123,6 +129,13 @@ class WorkerTemplatePayload(BaseModel):
     default_timeout_seconds: int = 300
     can_spawn_children: bool = False
     allowed_child_templates: list[str] = Field(default_factory=list)
+
+
+class DashboardSkillInstallPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    clawhub_site: str | None = None
 
 
 class DashboardConfigPayload(BaseModel):
@@ -358,6 +371,39 @@ def register_dashboard_routes(app: FastAPI) -> None:
         settings = _get_settings(app)
         _verify_dashboard_token(request, settings)
         return _delete_worker_template(settings, template_id)
+
+    @app.get("/api/dashboard/skills")
+    async def dashboard_skills(request: Request) -> dict[str, Any]:
+        settings = _get_settings(app)
+        _verify_dashboard_token(request, settings)
+        return await asyncio.to_thread(_dashboard_skills_payload, settings)
+
+    @app.post("/api/dashboard/skills/install")
+    async def dashboard_install_skill(
+        request: Request,
+        payload: DashboardSkillInstallPayload,
+    ) -> dict[str, Any]:
+        settings = _get_settings(app)
+        _verify_dashboard_token(request, settings)
+        return await asyncio.to_thread(_dashboard_install_skill, settings, payload)
+
+    @app.post("/api/dashboard/skills/{skill_id}/enable")
+    async def dashboard_enable_skill(skill_id: str, request: Request) -> dict[str, Any]:
+        settings = _get_settings(app)
+        _verify_dashboard_token(request, settings)
+        return await asyncio.to_thread(_dashboard_set_skill_enabled, settings, skill_id, True)
+
+    @app.post("/api/dashboard/skills/{skill_id}/disable")
+    async def dashboard_disable_skill(skill_id: str, request: Request) -> dict[str, Any]:
+        settings = _get_settings(app)
+        _verify_dashboard_token(request, settings)
+        return await asyncio.to_thread(_dashboard_set_skill_enabled, settings, skill_id, False)
+
+    @app.delete("/api/dashboard/skills/{skill_id}")
+    async def dashboard_delete_skill(skill_id: str, request: Request) -> dict[str, Any]:
+        settings = _get_settings(app)
+        _verify_dashboard_token(request, settings)
+        return await asyncio.to_thread(_dashboard_delete_skill, settings, skill_id)
 
     @app.post("/api/dashboard/actions")
     async def dashboard_actions(
@@ -709,6 +755,180 @@ def _get_store(app: FastAPI, settings: Settings) -> SQLiteStore:
     store = SQLiteStore(settings)
     app.state.dashboard_store = store
     return store
+
+
+def _dashboard_skills_payload(settings: Settings) -> dict[str, Any]:
+    workspace_dir = settings.workspace_dir.resolve()
+    payload = list_skill_inventory(workspace_dir)
+    skills = [
+        _serialize_dashboard_skill(item)
+        for item in sorted(
+            payload.get("skills", []),
+            key=lambda item: (
+                str(item.get("name", "") or item.get("id", "")).lower(),
+                str(item.get("id", "")).lower(),
+            ),
+        )
+        if isinstance(item, dict)
+    ]
+    return {
+        "contract_version": "dashboard.skills.v1",
+        "count": len(skills),
+        "registry_path": str(payload.get("registry_path", "")),
+        "skills": skills,
+        "install": {
+            "supported_sources": [
+                "clawhub_slug",
+                "skill_md_url",
+                "zip_url",
+                "local_dir",
+                "local_skill_md",
+                "local_zip",
+            ],
+            "default_clawhub_site": "https://clawhub.ai",
+        },
+    }
+
+
+def _dashboard_install_skill(settings: Settings, payload: DashboardSkillInstallPayload) -> dict[str, Any]:
+    source = str(payload.source or "").strip()
+    if not source:
+        raise HTTPException(status_code=400, detail="Skill source is required")
+
+    try:
+        kwargs: dict[str, Any] = {"workspace_dir": settings.workspace_dir.resolve()}
+        clawhub_site = str(payload.clawhub_site or "").strip()
+        if clawhub_site:
+            kwargs["clawhub_site"] = clawhub_site
+        install_payload = install_skill_from_source(source, **kwargs)
+    except Exception as exc:
+        raise _skill_dashboard_http_error(exc) from exc
+
+    skill_id = str(install_payload.get("skill_id", "")).strip()
+    return {
+        "status": str(install_payload.get("status", "installed")),
+        "skill_id": skill_id,
+        "skill": _require_dashboard_skill(settings, skill_id),
+        "install": install_payload,
+    }
+
+
+def _dashboard_set_skill_enabled(settings: Settings, skill_id: str, enabled: bool) -> dict[str, Any]:
+    normalized_id = str(skill_id or "").strip()
+    try:
+        action_payload = set_skill_enabled(
+            normalized_id,
+            workspace_dir=settings.workspace_dir.resolve(),
+            enabled=enabled,
+        )
+    except Exception as exc:
+        raise _skill_dashboard_http_error(exc) from exc
+
+    return {
+        "status": str(action_payload.get("status", "enabled" if enabled else "disabled")),
+        "skill_id": normalized_id,
+        "skill": _require_dashboard_skill(settings, normalized_id),
+        "action": action_payload,
+    }
+
+
+def _dashboard_delete_skill(settings: Settings, skill_id: str) -> dict[str, Any]:
+    normalized_id = str(skill_id or "").strip()
+    try:
+        payload = remove_skill(normalized_id, workspace_dir=settings.workspace_dir.resolve())
+    except Exception as exc:
+        raise _skill_dashboard_http_error(exc) from exc
+    return {
+        "status": str(payload.get("status", "removed")),
+        "skill_id": normalized_id,
+        "removed": payload,
+        "skills": _dashboard_skills_payload(settings),
+    }
+
+
+def _find_dashboard_skill(settings: Settings, skill_id: str) -> dict[str, Any] | None:
+    normalized_id = str(skill_id or "").strip()
+    for item in _dashboard_skills_payload(settings).get("skills", []):
+        if isinstance(item, dict) and str(item.get("id", "")) == normalized_id:
+            return item
+    return None
+
+
+def _require_dashboard_skill(settings: Settings, skill_id: str) -> dict[str, Any]:
+    skill = _find_dashboard_skill(settings, skill_id)
+    if skill is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Skill operation succeeded but the updated skill could not be reloaded",
+        )
+    return skill
+
+
+def _serialize_dashboard_skill(item: dict[str, Any]) -> dict[str, Any]:
+    skill_id = str(item.get("id", "")).strip()
+    name = str(item.get("name", "")).strip() or skill_id
+    description = str(item.get("description", "")).strip()
+    enabled = bool(item.get("enabled", True))
+    ready = bool(item.get("ready", False))
+    installer_managed = bool(item.get("installer_managed", False))
+    auto_discovered = bool(item.get("auto_discovered", False))
+    origin = "installed" if installer_managed else "auto_discovered" if auto_discovered else "local"
+    installed_source = str(item.get("installed_source", "")).strip()
+    installed_source_kind = str(item.get("installed_source_kind", "")).strip()
+    path = str(item.get("path", "")).strip()
+
+    return {
+        "id": skill_id,
+        "name": name,
+        "description": description,
+        "scope": str(item.get("scope", "both")),
+        "enabled": enabled,
+        "ready": ready,
+        "status": str(item.get("status", "")),
+        "reasons": [str(reason) for reason in item.get("reasons", []) if str(reason).strip()],
+        "origin": origin,
+        "source": {
+            "kind": installed_source_kind or str(item.get("source", "registry")),
+            "label": installed_source or path or origin,
+            "path": path,
+            "installer_managed": installer_managed,
+            "auto_discovered": auto_discovered,
+        },
+        "trust": {
+            "trusted": bool(item.get("trusted", True)),
+            "has_scripts": bool(item.get("has_scripts", False)),
+            "scan_status": str(item.get("scan_status", "")),
+            "scan_findings_count": int(item.get("scan_findings_count", 0)),
+        },
+        "runtime": {
+            "kind": str(item.get("runtime_kind", "")),
+            "required": bool(item.get("runtime_required", False)),
+            "recommended": bool(item.get("runtime_recommended", False)),
+            "prepared": bool(item.get("runtime_prepared", False)),
+            "next_step": str(item.get("runtime_next_step", "")),
+        },
+        "requirements": {
+            "missing_bins": [str(value) for value in item.get("missing_bins", [])],
+            "missing_env": [str(value) for value in item.get("missing_env", [])],
+            "missing_config": [str(value) for value in item.get("missing_config", [])],
+        },
+        "actions": {
+            "can_enable": not enabled,
+            "can_disable": enabled,
+            "can_remove": bool(skill_id),
+            "can_install": True,
+        },
+    }
+
+
+def _skill_dashboard_http_error(exc: Exception) -> HTTPException:
+    detail = str(exc).strip() or exc.__class__.__name__
+    lowered = detail.lower()
+    if "not found" in lowered or ("missing" in lowered and "installed bundle" in lowered):
+        return HTTPException(status_code=404, detail=detail)
+    if "already exists" in lowered or "different source" in lowered or "refusing to overwrite" in lowered:
+        return HTTPException(status_code=409, detail=detail)
+    return HTTPException(status_code=400, detail=detail)
 
 
 def _serialize_worker_template(template: WorkerTemplateRecord) -> dict[str, Any]:

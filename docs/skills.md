@@ -114,6 +114,8 @@ uv run octopal skill install <source>
 uv run octopal skill list
 uv run octopal skill update <skill-id>
 uv run octopal skill verify <skill-id>
+uv run octopal skill disable <skill-id>
+uv run octopal skill enable <skill-id>
 uv run octopal skill trust <skill-id>
 uv run octopal skill untrust <skill-id>
 uv run octopal skill remove <skill-id>
@@ -274,6 +276,8 @@ Current requirement checks:
 - missing environment variables from `requires.env`
 - missing config keys from `requires.config`
 - untrusted imported script bundles
+
+Use `octopal skill disable <skill-id>` to keep an installed bundle on disk while removing it from active skill use. Re-enable it with `octopal skill enable <skill-id>`.
 
 Config requirements are currently checked via env vars named like:
 
