@@ -277,6 +277,65 @@ type DesktopWorkerTemplate = {
   updated_at?: string;
 };
 
+type DesktopSkill = {
+  id: string;
+  name: string;
+  description: string;
+  scope: string;
+  enabled: boolean;
+  ready: boolean;
+  status: string;
+  reasons: string[];
+  origin: string;
+  source: {
+    kind: string;
+    label: string;
+    path: string;
+    installer_managed: boolean;
+    auto_discovered: boolean;
+  };
+  trust: {
+    trusted: boolean;
+    has_scripts: boolean;
+    scan_status: string;
+    scan_findings_count: number;
+  };
+  runtime: {
+    kind: string;
+    required: boolean;
+    recommended: boolean;
+    prepared: boolean;
+    next_step: string;
+  };
+  requirements: {
+    missing_bins: string[];
+    missing_env: string[];
+    missing_config: string[];
+  };
+  actions: {
+    can_enable: boolean;
+    can_disable: boolean;
+    can_remove: boolean;
+    can_install: boolean;
+  };
+};
+
+type DesktopSkillsResponse = {
+  contract_version: string;
+  count: number;
+  registry_path: string;
+  skills: DesktopSkill[];
+  install: {
+    supported_sources: string[];
+    default_clawhub_site: string;
+  };
+};
+
+type DesktopSkillInstallPayload = {
+  source: string;
+  clawhub_site?: string;
+};
+
 type DesktopChatConnectionStatus = {
   ok: boolean;
   state: "idle" | "connecting" | "connected" | "disconnected" | "error";
@@ -341,6 +400,20 @@ type OctopalDesktopApi = {
   ) => Promise<DesktopDashboardSnapshot>;
   openOctopalLogs: (installDir: string) => Promise<boolean>;
   getWorkerTemplates: (installDir: string) => Promise<DesktopWorkerTemplate[]>;
+  getSkills: (installDir: string) => Promise<DesktopSkillsResponse>;
+  installSkill: (
+    installDir: string,
+    payload: DesktopSkillInstallPayload,
+  ) => Promise<DesktopSkill>;
+  setSkillEnabled: (
+    installDir: string,
+    skillId: string,
+    enabled: boolean,
+  ) => Promise<DesktopSkill>;
+  deleteSkill: (
+    installDir: string,
+    skillId: string,
+  ) => Promise<DesktopSkillsResponse>;
   connectChat: (installDir: string) => Promise<DesktopChatConnectionStatus>;
   disconnectChat: () => Promise<DesktopChatConnectionStatus>;
   chooseChatFiles: (installDir: string) => Promise<DesktopChatAttachment[]>;

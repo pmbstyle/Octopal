@@ -1,4 +1,5 @@
 import {
+  Activity,
   AlertTriangle,
   Clock,
   Download,
@@ -7,10 +8,15 @@ import {
   FileJson,
   GitBranch,
   ListChecks,
+  MessageCircle,
   Pencil,
   Play,
   Plus,
+  Power,
+  PowerOff,
+  Puzzle,
   RotateCw,
+  Settings2,
   Square,
   Trash2,
   Wrench,
@@ -27,7 +33,7 @@ import type { CopyFn } from "../lib/appTypes";
 import { Button } from "./Button";
 import { ChatView } from "./ChatView";
 
-type DashboardView = "chat" | "control" | "workers" | "system";
+type DashboardView = "chat" | "control" | "skills" | "workers" | "system";
 
 type LoadPoint = {
   at: number;
@@ -108,6 +114,81 @@ function templatePayload(form: WorkerTemplateForm): DesktopWorkerTemplate {
     can_spawn_children: form.can_spawn_children,
     allowed_child_templates: parseList(form.allowed_child_templates),
   };
+}
+
+function sortSkills(skills: DesktopSkill[]): DesktopSkill[] {
+  return [...skills].sort(
+    (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+  );
+}
+
+function skillStatusLabel(skill: DesktopSkill): string {
+  if (!skill.enabled) {
+    return "disabled";
+  }
+  if (skill.ready) {
+    return "ready";
+  }
+  return skill.status || "needs setup";
+}
+
+function skillStatusClass(skill: DesktopSkill): string {
+  if (!skill.enabled) {
+    return statusClass("stopped");
+  }
+  if (skill.ready) {
+    return statusClass("ok");
+  }
+  return statusClass("warning");
+}
+
+function skillSourceLabel(skill: DesktopSkill): string {
+  return skill.source.label || skill.source.path || skill.origin || "local";
+}
+
+function skillSourceHref(skill: DesktopSkill): string {
+  const candidates = [skill.source.label, skill.source.path];
+  return (
+    candidates.find((value) => /^https?:\/\//i.test(value || "")) || ""
+  );
+}
+
+function skillScopeLabel(scope: string): string {
+  const value = scope.toLowerCase();
+  if (value === "both") {
+    return "Octo + workers";
+  }
+  if (value === "octo") {
+    return "Octo";
+  }
+  if (value === "worker" || value === "workers") {
+    return "Workers";
+  }
+  return scope || "Local";
+}
+
+function skillOriginLabel(origin: string): string {
+  const value = origin.toLowerCase();
+  if (value === "installed") {
+    return "Installed";
+  }
+  if (value === "workspace" || value === "auto_discovered") {
+    return "Workspace";
+  }
+  if (value === "local") {
+    return "Local";
+  }
+  return origin || "Local";
+}
+
+function replaceSkill(
+  skills: DesktopSkill[],
+  skill: DesktopSkill,
+): DesktopSkill[] {
+  const next = skills.some((item) => item.id === skill.id)
+    ? skills.map((item) => (item.id === skill.id ? skill : item))
+    : [...skills, skill];
+  return sortSkills(next);
 }
 
 function shortId(value?: string | null): string {
@@ -415,6 +496,14 @@ export function DashboardScreen({
   const [templates, setTemplates] = useState<DesktopWorkerTemplate[]>([]);
   const [templateError, setTemplateError] = useState("");
   const [templateNotice, setTemplateNotice] = useState("");
+  const [skillsPayload, setSkillsPayload] =
+    useState<DesktopSkillsResponse | null>(null);
+  const [selectedSkillId, setSelectedSkillId] = useState("");
+  const [skillSource, setSkillSource] = useState("");
+  const [skillClawhubSite, setSkillClawhubSite] = useState("");
+  const [skillError, setSkillError] = useState("");
+  const [skillNotice, setSkillNotice] = useState("");
+  const [skillSaving, setSkillSaving] = useState(false);
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(
     null,
   );
@@ -476,6 +565,37 @@ export function DashboardScreen({
     }
   }, [copy, installDir]);
 
+  const refreshSkills = useCallback(
+    async (nextSelectedId?: string) => {
+      if (!window.octopalDesktop || !installDir) {
+        return;
+      }
+      try {
+        const next = await window.octopalDesktop.getSkills(installDir);
+        const sorted = sortSkills(next.skills ?? []);
+        setSkillsPayload({ ...next, skills: sorted });
+        setSelectedSkillId((current) => {
+          if (
+            nextSelectedId &&
+            sorted.some((skill) => skill.id === nextSelectedId)
+          ) {
+            return nextSelectedId;
+          }
+          if (current && sorted.some((skill) => skill.id === current)) {
+            return current;
+          }
+          return sorted[0]?.id ?? "";
+        });
+        setSkillError("");
+      } catch (error) {
+        setSkillError(
+          error instanceof Error ? error.message : copy("skillsLoadFailed"),
+        );
+      }
+    },
+    [copy, installDir],
+  );
+
   useEffect(() => {
     void refreshSnapshot();
     const timer = window.setInterval(() => {
@@ -487,6 +607,12 @@ export function DashboardScreen({
   useEffect(() => {
     void refreshTemplates();
   }, [refreshTemplates]);
+
+  useEffect(() => {
+    if (view === "skills") {
+      void refreshSkills();
+    }
+  }, [refreshSkills, view]);
 
   const graphPoints = useMemo(() => {
     if (history.length > 0) {
@@ -583,6 +709,17 @@ export function DashboardScreen({
   const editingTemplate = editingTemplateId
     ? (templates.find((template) => template.id === editingTemplateId) ?? null)
     : null;
+  const skills = skillsPayload?.skills ?? [];
+  const selectedSkill =
+    selectedSkillId && skills.length > 0
+      ? (skills.find((skill) => skill.id === selectedSkillId) ?? null)
+      : null;
+  const enabledSkillCount = skills.filter((skill) => skill.enabled).length;
+  const readySkillCount = skills.filter(
+    (skill) => skill.enabled && skill.ready,
+  ).length;
+  const defaultClawhubSite =
+    skillsPayload?.install.default_clawhub_site ?? "https://clawhub.ai";
   const isCreatingTemplate = editingTemplateId === "";
   const selectedWorkerTemplate = selectedWorker?.template_id
     ? (templates.find(
@@ -662,6 +799,101 @@ export function DashboardScreen({
       );
     } finally {
       setTemplateSaving(false);
+    }
+  }
+
+  async function installSkill(): Promise<void> {
+    if (!window.octopalDesktop || !installDir) {
+      return;
+    }
+    const source = skillSource.trim();
+    if (!source) {
+      setSkillError(copy("skillSourceRequired"));
+      return;
+    }
+    setSkillSaving(true);
+    setSkillNotice("");
+    setSkillError("");
+    try {
+      const installed = await window.octopalDesktop.installSkill(installDir, {
+        source,
+        clawhub_site: skillClawhubSite.trim() || undefined,
+      });
+      setSkillsPayload((current) =>
+        current
+          ? { ...current, skills: replaceSkill(current.skills, installed) }
+          : current,
+      );
+      setSelectedSkillId(installed.id);
+      setSkillSource("");
+      setSkillNotice(`${installed.name} ${copy("skillInstalled")}`);
+    } catch (error) {
+      setSkillError(
+        error instanceof Error ? error.message : copy("skillInstallFailed"),
+      );
+    } finally {
+      setSkillSaving(false);
+    }
+  }
+
+  async function toggleSkill(skill: DesktopSkill): Promise<void> {
+    if (!window.octopalDesktop || !installDir) {
+      return;
+    }
+    const nextEnabled = !skill.enabled;
+    setSkillSaving(true);
+    setSkillNotice("");
+    setSkillError("");
+    try {
+      const updated = await window.octopalDesktop.setSkillEnabled(
+        installDir,
+        skill.id,
+        nextEnabled,
+      );
+      setSkillsPayload((current) =>
+        current
+          ? { ...current, skills: replaceSkill(current.skills, updated) }
+          : current,
+      );
+      setSelectedSkillId(updated.id);
+      setSkillNotice(
+        `${updated.name} ${nextEnabled ? copy("skillEnabled") : copy("skillDisabled")}`,
+      );
+    } catch (error) {
+      setSkillError(
+        error instanceof Error
+          ? error.message
+          : nextEnabled
+            ? copy("skillEnableFailed")
+            : copy("skillDisableFailed"),
+      );
+    } finally {
+      setSkillSaving(false);
+    }
+  }
+
+  async function deleteSkill(skill: DesktopSkill): Promise<void> {
+    if (!window.octopalDesktop || !installDir) {
+      return;
+    }
+    if (!window.confirm(`${copy("deleteSkillConfirm")} ${skill.name}?`)) {
+      return;
+    }
+    setSkillSaving(true);
+    setSkillNotice("");
+    setSkillError("");
+    try {
+      const next = await window.octopalDesktop.deleteSkill(installDir, skill.id);
+      const sorted = sortSkills(next.skills ?? []);
+      setSkillsPayload({ ...next, skills: sorted });
+      setSelectedSkillId(sorted[0]?.id ?? "");
+      setSkillNotice(`${skill.name} ${copy("skillDeleted")}`);
+    } catch (error) {
+      setSkillError(
+        error instanceof Error ? error.message : copy("skillDeleteFailed"),
+      );
+    } finally {
+      setSkillSaving(false);
     }
   }
 
@@ -959,6 +1191,259 @@ export function DashboardScreen({
                 ))
               )}
             </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  function renderSkills() {
+    const selectedSkillSourceHref = selectedSkill
+      ? skillSourceHref(selectedSkill)
+      : "";
+
+    return (
+      <section className="dashboard-skills-view">
+        {renderDashboardHeader({
+          title: copy("skills"),
+          detail: copy("skillsBody"),
+          latest: latestAction,
+          latestRaw: latestActionRaw,
+        })}
+
+        {skillError ? (
+          <p className="dashboard-inline-error">{skillError}</p>
+        ) : null}
+        {skillNotice ? (
+          <p className="dashboard-inline-notice">{skillNotice}</p>
+        ) : null}
+
+        <div className="dashboard-panel skill-install-panel">
+          <label className="template-field">
+            <span>{copy("skillSource")}</span>
+            <input
+              value={skillSource}
+              disabled={skillSaving}
+              placeholder="skill-name, https://..., or local path"
+              onChange={(event) => setSkillSource(event.target.value)}
+            />
+          </label>
+          <label className="template-field">
+            <span>{copy("skillClawhubSite")}</span>
+            <input
+              value={skillClawhubSite}
+              disabled={skillSaving}
+              placeholder={defaultClawhubSite}
+              onChange={(event) => setSkillClawhubSite(event.target.value)}
+            />
+          </label>
+          <div className="skill-install-actions">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={skillSaving}
+              onClick={() => void refreshSkills(selectedSkillId)}
+            >
+              <RotateCw data-icon="inline-start" />
+              {copy("refresh")}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={skillSaving || !skillSource.trim()}
+              onClick={() => void installSkill()}
+            >
+              <Download data-icon="inline-start" />
+              {skillSaving ? copy("installingSkill") : copy("installSkill")}
+            </Button>
+          </div>
+        </div>
+
+        <div className="skills-grid">
+          <div className="dashboard-panel skill-list-panel">
+            <div className="dashboard-panel-head">
+              <div>
+                <h2>{copy("installedSkills")}</h2>
+                <p>workspace/skills</p>
+              </div>
+              <div className="skill-summary-pills" aria-label="Skill summary">
+                <span className="dashboard-pill">{skills.length} total</span>
+                <span className="dashboard-pill">{enabledSkillCount} enabled</span>
+                <span className="dashboard-pill">{readySkillCount} ready</span>
+              </div>
+            </div>
+            <div className="skill-list">
+              {skills.length === 0 ? (
+                <p className="dashboard-empty-row">{copy("noSkills")}</p>
+              ) : (
+                skills.map((skill) => (
+                  <button
+                    type="button"
+                    className={
+                      selectedSkill?.id === skill.id
+                        ? "skill-card skill-card-active"
+                        : "skill-card"
+                    }
+                    key={skill.id}
+                    onClick={() => {
+                      setSelectedSkillId(skill.id);
+                      setSkillNotice("");
+                      setSkillError("");
+                    }}
+                  >
+                    <span>
+                      <strong>{skill.name}</strong>
+                    </span>
+                    <span className={skillStatusClass(skill)}>
+                      {skillStatusLabel(skill)}
+                    </span>
+                    <p>{skill.description || copy("noSkillDescription")}</p>
+                    <div className="skill-card-meta">
+                      <span>{skillScopeLabel(skill.scope)}</span>
+                      <span>{skillOriginLabel(skill.origin)}</span>
+                      {skill.trust.has_scripts ? <span>Scripts</span> : null}
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="dashboard-panel skill-detail-panel">
+            {selectedSkill ? (
+              <>
+                <div className="skill-detail-head">
+                  <div>
+                    <p className="skill-detail-kicker">{copy("skillDetail")}</p>
+                    <h2>{selectedSkill.name}</h2>
+                    <p>{selectedSkill.description || copy("noSkillDescription")}</p>
+                    {selectedSkillSourceHref ? (
+                      <button
+                        className="skill-detail-source-link"
+                        type="button"
+                        onClick={() => window.open(selectedSkillSourceHref, "_blank")}
+                      >
+                        <ExternalLink />
+                        {copy("openSkillSource")}
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="skill-detail-actions">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={
+                        skillSaving ||
+                        (!selectedSkill.actions.can_enable &&
+                          !selectedSkill.actions.can_disable)
+                      }
+                      onClick={() => void toggleSkill(selectedSkill)}
+                    >
+                      {selectedSkill.enabled ? (
+                        <PowerOff data-icon="inline-start" />
+                      ) : (
+                        <Power data-icon="inline-start" />
+                      )}
+                      {selectedSkill.enabled ? copy("disableSkill") : copy("enableSkill")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="danger"
+                      disabled={skillSaving || !selectedSkill.actions.can_remove}
+                      onClick={() => void deleteSkill(selectedSkill)}
+                    >
+                      <Trash2 data-icon="inline-start" />
+                      {copy("deleteSkill")}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="skill-badge-row">
+                  <span className={skillStatusClass(selectedSkill)}>
+                    {skillStatusLabel(selectedSkill)}
+                  </span>
+                  <span className="dashboard-pill">
+                    {skillScopeLabel(selectedSkill.scope)}
+                  </span>
+                  <span className="dashboard-pill">
+                    {skillOriginLabel(selectedSkill.origin)}
+                  </span>
+                </div>
+
+                {selectedSkill.reasons.length > 0 ? (
+                  <div className="skill-attention">
+                    <AlertTriangle />
+                    <div>
+                      <strong>{copy("skillNeedsAttention")}</strong>
+                      <ul>
+                        {selectedSkill.reasons.map((reason) => (
+                          <li key={reason}>{reason}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                ) : null}
+
+                <dl className="skill-facts">
+                  <div>
+                    <dt>ID</dt>
+                    <dd>{selectedSkill.id}</dd>
+                  </div>
+                  <div>
+                    <dt>{copy("skillSource")}</dt>
+                    <dd title={skillSourceLabel(selectedSkill)}>
+                      {selectedSkillSourceHref ? (
+                        <button
+                          className="skill-source-link"
+                          type="button"
+                          onClick={() => window.open(selectedSkillSourceHref, "_blank")}
+                        >
+                          <span>{skillSourceLabel(selectedSkill)}</span>
+                          <ExternalLink />
+                        </button>
+                      ) : (
+                        skillSourceLabel(selectedSkill)
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{copy("runtime")}</dt>
+                    <dd>{selectedSkill.runtime.kind || "none"}</dd>
+                  </div>
+                  <div>
+                    <dt>{copy("status")}</dt>
+                    <dd>{selectedSkill.status || skillStatusLabel(selectedSkill)}</dd>
+                  </div>
+                </dl>
+
+                <div className="skill-requirements">
+                  {[
+                    [copy("missingBins"), selectedSkill.requirements.missing_bins],
+                    [copy("missingEnv"), selectedSkill.requirements.missing_env],
+                    [copy("missingConfig"), selectedSkill.requirements.missing_config],
+                  ].map(([label, values]) =>
+                    Array.isArray(values) && values.length > 0 ? (
+                      <div key={label as string}>
+                        <strong>{label as string}</strong>
+                        <div className="worker-tool-cloud worker-tool-cloud-muted">
+                          {values.map((value) => (
+                            <span key={value}>{value}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null,
+                  )}
+                </div>
+
+                {selectedSkill.runtime.next_step ? (
+                  <p className="skill-runtime-note">
+                    {selectedSkill.runtime.next_step}
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <p className="dashboard-empty-row">{copy("selectSkill")}</p>
+            )}
           </div>
         </div>
       </section>
@@ -1461,6 +1946,7 @@ export function DashboardScreen({
           }
           onClick={() => setView("control")}
         >
+          <Activity data-icon="inline-start" />
           {copy("control")}
         </button>
         <button
@@ -1472,6 +1958,7 @@ export function DashboardScreen({
           }
           onClick={() => setView("chat")}
         >
+          <MessageCircle data-icon="inline-start" />
           Chat
         </button>
         <button
@@ -1483,7 +1970,20 @@ export function DashboardScreen({
           }
           onClick={() => setView("workers")}
         >
+          <Wrench data-icon="inline-start" />
           {copy("workers")}
+        </button>
+        <button
+          type="button"
+          className={
+            view === "skills"
+              ? "dashboard-tab dashboard-tab-active"
+              : "dashboard-tab"
+          }
+          onClick={() => setView("skills")}
+        >
+          <Puzzle data-icon="inline-start" />
+          {copy("skills")}
         </button>
         <button
           type="button"
@@ -1494,6 +1994,7 @@ export function DashboardScreen({
           }
           onClick={() => setView("system")}
         >
+          <Settings2 data-icon="inline-start" />
           {copy("systemView")}
         </button>
       </nav>
@@ -1502,6 +2003,7 @@ export function DashboardScreen({
         <ChatView active={view === "chat"} installDir={installDir} />
         {view === "control" ? renderControl() : null}
         {view === "workers" ? renderWorkers() : null}
+        {view === "skills" ? renderSkills() : null}
         {view === "system" ? renderSystem() : null}
       </div>
 
