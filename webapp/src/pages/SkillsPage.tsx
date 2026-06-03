@@ -254,7 +254,7 @@ export function SkillsPage() {
               value={source}
               onChange={(event) => setSource(event.target.value)}
               disabled={saving}
-              placeholder="adinvadim-2captcha, https://..., or local path"
+              placeholder="skill-name, https://..., or local path"
               className={inputClass}
             />
           </label>

@@ -5,7 +5,7 @@ export function AppShell({
   onMaximize,
   children,
 }: {
-  title: string;
+  title?: string;
   onClose: () => void;
   onMinimize: () => void;
   onMaximize: () => void;
@@ -19,7 +19,7 @@ export function AppShell({
           <button className="window-control window-minimize" type="button" aria-label="Minimize window" onClick={onMinimize} />
           <button className="window-control window-maximize" type="button" aria-label="Maximize window" onClick={onMaximize} />
         </div>
-        <div className="titlebar-title">{title}</div>
+        {title ? <div className="titlebar-title">{title}</div> : null}
       </header>
       {children}
     </main>

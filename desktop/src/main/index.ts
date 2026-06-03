@@ -187,6 +187,65 @@ type DesktopWorkerTemplate = {
   updated_at?: string;
 };
 
+type DesktopSkill = {
+  id: string;
+  name: string;
+  description: string;
+  scope: string;
+  enabled: boolean;
+  ready: boolean;
+  status: string;
+  reasons: string[];
+  origin: string;
+  source: {
+    kind: string;
+    label: string;
+    path: string;
+    installer_managed: boolean;
+    auto_discovered: boolean;
+  };
+  trust: {
+    trusted: boolean;
+    has_scripts: boolean;
+    scan_status: string;
+    scan_findings_count: number;
+  };
+  runtime: {
+    kind: string;
+    required: boolean;
+    recommended: boolean;
+    prepared: boolean;
+    next_step: string;
+  };
+  requirements: {
+    missing_bins: string[];
+    missing_env: string[];
+    missing_config: string[];
+  };
+  actions: {
+    can_enable: boolean;
+    can_disable: boolean;
+    can_remove: boolean;
+    can_install: boolean;
+  };
+};
+
+type DesktopSkillsResponse = {
+  contract_version: string;
+  count: number;
+  registry_path: string;
+  skills: DesktopSkill[];
+  install: {
+    supported_sources: string[];
+    default_clawhub_site: string;
+  };
+};
+
+type DesktopSkillInstallPayload = {
+  source: string;
+  clawhub_site?: string;
+};
+
 type DesktopChatConnectionStatus = {
   ok: boolean;
   state: "idle" | "connecting" | "connected" | "disconnected" | "error";
@@ -789,7 +848,18 @@ async function fetchDashboardJson<T>(
   const response = await fetch(url, { ...init, headers });
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(detail || `Dashboard request failed: ${response.status}`);
+    let parsedDetail = "";
+    try {
+      const parsed = JSON.parse(detail) as { detail?: unknown };
+      if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+        parsedDetail = parsed.detail;
+      }
+    } catch {
+      // Some local gateway failures are plain text.
+    }
+    throw new Error(
+      parsedDetail || detail || `Dashboard request failed: ${response.status}`,
+    );
   }
   return (await response.json()) as T;
 }
@@ -1207,6 +1277,64 @@ async function deleteDesktopWorkerTemplate(
     }
     await deleteLocalWorkerTemplate(installDir, templateId);
   }
+}
+
+async function getDesktopSkills(
+  installDir: string,
+): Promise<DesktopSkillsResponse> {
+  return fetchDashboardJson<DesktopSkillsResponse>(
+    installDir,
+    "/api/dashboard/skills",
+  );
+}
+
+async function installDesktopSkill(
+  installDir: string,
+  payload: DesktopSkillInstallPayload,
+): Promise<DesktopSkill> {
+  const response = await fetchDashboardJson<{ skill?: DesktopSkill }>(
+    installDir,
+    "/api/dashboard/skills/install",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.skill) {
+    throw new Error("Skill was installed but could not be reloaded.");
+  }
+  return response.skill;
+}
+
+async function setDesktopSkillEnabled(
+  installDir: string,
+  skillId: string,
+  enabled: boolean,
+): Promise<DesktopSkill> {
+  const response = await fetchDashboardJson<{ skill?: DesktopSkill }>(
+    installDir,
+    `/api/dashboard/skills/${encodeURIComponent(skillId)}/${enabled ? "enable" : "disable"}`,
+    { method: "POST" },
+  );
+  if (!response.skill) {
+    throw new Error("Skill was updated but could not be reloaded.");
+  }
+  return response.skill;
+}
+
+async function deleteDesktopSkill(
+  installDir: string,
+  skillId: string,
+): Promise<DesktopSkillsResponse> {
+  const response = await fetchDashboardJson<{ skills?: DesktopSkillsResponse }>(
+    installDir,
+    `/api/dashboard/skills/${encodeURIComponent(skillId)}`,
+    { method: "DELETE" },
+  );
+  if (!response.skills) {
+    throw new Error("Skill was deleted but the skill list could not be reloaded.");
+  }
+  return response.skills;
 }
 
 function emitChatStatus(status: DesktopChatConnectionStatus): void {
@@ -1942,6 +2070,24 @@ ipcMain.handle(
 ipcMain.handle(
   "desktop:get-worker-templates",
   async (_event, installDir: string) => getDesktopWorkerTemplates(installDir),
+);
+ipcMain.handle("desktop:get-skills", async (_event, installDir: string) =>
+  getDesktopSkills(installDir),
+);
+ipcMain.handle(
+  "desktop:install-skill",
+  async (_event, installDir: string, payload: DesktopSkillInstallPayload) =>
+    installDesktopSkill(installDir, payload),
+);
+ipcMain.handle(
+  "desktop:set-skill-enabled",
+  async (_event, installDir: string, skillId: string, enabled: boolean) =>
+    setDesktopSkillEnabled(installDir, skillId, enabled),
+);
+ipcMain.handle(
+  "desktop:delete-skill",
+  async (_event, installDir: string, skillId: string) =>
+    deleteDesktopSkill(installDir, skillId),
 );
 ipcMain.handle("desktop:chat-connect", async (event, installDir: string) =>
   connectDesktopChat(installDir, BrowserWindow.fromWebContents(event.sender)),
