@@ -15,6 +15,7 @@ describe("AppShell", () => {
     expect(screen.getByRole("heading", { name: "Control" })).toBeInTheDocument();
     expect(screen.getAllByText("Live operating surface").length).toBeGreaterThan(0);
     expect(screen.getByText("Dashboard token")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Skills Installed skill library/i })).toBeInTheDocument();
     expect(screen.getByText("Loading live operations view...")).toBeInTheDocument();
   });
 });
