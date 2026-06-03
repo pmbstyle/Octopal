@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 
+from octopal.tools.skills.installer import install_skill_from_source
 from octopal.tools.skills.management import (
     _load_skill_inventory,
     _run_skill,
@@ -11,11 +12,13 @@ from octopal.tools.skills.management import (
     _tool_list_skills,
     _tool_remove_skill,
     _tool_run_skill_script,
+    _tool_set_skill_enabled,
     _tool_use_skill,
     get_registered_skill_tools,
     get_skill_management_tools,
     list_skill_inventory,
     remove_skill,
+    set_skill_enabled,
     set_skill_trust,
 )
 
@@ -263,6 +266,7 @@ def test_skill_management_tools_include_run_skill_script() -> None:
 
     assert "run_skill_script" in [tool.name for tool in tools]
     assert "use_skill" in [tool.name for tool in tools]
+    assert "set_skill_enabled" in [tool.name for tool in tools]
 
 
 def test_use_skill_reads_guidance_by_id(tmp_path: Path, monkeypatch) -> None:
@@ -286,6 +290,81 @@ description: Helps write copy
     assert payload["skill_id"] == "writer"
     assert "Skills are internal Octopal tools" in payload["usage_hint"]
     assert "# Writer" in payload["guidance"]
+
+
+def test_set_skill_enabled_disables_auto_discovered_bundle(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+
+# Writer
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(workspace_dir))
+
+    disabled = set_skill_enabled("writer", workspace_dir=workspace_dir, enabled=False)
+
+    assert disabled["status"] == "disabled"
+    listed = list_skill_inventory(workspace_dir)
+    assert listed["skills"][0]["enabled"] is False
+    assert listed["skills"][0]["status"] == "disabled"
+    assert get_registered_skill_tools() == []
+    assert "is disabled" in _tool_use_skill({"skill_id": "writer"}, {"worker": object()})
+
+    enabled = set_skill_enabled("writer", workspace_dir=workspace_dir, enabled=True)
+
+    assert enabled["status"] == "enabled"
+    assert list_skill_inventory(workspace_dir)["skills"][0]["enabled"] is True
+    assert [tool.name for tool in get_registered_skill_tools()] == ["skill_writer"]
+
+
+def test_tool_set_skill_enabled_updates_registry_override(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(workspace_dir))
+
+    payload = json.loads(_tool_set_skill_enabled({"id": "writer", "enabled": False}, {}))
+
+    assert payload["status"] == "disabled"
+    assert payload["enabled"] is False
+    assert list_skill_inventory(workspace_dir)["skills"][0]["enabled"] is False
+
+
+def test_remove_installed_skill_cleans_disable_override(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    source_dir = tmp_path / "writer"
+    source_dir.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        """---
+name: writer
+description: Helps write copy
+---
+""",
+        encoding="utf-8",
+    )
+    install_skill_from_source(str(source_dir), workspace_dir=workspace_dir)
+    set_skill_enabled("writer", workspace_dir=workspace_dir, enabled=False)
+
+    payload = remove_skill("writer", workspace_dir=workspace_dir)
+
+    assert payload["installer_managed"] is True
+    assert payload["removed_registry_override"] is True
+    assert list_skill_inventory(workspace_dir)["skills"] == []
 
 
 def test_run_skill_script_executes_python_from_bundle_scripts_dir(tmp_path: Path, monkeypatch) -> None:
