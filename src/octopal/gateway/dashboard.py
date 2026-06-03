@@ -138,6 +138,12 @@ class DashboardSkillInstallPayload(BaseModel):
     clawhub_site: str | None = None
 
 
+class DashboardConnectorApplyPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+
+
 class DashboardConfigPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -404,6 +410,15 @@ def register_dashboard_routes(app: FastAPI) -> None:
         settings = _get_settings(app)
         _verify_dashboard_token(request, settings)
         return await asyncio.to_thread(_dashboard_delete_skill, settings, skill_id)
+
+    @app.post("/api/dashboard/connectors/apply")
+    async def dashboard_apply_connectors(
+        request: Request,
+        payload: DashboardConnectorApplyPayload,
+    ) -> dict[str, Any]:
+        settings = _get_settings(app)
+        _verify_dashboard_token(request, settings)
+        return await _dashboard_apply_connectors(app, settings, payload)
 
     @app.post("/api/dashboard/actions")
     async def dashboard_actions(
@@ -862,6 +877,42 @@ def _require_dashboard_skill(settings: Settings, skill_id: str) -> dict[str, Any
             detail="Skill operation succeeded but the updated skill could not be reloaded",
         )
     return skill
+
+
+async def _dashboard_apply_connectors(
+    app: FastAPI,
+    settings: Settings,
+    payload: DashboardConnectorApplyPayload,
+) -> dict[str, Any]:
+    octo = getattr(app.state, "octo", None)
+    manager = getattr(octo, "connector_manager", None)
+    if manager is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Connector runtime is not available in this gateway process",
+        )
+
+    config = load_config()
+    settings.config_obj = config
+    _sync_settings_from_config(settings, config)
+    manager.config = config.connectors
+    manager.octo_config = config
+
+    name = (payload.name or "").strip().lower()
+    if name:
+        connector = manager.get_connector(name)
+        if connector is None:
+            raise HTTPException(status_code=404, detail=f"Unknown connector: {name}")
+        await manager.reconcile_connector_runtime(name)
+        statuses = {name: await connector.get_status()}
+    else:
+        await manager.load_and_start_all()
+        statuses = await manager.get_all_statuses()
+
+    return {
+        "status": "applied",
+        "connectors": statuses,
+    }
 
 
 def _serialize_dashboard_skill(item: dict[str, Any]) -> dict[str, Any]:

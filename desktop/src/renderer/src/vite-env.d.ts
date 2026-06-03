@@ -456,6 +456,10 @@ type OctopalDesktopApi = {
     name: DesktopConnectorName,
     forgetCredentials?: boolean,
   ) => Promise<DesktopConnectorActionResult>;
+  applyConnectorRuntime: (
+    installDir: string,
+    name: DesktopConnectorName,
+  ) => Promise<DesktopConnectorActionResult>;
   getCodexAuthStatus: () => Promise<DesktopCodexAuthStatus>;
   startCodexAuth: () => Promise<DesktopCodexAuthStartResult>;
   disconnectCodexAuth: () => Promise<{ success: boolean; error?: string }>;

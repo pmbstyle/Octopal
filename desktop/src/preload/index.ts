@@ -560,6 +560,12 @@ contextBridge.exposeInMainWorld("octopalDesktop", {
       name,
       forgetCredentials,
     ) as Promise<DesktopConnectorActionResult>,
+  applyConnectorRuntime: (installDir: string, name: DesktopConnectorName) =>
+    ipcRenderer.invoke(
+      "desktop:apply-connector-runtime",
+      installDir,
+      name,
+    ) as Promise<DesktopConnectorActionResult>,
   getCodexAuthStatus: () =>
     ipcRenderer.invoke("codex-auth:status") as Promise<DesktopCodexAuthStatus>,
   startCodexAuth: () =>

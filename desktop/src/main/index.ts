@@ -1236,6 +1236,45 @@ async function getDesktopWorkerTemplates(
   }
 }
 
+async function applyDesktopConnectorRuntime(
+  installDir: string,
+  name: ConnectorName,
+): Promise<{
+  ok: boolean;
+  name: ConnectorName;
+  status?: string;
+  message: string;
+  detail: string;
+}> {
+  try {
+    const payload = await fetchDashboardJson<{
+      status?: string;
+      connectors?: Record<string, unknown>;
+    }>(installDir, "/api/dashboard/connectors/apply", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    const connector = recordValue(recordValue(payload.connectors)[name]);
+    return {
+      ok: true,
+      name,
+      status: stringValue(connector.status, stringValue(payload.status, "applied")),
+      message: "Connector applied to the running instance.",
+      detail: stringValue(connector.message, "Connector runtime reconciled."),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      name,
+      message: "Connector settings were saved. Restart Octopal if the running instance does not pick them up.",
+      detail:
+        error instanceof Error
+          ? error.message
+          : "Connector runtime apply failed.",
+    };
+  }
+}
+
 async function saveDesktopWorkerTemplate(
   installDir: string,
   template: DesktopWorkerTemplate,
@@ -2183,6 +2222,11 @@ ipcMain.handle(
     name: ConnectorName,
     forgetCredentials: boolean,
   ) => disconnectConnector(installDir, name, forgetCredentials),
+);
+ipcMain.handle(
+  "desktop:apply-connector-runtime",
+  async (_event, installDir: string, name: ConnectorName) =>
+    applyDesktopConnectorRuntime(installDir, name),
 );
 ipcMain.handle(
   "desktop:start-whatsapp-link",

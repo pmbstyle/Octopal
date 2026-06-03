@@ -27,13 +27,73 @@ export type ConnectorActionResult = {
 
 function parseJsonFromOutput(output: string): Record<string, unknown> {
   const trimmed = output.trim();
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error("Connector command did not return JSON output.");
+  if (!trimmed) {
+    throw new Error("Connector command did not return any output.");
   }
-  const parsed = JSON.parse(trimmed.slice(start, end + 1));
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+
+  const direct = parseJsonRecord(trimmed);
+  if (direct) {
+    return direct;
+  }
+
+  for (const candidate of extractJsonObjectCandidates(trimmed)) {
+    const parsed = parseJsonRecord(candidate);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  throw new Error(
+    "Connector command did not return valid JSON. Update the Octopal runtime install, then try Refresh again.",
+  );
+}
+
+function parseJsonRecord(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractJsonObjectCandidates(output: string): string[] {
+  const candidates: string[] = [];
+  for (let start = 0; start < output.length; start += 1) {
+    if (output[start] !== "{") {
+      continue;
+    }
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < output.length; index += 1) {
+      const char = output[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (char === "\"") {
+        inString = true;
+        continue;
+      }
+      if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          candidates.unshift(output.slice(start, index + 1));
+          break;
+        }
+      }
+    }
+  }
+  return candidates;
 }
 
 function connectorMessage(payload: Record<string, unknown>, fallback: string): string {
