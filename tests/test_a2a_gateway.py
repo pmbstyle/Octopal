@@ -280,6 +280,36 @@ def test_message_send_routes_authenticated_peer_message_to_octo() -> None:
     ]
 
 
+def test_message_send_deduplicates_same_peer_message_id() -> None:
+    octo = _DummyOcto()
+    client = TestClient(
+        _app(
+            A2AConfig(
+                enabled=True,
+                peers={"bob": A2APeerConfig(name="Bob", token="secret")},
+            ),
+            octo=octo,
+        )
+    )
+    body = {
+        "message": {
+            "role": "ROLE_USER",
+            "messageId": "peer-message-1",
+            "contextId": "ctx-dedupe",
+            "parts": [{"text": "hi Alice"}],
+        }
+    }
+    headers = {"Authorization": "Bearer secret"}
+
+    first = client.post("/a2a/v1/message:send", headers=headers, json=body)
+    second = client.post("/a2a/v1/message:send", headers=headers, json=body)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert len(octo.calls) == 1
+    assert len(octo.suppressed_channel_followups) == 1
+
+
 def test_message_send_routes_data_and_file_url_parts_to_octo_prompt() -> None:
     octo = _DummyOcto()
     client = TestClient(
@@ -804,6 +834,59 @@ def test_a2a_send_message_forwards_structured_data_and_file_urls(monkeypatch) ->
     assert payload["reply_text"] == "received"
     assert payload["artifacts"][0]["parts"][0]["kind"] == "data"
     assert payload["artifacts"][0]["parts"][0]["data"] == {"ok": True}
+
+
+def test_a2a_send_message_skips_duplicate_payload_in_same_turn(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def fake_send_peer_message(
+        _config: A2AConfig,
+        *,
+        peer_id: str,
+        text: str | None = None,
+        data: Any = None,
+        file_urls: list[dict[str, Any]] | None = None,
+        raw_files: list[dict[str, Any]] | None = None,
+        context_id: str | None = None,
+    ) -> dict[str, Any]:
+        calls.append(
+            {
+                "peer_id": peer_id,
+                "text": text,
+                "data": data,
+                "file_urls": file_urls,
+                "raw_files": raw_files,
+                "context_id": context_id,
+            }
+        )
+        return {"taskState": "TASK_STATE_COMPLETED", "replyText": "ok"}
+
+    monkeypatch.setattr(a2a_tools, "send_peer_message", fake_send_peer_message)
+    ctx = {
+        "octo": SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    a2a=A2AConfig(
+                        enabled=True,
+                        peers={
+                            "bob": A2APeerConfig(
+                                token="secret",
+                                base_url="https://bob.example/a2a/v1",
+                            )
+                        },
+                    )
+                )
+            )
+        )
+    }
+    args = {"peer_id": "bob", "text": "hello", "context_id": "ctx-1"}
+
+    first = json.loads(asyncio.run(a2a_tools.a2a_send_message(args, ctx)))
+    second = json.loads(asyncio.run(a2a_tools.a2a_send_message(args, ctx)))
+
+    assert first["status"] == "ok"
+    assert second["status"] == "skipped_duplicate"
+    assert len(calls) == 1
 
 
 def test_a2a_send_message_rejects_data_without_peer_capability() -> None:
