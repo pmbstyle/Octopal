@@ -4477,6 +4477,69 @@ p {
   min-height: 44px;
 }
 
+.system-preferences {
+  display: grid;
+  gap: 10px;
+}
+
+.system-preference-control {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 58px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  padding: 10px 12px;
+}
+
+.system-preference-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--primary);
+}
+
+.system-preference-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.system-preference-control > span:last-child {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.system-preference-control strong {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.system-preference-control select {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 650;
+  outline: 0;
+}
+
+.system-preference-control:focus-within {
+  border-color: color-mix(in srgb, var(--primary) 58%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
 .system-grid {
   display: grid;
   gap: 14px;
@@ -4489,6 +4552,10 @@ p {
 
   .system-card:not(.system-card-half) {
     grid-column: 1 / -1;
+  }
+
+  .system-preferences {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

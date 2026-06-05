@@ -12,12 +12,14 @@ import {
   Folder,
   GitBranch,
   Github,
+  Globe2,
   Info,
   KeyRound,
   LayoutDashboard,
   ListChecks,
   Mail,
   MessageCircle,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -29,6 +31,7 @@ import {
   RotateCw,
   Settings2,
   Square,
+  Sun,
   Trash2,
   Unplug,
   Wrench,
@@ -40,7 +43,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import octoIdleSprite from "../../../../assets/octo-idle-sprite.png";
 import octoThinkingSprite from "../../../../assets/octo-thinking-sprite.png";
 import octoImage from "../../../../assets/octo.png";
-import type { CopyFn } from "../lib/appTypes";
+import type { CopyFn, Theme } from "../lib/appTypes";
+import { languages, type Language } from "../lib/i18n";
 import {
   buildOctopalConfig,
   connectorProviders,
@@ -621,6 +625,8 @@ function Field({
 
 export function DashboardScreen({
   copy,
+  language,
+  theme,
   installDir,
   runtimeView,
   updateAvailable,
@@ -634,8 +640,12 @@ export function DashboardScreen({
   onRestart,
   onUpdateOctopal,
   onUpdateDesktopApp,
+  onLanguageChange,
+  onThemeChange,
 }: {
   copy: CopyFn;
+  language: Language;
+  theme: Theme;
   installDir: string;
   runtimeView: { state: string; title: string; detail: string };
   updateAvailable: boolean;
@@ -649,6 +659,8 @@ export function DashboardScreen({
   onRestart: () => void;
   onUpdateOctopal: () => void;
   onUpdateDesktopApp: () => void;
+  onLanguageChange: (language: Language) => void;
+  onThemeChange: (theme: Theme) => void;
 }) {
   const [view, setView] = useState<DashboardView>("control");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -952,39 +964,39 @@ export function DashboardScreen({
     {
       view: "control",
       label: copy("control"),
-      description: "Live runtime overview",
+      description: copy("control"),
       icon: Activity,
     },
     {
       view: "chat",
-      label: "Chat",
-      description: "Conversation and approvals",
+      label: copy("chat"),
+      description: copy("chat"),
       icon: MessageCircle,
     },
     {
       view: "workers",
       label: copy("workers"),
-      description: "Templates and recent runs",
+      description: copy("workers"),
       icon: Wrench,
       count: templates.length,
     },
     {
       view: "skills",
       label: copy("skills"),
-      description: "Installed capabilities",
+      description: copy("skills"),
       icon: Puzzle,
       count: enabledSkillCount,
     },
     {
       view: "connectors",
-      label: "Connectors",
-      description: "Google and GitHub access",
+      label: copy("connectors"),
+      description: copy("connectors"),
       icon: Mail,
     },
     {
       view: "system",
       label: copy("systemView"),
-      description: "Services, logs, and MCP",
+      description: copy("systemBody"),
       icon: Settings2,
     },
   ];
@@ -2217,6 +2229,65 @@ export function DashboardScreen({
 
           <Card className="system-card">
             <CardHeader>
+              <div>
+                <CardTitle>
+                  {copy("language")} / {copy("theme")}
+                </CardTitle>
+                <CardDescription>
+                  {copy("language")} · {copy("theme")}
+                </CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="system-preferences">
+              <label className="system-preference-control">
+                <span className="system-preference-icon">
+                  <Globe2 />
+                </span>
+                <span>
+                  <strong>{copy("language")}</strong>
+                  <select
+                    value={language}
+                    onChange={(event) =>
+                      onLanguageChange(event.target.value as Language)
+                    }
+                  >
+                    {languages.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </span>
+              </label>
+              <label className="system-preference-control">
+                <span className="system-preference-icon">
+                  {theme === "system" ? (
+                    <Settings2 />
+                  ) : theme === "dark" ? (
+                    <Moon />
+                  ) : (
+                    <Sun />
+                  )}
+                </span>
+                <span>
+                  <strong>{copy("theme")}</strong>
+                  <select
+                    value={theme}
+                    onChange={(event) =>
+                      onThemeChange(event.target.value as Theme)
+                    }
+                  >
+                    <option value="light">{copy("light")}</option>
+                    <option value="dark">{copy("dark")}</option>
+                    <option value="system">{copy("system")}</option>
+                  </select>
+                </span>
+              </label>
+            </CardContent>
+          </Card>
+
+          <Card className="system-card">
+            <CardHeader>
               <CardTitle>{copy("services")}</CardTitle>
             </CardHeader>
             <CardContent className="service-pills">
@@ -2675,12 +2746,14 @@ export function DashboardScreen({
             type="button"
             className="dashboard-sidebar-collapse"
             aria-expanded={!sidebarCollapsed}
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={
+              sidebarCollapsed ? copy("expandSidebar") : copy("collapseSidebar")
+            }
             onClick={() => setSidebarCollapsed((current) => !current)}
           >
             {sidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
             <span className="dashboard-sidebar-label">
-              {sidebarCollapsed ? "Expand" : "Collapse"}
+              {sidebarCollapsed ? copy("expandSidebar") : copy("collapseSidebar")}
             </span>
           </button>
         </aside>

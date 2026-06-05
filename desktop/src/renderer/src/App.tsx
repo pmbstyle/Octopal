@@ -1120,6 +1120,8 @@ export function App() {
           <DashboardScreen
             key="dashboard"
             copy={copy}
+            language={language}
+            theme={theme}
             installDir={runtimeInstallDir}
             runtimeView={runtimeView}
             updateAvailable={updateAvailable}
@@ -1133,6 +1135,8 @@ export function App() {
             onRestart={() => void restartInstalledOctopal()}
             onUpdateOctopal={() => void updateInstalledOctopal()}
             onUpdateDesktopApp={() => void updateDesktopApp()}
+            onLanguageChange={updateLanguage}
+            onThemeChange={setTheme}
           />
         ) : null}
 

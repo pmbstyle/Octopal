@@ -1,7 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { AppShell } from "./AppShell";
 import { DashboardScreen } from "./DashboardScreen";
+import type { Theme } from "../lib/appTypes";
+import { t, type Language } from "../lib/i18n";
 
 const now = new Date("2026-06-04T18:24:00.000Z");
 
@@ -551,11 +553,19 @@ function installPreviewDesktopApi() {
 }
 
 export function DesignPreview() {
+  const [previewLanguage, setPreviewLanguage] = useState<Language>("en");
+  const [previewTheme, setPreviewTheme] = useState<Theme>("dark");
+
   installPreviewDesktopApi();
 
   useEffect(() => {
-    document.documentElement.dataset.theme = "dark";
-  }, []);
+    document.documentElement.dataset.theme =
+      previewTheme === "system"
+        ? window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light"
+        : previewTheme;
+  }, [previewTheme]);
 
   return (
     <AppShell
@@ -565,34 +575,9 @@ export function DesignPreview() {
       onMaximize={() => undefined}
     >
       <DashboardScreen
-        copy={(key) => {
-          const labels: Record<string, string> = {
-            control: "Control",
-            workers: "Workers",
-            skills: "Skills",
-            systemView: "System",
-            octopalStarted: "Octopal is running",
-            systemBody: "Runtime services are available.",
-            latestAction: "Latest action",
-            octoLatestFallback: "Waiting for the next operator request.",
-            liveLoad: "Live load",
-            liveLoadBody: "Worker pressure, Octo queue, and recent runtime activity.",
-            lastSamples: "Last samples",
-            activeWorkers: "Active workers",
-            workerQueue: "Worker queue",
-            octoQueue: "Octo queue",
-            collectingSamples: "Collecting samples",
-            workerRuns: "Worker runs",
-            workerRunsBody: "Recent worker tasks and execution status.",
-            openWorkerStudio: "Open worker studio",
-            status: "Status",
-            template: "Template",
-            task: "Task",
-            updated: "Updated",
-            noRecentWorkers: "No recent workers",
-          };
-          return labels[key] ?? String(key);
-        }}
+        copy={(key) => t(previewLanguage, key)}
+        language={previewLanguage}
+        theme={previewTheme}
         installDir="/preview/octopal"
         runtimeView={{
           state: "running",
@@ -610,6 +595,8 @@ export function DesignPreview() {
         onRestart={() => undefined}
         onUpdateOctopal={() => undefined}
         onUpdateDesktopApp={() => undefined}
+        onLanguageChange={setPreviewLanguage}
+        onThemeChange={setPreviewTheme}
       />
     </AppShell>
   );
