@@ -13,6 +13,13 @@ class TelegramConfig(BaseModel):
     parse_mode: str = "MarkdownV2"
 
 
+class GroupAddressingConfig(BaseModel):
+    enabled: bool = True
+    agent_name: str | None = None
+    agent_aliases: list[str] = Field(default_factory=list)
+    collective_aliases: list[str] = Field(default_factory=list)
+
+
 class LLMConfig(BaseModel):
     provider_id: str | None = None
     model: str | None = None
@@ -69,6 +76,7 @@ class WorkerRuntimeConfig(BaseModel):
 class WhatsAppConfig(BaseModel):
     mode: str = "separate"
     allowed_numbers: list[str] = Field(default_factory=list)
+    allowed_chats: list[str] = Field(default_factory=list)
     auth_dir: Path | None = None
     bridge_host: str = "127.0.0.1"
     bridge_port: int = 8765
@@ -169,6 +177,7 @@ class ConnectorsConfig(BaseModel):
 class OctopalConfig(BaseModel):
     user_channel: str = DEFAULT_USER_CHANNEL
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    group_addressing: GroupAddressingConfig = Field(default_factory=GroupAddressingConfig)
 
     # Octo LLM settings
     llm: LLMConfig = Field(default_factory=LLMConfig)

@@ -11,9 +11,12 @@ from typing import Any
 
 import structlog
 
+from octopal.channels.group_addressing import decide_group_addressing
 from octopal.channels.whatsapp.bridge import WhatsAppBridgeController
 from octopal.channels.whatsapp.ids import (
+    normalize_whatsapp_chat,
     normalize_whatsapp_number,
+    parse_allowed_whatsapp_chats,
     parse_allowed_whatsapp_numbers,
     whatsapp_chat_id,
 )
@@ -141,9 +144,16 @@ class WhatsAppRuntime:
         allowed_numbers = parse_allowed_whatsapp_numbers(self.settings.allowed_whatsapp_numbers)
         for number in allowed_numbers:
             self._number_by_chat_id[whatsapp_chat_id(number)] = number
+        allowed_chats = parse_allowed_whatsapp_chats(
+            str(getattr(self.settings, "allowed_whatsapp_chats", "") or "")
+        )
+        for chat in allowed_chats:
+            self._number_by_chat_id[whatsapp_chat_id(chat)] = chat
         await self.octo.initialize_system(
             bot=None,
-            allowed_chat_ids=[whatsapp_chat_id(number) for number in allowed_numbers],
+            allowed_chat_ids=[
+                whatsapp_chat_id(chat) for chat in [*allowed_numbers, *allowed_chats]
+            ],
         )
         self._publish_metrics(connected=True)
         return self.octo
@@ -179,7 +189,20 @@ class WhatsAppRuntime:
             )
             return {"accepted": False, "reason": "not_self_chat"}
         allowed = parse_allowed_whatsapp_numbers(self.settings.allowed_whatsapp_numbers)
-        if allowed and sender not in allowed:
+        allowed_chats = parse_allowed_whatsapp_chats(
+            str(getattr(self.settings, "allowed_whatsapp_chats", "") or "")
+        )
+        group_chat = _is_whatsapp_group_chat(conversation, payload)
+        chat_number = normalize_whatsapp_chat(conversation) or conversation
+        if group_chat:
+            if chat_number not in allowed_chats:
+                logger.warning(
+                    "Rejected WhatsApp group message from unauthorized chat",
+                    sender=sender,
+                    conversation=conversation,
+                )
+                return {"accepted": False, "reason": "unauthorized_group"}
+        elif allowed and sender not in allowed:
             logger.warning("Rejected WhatsApp message from unauthorized sender", sender=sender)
             return {"accepted": False, "reason": "unauthorized"}
 
@@ -191,7 +214,6 @@ class WhatsAppRuntime:
             )
             return {"accepted": False, "reason": "invalid_self_chat_sender"}
 
-        chat_number = normalize_whatsapp_number(conversation) or conversation
         chat_id = whatsapp_chat_id(chat_number)
         self._number_by_chat_id[chat_id] = chat_number
         await self._pending_turns.submit(
@@ -203,6 +225,9 @@ class WhatsAppRuntime:
                 "message_id": str(payload.get("messageId", "") or "").strip(),
                 "remote_jid": str(payload.get("remoteJid", "") or "").strip(),
                 "target_from_me": from_me,
+                "is_group_chat": group_chat,
+                "reply_to_agent": bool(payload.get("replyToAgent")),
+                "sender_label": sender,
             },
         )
         self._publish_metrics(last_sender=sender)
@@ -290,6 +315,27 @@ class WhatsAppRuntime:
         remote_jid = str(metadata.get("remote_jid", "") or "").strip() or None
         target_from_me = bool(metadata.get("target_from_me"))
 
+        if bool(metadata.get("is_group_chat")):
+            provider = getattr(self.octo, "provider", None)
+            decision = await decide_group_addressing(
+                provider=provider,
+                settings=self.settings,
+                channel="whatsapp",
+                chat_id=chat_id,
+                text=text,
+                has_attachments=bool(images or saved_file_paths),
+                reply_to_agent=bool(metadata.get("reply_to_agent")),
+                sender_label=str(metadata.get("sender_label", "") or "") or None,
+            )
+            if not decision.should_process:
+                logger.info(
+                    "Ignoring non-addressed WhatsApp group message",
+                    chat_id=chat_id,
+                    reason=decision.reason,
+                    confidence=decision.confidence,
+                )
+                return
+
         # Immediate feedback
         if to and message_id:
             try:
@@ -364,6 +410,13 @@ def _persist_whatsapp_media_payload(
     file_path = (media_dir / f"{safe_stem}_{uuid.uuid4()}{suffix}").resolve()
     file_path.write_bytes(binary)
     return str(file_path)
+
+
+def _is_whatsapp_group_chat(conversation: str, payload: dict[str, Any]) -> bool:
+    if bool(payload.get("group")):
+        return True
+    remote_jid = str(payload.get("remoteJid", "") or "").strip()
+    return "@g.us" in conversation or "@g.us" in remote_jid
 
 
 def _chunk_text(text: str, limit: int) -> list[str]:
