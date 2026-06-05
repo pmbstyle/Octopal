@@ -130,12 +130,17 @@ export function ReviewStep({
     values.googleConnectorEnabled ? copy("googleConnector") : "",
     values.githubConnectorEnabled ? copy("githubConnector") : "",
   ].filter(Boolean);
+  const channelLabels: Record<InstallForm["channel"], string> = {
+    desktop: copy("desktopChannel"),
+    telegram: copy("telegram"),
+    whatsapp: copy("whatsapp"),
+  };
 
   return (
     <StepSection body={body}>
       <div className="review-grid">
         <ReviewItem label={copy("installFolder")} value={values.installDir || "-"} />
-        <ReviewItem label={copy("stepChannel")} value={values.channel === "telegram" ? copy("telegram") : copy("whatsapp")} />
+        <ReviewItem label={copy("stepChannel")} value={channelLabels[values.channel]} />
         <ReviewItem label={copy("provider")} value={providers.find((item) => item.id === values.providerId)?.label ?? values.providerId} />
         <ReviewItem label={copy("model")} value={values.model || "-"} />
         <ReviewItem label={copy("stepWorkerLlm")} value={values.sameWorker ? copy("sameWorker") : values.workerModel || values.model || "-"} />

@@ -2553,6 +2553,14 @@ def _select_active_channel_metrics(
             "chat_mappings": int(whatsapp_metrics.get("chat_mappings", 0) or 0),
             "updated_at": whatsapp_metrics.get("updated_at"),
         }
+    if active_channel == "desktop":
+        return {
+            "queue_depth": 0,
+            "send_tasks": None,
+            "connected": None,
+            "chat_mappings": None,
+            "updated_at": None,
+        }
     return {
         "queue_depth": int(telegram_metrics.get("chat_queues", 0) or 0),
         "send_tasks": int(telegram_metrics.get("send_tasks", 0) or 0),

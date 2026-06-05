@@ -41,6 +41,9 @@ const initialStatus: DesktopChatConnectionStatus = {
   detail: "Chat is idle.",
 };
 
+const ACTIVITY_TIMEOUT_MS = 30_000;
+const THINKING_STATUS_TEXT = "Octo is thinking";
+
 function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
@@ -154,42 +157,58 @@ function workerSnapshotText(worker: Record<string, unknown>): string {
   const name = workerSnapshotName(worker);
   const status = stringValue(worker.status, "unknown").toLowerCase();
   if (status === "running") {
-    return `${name} worker is running.`;
+    return `${name} worker is running`;
   }
   if (status === "waiting_for_children") {
-    return `${name} worker is waiting for child workers.`;
+    return `${name} worker is waiting for child workers`;
   }
   if (status === "awaiting_instruction") {
-    return `${name} worker is awaiting instruction.`;
+    return `${name} worker is awaiting instruction`;
   }
   if (["started", "completed", "failed", "stopped"].includes(status)) {
-    return `${name} worker ${status}.`;
+    return `${name} worker ${status}`;
   }
-  return `${name} worker status: ${status}.`;
+  return `${name} worker status: ${status}`;
 }
 
-function chatItemFromWorkerSnapshot(
+function activityStatusText(text: string): string {
+  return text.trim().replace(/\.+$/u, "");
+}
+
+function activityTextFromWorkerSnapshot(
   worker: Record<string, unknown>,
-  index: number,
-): ChatItem {
-  const createdAt =
-    stringValue(worker.updated_at) ||
-    stringValue(worker.created_at) ||
-    new Date().toISOString();
-  const workerId = stringValue(worker.id, `worker-${index}`);
-  const status = stringValue(worker.status, "unknown");
-  return {
-    id: `worker-${workerId}-${status}-${createdAt}`,
-    kind: "event",
-    type: "worker_snapshot",
-    role: "system",
-    direction: "event",
-    channel: "runtime",
-    text: workerSnapshotText(worker),
-    createdAt,
-    meta: worker,
-    technical: true,
-  };
+): string {
+  return workerSnapshotText(worker);
+}
+
+function activityTextFromEvent(event: DesktopChatEvent): string {
+  const type = stringValue(event.type);
+  if (type === "progress") {
+    return eventText(event);
+  }
+  if (type === "worker_event") {
+    const payload = recordValue(event.payload);
+    return (
+      stringValue(event.text) ||
+      stringValue(event.message) ||
+      stringValue(payload.message) ||
+      stringValue(payload.summary) ||
+      stringValue(event.event)
+    );
+  }
+  if (type === "workers_snapshot") {
+    const activeWorker = recordArray(event.workers).find((worker) => {
+      const status = stringValue(worker.status).toLowerCase();
+      return [
+        "running",
+        "started",
+        "waiting_for_children",
+        "awaiting_instruction",
+      ].includes(status);
+    });
+    return activeWorker ? activityTextFromWorkerSnapshot(activeWorker) : "";
+  }
+  return "";
 }
 
 function chatItemFromEvent(
@@ -235,7 +254,11 @@ function chatItemFromEvent(
     };
   }
 
-  if (["workers_snapshot", "pong", "typing", "worker_event"].includes(type)) {
+  if (
+    ["workers_snapshot", "pong", "typing", "worker_event", "progress"].includes(
+      type,
+    )
+  ) {
     return null;
   }
 
@@ -243,7 +266,7 @@ function chatItemFromEvent(
     return null;
   }
 
-  if (["progress", "file", "warning", "error"].includes(type)) {
+  if (["file", "warning", "error"].includes(type)) {
     return {
       id: baseId,
       kind: "event",
@@ -276,9 +299,7 @@ function chatItemsFromEvent(
       .filter((item): item is ChatItem => item !== null);
   }
   if (type === "workers_snapshot") {
-    return recordArray(event.workers).map((worker, workerIndex) =>
-      chatItemFromWorkerSnapshot(worker, index + workerIndex),
-    );
+    return [];
   }
   const item = chatItemFromEvent(event, index);
   return item ? [item] : [];
@@ -377,8 +398,10 @@ export function ChatView({ active, installDir }: ChatViewProps) {
   const [sendError, setSendError] = useState("");
   const [sending, setSending] = useState(false);
   const [thinking, setThinking] = useState(false);
+  const [activityText, setActivityText] = useState("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const eventCount = useRef(0);
+  const activityTimeoutRef = useRef<number | null>(null);
 
   const connected = status.state === "connected";
   const canSend =
@@ -412,6 +435,37 @@ export function ChatView({ active, installDir }: ChatViewProps) {
     }
   }, [installDir]);
 
+  const clearActivityTimeout = useCallback(() => {
+    if (activityTimeoutRef.current !== null) {
+      window.clearTimeout(activityTimeoutRef.current);
+      activityTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearActivity = useCallback(() => {
+    clearActivityTimeout();
+    setThinking(false);
+    setActivityText("");
+  }, [clearActivityTimeout]);
+
+  const scheduleActivityTimeout = useCallback(() => {
+    clearActivityTimeout();
+    activityTimeoutRef.current = window.setTimeout(() => {
+      setThinking(false);
+      setActivityText("");
+      activityTimeoutRef.current = null;
+    }, ACTIVITY_TIMEOUT_MS);
+  }, [clearActivityTimeout]);
+
+  const showActivity = useCallback(
+    (text: string) => {
+      setActivityText(activityStatusText(text) || THINKING_STATUS_TEXT);
+      setThinking(true);
+      scheduleActivityTimeout();
+    },
+    [scheduleActivityTimeout],
+  );
+
   useEffect(() => {
     if (!window.octopalDesktop || !installDir) {
       return;
@@ -420,7 +474,13 @@ export function ChatView({ active, installDir }: ChatViewProps) {
     const unsubscribeStatus = window.octopalDesktop.onChatStatus(setStatus);
     const unsubscribeEvent = window.octopalDesktop.onChatEvent((event) => {
       if (stringValue(event.type) === "typing") {
-        setThinking(Boolean(event.active));
+        if (event.active) {
+          setActivityText((current) => current || THINKING_STATUS_TEXT);
+          setThinking(true);
+          scheduleActivityTimeout();
+        } else {
+          setThinking(false);
+        }
         return;
       }
 
@@ -457,12 +517,20 @@ export function ChatView({ active, installDir }: ChatViewProps) {
       }
 
       eventCount.current += 1;
+      const activity = activityTextFromEvent(event);
+      if (activity) {
+        showActivity(activity);
+      }
       const nextItems = chatItemsFromEvent(event, eventCount.current);
       if (nextItems.length === 0) {
         return;
       }
-      if (nextItems.some((item) => item.role === "assistant" || item.type === "error")) {
-        setThinking(false);
+      if (
+        nextItems.some(
+          (item) => item.role === "assistant" || item.type === "error",
+        )
+      ) {
+        clearActivity();
       }
       setItems((current) => {
         if (
@@ -487,8 +555,16 @@ export function ChatView({ active, installDir }: ChatViewProps) {
     return () => {
       unsubscribeStatus();
       unsubscribeEvent();
+      clearActivityTimeout();
     };
-  }, [connect, installDir]);
+  }, [
+    clearActivity,
+    clearActivityTimeout,
+    connect,
+    installDir,
+    scheduleActivityTimeout,
+    showActivity,
+  ]);
 
   useEffect(() => {
     if (!active) {
@@ -498,7 +574,7 @@ export function ChatView({ active, installDir }: ChatViewProps) {
       top: scrollRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [active, sortedItems.length, thinking]);
+  }, [active, sortedItems.length, thinking, activityText]);
 
   function appendAttachments(next: DesktopChatAttachment[]): void {
     setAttachments((current) => {
@@ -580,7 +656,7 @@ export function ChatView({ active, installDir }: ChatViewProps) {
       );
       setDraft("");
       setAttachments([]);
-      setThinking(true);
+      showActivity(THINKING_STATUS_TEXT);
     } catch (error) {
       setThinking(false);
       setSendError(
@@ -626,7 +702,7 @@ export function ChatView({ active, installDir }: ChatViewProps) {
       aria-label="Desktop chat"
     >
       <div ref={scrollRef} className="chat-transcript">
-        {sortedItems.length === 0 ? (
+        {sortedItems.length === 0 && !activityText && !thinking ? (
           <div className="chat-empty">
             <h2>No chat events yet</h2>
             <p>Waiting for live activity.</p>
@@ -698,18 +774,12 @@ export function ChatView({ active, installDir }: ChatViewProps) {
             ) : null}
           </article>
         ))}
-        {thinking ? (
-          <article className="chat-bubble chat-bubble-assistant chat-thinking">
-            <div className="chat-item-meta">
-              <span>Octo</span>
-              <span>thinking</span>
-            </div>
-            <div className="chat-thinking-dots" aria-label="Octo is thinking">
-              <span />
-              <span />
-              <span />
-            </div>
-          </article>
+        {thinking || activityText ? (
+          <div className="chat-activity" aria-live="polite">
+            <span className="chat-activity-text">
+              {activityText || THINKING_STATUS_TEXT}
+            </span>
+          </div>
         ) : null}
       </div>
 

@@ -9,7 +9,7 @@ from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.rule import Rule
 from rich.table import Table
 
-from octopal.channels import normalize_user_channel
+from octopal.channels import DEFAULT_USER_CHANNEL, normalize_user_channel
 from octopal.cli.branding import print_banner
 from octopal.cli.wizard import (
     WizardConfirmParams,
@@ -185,11 +185,14 @@ def configure_wizard() -> None:
 
 def _configure_user_channel(config: OctopalConfig, prompter) -> None:
     _print_section_header("Channel Access")
+    initial_channel = normalize_user_channel(config.user_channel)
+    if initial_channel == "desktop":
+        initial_channel = DEFAULT_USER_CHANNEL
 
     channel = prompter.select(
         WizardSelectParams(
             message="Primary communication channel",
-            initial_value=normalize_user_channel(config.user_channel),
+            initial_value=initial_channel,
             options=[
                 WizardSelectOption(
                     value="telegram",

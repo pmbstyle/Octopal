@@ -72,7 +72,7 @@ const githubServiceSchema = z.enum(["repos", "issues", "pull_requests"]);
 export const installSchema = z
   .object({
     installDir: z.string().trim().min(1),
-    channel: z.enum(["telegram", "whatsapp"]),
+    channel: z.enum(["desktop", "telegram", "whatsapp"]),
     telegramToken: z.string().optional(),
     allowedChatIds: z.string().optional(),
     whatsappMode: z.enum(["personal", "separate"]),
@@ -179,7 +179,7 @@ function secretNullable(value: string | undefined): string | null {
 
 export const defaultInstallValues: InstallForm = {
   installDir: "",
-  channel: "telegram",
+  channel: "desktop",
   telegramToken: "",
   allowedChatIds: "",
   whatsappMode: "separate",
@@ -345,7 +345,8 @@ export function formValuesFromOctopalConfig(config: unknown, installDir: string)
   return {
     ...defaultInstallValues,
     installDir,
-    channel: root.user_channel === "whatsapp" ? "whatsapp" : "telegram",
+    channel:
+      root.user_channel === "whatsapp" ? "whatsapp" : root.user_channel === "telegram" ? "telegram" : "desktop",
     telegramToken: stringValue(telegram.bot_token),
     allowedChatIds: listValue(telegram.allowed_chat_ids),
     whatsappMode: whatsapp.mode === "personal" ? "personal" : "separate",

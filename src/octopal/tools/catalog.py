@@ -2094,7 +2094,12 @@ def _tool_gateway_status(args, ctx) -> str:
     exec_metrics = metrics.get("exec_run", {}) if isinstance(metrics, dict) else {}
     connectivity_metrics = metrics.get("connectivity", {}) if isinstance(metrics, dict) else {}
     scheduler_metrics = metrics.get("scheduler", {}) if isinstance(metrics, dict) else {}
-    active_channel_metrics = whatsapp_metrics if active_channel == "whatsapp" else telegram_metrics
+    if active_channel == "whatsapp":
+        active_channel_metrics = whatsapp_metrics
+    elif active_channel == "telegram":
+        active_channel_metrics = telegram_metrics
+    else:
+        active_channel_metrics = {}
 
     octo_status = build_octo_status(octo_metrics)
     last_heartbeat = status_data.get("last_internal_heartbeat_at")
@@ -2354,6 +2359,8 @@ def _workspace_dir() -> Path:
 
 
 def _gateway_channel_status(channel_id: str, channel_metrics: dict[str, object]) -> str:
+    if channel_id == "desktop":
+        return "ok"
     if channel_id == "whatsapp":
         connected = channel_metrics.get("connected")
         if connected in {0}:
@@ -2368,6 +2375,8 @@ def _gateway_channel_status(channel_id: str, channel_metrics: dict[str, object])
 
 
 def _gateway_channel_reason(channel_id: str, channel_metrics: dict[str, object]) -> str:
+    if channel_id == "desktop":
+        return "desktop gateway"
     if channel_id == "whatsapp":
         connected = channel_metrics.get("connected")
         mappings = int(channel_metrics.get("chat_mappings", 0) or 0)

@@ -805,6 +805,12 @@ def start(
             octo = await whatsapp_runtime.start()
             gateway_app = _build_gateway_app(settings, octo)
             gateway_app.state.whatsapp_runtime = whatsapp_runtime
+        elif selected_channel == "desktop":
+            from octopal.runtime.app import build_octo
+
+            octo = build_octo(settings)
+            await octo.initialize_system(bot=None, allowed_chat_ids=[])
+            gateway_app = _build_gateway_app(settings, octo)
         else:
             bot_instance = _build_telegram_bot(settings.telegram_bot_token)
             _dp, octo = build_dispatcher(settings, bot_instance)
@@ -815,7 +821,7 @@ def start(
         server = uvicorn.Server(config)
         gateway_task = asyncio.create_task(server.serve())
         try:
-            if selected_channel == "whatsapp":
+            if selected_channel in {"desktop", "whatsapp"}:
                 await asyncio.Event().wait()
             else:
                 await run_bot(settings, existing_octo=octo)
@@ -823,9 +829,10 @@ def start(
             server.should_exit = True
             await gateway_task
             runtime = getattr(gateway_app.state, "whatsapp_runtime", None)
-            WhatsAppRuntime = _get_whatsapp_runtime_class()
-            if isinstance(runtime, WhatsAppRuntime):
+            if runtime is not None and isinstance(runtime, _get_whatsapp_runtime_class()):
                 await runtime.stop()
+            elif selected_channel == "desktop":
+                await octo.stop_background_tasks()
 
     try:
         asyncio.run(run_all())
@@ -1106,6 +1113,8 @@ def status() -> None:
                 "WhatsApp",
                 f"[dim]mapped chats=[/dim]{whatsapp_metrics.get('chat_mappings', 0)} [dim]connected=[/dim]{whatsapp_metrics.get('connected', 0)}",
             )
+        elif selected_channel == "desktop":
+            grid.add_row("Desktop Chat", "[dim]gateway=[/dim]websocket [dim]external bot=[/dim]disabled")
         else:
             grid.add_row("Telegram Chat", f"[dim]queues=[/dim]{telegram_metrics.get('chat_queues', 0)} [dim]tasks=[/dim]{telegram_metrics.get('send_tasks', 0)}")
         grid.add_row("Exec Sessions", f"[dim]running=[/dim]{exec_metrics.get('background_sessions_running', 0)} [dim]total=[/dim]{exec_metrics.get('background_sessions_total', 0)}")
@@ -1459,6 +1468,8 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
             if _has_allowed_whatsapp_numbers(settings.allowed_whatsapp_numbers)
             else "[bright_red]SETUP NEEDED[/bright_red]"
         )
+    elif selected_channel == "desktop":
+        profile_status = "[bright_green]READY[/bright_green]"
     else:
         profile_status = "[bright_green]READY[/bright_green]" if settings.telegram_bot_token.strip() else "[bright_red]SETUP NEEDED[/bright_red]"
     header.add_row("Profile", profile_status)
@@ -1502,6 +1513,8 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
     if selected_channel == "whatsapp":
         if not _has_allowed_whatsapp_numbers(settings.allowed_whatsapp_numbers):
             checks.append("[bright_red]Set ALLOWED_WHATSAPP_NUMBERS for WhatsApp access[/bright_red]")
+    elif selected_channel == "desktop":
+        pass
     else:
         if not settings.telegram_bot_token.strip():
             checks.append("[bright_red]Missing TELEGRAM_BOT_TOKEN[/bright_red]")
