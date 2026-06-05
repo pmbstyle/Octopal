@@ -58,11 +58,22 @@ class _FakeReply:
         self.immediate = immediate
 
 
+class _FakeProvider:
+    def __init__(self, action: str = "respond_self") -> None:
+        self.action = action
+        self.messages = []
+
+    async def complete(self, messages, **kwargs):
+        self.messages.append(messages)
+        return f'{{"action":"{self.action}","confidence":0.95,"reason":"test"}}'
+
+
 class _FakeOcto:
     def __init__(self) -> None:
         self.handled: list[dict] = []
         self.initialized: list[int] = []
         self.internal_send = None
+        self.provider = _FakeProvider()
 
     async def initialize_system(self, *, bot=None, allowed_chat_ids=None) -> None:
         self.initialized = list(allowed_chat_ids or [])
@@ -75,11 +86,18 @@ class _FakeOcto:
         return None
 
 
-def _make_settings(*, mode: str, allowed_numbers: str) -> SimpleNamespace:
+def _make_settings(
+    *, mode: str, allowed_numbers: str, allowed_chats: str = ""
+) -> SimpleNamespace:
     return SimpleNamespace(
         whatsapp_mode=mode,
         allowed_whatsapp_numbers=allowed_numbers,
+        allowed_whatsapp_chats=allowed_chats,
         user_message_grace_seconds=0.0,
+        group_addressing_enabled=True,
+        group_agent_name="Alice",
+        group_agent_aliases="Alice,AliceBot",
+        group_collective_aliases="Octopals,agents",
         gateway_port=8000,
         whatsapp_callback_token="",
         whatsapp_bridge_host="127.0.0.1",
@@ -427,3 +445,114 @@ def test_whatsapp_runtime_internal_send_file_uses_bridge(monkeypatch, tmp_path: 
     assert runtime.bridge.sent_files == [
         {"to": "+15551234567", "file_path": str(file_path), "caption": "Take this"}
     ]
+
+
+def test_whatsapp_runtime_rejects_unconfigured_group_chat(monkeypatch) -> None:
+    fake_octo = _FakeOcto()
+    monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
+    monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+
+    runtime = WhatsAppRuntime(_make_settings(mode="separate", allowed_numbers="+15551234567"))
+    runtime.attach_octo_output()
+
+    async def scenario() -> None:
+        result = await runtime.handle_inbound(
+            {
+                "sender": "+15550000000",
+                "conversation": "120363123456789@g.us",
+                "remoteJid": "120363123456789@g.us",
+                "group": True,
+                "fromMe": False,
+                "text": "Alice, status?",
+            }
+        )
+        assert result == {"accepted": False, "reason": "unauthorized_group"}
+        assert fake_octo.handled == []
+
+    asyncio.run(scenario())
+
+
+def test_whatsapp_runtime_ignores_non_addressed_group_message(monkeypatch) -> None:
+    fake_octo = _FakeOcto()
+    fake_octo.provider = _FakeProvider("ignore")
+    monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
+    monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None
+    )
+
+    runtime = WhatsAppRuntime(
+        _make_settings(
+            mode="separate",
+            allowed_numbers="+15551234567",
+            allowed_chats="120363123456789@g.us",
+        )
+    )
+    runtime.attach_octo_output()
+
+    async def scenario() -> None:
+        result = await runtime.handle_inbound(
+            {
+                "sender": "+15550000000",
+                "conversation": "120363123456789@g.us",
+                "remoteJid": "120363123456789@g.us",
+                "group": True,
+                "fromMe": False,
+                "text": "Bob, status?",
+                "messageId": "wamid-group-1",
+            }
+        )
+        assert result["accepted"] is True
+        assert fake_octo.provider.messages
+        assert fake_octo.handled == []
+        assert runtime.bridge.reactions == []
+        assert runtime.bridge.sent == []
+
+    asyncio.run(scenario())
+
+
+def test_whatsapp_runtime_handles_addressed_group_message(monkeypatch) -> None:
+    fake_octo = _FakeOcto()
+    fake_octo.provider = _FakeProvider("respond_all_agents")
+    monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
+    monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None
+    )
+
+    runtime = WhatsAppRuntime(
+        _make_settings(
+            mode="separate",
+            allowed_numbers="+15551234567",
+            allowed_chats="120363123456789@g.us",
+        )
+    )
+    runtime.attach_octo_output()
+
+    async def scenario() -> None:
+        result = await runtime.handle_inbound(
+            {
+                "sender": "+15550000000",
+                "conversation": "120363123456789@g.us",
+                "remoteJid": "120363123456789@g.us",
+                "group": True,
+                "fromMe": False,
+                "text": "Octopals, status?",
+                "messageId": "wamid-group-2",
+            }
+        )
+        assert result["accepted"] is True
+        assert fake_octo.handled[-1]["text"] == "Octopals, status?"
+        assert fake_octo.handled[-1]["kwargs"]["source_channel"] == "whatsapp"
+        assert runtime.bridge.sent == [("120363123456789@g.us", "hello back")]
+
+    asyncio.run(scenario())

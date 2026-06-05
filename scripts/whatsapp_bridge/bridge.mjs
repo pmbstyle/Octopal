@@ -60,9 +60,9 @@ function renderQrTerminal(qr) {
   });
 }
 
-function normalizeDirectJid(raw) {
+function normalizeChatJid(raw) {
   if (!raw) return "";
-  if (raw.includes("@g.us") || raw.includes("@broadcast") || raw === "status@broadcast") {
+  if (raw.includes("@broadcast") || raw === "status@broadcast") {
     return "";
   }
   if (raw.includes("@")) {
@@ -255,9 +255,10 @@ async function bootstrapSocket() {
     for (const item of messages || []) {
       if (!item?.message) continue;
       const remoteJid = item?.key?.remoteJid || "";
-      if (remoteJid.includes("@g.us") || remoteJid.includes("@broadcast") || remoteJid === "status@broadcast") {
+      if (remoteJid.includes("@broadcast") || remoteJid === "status@broadcast") {
         continue;
       }
+      const group = remoteJid.includes("@g.us");
       const fromMe = Boolean(item?.key?.fromMe);
       const messageId = String(item?.key?.id || "").trim();
       if (fromMe && messageId && outboundMessageIds.has(messageId)) {
@@ -265,17 +266,17 @@ async function bootstrapSocket() {
         continue;
       }
       const selfNumber = senderFromJid(selfId);
-      const senderJid = fromMe ? (selfId || sock.user?.id || "") : remoteJid;
-      const sender = senderFromJid(remoteJid);
+      const senderJid = fromMe ? (selfId || sock.user?.id || "") : (group ? (item?.key?.participant || "") : remoteJid);
       const actualSender = senderFromJid(senderJid);
-      const conversation = sender;
+      const conversation = group ? remoteJid : senderFromJid(remoteJid);
       const text = extractText(item.message).trim();
       const mediaPayload = await extractMediaPayload(item);
-      const selfChat = Boolean(fromMe && selfNumber && conversation && selfNumber === conversation);
+      const selfChat = Boolean(!group && fromMe && selfNumber && conversation && selfNumber === conversation);
       if (!actualSender || !conversation || (!text && !mediaPayload)) continue;
       await postInbound({
         sender: actualSender,
         conversation,
+        group,
         fromMe,
         self: selfNumber,
         selfChat,
@@ -339,7 +340,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === "POST" && url.pathname === "/send") {
     const payload = await readJson(req);
-    const to = normalizeDirectJid(payload.to || "");
+    const to = normalizeChatJid(payload.to || "");
     const text = String(payload.text || "").trim();
     if (!sock || !to || !text) {
       return await jsonResponse(res, 400, { ok: false, error: "missing_to_or_text" });
@@ -350,7 +351,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === "POST" && url.pathname === "/send-file") {
     const payload = await readJson(req);
-    const to = normalizeDirectJid(payload.to || "");
+    const to = normalizeChatJid(payload.to || "");
     const filePath = String(payload.path || "").trim();
     const caption = String(payload.caption || "").trim();
     const kind = String(payload.kind || "").trim();
@@ -396,8 +397,8 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === "POST" && url.pathname === "/react") {
     const payload = await readJson(req);
-    const to = normalizeDirectJid(payload.to || payload.remoteJid || "");
-    const remoteJid = normalizeDirectJid(payload.remoteJid || payload.to || "");
+    const to = normalizeChatJid(payload.to || payload.remoteJid || "");
+    const remoteJid = normalizeChatJid(payload.remoteJid || payload.to || "");
     const emoji = String(payload.emoji || "").trim();
     const messageId = String(payload.messageId || "").trim();
     const targetFromMe = Boolean(payload.targetFromMe);

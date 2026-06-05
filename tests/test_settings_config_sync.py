@@ -172,3 +172,33 @@ def test_load_settings_syncs_a2a_config(tmp_path, monkeypatch) -> None:
     assert settings.a2a.public_base_url == "https://octo.example"
     assert settings.a2a.agent_name == "Alice"
     assert settings.a2a.peers["bob"].token == "peer-secret"
+
+
+def test_load_settings_syncs_group_addressing_and_whatsapp_group_chats(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "group_addressing": {
+                    "enabled": True,
+                    "agent_name": "Alice",
+                    "agent_aliases": ["Alice", "AliceBot"],
+                    "collective_aliases": ["Octopals", "agents"],
+                },
+                "whatsapp": {
+                    "allowed_chats": ["120363123456789@g.us"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.group_addressing_enabled is True
+    assert settings.group_agent_name == "Alice"
+    assert settings.group_agent_aliases == "Alice,AliceBot"
+    assert settings.group_collective_aliases == "Octopals,agents"
+    assert settings.allowed_whatsapp_chats == "120363123456789@g.us"

@@ -111,6 +111,10 @@ class Settings(BaseSettings):
 
     heartbeat_interval_seconds: int = Field(900, alias="OCTOPAL_HEARTBEAT_INTERVAL_SECONDS")
     user_message_grace_seconds: float = Field(5.0, alias="OCTOPAL_USER_MESSAGE_GRACE_SECONDS")
+    group_addressing_enabled: bool = Field(True, alias="OCTOPAL_GROUP_ADDRESSING_ENABLED")
+    group_agent_name: str = Field("", alias="OCTOPAL_GROUP_AGENT_NAME")
+    group_agent_aliases: str = Field("", alias="OCTOPAL_GROUP_AGENT_ALIASES")
+    group_collective_aliases: str = Field("", alias="OCTOPAL_GROUP_COLLECTIVE_ALIASES")
 
     # Connectors
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
@@ -122,6 +126,7 @@ class Settings(BaseSettings):
     telegram_parse_mode: str = Field("MarkdownV2", alias="OCTOPAL_TELEGRAM_PARSE_MODE")
     whatsapp_mode: str = Field("separate", alias="OCTOPAL_WHATSAPP_MODE")
     allowed_whatsapp_numbers: str = Field("", alias="ALLOWED_WHATSAPP_NUMBERS")
+    allowed_whatsapp_chats: str = Field("", alias="ALLOWED_WHATSAPP_CHATS")
     whatsapp_auth_dir: Path | None = Field(default=None, alias="OCTOPAL_WHATSAPP_AUTH_DIR")
     whatsapp_bridge_host: str = Field("127.0.0.1", alias="OCTOPAL_WHATSAPP_BRIDGE_HOST")
     whatsapp_bridge_port: int = Field(8765, alias="OCTOPAL_WHATSAPP_BRIDGE_PORT")
@@ -204,6 +209,12 @@ def _sync_settings_from_config(settings: Settings, config: OctopalConfig) -> Non
     updates["allowed_telegram_chat_ids"] = ",".join(config.telegram.allowed_chat_ids)
     updates["telegram_parse_mode"] = config.telegram.parse_mode
 
+    # Group addressing
+    updates["group_addressing_enabled"] = config.group_addressing.enabled
+    updates["group_agent_name"] = config.group_addressing.agent_name or ""
+    updates["group_agent_aliases"] = ",".join(config.group_addressing.agent_aliases)
+    updates["group_collective_aliases"] = ",".join(config.group_addressing.collective_aliases)
+
     # LLM (Octo)
     updates["litellm_provider_id"] = config.llm.provider_id
     updates["litellm_model"] = config.llm.model
@@ -257,6 +268,7 @@ def _sync_settings_from_config(settings: Settings, config: OctopalConfig) -> Non
     # WhatsApp
     updates["whatsapp_mode"] = config.whatsapp.mode
     updates["allowed_whatsapp_numbers"] = ",".join(config.whatsapp.allowed_numbers)
+    updates["allowed_whatsapp_chats"] = ",".join(config.whatsapp.allowed_chats)
     updates["whatsapp_auth_dir"] = config.whatsapp.auth_dir
     updates["whatsapp_bridge_host"] = config.whatsapp.bridge_host
     updates["whatsapp_bridge_port"] = config.whatsapp.bridge_port

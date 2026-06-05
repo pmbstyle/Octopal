@@ -18,6 +18,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, FSInputFile, Message, ReactionTypeEmoji
 
+from octopal.channels.group_addressing import decide_group_addressing
 from octopal.channels.telegram.access import is_allowed_chat, parse_allowed_chat_ids
 from octopal.channels.telegram.approvals import ApprovalManager
 from octopal.infrastructure.config.settings import Settings
@@ -291,9 +292,13 @@ def register_handlers(
     import importlib.metadata
 
     @dp.message(Command("help"))
-    async def cmd_help(message: Message) -> None:
+    async def cmd_help(message: Message, command: CommandObject) -> None:
         if not is_allowed_chat(message.chat.id, allowed_chat_ids):
             await _reject_unauthorized_message(message)
+            return
+        if not await _telegram_group_command_should_run(
+            message, command=command, settings=settings, octo=octo, bot=bot
+        ):
             return
         help_text = (
             "Available commands:\n"
@@ -306,9 +311,13 @@ def register_handlers(
         await message.answer(help_text)
 
     @dp.message(Command("version"))
-    async def cmd_version(message: Message) -> None:
+    async def cmd_version(message: Message, command: CommandObject) -> None:
         if not is_allowed_chat(message.chat.id, allowed_chat_ids):
             await _reject_unauthorized_message(message)
+            return
+        if not await _telegram_group_command_should_run(
+            message, command=command, settings=settings, octo=octo, bot=bot
+        ):
             return
         try:
             version = importlib.metadata.version("octopal")
@@ -317,9 +326,13 @@ def register_handlers(
         await message.answer(f"Octopal v{version}")
 
     @dp.message(Command("status"))
-    async def cmd_status(message: Message) -> None:
+    async def cmd_status(message: Message, command: CommandObject) -> None:
         if not is_allowed_chat(message.chat.id, allowed_chat_ids):
             await _reject_unauthorized_message(message)
+            return
+        if not await _telegram_group_command_should_run(
+            message, command=command, settings=settings, octo=octo, bot=bot
+        ):
             return
         active_workers = await asyncio.to_thread(octo.store.get_active_workers)
         metrics = read_metrics_snapshot(settings.state_dir)
@@ -343,9 +356,13 @@ def register_handlers(
         await message.answer(status_text, parse_mode="Markdown")
 
     @dp.message(Command("workers"))
-    async def cmd_workers(message: Message) -> None:
+    async def cmd_workers(message: Message, command: CommandObject) -> None:
         if not is_allowed_chat(message.chat.id, allowed_chat_ids):
             await _reject_unauthorized_message(message)
+            return
+        if not await _telegram_group_command_should_run(
+            message, command=command, settings=settings, octo=octo, bot=bot
+        ):
             return
         templates = await asyncio.to_thread(octo.store.list_worker_templates)
         if not templates:
@@ -361,6 +378,10 @@ def register_handlers(
     async def cmd_memory(message: Message, command: CommandObject) -> None:
         if not is_allowed_chat(message.chat.id, allowed_chat_ids):
             await _reject_unauthorized_message(message)
+            return
+        if not await _telegram_group_command_should_run(
+            message, command=command, settings=settings, octo=octo, bot=bot
+        ):
             return
         limit = 300
         if command.args and command.args.isdigit():
@@ -525,7 +546,12 @@ def register_handlers(
                 text=text,
                 images=images,
                 saved_file_paths=saved_file_paths,
-                metadata={"reply_to_message_id": message.message_id},
+                metadata={
+                    "reply_to_message_id": message.message_id,
+                    "is_group_chat": _is_telegram_group_chat(message),
+                    "reply_to_agent": _telegram_reply_targets_this_bot(message, bot),
+                    "sender_label": _telegram_sender_label(message),
+                },
             )
             return
 
@@ -852,6 +878,27 @@ def _flush_pending_turn_factory(
     ) -> None:
         lock = _CHAT_LOCKS.setdefault(chat_id, asyncio.Lock())
         reply_to_message_id = metadata.get("reply_to_message_id")
+        is_group_chat = bool(metadata.get("is_group_chat"))
+        if is_group_chat:
+            provider = getattr(octo, "provider", None)
+            decision = await decide_group_addressing(
+                provider=provider,
+                settings=settings,
+                channel="telegram",
+                chat_id=chat_id,
+                text=text,
+                has_attachments=bool(images or saved_file_paths),
+                reply_to_agent=bool(metadata.get("reply_to_agent")),
+                sender_label=str(metadata.get("sender_label", "") or "") or None,
+            )
+            if not decision.should_process:
+                logger.info(
+                    "Ignoring non-addressed Telegram group message",
+                    chat_id=chat_id,
+                    reason=decision.reason,
+                    confidence=decision.confidence,
+                )
+                return
 
         # Immediate feedback
         if reply_to_message_id is not None:
@@ -951,6 +998,85 @@ def _flush_pending_turn_factory(
             )
 
     return _flush_pending_turn
+
+
+def _is_telegram_group_chat(message: Message) -> bool:
+    chat_type = str(getattr(getattr(message, "chat", None), "type", "") or "").lower()
+    return chat_type in {"group", "supergroup"}
+
+
+def _telegram_reply_targets_this_bot(message: Message, bot: Bot) -> bool:
+    reply_to = getattr(message, "reply_to_message", None)
+    reply_from = getattr(reply_to, "from_user", None)
+    if reply_from is None:
+        return False
+    bot_id = getattr(bot, "id", None)
+    reply_from_id = getattr(reply_from, "id", None)
+    if bot_id is not None and reply_from_id is not None:
+        return int(bot_id) == int(reply_from_id)
+    return False
+
+
+async def _telegram_group_command_should_run(
+    message: Message,
+    *,
+    command: CommandObject | None,
+    settings: Settings,
+    octo: Octo,
+    bot: Bot,
+) -> bool:
+    if not _is_telegram_group_chat(message):
+        return True
+    provider = getattr(octo, "provider", None)
+    decision = await decide_group_addressing(
+        provider=provider,
+        settings=settings,
+        channel="telegram",
+        chat_id=message.chat.id,
+        text=message.text or message.caption or "",
+        reply_to_agent=(
+            _telegram_reply_targets_this_bot(message, bot)
+            or _telegram_command_targets_this_bot(command, bot)
+        ),
+        sender_label=_telegram_sender_label(message) or None,
+    )
+    if decision.should_process:
+        return True
+    logger.info(
+        "Ignoring non-addressed Telegram group command",
+        chat_id=message.chat.id,
+        command=getattr(command, "command", None),
+        reason=decision.reason,
+        confidence=decision.confidence,
+    )
+    return False
+
+
+def _telegram_command_targets_this_bot(command: CommandObject | None, bot: Bot) -> bool:
+    mention = str(getattr(command, "mention", "") or "").strip().lstrip("@").casefold()
+    if not mention:
+        return False
+    username = _telegram_bot_username(bot)
+    return bool(username and mention == username.casefold())
+
+
+def _telegram_bot_username(bot: Bot) -> str:
+    for attr in ("username", "bot_username"):
+        value = str(getattr(bot, attr, "") or "").strip()
+        if value:
+            return value.lstrip("@")
+    me = getattr(bot, "_me", None)
+    value = str(getattr(me, "username", "") or "").strip()
+    return value.lstrip("@")
+
+
+def _telegram_sender_label(message: Message) -> str:
+    user = getattr(message, "from_user", None)
+    parts = [
+        str(getattr(user, "full_name", "") or "").strip(),
+        str(getattr(user, "username", "") or "").strip(),
+    ]
+    return " / ".join(part for part in parts if part)
 
 
 def _chunk_text(text: str, limit: int) -> list[str]:
