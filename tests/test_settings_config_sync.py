@@ -26,6 +26,18 @@ def test_load_settings_uses_user_channel_from_config_json(tmp_path, monkeypatch)
     assert settings.allowed_whatsapp_numbers == "+15551234567"
 
 
+def test_load_settings_accepts_desktop_user_channel(tmp_path, monkeypatch) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps({"user_channel": "desktop"}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.user_channel == "desktop"
+
+
 def test_load_settings_defaults_to_empty_telegram_values_without_config_json(
     tmp_path, monkeypatch
 ) -> None:

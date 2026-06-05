@@ -26,6 +26,14 @@ def test_write_start_status_persists_active_channel(tmp_path) -> None:
     assert payload["status_updated_at"]
 
 
+def test_write_start_status_persists_desktop_active_channel(tmp_path) -> None:
+    settings = SimpleNamespace(state_dir=tmp_path, user_channel="desktop")
+    write_start_status(settings)
+
+    payload = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert payload["active_channel"] == "Desktop"
+
+
 def test_mark_runtime_running_updates_phase(tmp_path) -> None:
     settings = SimpleNamespace(state_dir=tmp_path, user_channel="telegram")
     write_start_status(settings)

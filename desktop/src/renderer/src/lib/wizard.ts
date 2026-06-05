@@ -36,6 +36,9 @@ export function getValidationFields(step: StepId, values: InstallForm): Array<ke
   }
 
   if (step === "channel") {
+    if (values.channel === "desktop") {
+      return ["channel"];
+    }
     return values.channel === "telegram" ? ["channel", "telegramToken"] : ["channel", "whatsappAllowedNumbers"];
   }
 
