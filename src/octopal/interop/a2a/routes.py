@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import copy
 import re
 import time
 from pathlib import Path
@@ -75,78 +77,173 @@ def register_a2a_routes(app: FastAPI) -> None:
                 },
             )
 
-        task_id = f"a2a-task-{uuid4().hex}"
-        context_id = request_payload.message.context_id or f"a2a-context-{uuid4().hex}"
-        saved_file_paths = _persist_raw_file_parts(
+        dedupe_key = _message_dedupe_key(peer.peer_id, request_payload.message)
+        if dedupe_key is not None:
+            lock = _a2a_message_lock(app, dedupe_key)
+            async with lock:
+                cached = _cached_a2a_message_response(app, dedupe_key)
+                if cached is not None:
+                    return cached
+                response_payload = await _route_a2a_message_to_octo(
+                    app,
+                    octo=octo,
+                    peer=peer,
+                    request_payload=request_payload,
+                )
+                _cache_a2a_message_response(app, dedupe_key, response_payload)
+                return response_payload
+
+        return await _route_a2a_message_to_octo(
             app,
-            request_payload.message,
-            peer_id=peer.peer_id,
-            context_id=context_id,
+            octo=octo,
+            peer=peer,
+            request_payload=request_payload,
         )
-        peer_label = peer.config.name or peer.peer_id
-        octo_text = _build_octo_peer_prompt(
-            peer_id=peer.peer_id,
-            peer_name=peer_label,
-            context_id=context_id,
-            text=content,
+
+
+async def _route_a2a_message_to_octo(
+    app: FastAPI,
+    *,
+    octo: Any,
+    peer: Any,
+    request_payload: A2AMessageSendRequest,
+) -> dict[str, Any]:
+    task_id = f"a2a-task-{uuid4().hex}"
+    context_id = request_payload.message.context_id or f"a2a-context-{uuid4().hex}"
+    saved_file_paths = _persist_raw_file_parts(
+        app,
+        request_payload.message,
+        peer_id=peer.peer_id,
+        context_id=context_id,
+    )
+    peer_label = peer.config.name or peer.peer_id
+    octo_text = _build_octo_peer_prompt(
+        peer_id=peer.peer_id,
+        peer_name=peer_label,
+        context_id=context_id,
+        text=message_content_for_octo(request_payload.message),
+    )
+    correlation_token = correlation_id_var.set(task_id)
+    try:
+        suppress_channel_followups = getattr(octo, "suppress_channel_followups", None)
+        if callable(suppress_channel_followups):
+            suppress_channel_followups(task_id, reason="a2a_peer_message")
+        reply = await octo.handle_message(
+            octo_text,
+            _peer_chat_id(peer.peer_id, context_id),
+            show_typing=False,
+            is_ws=True,
+            saved_file_paths=saved_file_paths,
+            include_wakeup=False,
+            source_channel="a2a",
         )
-        correlation_token = correlation_id_var.set(task_id)
-        try:
-            suppress_channel_followups = getattr(octo, "suppress_channel_followups", None)
-            if callable(suppress_channel_followups):
-                suppress_channel_followups(task_id, reason="a2a_peer_message")
-            reply = await octo.handle_message(
-                octo_text,
-                _peer_chat_id(peer.peer_id, context_id),
-                show_typing=False,
-                is_ws=True,
-                saved_file_paths=saved_file_paths,
-                include_wakeup=False,
-                source_channel="a2a",
-            )
-        finally:
-            correlation_id_var.reset(correlation_token)
-        reply_text = str(getattr(reply, "immediate", "") or "").strip()
-        state = "TASK_STATE_COMPLETED" if reply_text else "TASK_STATE_FAILED"
-        response_message = {
-            "role": "ROLE_AGENT",
-            "parts": [{"text": reply_text}],
-            "messageId": f"a2a-message-{uuid4().hex}",
+    finally:
+        correlation_id_var.reset(correlation_token)
+    reply_text = str(getattr(reply, "immediate", "") or "").strip()
+    state = "TASK_STATE_COMPLETED" if reply_text else "TASK_STATE_FAILED"
+    response_message = {
+        "role": "ROLE_AGENT",
+        "parts": [{"text": reply_text}],
+        "messageId": f"a2a-message-{uuid4().hex}",
+        "contextId": context_id,
+        "taskId": task_id,
+        "metadata": {
+            "octopalPeerId": peer.peer_id,
+            "octopalPeerName": peer_label,
+        },
+    }
+    return {
+        "taskState": state,
+        "replyText": reply_text,
+        "task": {
+            "id": task_id,
             "contextId": context_id,
-            "taskId": task_id,
+            "status": {
+                "state": state,
+                "message": response_message,
+            },
+            "artifacts": [
+                {
+                    "artifactId": f"a2a-artifact-{uuid4().hex}",
+                    "name": "response",
+                    "parts": [{"text": reply_text}],
+                }
+            ],
+            "history": [
+                request_payload.message.model_dump(by_alias=True, exclude_none=True),
+                response_message,
+            ],
             "metadata": {
                 "octopalPeerId": peer.peer_id,
                 "octopalPeerName": peer_label,
+                "octopalSavedFilePaths": saved_file_paths,
             },
-        }
-        return {
-            "taskState": state,
-            "replyText": reply_text,
-            "task": {
-                "id": task_id,
-                "contextId": context_id,
-                "status": {
-                    "state": state,
-                    "message": response_message,
-                },
-                "artifacts": [
-                    {
-                        "artifactId": f"a2a-artifact-{uuid4().hex}",
-                        "name": "response",
-                        "parts": [{"text": reply_text}],
-                    }
-                ],
-                "history": [
-                    request_payload.message.model_dump(by_alias=True, exclude_none=True),
-                    response_message,
-                ],
-                "metadata": {
-                    "octopalPeerId": peer.peer_id,
-                    "octopalPeerName": peer_label,
-                    "octopalSavedFilePaths": saved_file_paths,
-                },
-            },
-        }
+        },
+    }
+
+
+def _message_dedupe_key(peer_id: str, message: A2AMessage) -> tuple[str, str] | None:
+    message_id = str(message.message_id or "").strip()
+    if not message_id:
+        return None
+    return str(peer_id or "").strip(), message_id
+
+
+def _a2a_message_lock(app: FastAPI, key: tuple[str, str]) -> asyncio.Lock:
+    _prune_a2a_message_dedupe(app)
+    locks = getattr(app.state, "a2a_message_locks", None)
+    if not isinstance(locks, dict):
+        locks = {}
+        app.state.a2a_message_locks = locks
+    lock = locks.get(key)
+    if not isinstance(lock, asyncio.Lock):
+        lock = asyncio.Lock()
+        locks[key] = lock
+    return lock
+
+
+def _cached_a2a_message_response(app: FastAPI, key: tuple[str, str]) -> dict[str, Any] | None:
+    _prune_a2a_message_dedupe(app)
+    cache = getattr(app.state, "a2a_message_response_cache", None)
+    if not isinstance(cache, dict):
+        return None
+    entry = cache.get(key)
+    if not isinstance(entry, tuple) or len(entry) != 2:
+        return None
+    _, payload = entry
+    return copy.deepcopy(payload) if isinstance(payload, dict) else None
+
+
+def _cache_a2a_message_response(
+    app: FastAPI,
+    key: tuple[str, str],
+    payload: dict[str, Any],
+) -> None:
+    cache = getattr(app.state, "a2a_message_response_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        app.state.a2a_message_response_cache = cache
+    cache[key] = (time.monotonic(), copy.deepcopy(payload))
+
+
+def _prune_a2a_message_dedupe(app: FastAPI, *, ttl_seconds: float = 600.0) -> None:
+    cache = getattr(app.state, "a2a_message_response_cache", None)
+    if not isinstance(cache, dict):
+        return
+    cutoff = time.monotonic() - ttl_seconds
+    stale = [
+        key
+        for key, entry in list(cache.items())
+        if not isinstance(entry, tuple) or len(entry) != 2 or float(entry[0]) < cutoff
+    ]
+    for key in stale:
+        cache.pop(key, None)
+    locks = getattr(app.state, "a2a_message_locks", None)
+    if isinstance(locks, dict):
+        for key in stale:
+            lock = locks.get(key)
+            if not isinstance(lock, asyncio.Lock) or not lock.locked():
+                locks.pop(key, None)
 
 
 def _a2a_config(app: FastAPI) -> A2AConfig:

@@ -63,3 +63,4 @@ config.test.json
 /src/octopal/infrastructure/observability/__pycache__
 /src/octopal/interop/__pycache__
 /src/octopal/interop/a2a/__pycache__
+desktop/.DS_Store

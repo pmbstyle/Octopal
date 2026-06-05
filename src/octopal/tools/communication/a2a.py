@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -29,6 +30,25 @@ async def a2a_send_message(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     config = _resolve_a2a_config(ctx)
     if not config.enabled:
         return _error_payload("A2A interop is disabled.", error_type="disabled")
+    send_signature = _send_signature(
+        peer_id=peer_id,
+        text=text,
+        data=data,
+        file_urls=file_urls,
+        raw_files=raw_files,
+        context_id=context_id,
+    )
+    sent_signatures = _sent_a2a_signatures(ctx)
+    if send_signature in sent_signatures:
+        return _json(
+            {
+                "status": "skipped_duplicate",
+                "ok": True,
+                "peer_id": peer_id,
+                "context_id": context_id or f"octopal-peer-{peer_id}",
+                "message": "Duplicate A2A send detected in this turn; skipped sending a second request.",
+            }
+        )
     try:
         payload = await send_peer_message(
             config,
@@ -46,6 +66,7 @@ async def a2a_send_message(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             f"A2A request failed: {exc}",
             error_type=_classify_a2a_error(str(exc)),
         )
+    sent_signatures.add(send_signature)
     return _json(
         {
             "status": "ok",
@@ -137,6 +158,37 @@ def _resolve_a2a_config(ctx: dict[str, Any]) -> A2AConfig:
     if isinstance(candidate, A2AConfig):
         return candidate
     return A2AConfig()
+
+
+def _sent_a2a_signatures(ctx: dict[str, Any]) -> set[str]:
+    key = "_a2a_send_message_signatures"
+    signatures = (ctx or {}).get(key)
+    if not isinstance(signatures, set):
+        signatures = set()
+        if isinstance(ctx, dict):
+            ctx[key] = signatures
+    return signatures
+
+
+def _send_signature(
+    *,
+    peer_id: str,
+    text: str,
+    data: Any,
+    file_urls: list[dict[str, Any]] | None,
+    raw_files: list[dict[str, Any]] | None,
+    context_id: str | None,
+) -> str:
+    payload = {
+        "peer_id": peer_id,
+        "text": text,
+        "data": data,
+        "file_urls": file_urls or [],
+        "raw_files": raw_files or [],
+        "context_id": context_id or "",
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _json(payload: dict[str, Any]) -> str:
