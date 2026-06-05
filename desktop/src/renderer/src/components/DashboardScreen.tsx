@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
   Clock,
   Download,
   ExternalLink,
@@ -13,9 +14,12 @@ import {
   Github,
   Info,
   KeyRound,
+  LayoutDashboard,
   ListChecks,
   Mail,
   MessageCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Play,
   Plus,
@@ -32,7 +36,6 @@ import {
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
 
 import octoIdleSprite from "../../../../assets/octo-idle-sprite.png";
 import octoThinkingSprite from "../../../../assets/octo-thinking-sprite.png";
@@ -45,9 +48,30 @@ import {
   isExistingSecret,
   type InstallForm,
 } from "../lib/install";
-import { Button } from "./Button";
+import { cn } from "../lib/cn";
 import { ChatView } from "./ChatView";
+import { DashboardHeader } from "./dashboard/DashboardHeader";
 import { Field as SetupField, Input } from "./Field";
+import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
+import { Badge, type BadgeVariant } from "./ui/badge";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "./ui/card";
+import { Button } from "./ui/button";
+import {
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogOverlay,
+  DialogTitle,
+} from "./ui/dialog";
+import { Table, TableCell, TableHead, TableRow } from "./ui/table";
 
 type DashboardView = "chat" | "control" | "connectors" | "skills" | "workers" | "system";
 
@@ -79,6 +103,10 @@ type ConnectorStatus = {
   message?: string;
   services?: string[];
 };
+
+type DashboardMcpServer = NonNullable<
+  DesktopDashboardSnapshot["system"]
+>["mcpServers"][number];
 
 const emptyTemplateForm: WorkerTemplateForm = {
   id: "",
@@ -154,14 +182,42 @@ function skillStatusLabel(skill: DesktopSkill): string {
   return skill.status || "needs setup";
 }
 
-function skillStatusClass(skill: DesktopSkill): string {
+function statusBadgeVariant(status?: string): BadgeVariant {
+  const value = String(status ?? "").toLowerCase();
+  if (["running", "started", "thinking"].includes(value)) {
+    return "live";
+  }
+  if (["completed", "ok", "connected", "ready"].includes(value)) {
+    return "success";
+  }
+  if (
+    [
+      "warning",
+      "stopped",
+      "awaiting_instruction",
+      "waiting_for_children",
+      "needs_auth",
+      "needs_reauth",
+      "misconfigured",
+      "unsupported_service_configuration",
+    ].includes(value)
+  ) {
+    return "warning";
+  }
+  if (["error", "failed", "critical"].includes(value)) {
+    return "danger";
+  }
+  return "outline";
+}
+
+function skillStatusBadgeVariant(skill: DesktopSkill): BadgeVariant {
   if (!skill.enabled) {
-    return statusClass("stopped");
+    return "warning";
   }
   if (skill.ready) {
-    return statusClass("ok");
+    return "success";
   }
-  return statusClass("warning");
+  return "warning";
 }
 
 function skillSourceLabel(skill: DesktopSkill): string {
@@ -278,18 +334,66 @@ function connectorStatusFor(
     : null;
 }
 
-function connectorStatusClass(status?: string): string {
-  const value = String(status ?? "").toLowerCase();
-  if (value === "ready") {
-    return "dashboard-status dashboard-status-good";
+function connectorServerId(
+  name: DesktopConnectorName,
+  serviceId: string,
+): string {
+  if (name === "google") {
+    return `google-${serviceId}`;
   }
-  if (["needs_auth", "needs_reauth", "misconfigured", "unsupported_service_configuration"].includes(value)) {
-    return "dashboard-status dashboard-status-warn";
+  return "github-core";
+}
+
+function connectorLabel(name: DesktopConnectorName): string {
+  return name === "google" ? "Google" : "GitHub";
+}
+
+function connectorStatusFromRuntimeServers(
+  name: DesktopConnectorName,
+  enabled: boolean,
+  services: string[],
+  servers: DashboardMcpServer[],
+): ConnectorStatus | null {
+  if (!enabled) {
+    return { status: "disabled", message: `${connectorLabel(name)} connector is disabled.` };
   }
-  if (["error", "failed"].includes(value)) {
-    return "dashboard-status dashboard-status-bad";
+
+  if (services.length === 0) {
+    return {
+      status: "misconfigured",
+      message: `${connectorLabel(name)} connector is enabled but no services are selected.`,
+    };
   }
-  return "dashboard-status";
+
+  const connectedIds = new Set(servers.map((server) => server.id));
+  const expectedIds = new Set(
+    services.map((service) => connectorServerId(name, service)),
+  );
+  const matchingServers =
+    name === "github"
+      ? servers.filter((server) => server.id === "github-core" || server.id.startsWith("github-"))
+      : servers.filter((server) => expectedIds.has(server.id));
+
+  if (matchingServers.length === 0) {
+    return null;
+  }
+
+  if (
+    name === "github" ||
+    Array.from(expectedIds).every((serverId) => connectedIds.has(serverId))
+  ) {
+    return {
+      status: "ready",
+      message: `${connectorLabel(name)} connector is ready. ${matchingServers.length} runtime MCP server${matchingServers.length === 1 ? "" : "s"} connected.`,
+      services,
+    };
+  }
+
+  return {
+    status: "warning",
+    message: `${matchingServers.length} of ${expectedIds.size} ${connectorLabel(name)} runtime MCP servers connected.`,
+    services,
+  };
 }
 
 function connectorServiceIcon(serviceId: string) {
@@ -547,6 +651,7 @@ export function DashboardScreen({
   onUpdateDesktopApp: () => void;
 }) {
   const [view, setView] = useState<DashboardView>("control");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [snapshot, setSnapshot] = useState<DesktopDashboardSnapshot | null>(
     null,
   );
@@ -576,6 +681,8 @@ export function DashboardScreen({
   const [connectorStatus, setConnectorStatus] =
     useState<DesktopConnectorStatusResult | null>(null);
   const [connectorBusy, setConnectorBusy] =
+    useState<DesktopConnectorName | null>(null);
+  const [expandedConnector, setExpandedConnector] =
     useState<DesktopConnectorName | null>(null);
   const [connectorError, setConnectorError] = useState("");
   const [connectorNotice, setConnectorNotice] = useState("");
@@ -675,7 +782,7 @@ export function DashboardScreen({
       ]);
       setConnectorValues(formValuesFromOctopalConfig(config, installDir));
       setConnectorStatus(status);
-      setConnectorError(status.ok ? "" : status.detail);
+      setConnectorError("");
     } catch (error) {
       setConnectorError(
         error instanceof Error ? error.message : "Could not load connectors.",
@@ -791,10 +898,6 @@ export function DashboardScreen({
   ]
     .filter(Boolean)
     .join(" · ");
-  const systemTitle = attention ? attentionTitleText : runtimeView.title;
-  const systemDetail = attention
-    ? attentionDetail
-    : runtimeView.detail || copy("systemBody");
   const services = snapshot?.system?.services ?? [];
   const connectedMcpServers = (snapshot?.system?.mcpServers ?? []).filter(
     (server) => String(server.status).toLowerCase() === "connected",
@@ -823,6 +926,70 @@ export function DashboardScreen({
       ) ?? null)
     : null;
   const animatedOcto = animatedOctoForState(displayOctoState);
+  const octoHeaderTitle = octoHeadline;
+  const octoHeaderDetail = latestAction || octoDetail;
+  const octoHeaderAvatar = animatedOcto ? (
+    <span
+      className={`octo dashboard-header-octo-image ${animatedOcto.className}`}
+      role="img"
+      aria-label="Octopal mascot"
+      style={{ backgroundImage: `url(${animatedOcto.sprite})` }}
+    />
+  ) : (
+    <img
+      className="octo dashboard-header-octo-image"
+      src={octoImage}
+      alt="Octopal mascot"
+    />
+  );
+  const dashboardNavItems: Array<{
+    view: DashboardView;
+    label: string;
+    description: string;
+    icon: typeof Activity;
+    count?: number;
+  }> = [
+    {
+      view: "control",
+      label: copy("control"),
+      description: "Live runtime overview",
+      icon: Activity,
+    },
+    {
+      view: "chat",
+      label: "Chat",
+      description: "Conversation and approvals",
+      icon: MessageCircle,
+    },
+    {
+      view: "workers",
+      label: copy("workers"),
+      description: "Templates and recent runs",
+      icon: Wrench,
+      count: templates.length,
+    },
+    {
+      view: "skills",
+      label: copy("skills"),
+      description: "Installed capabilities",
+      icon: Puzzle,
+      count: enabledSkillCount,
+    },
+    {
+      view: "connectors",
+      label: "Connectors",
+      description: "Google and GitHub access",
+      icon: Mail,
+    },
+    {
+      view: "system",
+      label: copy("systemView"),
+      description: "Services, logs, and MCP",
+      icon: Settings2,
+    },
+  ];
+  const currentNavItem =
+    dashboardNavItems.find((item) => item.view === view) ?? dashboardNavItems[0];
 
   function startCreateTemplate(): void {
     setEditingTemplateId("");
@@ -1219,110 +1386,49 @@ export function DashboardScreen({
     }
   }
 
-  function renderDashboardHeader({
-    title,
-    titleRaw = title,
-    detail,
-    detailRaw = detail,
-    latest,
-    latestRaw = latest,
-    actions,
-  }: {
-    title: string;
-    titleRaw?: string;
-    detail: string;
-    detailRaw?: string;
-    latest?: string;
-    latestRaw?: string;
-    actions?: ReactNode;
-  }) {
-    return (
-      <div className="dashboard-assistant-head">
-        <div className="dashboard-octo-stack">
-          {animatedOcto ? (
-            <span
-              className={`octo dashboard-octo ${animatedOcto.className}`}
-              role="img"
-              aria-label="Octopal mascot"
-              style={{ backgroundImage: `url(${animatedOcto.sprite})` }}
-            />
-          ) : (
-            <img
-              className="octo dashboard-octo"
-              src={octoImage}
-              alt="Octopal mascot"
-            />
-          )}
-          <span className={statusClass(displayOctoState)}>
-            {displayOctoState}
-          </span>
-        </div>
-        <div className="dashboard-bubble">
-          <h1 title={titleRaw}>{title}</h1>
-          <p className="dashboard-octo-detail" title={detailRaw}>
-            {detail}
-          </p>
-          {latest ? (
-            <p className="dashboard-latest" title={latestRaw}>
-              <strong>{copy("latestAction")}:</strong> {latest}
-            </p>
-          ) : null}
-        </div>
-        {actions ? <div className="dashboard-actions">{actions}</div> : null}
-      </div>
-    );
-  }
-
   function renderControl() {
     return (
       <section className="dashboard-control">
-        {renderDashboardHeader({
-          title: octoHeadline,
-          titleRaw: octoHeadlineRaw,
-          detail: octoDetail,
-          detailRaw: octoDetailRaw,
-          latest: latestAction,
-          latestRaw: latestActionRaw,
-          actions:
-            updateAvailable || desktopUpdateAvailable ? (
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setView("system")}
-              >
-                {copy("updateReady")}
-              </Button>
-            ) : null,
-        })}
+        {updateAvailable || desktopUpdateAvailable ? (
+          <div className="dashboard-control-strip">
+            <div>
+              <strong>{copy("updateReady")}</strong>
+              <span>{latestAction}</span>
+            </div>
+            <Button type="button" variant="ghost" onClick={() => setView("system")}>
+              {copy("systemView")}
+            </Button>
+          </div>
+        ) : null}
 
         {attention || octoNeedsAttention || dashboardError ? (
-          <div className="dashboard-attention-panel" role="alert">
+          <Alert className="dashboard-attention-panel" variant="danger" role="alert">
             <AlertTriangle />
             <div>
               <span className="dashboard-attention-kicker">
                 {copy("runtimeStatusError")}
               </span>
-              <h2 title={attentionTitle}>{attentionTitleText}</h2>
-              <p title={attentionDetail}>{attentionDetail}</p>
+              <AlertTitle title={attentionTitle}>{attentionTitleText}</AlertTitle>
+              <AlertDescription title={attentionDetail}>{attentionDetail}</AlertDescription>
               {attentionMeta ? <small>{attentionMeta}</small> : null}
             </div>
             <Button type="button" variant="secondary" onClick={openLogs}>
               <FileJson data-icon="inline-start" />
               {copy("openLogs")}
             </Button>
-          </div>
+          </Alert>
         ) : null}
 
-        <div className="dashboard-panel">
-          <div className="dashboard-panel-head">
+        <Card>
+          <CardHeader>
             <div>
-              <h2>{copy("liveLoad")}</h2>
-              <p>{copy("liveLoadBody")}</p>
+              <CardTitle>{copy("liveLoad")}</CardTitle>
+              <CardDescription>{copy("liveLoadBody")}</CardDescription>
             </div>
-            <div className="dashboard-chart-pills">
-              <span className="dashboard-pill">{copy("lastSamples")}</span>
-            </div>
-          </div>
+            <CardAction>
+              <Badge variant="outline">{copy("lastSamples")}</Badge>
+            </CardAction>
+          </CardHeader>
           <div className="dashboard-load-summary">
             {loadMetrics.map((metric) => (
               <div className="dashboard-load-chip" key={metric.key}>
@@ -1369,51 +1475,53 @@ export function DashboardScreen({
           {dashboardError ? (
             <p className="dashboard-inline-error">{dashboardError}</p>
           ) : null}
-        </div>
+        </Card>
 
-        <div className="dashboard-panel">
-          <div className="dashboard-panel-head">
+        <Card>
+          <CardHeader>
             <div>
-              <h2>{copy("workerRuns")}</h2>
-              <p>{copy("workerRunsBody")}</p>
+              <CardTitle>{copy("workerRuns")}</CardTitle>
+              <CardDescription>{copy("workerRunsBody")}</CardDescription>
             </div>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setView("workers")}
-            >
-              {copy("openWorkerStudio")}
-            </Button>
-          </div>
-          <div className="dashboard-worker-table">
-            <div className="dashboard-worker-row dashboard-worker-row-head">
-              <span>ID</span>
-              <span>{copy("status")}</span>
-              <span>{copy("template")}</span>
-              <span>{copy("task")}</span>
-              <span>{copy("updated")}</span>
-              <span>Details</span>
-            </div>
+            <CardAction>
+              <Button type="button" variant="ghost" onClick={() => setView("workers")}>
+                {copy("openWorkerStudio")}
+              </Button>
+            </CardAction>
+          </CardHeader>
+          <CardContent>
+          <Table>
+            <TableHead>
+              <TableCell>ID</TableCell>
+              <TableCell>{copy("status")}</TableCell>
+              <TableCell>{copy("template")}</TableCell>
+              <TableCell>{copy("task")}</TableCell>
+              <TableCell>{copy("updated")}</TableCell>
+              <TableCell>Details</TableCell>
+            </TableHead>
             {recentWorkers.length === 0 ? (
-              <div className="dashboard-empty-row">
+              <div className="dashboard-empty-row dashboard-empty-row-table">
                 {copy("noRecentWorkers")}
               </div>
             ) : (
               recentWorkers.slice(0, 8).map((worker, index) => (
-                <button
+                <TableRow
+                  as="button"
                   type="button"
-                  className="dashboard-worker-row dashboard-worker-row-button"
+                  className="dashboard-worker-row-button"
                   key={worker.id ?? `${worker.updated_at}-${index}`}
                   onClick={() => setSelectedWorkerId(worker.id ?? null)}
                 >
-                  <strong>{shortId(worker.id)}</strong>
-                  <span className={statusClass(worker.status)}>
+                  <TableCell>
+                    <strong>{shortId(worker.id)}</strong>
+                  </TableCell>
+                  <TableCell className={statusClass(worker.status)}>
                     {worker.status ?? "unknown"}
-                  </span>
-                  <span>
+                  </TableCell>
+                  <TableCell>
                     {worker.template_name ?? worker.template_id ?? "-"}
-                  </span>
-                  <span
+                  </TableCell>
+                  <TableCell
                     className="dashboard-worker-task"
                     title={
                       worker.task ??
@@ -1428,17 +1536,18 @@ export function DashboardScreen({
                       worker.summary ??
                       worker.error ??
                       "-"}
-                  </span>
-                  <span>{formatTime(worker.updated_at)}</span>
-                  <span className="worker-row-open">
+                  </TableCell>
+                  <TableCell>{formatTime(worker.updated_at)}</TableCell>
+                  <TableCell className="worker-row-open">
                     <Eye />
                     Open
-                  </span>
-                </button>
+                  </TableCell>
+                </TableRow>
               ))
             )}
-          </div>
-        </div>
+          </Table>
+          </CardContent>
+        </Card>
       </section>
     );
   }
@@ -1446,12 +1555,6 @@ export function DashboardScreen({
   function renderWorkers() {
     return (
       <section className="dashboard-workers-view">
-        {renderDashboardHeader({
-          title: copy("workerTemplates"),
-          detail: copy("workerTemplatesBody"),
-          latest: latestAction,
-          latestRaw: latestActionRaw,
-        })}
         {templateError ? (
           <p className="dashboard-inline-error">{templateError}</p>
         ) : null}
@@ -1459,22 +1562,24 @@ export function DashboardScreen({
           <p className="dashboard-inline-notice">{templateNotice}</p>
         ) : null}
         <div className="worker-studio-grid">
-          <div className="dashboard-panel worker-template-list-panel">
-            <div className="dashboard-panel-head">
+          <Card className="worker-template-list-panel">
+            <CardHeader>
               <div>
-                <h2>{copy("templates")}</h2>
-                <p>workspace/workers</p>
+                <CardTitle>{copy("templates")}</CardTitle>
+                <CardDescription>workspace/workers</CardDescription>
               </div>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={startCreateTemplate}
-              >
-                <Plus data-icon="inline-start" />
-                {copy("newTemplate")}
-              </Button>
-            </div>
-            <div className="worker-template-list">
+              <CardAction>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={startCreateTemplate}
+                >
+                  <Plus data-icon="inline-start" />
+                  {copy("newTemplate")}
+                </Button>
+              </CardAction>
+            </CardHeader>
+            <CardContent className="worker-template-list">
               {templates.length === 0 ? (
                 <p className="dashboard-empty-row">
                   {copy("noWorkerTemplates")}
@@ -1496,8 +1601,8 @@ export function DashboardScreen({
                   </button>
                 ))
               )}
-            </div>
-          </div>
+            </CardContent>
+          </Card>
         </div>
       </section>
     );
@@ -1510,13 +1615,6 @@ export function DashboardScreen({
 
     return (
       <section className="dashboard-skills-view">
-        {renderDashboardHeader({
-          title: copy("skills"),
-          detail: copy("skillsBody"),
-          latest: latestAction,
-          latestRaw: latestActionRaw,
-        })}
-
         {skillError ? (
           <p className="dashboard-inline-error">{skillError}</p>
         ) : null}
@@ -1524,61 +1622,63 @@ export function DashboardScreen({
           <p className="dashboard-inline-notice">{skillNotice}</p>
         ) : null}
 
-        <div className="dashboard-panel skill-install-panel">
-          <label className="template-field">
-            <span>{copy("skillSource")}</span>
-            <input
-              value={skillSource}
-              disabled={skillSaving}
-              placeholder="skill-name, https://..., or local path"
-              onChange={(event) => setSkillSource(event.target.value)}
-            />
-          </label>
-          <label className="template-field">
-            <span>{copy("skillClawhubSite")}</span>
-            <input
-              value={skillClawhubSite}
-              disabled={skillSaving}
-              placeholder={defaultClawhubSite}
-              onChange={(event) => setSkillClawhubSite(event.target.value)}
-            />
-          </label>
-          <div className="skill-install-actions">
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={skillSaving}
-              onClick={() => void refreshSkills(selectedSkillId)}
-            >
-              <RotateCw data-icon="inline-start" />
-              {copy("refresh")}
-            </Button>
-            <Button
-              type="button"
-              variant="primary"
-              disabled={skillSaving || !skillSource.trim()}
-              onClick={() => void installSkill()}
-            >
-              <Download data-icon="inline-start" />
-              {skillSaving ? copy("installingSkill") : copy("installSkill")}
-            </Button>
-          </div>
-        </div>
+        <Card className="skill-install-panel">
+          <CardContent>
+            <label className="template-field">
+              <span>{copy("skillSource")}</span>
+              <input
+                value={skillSource}
+                disabled={skillSaving}
+                placeholder="skill-name, https://..., or local path"
+                onChange={(event) => setSkillSource(event.target.value)}
+              />
+            </label>
+            <label className="template-field">
+              <span>{copy("skillClawhubSite")}</span>
+              <input
+                value={skillClawhubSite}
+                disabled={skillSaving}
+                placeholder={defaultClawhubSite}
+                onChange={(event) => setSkillClawhubSite(event.target.value)}
+              />
+            </label>
+            <div className="skill-install-actions">
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={skillSaving}
+                onClick={() => void refreshSkills(selectedSkillId)}
+              >
+                <RotateCw data-icon="inline-start" />
+                {copy("refresh")}
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                disabled={skillSaving || !skillSource.trim()}
+                onClick={() => void installSkill()}
+              >
+                <Download data-icon="inline-start" />
+                {skillSaving ? copy("installingSkill") : copy("installSkill")}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
         <div className="skills-grid">
-          <div className="dashboard-panel skill-list-panel">
-            <div className="dashboard-panel-head">
+          <Card className="skill-list-panel">
+            <CardHeader>
               <div>
-                <h2>{copy("installedSkills")}</h2>
-                <p>workspace/skills</p>
+                <CardTitle>{copy("installedSkills")}</CardTitle>
+                <CardDescription>workspace/skills</CardDescription>
               </div>
-              <div className="skill-summary-pills" aria-label="Skill summary">
-                <span className="dashboard-pill">{skills.length} total</span>
-                <span className="dashboard-pill">{enabledSkillCount} enabled</span>
-                <span className="dashboard-pill">{readySkillCount} ready</span>
-              </div>
-            </div>
-            <div className="skill-list">
+              <CardAction className="skill-summary-pills" aria-label="Skill summary">
+                <Badge variant="outline">{skills.length} total</Badge>
+                <Badge variant="outline">{enabledSkillCount} enabled</Badge>
+                <Badge variant="success">{readySkillCount} ready</Badge>
+              </CardAction>
+            </CardHeader>
+            <CardContent className="skill-list">
               {skills.length === 0 ? (
                 <p className="dashboard-empty-row">{copy("noSkills")}</p>
               ) : (
@@ -1600,9 +1700,9 @@ export function DashboardScreen({
                     <span>
                       <strong>{skill.name}</strong>
                     </span>
-                    <span className={skillStatusClass(skill)}>
+                    <Badge variant={skillStatusBadgeVariant(skill)}>
                       {skillStatusLabel(skill)}
-                    </span>
+                    </Badge>
                     <p>{skill.description || copy("noSkillDescription")}</p>
                     <div className="skill-card-meta">
                       <span>{skillScopeLabel(skill.scope)}</span>
@@ -1612,10 +1712,10 @@ export function DashboardScreen({
                   </button>
                 ))
               )}
-            </div>
-          </div>
+            </CardContent>
+          </Card>
 
-          <div className="dashboard-panel skill-detail-panel">
+          <Card className="skill-detail-panel">
             {selectedSkill ? (
               <>
                 <div className="skill-detail-head">
@@ -1665,15 +1765,15 @@ export function DashboardScreen({
                 </div>
 
                 <div className="skill-badge-row">
-                  <span className={skillStatusClass(selectedSkill)}>
+                  <Badge variant={skillStatusBadgeVariant(selectedSkill)}>
                     {skillStatusLabel(selectedSkill)}
-                  </span>
-                  <span className="dashboard-pill">
+                  </Badge>
+                  <Badge variant="outline">
                     {skillScopeLabel(selectedSkill.scope)}
-                  </span>
-                  <span className="dashboard-pill">
+                  </Badge>
+                  <Badge variant="outline">
                     {skillOriginLabel(selectedSkill.origin)}
-                  </span>
+                  </Badge>
                 </div>
 
                 {selectedSkill.reasons.length > 0 ? (
@@ -1750,7 +1850,7 @@ export function DashboardScreen({
             ) : (
               <p className="dashboard-empty-row">{copy("selectSkill")}</p>
             )}
-          </div>
+          </Card>
         </div>
       </section>
     );
@@ -1760,9 +1860,9 @@ export function DashboardScreen({
   function renderConnectorPanel(name: DesktopConnectorName) {
     if (!connectorValues) {
       return (
-        <div className="dashboard-panel connector-management-panel">
+        <Card className="connector-management-panel">
           <p className="dashboard-empty-row">Loading connector settings...</p>
-        </div>
+        </Card>
       );
     }
 
@@ -1774,20 +1874,64 @@ export function DashboardScreen({
     const services = isGoogle
       ? connectorValues.googleConnectorServices
       : connectorValues.githubConnectorServices;
-    const status = isGoogle ? googleConnectorStatus : githubConnectorStatus;
+    const status =
+      (isGoogle ? googleConnectorStatus : githubConnectorStatus) ??
+      connectorStatusFromRuntimeServers(
+        name,
+        enabled,
+        services,
+        connectedMcpServers,
+      );
+    const expanded = expandedConnector === name;
+    const selectedServices = services.length
+      ? `${services.length} service${services.length === 1 ? "" : "s"} selected`
+      : "No services selected";
 
     return (
-      <div className="dashboard-panel connector-management-panel">
-        <div className="dashboard-panel-head">
-          <div>
-            <h2>{provider.label}</h2>
-            <p>{isGoogle ? copy("googleConnectorBody") : copy("githubConnectorBody")}</p>
+      <Card
+        className={cn(
+          "connector-management-panel",
+          expanded && "connector-management-panel-expanded",
+        )}
+      >
+        <button
+          type="button"
+          className="connector-management-trigger"
+          aria-expanded={expanded}
+          onClick={() =>
+            setExpandedConnector((current) => (current === name ? null : name))
+          }
+        >
+          <div className="connector-management-title-row">
+            <span
+              className={cn(
+                "connector-provider-icon",
+                isGoogle
+                  ? "connector-provider-icon-google"
+                  : "connector-provider-icon-github",
+              )}
+              aria-hidden="true"
+            >
+              {isGoogle ? "G" : <Github />}
+            </span>
+            <div className="connector-management-title">
+              <strong>{provider.label}</strong>
+              <span>
+                {isGoogle ? copy("googleConnectorBody") : copy("githubConnectorBody")}
+              </span>
+            </div>
           </div>
-          <span className={connectorStatusClass(status?.status)}>
-            {status?.status ?? "unknown"}
-          </span>
-        </div>
-        <div className="connector-management-body">
+          <div className="connector-management-summary">
+            <span>{selectedServices}</span>
+            <Badge variant={statusBadgeVariant(status?.status)}>
+              {status?.status ?? "unknown"}
+            </Badge>
+            <ChevronDown aria-hidden="true" />
+          </div>
+        </button>
+
+        {expanded ? (
+          <CardContent className="connector-management-body">
           <label className="connector-enable-row">
             <input
               checked={enabled}
@@ -1896,8 +2040,9 @@ export function DashboardScreen({
               Disconnect
             </Button>
           </div>
-        </div>
-      </div>
+          </CardContent>
+        ) : null}
+      </Card>
     );
   }
 
@@ -1909,15 +2054,16 @@ export function DashboardScreen({
 
     return (
       <section className="dashboard-connectors-view">
-        {renderDashboardHeader({
-          title: copy("connectorsTitle"),
-          detail:
-            "Configure connector accounts and apply them to the running instance.",
-          latest:
-            connectorServers.length > 0
-              ? `${connectorServers.length} connector MCP server${connectorServers.length === 1 ? "" : "s"} visible`
-              : "No connector MCP servers visible yet",
-          actions: (
+        <div className="dashboard-page-toolbar">
+          <div>
+            <strong>
+              {connectorServers.length > 0
+                ? `${connectorServers.length} connector MCP server${connectorServers.length === 1 ? "" : "s"} visible`
+                : "No connector MCP servers visible yet"}
+            </strong>
+            <span>Configure connector accounts and apply them to the running instance.</span>
+          </div>
+          <div className="dashboard-page-toolbar-actions">
             <Button
               type="button"
               variant="secondary"
@@ -1927,8 +2073,8 @@ export function DashboardScreen({
               <RotateCw data-icon="inline-start" />
               Refresh
             </Button>
-          ),
-        })}
+          </div>
+        </div>
 
         {connectorError ? (
           <p className="dashboard-inline-error">{connectorError}</p>
@@ -1942,8 +2088,11 @@ export function DashboardScreen({
           {renderConnectorPanel("github")}
         </div>
 
-        <div className="dashboard-panel system-card">
-          <h2>Runtime connector servers</h2>
+        <Card className="system-card">
+          <CardHeader>
+            <CardTitle>Runtime connector servers</CardTitle>
+          </CardHeader>
+          <CardContent>
           {connectorServers.length === 0 ? (
             <p>No connector-backed MCP servers are currently connected.</p>
           ) : (
@@ -1968,7 +2117,8 @@ export function DashboardScreen({
               ))}
             </div>
           )}
-        </div>
+          </CardContent>
+        </Card>
       </section>
     );
   }
@@ -1976,34 +2126,32 @@ export function DashboardScreen({
   function renderSystem() {
     return (
       <section className="dashboard-system-view">
-        {renderDashboardHeader({
-          title: systemTitle,
-          detail: systemDetail,
-          latest: latestAction,
-          latestRaw: latestActionRaw,
-        })}
         {attention || dashboardError ? (
-          <div className="dashboard-attention-panel" role="alert">
+          <Alert className="dashboard-attention-panel" variant="danger" role="alert">
             <AlertTriangle />
             <div>
               <span className="dashboard-attention-kicker">
                 {copy("runtimeStatusError")}
               </span>
-              <h2 title={attentionTitle}>{attentionTitleText}</h2>
-              <p title={attentionDetail}>{attentionDetail}</p>
+              <AlertTitle title={attentionTitle}>{attentionTitleText}</AlertTitle>
+              <AlertDescription title={attentionDetail}>{attentionDetail}</AlertDescription>
               {attentionMeta ? <small>{attentionMeta}</small> : null}
             </div>
             <Button type="button" variant="secondary" onClick={openLogs}>
               <FileJson data-icon="inline-start" />
               {copy("openLogs")}
             </Button>
-          </div>
+          </Alert>
         ) : null}
         <div className="system-grid">
-          <div className="dashboard-panel system-card system-card-half">
-            <h2>{copy("runtime")}</h2>
-            <p>{copy("runtimeBody")}</p>
-            <div className="system-actions">
+          <Card className="system-card system-card-half">
+            <CardHeader>
+              <div>
+                <CardTitle>{copy("runtime")}</CardTitle>
+                <CardDescription>{copy("runtimeBody")}</CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="system-actions">
               {runtimeView.state === "running" ? (
                 <>
                   <Button type="button" variant="danger" onClick={onStop}>
@@ -2031,13 +2179,17 @@ export function DashboardScreen({
                   {copy("openDashboardUrl")}
                 </Button>
               ) : null}
-            </div>
-          </div>
+            </CardContent>
+          </Card>
 
-          <div className="dashboard-panel system-card system-card-half">
-            <h2>{copy("updates")}</h2>
-            <p>{copy("updatesBody")}</p>
-            <div className="system-actions">
+          <Card className="system-card system-card-half">
+            <CardHeader>
+              <div>
+                <CardTitle>{copy("updates")}</CardTitle>
+                <CardDescription>{copy("updatesBody")}</CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="system-actions">
               <Button
                 type="button"
                 variant="primary"
@@ -2060,32 +2212,37 @@ export function DashboardScreen({
                   ? copy("installDesktopUpdate")
                   : copy("checkDesktopUpdate")}
               </Button>
-            </div>
-          </div>
+            </CardContent>
+          </Card>
 
-          <div className="dashboard-panel system-card">
-            <h2>{copy("services")}</h2>
-            <div className="service-pills">
+          <Card className="system-card">
+            <CardHeader>
+              <CardTitle>{copy("services")}</CardTitle>
+            </CardHeader>
+            <CardContent className="service-pills">
               {services.length === 0 ? (
-                <span className="dashboard-pill">
+                <Badge variant="outline">
                   {copy("noDashboardData")}
-                </span>
+                </Badge>
               ) : (
                 services.map((service) => (
-                  <span
-                    className={statusClass(service.status)}
+                  <Badge
+                    variant={statusBadgeVariant(service.status)}
                     title={service.reason}
                     key={service.id}
                   >
                     {service.name} {service.status}
-                  </span>
+                  </Badge>
                 ))
               )}
-            </div>
-          </div>
+            </CardContent>
+          </Card>
 
-          <div className="dashboard-panel system-card">
-            <h2>{copy("connectedMcpServers")}</h2>
+          <Card className="system-card">
+            <CardHeader>
+              <CardTitle>{copy("connectedMcpServers")}</CardTitle>
+            </CardHeader>
+            <CardContent>
             {connectedMcpServers.length === 0 ? (
               <p>{copy("noConnectedMcpServers")}</p>
             ) : (
@@ -2114,10 +2271,14 @@ export function DashboardScreen({
                 ))}
               </div>
             )}
-          </div>
+            </CardContent>
+          </Card>
 
-          <div className="dashboard-panel system-card">
-            <h2>{copy("recentLogs")}</h2>
+          <Card className="system-card">
+            <CardHeader>
+              <CardTitle>{copy("recentLogs")}</CardTitle>
+            </CardHeader>
+            <CardContent>
             {logs.length === 0 ? (
               <p>{copy("noLogs")}</p>
             ) : (
@@ -2130,7 +2291,8 @@ export function DashboardScreen({
                 ))}
               </div>
             )}
-          </div>
+            </CardContent>
+          </Card>
         </div>
       </section>
     );
@@ -2174,21 +2336,21 @@ export function DashboardScreen({
       "No result yet.";
 
     return (
-      <div className="worker-detail-backdrop" role="presentation">
-        <section
+      <DialogOverlay className="worker-detail-backdrop" role="presentation">
+        <DialogContent
           className="worker-detail-modal"
           role="dialog"
           aria-modal="true"
           aria-label="Worker details"
         >
-          <header className="worker-detail-header">
+          <DialogHeader className="worker-detail-header">
             <div>
               <p className="worker-detail-kicker">Worker run</p>
-              <h2>
+              <DialogTitle>
                 {selectedWorker.template_name ??
                   selectedWorker.template_id ??
                   shortId(selectedWorker.id)}
-              </h2>
+              </DialogTitle>
             </div>
             <div className="worker-detail-header-actions">
               {selectedWorkerTemplate ? (
@@ -2201,15 +2363,19 @@ export function DashboardScreen({
                   Edit template
                 </Button>
               ) : null}
-              <button
+              <Button
                 type="button"
+                aria-label="Close worker details"
+                title="Close worker details"
                 className="template-icon-button"
+                size="icon"
+                variant="outline"
                 onClick={() => setSelectedWorkerId(null)}
               >
                 <X />
-              </button>
+              </Button>
             </div>
-          </header>
+          </DialogHeader>
 
           <div className="worker-detail-summary">
             <div>
@@ -2253,7 +2419,7 @@ export function DashboardScreen({
 
           <div className="worker-detail-body">
             <section className="worker-detail-main">
-              <div className="worker-detail-section worker-detail-section-result">
+              <Card size="sm" className="worker-detail-section worker-detail-section-result">
                 <div className="worker-detail-section-head">
                   <h3>Result</h3>
                   <span>
@@ -2275,9 +2441,9 @@ export function DashboardScreen({
                 {!selectedWorker.summary && !selectedWorker.error ? (
                   <p className="worker-detail-muted">{preview}</p>
                 ) : null}
-              </div>
+              </Card>
 
-              <div className="worker-detail-section">
+              <Card size="sm" className="worker-detail-section">
                 <div className="worker-detail-section-head">
                   <h3>Action timeline</h3>
                   <span>
@@ -2300,21 +2466,21 @@ export function DashboardScreen({
                     </li>
                   ))}
                 </ol>
-              </div>
+              </Card>
 
               {outputText ? (
-                <div className="worker-detail-section">
+                <Card size="sm" className="worker-detail-section">
                   <div className="worker-detail-section-head">
                     <h3>Structured output</h3>
                     <span>JSON</span>
                   </div>
                   <pre className="worker-output-json">{outputText}</pre>
-                </div>
+                </Card>
               ) : null}
             </section>
 
             <aside className="worker-detail-side">
-              <div className="worker-detail-section">
+              <Card size="sm" className="worker-detail-section">
                 <div className="worker-detail-section-head">
                   <h3>Run context</h3>
                   <span>{shortId(selectedWorker.id)}</span>
@@ -2345,9 +2511,9 @@ export function DashboardScreen({
                     </dd>
                   </div>
                 </dl>
-              </div>
+              </Card>
 
-              <div className="worker-detail-section">
+              <Card size="sm" className="worker-detail-section">
                 <div className="worker-detail-section-head">
                   <h3>Tools used</h3>
                   <span>
@@ -2370,9 +2536,9 @@ export function DashboardScreen({
                     No tool usage was reported for this run.
                   </p>
                 )}
-              </div>
+              </Card>
 
-              <div className="worker-detail-section">
+              <Card size="sm" className="worker-detail-section">
                 <div className="worker-detail-section-head">
                   <h3>Template settings</h3>
                   {selectedWorkerTemplate ? (
@@ -2433,9 +2599,9 @@ export function DashboardScreen({
                     No template snapshot was available for this worker.
                   </p>
                 )}
-              </div>
+              </Card>
 
-              <div className="worker-detail-section">
+              <Card size="sm" className="worker-detail-section">
                 <div className="worker-detail-section-head">
                   <h3>Task</h3>
                   <FileJson />
@@ -2443,11 +2609,11 @@ export function DashboardScreen({
                 <p className="worker-detail-task">
                   {selectedWorker.task ?? "-"}
                 </p>
-              </div>
+              </Card>
             </aside>
           </div>
-        </section>
-      </div>
+        </DialogContent>
+      </DialogOverlay>
     );
   }
 
@@ -2459,117 +2625,119 @@ export function DashboardScreen({
       exit={{ opacity: 0, y: -16 }}
       transition={{ duration: 0.24 }}
     >
-      <nav className="dashboard-tabs" aria-label="Dashboard">
-        <button
-          type="button"
-          className={
-            view === "control"
-              ? "dashboard-tab dashboard-tab-active"
-              : "dashboard-tab"
-          }
-          onClick={() => setView("control")}
-        >
-          <Activity data-icon="inline-start" />
-          {copy("control")}
-        </button>
-        <button
-          type="button"
-          className={
-            view === "chat"
-              ? "dashboard-tab dashboard-tab-active"
-              : "dashboard-tab"
-          }
-          onClick={() => setView("chat")}
-        >
-          <MessageCircle data-icon="inline-start" />
-          Chat
-        </button>
-        <button
-          type="button"
-          className={
-            view === "workers"
-              ? "dashboard-tab dashboard-tab-active"
-              : "dashboard-tab"
-          }
-          onClick={() => setView("workers")}
-        >
-          <Wrench data-icon="inline-start" />
-          {copy("workers")}
-        </button>
-        <button
-          type="button"
-          className={
-            view === "skills"
-              ? "dashboard-tab dashboard-tab-active"
-              : "dashboard-tab"
-          }
-          onClick={() => setView("skills")}
-        >
-          <Puzzle data-icon="inline-start" />
-          {copy("skills")}
-        </button>
-        <button
-          type="button"
-          className={
-            view === "connectors"
-              ? "dashboard-tab dashboard-tab-active"
-              : "dashboard-tab"
-          }
-          onClick={() => setView("connectors")}
-        >
-          <Mail data-icon="inline-start" />
-          Connectors
-        </button>
-        <button
-          type="button"
-          className={
-            view === "system"
-              ? "dashboard-tab dashboard-tab-active"
-              : "dashboard-tab"
-          }
-          onClick={() => setView("system")}
-        >
-          <Settings2 data-icon="inline-start" />
-          {copy("systemView")}
-        </button>
-      </nav>
+      <div
+        className={cn(
+          "dashboard-layout",
+          sidebarCollapsed && "dashboard-layout-collapsed",
+        )}
+      >
+        <aside className="dashboard-sidebar" aria-label="Dashboard navigation">
+          <div className="dashboard-sidebar-brand">
+            <div className="dashboard-sidebar-mark">
+              <LayoutDashboard />
+            </div>
+            <div className="dashboard-sidebar-brand-copy">
+              <strong>Octopal</strong>
+              <span>Desktop</span>
+            </div>
+          </div>
 
-      <div className="dashboard-content">
-        <ChatView active={view === "chat"} installDir={installDir} />
-        {view === "control" ? renderControl() : null}
-        {view === "workers" ? renderWorkers() : null}
-        {view === "skills" ? renderSkills() : null}
-        {view === "connectors" ? renderConnectors() : null}
-        {view === "system" ? renderSystem() : null}
+          <nav className="dashboard-sidebar-nav">
+            {dashboardNavItems.map((item) => {
+              const Icon = item.icon;
+              const active = view === item.view;
+              return (
+                <button
+                  key={item.view}
+                  type="button"
+                  className={cn(
+                    "dashboard-sidebar-item",
+                    active && "dashboard-sidebar-item-active",
+                  )}
+                  title={sidebarCollapsed ? item.label : undefined}
+                  aria-label={item.label}
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => setView(item.view)}
+                >
+                  <Icon />
+                  <span className="dashboard-sidebar-label">{item.label}</span>
+                  {typeof item.count === "number" ? (
+                    <small className="dashboard-sidebar-count">
+                      {item.count}
+                    </small>
+                  ) : null}
+                </button>
+              );
+            })}
+          </nav>
+
+          <button
+            type="button"
+            className="dashboard-sidebar-collapse"
+            aria-expanded={!sidebarCollapsed}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() => setSidebarCollapsed((current) => !current)}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+            <span className="dashboard-sidebar-label">
+              {sidebarCollapsed ? "Expand" : "Collapse"}
+            </span>
+          </button>
+        </aside>
+
+        <div className="dashboard-workspace">
+          <DashboardHeader
+            title={currentNavItem.label}
+            description={currentNavItem.description}
+            octo={{
+              avatar: octoHeaderAvatar,
+              title: octoHeaderTitle,
+              detail: octoHeaderDetail,
+              state: String(displayOctoState),
+              statusClassName: statusClass(displayOctoState),
+            }}
+          />
+
+          <div className="dashboard-content">
+            <ChatView active={view === "chat"} installDir={installDir} />
+            {view === "control" ? renderControl() : null}
+            {view === "workers" ? renderWorkers() : null}
+            {view === "skills" ? renderSkills() : null}
+            {view === "connectors" ? renderConnectors() : null}
+            {view === "system" ? renderSystem() : null}
+          </div>
+        </div>
       </div>
 
       {renderWorkerDetailModal()}
 
       {editingTemplateId !== null ? (
-        <div className="template-modal-backdrop" role="presentation">
-          <section
+        <DialogOverlay className="template-modal-backdrop" role="presentation">
+          <DialogContent
             className="template-modal"
             role="dialog"
             aria-modal="true"
             aria-label={copy("editTemplate")}
           >
-            <header>
+            <DialogHeader>
               <div>
-                <h2>
+                <DialogTitle>
                   {isCreatingTemplate
                     ? copy("newTemplate")
                     : copy("editTemplate")}
-                </h2>
-                <p>{copy("focusedWorkerEditor")}</p>
+                </DialogTitle>
+                <DialogDescription>{copy("focusedWorkerEditor")}</DialogDescription>
               </div>
-              <button
+              <Button
                 type="button"
                 className="template-icon-button"
+                size="icon"
+                variant="outline"
                 onClick={() => setEditingTemplateId(null)}
               >
                 <X />
-              </button>
-            </header>
+              </Button>
+            </DialogHeader>
             <div className="template-modal-body">
               <Field label="ID">
                 <input
@@ -2710,7 +2878,7 @@ export function DashboardScreen({
                 />
               </Field>
             </div>
-            <footer>
+            <DialogFooter>
               {!isCreatingTemplate ? (
                 <Button
                   type="button"
@@ -2743,9 +2911,9 @@ export function DashboardScreen({
                       isCreatingTemplate ? "createTemplate" : "saveTemplate",
                     )}
               </Button>
-            </footer>
-          </section>
-        </div>
+            </DialogFooter>
+          </DialogContent>
+        </DialogOverlay>
       ) : null}
     </motion.section>
   );
