@@ -375,6 +375,8 @@ async def route_or_reply(
     saved_file_paths: list[str] | None = None,
     include_wakeup: bool = True,
     route_mode: str | RouteMode = RouteMode.CONVERSATION,
+    conversation_scope: str | None = None,
+    channel_context: dict[str, object] | None = None,
 ) -> str:
     """Core routing logic: decide whether to use tools or reply to user."""
     # Internal chat_id (<= 0) should not trigger typing indicators.
@@ -461,6 +463,8 @@ async def route_or_reply(
             tool_policy_summary=tool_policy_summary,
             facts=getattr(octo, "facts", None),
             reflection=getattr(octo, "reflection", None),
+            conversation_scope=conversation_scope,
+            channel_context=channel_context,
         )
         runtime_plan_context = _build_runtime_plan_context(octo, chat_id)
         messages.append(Message(role="system", content=_build_runtime_plan_guidance()))

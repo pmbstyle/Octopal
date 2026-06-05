@@ -8,6 +8,7 @@ from pathlib import Path
 from octopal.infrastructure.store.models import MemoryEntry
 from octopal.infrastructure.store.sqlite import SQLiteStore
 from octopal.runtime.memory.canon import CanonService
+from octopal.runtime.memory.service import MemoryService
 from octopal.utils import utc_now
 
 
@@ -93,6 +94,131 @@ def test_memory_chat_history_orders_by_created_at_not_uuid(tmp_path: Path) -> No
 
     rows = store.list_memory_entries_by_chat(7, limit=3)
     assert [row.content for row in rows] == ["newest", "middle", "oldest"]
+
+
+def test_recent_history_can_share_a_conversation_scope_across_chats(tmp_path: Path) -> None:
+    store = SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
+    service = MemoryService(store=store, embeddings=None, owner_id="default")
+
+    async def scenario() -> list[tuple[str, str, str]]:
+        await service.add_message(
+            "user",
+            "private setup detail",
+            {
+                "chat_id": 1,
+                "channel": "telegram",
+                "conversation_scope": "default",
+            },
+        )
+        await service.add_message(
+            "assistant",
+            "private setup acknowledged",
+            {
+                "chat_id": 1,
+                "channel": "telegram",
+                "conversation_scope": "default",
+            },
+        )
+        await service.add_message(
+            "system",
+            "internal worker result",
+            {
+                "chat_id": 2,
+                "channel": "telegram",
+                "conversation_scope": "default",
+                "worker_result": True,
+            },
+        )
+        await service.add_message(
+            "assistant",
+            "background heartbeat delivery",
+            {
+                "chat_id": 2,
+                "channel": "telegram",
+                "conversation_scope": "default",
+                "heartbeat": True,
+            },
+        )
+        await service.add_message(
+            "user",
+            "addressed group follow-up",
+            {
+                "chat_id": 2,
+                "channel": "telegram",
+                "conversation_scope": "default",
+                "chat_kind": "group",
+                "addressing_action": "respond_self",
+            },
+        )
+        return await service.get_recent_history(2, limit=10, conversation_scope="default")
+
+    history = asyncio.run(scenario())
+
+    assert [(role, content) for role, content, _created_at in history] == [
+        ("user", "private setup detail"),
+        ("assistant", "private setup acknowledged"),
+        ("user", "addressed group follow-up"),
+    ]
+
+
+def test_scoped_recent_history_orders_by_created_at_not_insert_order(tmp_path: Path) -> None:
+    store = SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
+    service = MemoryService(store=store, embeddings=None, owner_id="default")
+    base = datetime(2026, 6, 5, 10, 0, tzinfo=UTC)
+    entries = [
+        MemoryEntry(
+            id=str(uuid.uuid4()),
+            role="user",
+            content="newest",
+            embedding=None,
+            created_at=base + timedelta(minutes=2),
+            metadata={
+                "owner_id": "default",
+                "chat_id": 2,
+                "channel": "telegram",
+                "conversation_scope": "default",
+            },
+        ),
+        MemoryEntry(
+            id=str(uuid.uuid4()),
+            role="assistant",
+            content="oldest backfill",
+            embedding=None,
+            created_at=base,
+            metadata={
+                "owner_id": "default",
+                "chat_id": 1,
+                "channel": "telegram",
+                "conversation_scope": "default",
+            },
+        ),
+        MemoryEntry(
+            id=str(uuid.uuid4()),
+            role="user",
+            content="middle backfill",
+            embedding=None,
+            created_at=base + timedelta(minutes=1),
+            metadata={
+                "owner_id": "default",
+                "chat_id": 1,
+                "channel": "telegram",
+                "conversation_scope": "default",
+            },
+        ),
+    ]
+    for entry in entries:
+        store.add_memory_entry(entry)
+
+    async def scenario() -> list[tuple[str, str, str]]:
+        return await service.get_recent_history(2, limit=3, conversation_scope="default")
+
+    history = asyncio.run(scenario())
+
+    assert [(role, content) for role, content, _created_at in history] == [
+        ("assistant", "oldest backfill"),
+        ("user", "middle backfill"),
+        ("user", "newest"),
+    ]
 
 
 def test_canon_event_log_and_compaction(tmp_path: Path) -> None:

@@ -335,6 +335,17 @@ class WhatsAppRuntime:
                     confidence=decision.confidence,
                 )
                 return
+            source_context = {
+                "source_channel": "whatsapp",
+                "chat_kind": "group",
+                "addressing_action": decision.action,
+                "addressing_reason": decision.reason,
+            }
+        else:
+            source_context = {
+                "source_channel": "whatsapp",
+                "chat_kind": "private",
+            }
 
         # Immediate feedback
         if to and message_id:
@@ -356,6 +367,7 @@ class WhatsAppRuntime:
                 images=images,
                 saved_file_paths=saved_file_paths,
                 source_channel="whatsapp",
+                source_context=source_context,
             )
         update_last_message(self.settings)
         immediate = getattr(reply, "immediate", "")

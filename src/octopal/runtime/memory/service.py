@@ -174,11 +174,36 @@ class MemoryService:
         top = scored[: self.top_k]
         return [f"{entry.role}: {entry.content}" for _, entry in top]
 
-    async def get_recent_history(self, chat_id: int, limit: int = 6) -> list[tuple[str, str, str]]:
+    async def get_recent_history(
+        self,
+        chat_id: int,
+        limit: int = 6,
+        *,
+        conversation_scope: str | None = None,
+    ) -> list[tuple[str, str, str]]:
         fetch_limit = max(limit * 5, 50)
-        entries = await asyncio.to_thread(
-            self.store.list_memory_entries_by_chat, chat_id, limit=fetch_limit
-        )
+        if conversation_scope:
+            owner_fetch_limit = max(fetch_limit * 4, 200)
+            owner_entries = await asyncio.to_thread(
+                self.store.list_memory_entries_for_owner,
+                self.owner_id,
+                owner_fetch_limit,
+            )
+            entries = [
+                entry
+                for entry in owner_entries
+                if _entry_matches_conversation_scope(
+                    entry,
+                    chat_id=chat_id,
+                    conversation_scope=conversation_scope,
+                )
+            ]
+            entries.sort(key=lambda entry: entry.created_at, reverse=True)
+            entries = entries[:fetch_limit]
+        else:
+            entries = await asyncio.to_thread(
+                self.store.list_memory_entries_by_chat, chat_id, limit=fetch_limit
+            )
         entries = [entry for entry in entries if _is_conversational_history_entry(entry)][:limit]
         entries.reverse()
         return [(entry.role, entry.content, entry.created_at.isoformat()) for entry in entries]
@@ -217,8 +242,30 @@ def _is_conversational_history_entry(entry: MemoryEntry) -> bool:
         "planner",
         "scheduler",
         "control_plane",
+        "heartbeat",
     )
     return not any(bool(metadata.get(flag)) for flag in internal_flags)
+
+
+def _entry_matches_conversation_scope(
+    entry: MemoryEntry,
+    *,
+    chat_id: int,
+    conversation_scope: str,
+) -> bool:
+    metadata = entry.metadata or {}
+    if str(metadata.get("conversation_scope", "") or "") == conversation_scope:
+        return True
+    if metadata.get("chat_id") == chat_id:
+        return True
+    channel = str(metadata.get("channel", "") or "").strip().lower()
+    return metadata.get("conversation_scope") is None and channel in {
+        "telegram",
+        "whatsapp",
+        "desktop",
+        "chat",
+        "a2a",
+    }
 
 
 def _extract_assertion(value: str) -> _Assertion | None:

@@ -306,6 +306,7 @@ async def _build_memory_context_bundle(
     user_text: str,
     chat_id: int,
     facts: FactsService | None = None,
+    conversation_scope: str | None = None,
 ) -> MemoryContextBundle:
     canon_context = await asyncio.to_thread(canon.get_tier1_context)
 
@@ -332,7 +333,14 @@ async def _build_memory_context_bundle(
     else:
         memory_context = await memory.get_context(user_text, exclude_chat_id=chat_id)
 
-    raw_recent_history = await memory.get_recent_history(chat_id, limit=20)
+    try:
+        raw_recent_history = await memory.get_recent_history(
+            chat_id,
+            limit=20,
+            conversation_scope=conversation_scope,
+        )
+    except TypeError:
+        raw_recent_history = await memory.get_recent_history(chat_id, limit=20)
     recent_history = [_normalize_recent_history_item(item) for item in raw_recent_history]
     if recent_history and recent_history[-1][0] == "user" and recent_history[-1][1] == user_text:
         recent_history = recent_history[:-1]
@@ -369,6 +377,8 @@ async def build_octo_prompt(
     tool_policy_summary: str = "",
     facts: FactsService | None = None,
     reflection: ReflectionService | None = None,
+    conversation_scope: str | None = None,
+    channel_context: dict[str, object] | None = None,
 ) -> list[Message]:
     """Assembles all the pieces into the final message list for the LLM."""
 
@@ -380,7 +390,14 @@ async def build_octo_prompt(
 
     datetime_prompt = _current_datetime_prompt()
 
-    memory_bundle = await _build_memory_context_bundle(memory, canon, user_text, chat_id, facts)
+    memory_bundle = await _build_memory_context_bundle(
+        memory,
+        canon,
+        user_text,
+        chat_id,
+        facts,
+        conversation_scope=conversation_scope,
+    )
 
     messages: list[Message] = [Message(role="system", content=system_prompt)]
     if persona_prompt_lines:
@@ -416,6 +433,9 @@ async def build_octo_prompt(
                 content=tool_policy_summary.strip(),
             )
         )
+    channel_context_prompt = _build_channel_context_prompt(channel_context, conversation_scope)
+    if channel_context_prompt:
+        messages.append(Message(role="system", content=channel_context_prompt))
 
     if memory_bundle.canon_context:
         messages.append(Message(role="system", content=memory_bundle.canon_context))
@@ -503,6 +523,35 @@ async def build_octo_prompt(
             messages.append(Message(role="user", content=user_text))
 
     return messages
+
+
+def _build_channel_context_prompt(
+    channel_context: dict[str, object] | None,
+    conversation_scope: str | None,
+) -> str:
+    if not channel_context and not conversation_scope:
+        return ""
+    context = dict(channel_context or {})
+    source_channel = str(context.get("source_channel", "") or "").strip()
+    chat_kind = str(context.get("chat_kind", "") or "").strip()
+    addressing_action = str(context.get("addressing_action", "") or "").strip()
+    lines = ["Current turn transport context:"]
+    if source_channel:
+        lines.append(f"- source_channel={source_channel}")
+    if chat_kind:
+        lines.append(f"- chat_kind={chat_kind}")
+    if addressing_action:
+        lines.append(f"- group_addressing_action={addressing_action}")
+    if conversation_scope:
+        lines.append(f"- conversation_scope={conversation_scope}")
+    if chat_kind == "group":
+        lines.append(
+            "This is a valid group-chat turn for this agent because the ingress addressing gate already allowed it."
+        )
+        lines.append(
+            "Treat addressed group-chat messages as part of this agent's normal conversation context; do not claim you cannot see the group chat."
+        )
+    return "\n".join(lines)
 
 
 async def build_control_plane_prompt(
