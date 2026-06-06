@@ -49,6 +49,7 @@ logger = structlog.get_logger(__name__)
 
 _discard_worker_followup_batch = _followup_pipeline._discard_worker_followup_batch
 _schedule_worker_followup_flush = _followup_pipeline._schedule_worker_followup_flush
+_SHARED_CONVERSATION_SCOPE = "default"
 
 
 def _build_user_memory_content(
@@ -92,6 +93,26 @@ def _core_callable(name: str, default: Callable[..., Any]) -> Callable[..., Any]
     return default
 
 
+def _conversation_scope_for_turn(*, track_progress: bool) -> str | None:
+    return _SHARED_CONVERSATION_SCOPE if track_progress else None
+
+
+def _memory_channel_context_metadata(source_context: dict[str, Any] | None) -> dict[str, Any]:
+    if not source_context:
+        return {}
+    allowed_keys = {
+        "source_channel",
+        "chat_kind",
+        "addressing_action",
+        "addressing_reason",
+    }
+    return {
+        key: value
+        for key, value in source_context.items()
+        if key in allowed_keys and value not in (None, "")
+    }
+
+
 class OctoMessageRuntimeMixin:
     async def handle_message(
         self,
@@ -107,6 +128,7 @@ class OctoMessageRuntimeMixin:
         include_wakeup: bool = True,
         background_delivery: bool = False,
         source_channel: str | None = None,
+        source_context: dict[str, Any] | None = None,
     ) -> OctoReply:
         correlation_token = None
         correlation_id = correlation_id_var.get()
@@ -116,6 +138,9 @@ class OctoMessageRuntimeMixin:
         trace_status = "ok"
         trace_output: dict[str, Any] | None = None
         channel = (source_channel or ("desktop" if is_ws else "chat")).strip() or "chat"
+        source_context = dict(source_context or {})
+        source_context.setdefault("source_channel", channel)
+        conversation_scope = _conversation_scope_for_turn(track_progress=track_progress)
         trace_metadata: dict[str, Any] = {
             "channel": channel,
             "message_kind": "heartbeat" if not track_progress else "user",
@@ -125,6 +150,8 @@ class OctoMessageRuntimeMixin:
             "persist_to_memory": persist_to_memory,
             "track_progress": track_progress,
             "background_delivery": background_delivery,
+            "conversation_scope": conversation_scope,
+            **_memory_channel_context_metadata(source_context),
         }
         wants_followup = False
         finalized_visible_reply = False
@@ -199,11 +226,13 @@ class OctoMessageRuntimeMixin:
                     {
                         "chat_id": chat_id,
                         "channel": channel,
+                        "conversation_scope": conversation_scope,
                         "has_images": bool(images),
                         "has_files": bool(saved_file_paths),
                         "saved_file_paths": list(saved_file_paths or []),
                         "heartbeat": not track_progress,
                         "fact_candidate": False,
+                        **_memory_channel_context_metadata(source_context),
                     },
                 )
             bootstrap_context = None
@@ -239,6 +268,8 @@ class OctoMessageRuntimeMixin:
                     "saved_file_paths": saved_file_paths,
                     "include_wakeup": include_wakeup,
                     "route_mode": route_request.mode,
+                    "conversation_scope": conversation_scope,
+                    "channel_context": source_context,
                 }
                 route_or_reply = _core_callable("route_or_reply", _default_route_or_reply)
                 while True:
@@ -332,8 +363,10 @@ class OctoMessageRuntimeMixin:
                     {
                         "chat_id": chat_id,
                         "channel": channel,
+                        "conversation_scope": conversation_scope,
                         "background_delivery": True,
                         "heartbeat": not track_progress,
+                        **_memory_channel_context_metadata(source_context),
                     },
                 )
             elif persist_to_memory and delivery.user_visible:
@@ -343,7 +376,9 @@ class OctoMessageRuntimeMixin:
                     {
                         "chat_id": chat_id,
                         "channel": channel,
+                        "conversation_scope": conversation_scope,
                         "heartbeat": not track_progress,
+                        **_memory_channel_context_metadata(source_context),
                     },
                 )
             if delivery.user_visible and track_progress:

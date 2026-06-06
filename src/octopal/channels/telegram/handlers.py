@@ -899,6 +899,17 @@ def _flush_pending_turn_factory(
                     confidence=decision.confidence,
                 )
                 return
+            source_context = {
+                "source_channel": "telegram",
+                "chat_kind": "group",
+                "addressing_action": decision.action,
+                "addressing_reason": decision.reason,
+            }
+        else:
+            source_context = {
+                "source_channel": "telegram",
+                "chat_kind": "private",
+            }
 
         # Immediate feedback
         if reply_to_message_id is not None:
@@ -919,6 +930,7 @@ def _flush_pending_turn_factory(
                     images=images,
                     saved_file_paths=saved_file_paths,
                     source_channel="telegram",
+                    source_context=source_context,
                 )
             except Exception:
                 logger.exception("Failed to handle aggregated message", chat_id=chat_id)
