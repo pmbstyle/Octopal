@@ -130,6 +130,17 @@ def test_recent_history_can_share_a_conversation_scope_across_chats(tmp_path: Pa
             },
         )
         await service.add_message(
+            "system",
+            "Observed group-chat message.\n\nSender: Alice\n\nMessage:\nShared update",
+            {
+                "chat_id": 2,
+                "channel": "telegram",
+                "conversation_scope": "default",
+                "chat_kind": "group",
+                "passive_group_observation": True,
+            },
+        )
+        await service.add_message(
             "assistant",
             "background heartbeat delivery",
             {
@@ -157,6 +168,10 @@ def test_recent_history_can_share_a_conversation_scope_across_chats(tmp_path: Pa
     assert [(role, content) for role, content, _created_at in history] == [
         ("user", "private setup detail"),
         ("assistant", "private setup acknowledged"),
+        (
+            "system",
+            "Observed group-chat message.\n\nSender: Alice\n\nMessage:\nShared update",
+        ),
         ("user", "addressed group follow-up"),
     ]
 

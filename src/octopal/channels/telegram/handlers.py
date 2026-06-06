@@ -19,6 +19,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, FSInputFile, Message, ReactionTypeEmoji
 
 from octopal.channels.group_addressing import decide_group_addressing
+from octopal.channels.group_observation import record_passive_group_observation
 from octopal.channels.telegram.access import is_allowed_chat, parse_allowed_chat_ids
 from octopal.channels.telegram.approvals import ApprovalManager
 from octopal.infrastructure.config.settings import Settings
@@ -412,16 +413,28 @@ def register_handlers(
         if not is_allowed_chat(message.chat.id, allowed_chat_ids):
             await _reject_unauthorized_message(message)
             return
-        if getattr(message.from_user, "is_bot", False):
+        if _is_duplicate_inbound_message(message.chat.id, message.message_id):
             logger.info(
-                "Skipping bot-authored Telegram inbound message",
+                "Skipping duplicate Telegram inbound message",
                 chat_id=message.chat.id,
                 message_id=message.message_id,
             )
             return
-        if _is_duplicate_inbound_message(message.chat.id, message.message_id):
+        if getattr(message.from_user, "is_bot", False):
+            if _is_telegram_group_chat(message) and not _telegram_message_from_this_bot(
+                message, bot
+            ):
+                await record_passive_group_observation(
+                    octo,
+                    channel="telegram",
+                    chat_id=message.chat.id,
+                    text=message.text or message.caption or "",
+                    sender_label=_telegram_sender_label(message),
+                    addressing_action="observe_bot",
+                    addressing_reason="bot-authored group message",
+                )
             logger.info(
-                "Skipping duplicate Telegram inbound message",
+                "Skipping bot-authored Telegram inbound message",
                 chat_id=message.chat.id,
                 message_id=message.message_id,
             )
@@ -892,8 +905,19 @@ def _flush_pending_turn_factory(
                 sender_label=str(metadata.get("sender_label", "") or "") or None,
             )
             if not decision.should_process:
+                await record_passive_group_observation(
+                    octo,
+                    channel="telegram",
+                    chat_id=chat_id,
+                    text=text,
+                    images=images,
+                    saved_file_paths=saved_file_paths,
+                    sender_label=str(metadata.get("sender_label", "") or "") or None,
+                    addressing_action=decision.action,
+                    addressing_reason=decision.reason,
+                )
                 logger.info(
-                    "Ignoring non-addressed Telegram group message",
+                    "Observed non-addressed Telegram group message",
                     chat_id=chat_id,
                     reason=decision.reason,
                     confidence=decision.confidence,
@@ -1027,6 +1051,15 @@ def _telegram_reply_targets_this_bot(message: Message, bot: Bot) -> bool:
     if bot_id is not None and reply_from_id is not None:
         return int(bot_id) == int(reply_from_id)
     return False
+
+
+def _telegram_message_from_this_bot(message: Message, bot: Bot) -> bool:
+    sender = getattr(message, "from_user", None)
+    bot_id = getattr(bot, "id", None)
+    sender_id = getattr(sender, "id", None)
+    if bot_id is None or sender_id is None:
+        return False
+    return int(bot_id) == int(sender_id)
 
 
 async def _telegram_group_command_should_run(

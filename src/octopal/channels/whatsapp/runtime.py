@@ -12,6 +12,7 @@ from typing import Any
 import structlog
 
 from octopal.channels.group_addressing import decide_group_addressing
+from octopal.channels.group_observation import record_passive_group_observation
 from octopal.channels.whatsapp.bridge import WhatsAppBridgeController
 from octopal.channels.whatsapp.ids import (
     normalize_whatsapp_chat,
@@ -328,8 +329,19 @@ class WhatsAppRuntime:
                 sender_label=str(metadata.get("sender_label", "") or "") or None,
             )
             if not decision.should_process:
+                await record_passive_group_observation(
+                    self.octo,
+                    channel="whatsapp",
+                    chat_id=chat_id,
+                    text=text,
+                    images=images,
+                    saved_file_paths=saved_file_paths,
+                    sender_label=str(metadata.get("sender_label", "") or "") or None,
+                    addressing_action=decision.action,
+                    addressing_reason=decision.reason,
+                )
                 logger.info(
-                    "Ignoring non-addressed WhatsApp group message",
+                    "Observed non-addressed WhatsApp group message",
                     chat_id=chat_id,
                     reason=decision.reason,
                     confidence=decision.confidence,
