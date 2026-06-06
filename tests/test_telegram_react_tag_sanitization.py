@@ -189,11 +189,19 @@ def test_telegram_group_message_ignored_before_reaction_or_octo_call(tmp_path) -
         async def complete(self, messages, **kwargs):
             return '{"action":"ignore","confidence":0.97,"reason":"addressed to another agent"}'
 
+    class DummyMemory:
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, str, dict]] = []
+
+        async def add_message(self, role: str, content: str, metadata: dict) -> None:
+            self.messages.append((role, content, metadata))
+
     class DummyOcto:
         provider = DummyProvider()
 
         def __init__(self) -> None:
             self.calls = 0
+            self.memory = DummyMemory()
 
         async def handle_message(
             self, text: str, chat_id: int, images=None, saved_file_paths=None, **kwargs
@@ -255,6 +263,15 @@ def test_telegram_group_message_ignored_before_reaction_or_octo_call(tmp_path) -
     assert octo.calls == 0
     assert bot.reactions == []
     assert queued_messages == []
+    assert len(octo.memory.messages) == 1
+    role, content, metadata = octo.memory.messages[0]
+    assert role == "system"
+    assert "Observed group-chat message." in content
+    assert "Bob, what is the status?" in content
+    assert metadata["passive_group_observation"] is True
+    assert metadata["conversation_scope"] == "default"
+    assert metadata["chat_kind"] == "group"
+    assert metadata["addressing_reason"] == "addressed to another agent"
 
 
 def test_telegram_plain_group_command_is_gated(tmp_path) -> None:

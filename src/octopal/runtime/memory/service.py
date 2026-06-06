@@ -234,9 +234,11 @@ def _normalize_text(value: str) -> str:
 
 
 def _is_conversational_history_entry(entry: MemoryEntry) -> bool:
+    metadata = entry.metadata or {}
+    if bool(metadata.get("passive_group_observation")):
+        return entry.role == "system"
     if entry.role not in {"user", "assistant"}:
         return False
-    metadata = entry.metadata or {}
     internal_flags = (
         "worker_result",
         "planner",
