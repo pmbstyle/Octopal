@@ -221,7 +221,15 @@ Telegram reference:
 - https://core.telegram.org/bots/features
 - https://core.telegram.org/bots/faq
 
-## 8. Supported Telegram Features
+## 8. Scheduled Messages to Groups
+
+Scheduled tasks can optionally post to a Telegram group. Add the group chat ID to
+`telegram.allowed_chat_ids`, then ask the agent to send that scheduled update to the
+group.
+
+Deployments that do not use Telegram groups do not need this setting.
+
+## 9. Supported Telegram Features
 
 ### Commands
 

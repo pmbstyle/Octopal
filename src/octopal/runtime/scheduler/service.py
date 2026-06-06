@@ -9,6 +9,7 @@ from typing import Any
 import structlog
 
 from octopal.infrastructure.store.base import Store
+from octopal.runtime.octo.scheduler_helpers import _coerce_signed_chat_id
 from octopal.runtime.workers.allowed_paths import normalize_allowed_paths
 from octopal.runtime.workers.loader import get_worker_template
 from octopal.utils import utc_now
@@ -78,6 +79,18 @@ def parse_scheduled_task_suggested_execution_mode(metadata: dict[str, Any]) -> s
     return value if value in _EXECUTION_MODES else None
 
 
+def normalize_delivery_chat_id(delivery_chat_id: Any) -> str | None:
+    if delivery_chat_id is None:
+        return None
+    raw_value = str(delivery_chat_id).strip()
+    if not raw_value:
+        return None
+    chat_id = _coerce_signed_chat_id(raw_value)
+    if chat_id is None:
+        raise ValueError("delivery_chat_id must be a non-zero integer chat ID.")
+    return str(chat_id)
+
+
 class SchedulerService:
     def __init__(self, store: Store, workspace_dir: Path) -> None:
         self.store = store
@@ -95,6 +108,7 @@ class SchedulerService:
         allowed_paths: list[str] | None = None,
         notify_user: str | None = None,
         execution_mode: str | None = None,
+        delivery_chat_id: Any = None,
     ) -> str:
         """Add or update a scheduled task."""
         normalized_frequency = self._validate_and_normalize_frequency(frequency)
@@ -118,6 +132,7 @@ class SchedulerService:
         )
         if normalized_allowed_paths and normalized_execution_mode != "worker":
             raise ValueError("allowed_paths can only be used when execution_mode=worker.")
+        normalized_delivery_chat_id = normalize_delivery_chat_id(delivery_chat_id)
         task_id = self._generate_id(name)
         metadata: dict[str, Any] = {
             "notify_user": normalized_notify_user,
@@ -125,6 +140,8 @@ class SchedulerService:
         }
         if normalized_allowed_paths:
             metadata["allowed_paths"] = normalized_allowed_paths
+        if normalized_delivery_chat_id is not None:
+            metadata[SCHEDULED_TASK_DELIVERY_CHAT_ID_KEY] = normalized_delivery_chat_id
         self.store.upsert_scheduled_task(
             task_id=task_id,
             name=name,

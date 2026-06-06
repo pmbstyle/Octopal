@@ -24,7 +24,10 @@ from octopal.runtime.octo.router import (
     route_scheduled_octo_task as _default_route_scheduled_octo_task,
 )
 from octopal.runtime.octo.runtime_config import _env_int
-from octopal.runtime.octo.scheduler_helpers import _coerce_positive_chat_id
+from octopal.runtime.octo.scheduler_helpers import (
+    _coerce_positive_chat_id,
+    _coerce_signed_chat_id,
+)
 from octopal.runtime.scheduler.service import (
     SCHEDULED_TASK_BLOCKED_REASON_KEY,
     SCHEDULED_TASK_BLOCKED_UNTIL_KEY,
@@ -223,7 +226,7 @@ class OctoScheduledRuntimeMixin:
             return 0, "notify_never"
 
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        explicit = _coerce_positive_chat_id(
+        explicit = _coerce_signed_chat_id(
             task.get("delivery_chat_id")
             or metadata.get(SCHEDULED_TASK_DELIVERY_CHAT_ID_KEY)
             or metadata.get(SCHEDULED_TASK_TARGET_CHAT_ID_KEY)
@@ -231,7 +234,7 @@ class OctoScheduledRuntimeMixin:
         if explicit is not None:
             return explicit, "task_metadata"
 
-        requested = _coerce_positive_chat_id(requested_chat_id)
+        requested = _coerce_signed_chat_id(requested_chat_id)
         if requested is not None:
             return requested, "request_context"
 
@@ -251,7 +254,7 @@ class OctoScheduledRuntimeMixin:
         *,
         requested_chat_id: int = 0,
     ) -> tuple[int | None, str]:
-        requested = _coerce_positive_chat_id(requested_chat_id)
+        requested = _coerce_signed_chat_id(requested_chat_id)
         if requested is not None:
             return requested, "request_context"
 

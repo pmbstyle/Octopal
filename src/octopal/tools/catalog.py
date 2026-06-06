@@ -21,6 +21,7 @@ from octopal.runtime.memory.memchain import (
 from octopal.runtime.metrics import read_metrics_snapshot
 from octopal.runtime.octo_status import build_octo_status
 from octopal.runtime.scheduler.service import (
+    normalize_delivery_chat_id,
     normalize_execution_mode,
     normalize_notify_user_policy,
 )
@@ -858,6 +859,25 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                         "type": "string",
                         "enum": ["never", "if_significant", "always"],
                         "description": "When the user should hear about this scheduled task: never, only if significant, or always.",
+                    },
+                    "delivery_chat_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional non-zero chat ID for this task's user-visible result. "
+                            "Use only when this specific schedule should deliver somewhere other "
+                            "than the default chat and the exact runtime chat ID is already known. "
+                            "Omit it to keep the normal delivery behavior. Prefer delivery_target="
+                            "current_chat for user requests to post in the same Telegram or WhatsApp "
+                            "chat where the schedule is created."
+                        ),
+                    },
+                    "delivery_target": {
+                        "type": "string",
+                        "enum": ["current_chat"],
+                        "description": (
+                            "Optional semantic delivery target. Use current_chat when the user asks "
+                            "for this scheduled task to post in the same chat where the request was made."
+                        ),
                     },
                 },
                 "required": ["name", "frequency", "task"],
@@ -2035,6 +2055,7 @@ def _tool_repair_scheduled_tasks(args, ctx) -> str:
 
 def _tool_schedule_task(args, ctx) -> str:
     try:
+        delivery_chat_id = _resolve_schedule_delivery_chat_id(args, ctx)
         task_id = ctx["octo"].scheduler.schedule_task(
             name=args["name"],
             frequency=args["frequency"],
@@ -2045,6 +2066,7 @@ def _tool_schedule_task(args, ctx) -> str:
             allowed_paths=args.get("allowed_paths"),
             notify_user=args.get("notify_user"),
             execution_mode=args.get("execution_mode"),
+            delivery_chat_id=delivery_chat_id,
         )
     except ValueError as exc:
         return f"schedule_task error: {exc}"
@@ -2056,6 +2078,7 @@ def _tool_schedule_task(args, ctx) -> str:
     notify_user = normalize_notify_user_policy(args.get("notify_user"))
     if execution_mode == "octo_control" and notify_user == "if_significant":
         notify_user = "never"
+    delivery_chat_id = normalize_delivery_chat_id(delivery_chat_id)
     allowed_paths = normalize_allowed_paths(
         args.get("allowed_paths"),
         workspace_dir=ctx["octo"].scheduler.workspace_dir,
@@ -2069,10 +2092,29 @@ def _tool_schedule_task(args, ctx) -> str:
             "frequency": args["frequency"],
             "execution_mode": execution_mode,
             "notify_user": notify_user,
+            "delivery_chat_id": delivery_chat_id,
             "allowed_paths": allowed_paths or [],
         },
         ensure_ascii=False,
     )
+
+
+def _resolve_schedule_delivery_chat_id(args: dict[str, Any], ctx: dict[str, Any]) -> Any:
+    target = str((args or {}).get("delivery_target") or "").strip()
+    explicit_chat_id = (args or {}).get("delivery_chat_id")
+    if not target:
+        return explicit_chat_id
+    if target != "current_chat":
+        raise ValueError("delivery_target must be current_chat.")
+    if explicit_chat_id is not None and str(explicit_chat_id).strip():
+        raise ValueError("delivery_target and delivery_chat_id cannot both be set.")
+    try:
+        normalized_chat_id = normalize_delivery_chat_id((ctx or {}).get("chat_id"))
+    except ValueError:
+        normalized_chat_id = None
+    if normalized_chat_id is None:
+        raise ValueError("delivery_target=current_chat requires an active chat context.")
+    return normalized_chat_id
 
 
 def _tool_gateway_status(args, ctx) -> str:

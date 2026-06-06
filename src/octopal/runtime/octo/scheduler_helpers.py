@@ -21,3 +21,11 @@ def _coerce_positive_chat_id(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return chat_id if chat_id > 0 else None
+
+
+def _coerce_signed_chat_id(value: Any) -> int | None:
+    try:
+        chat_id = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return chat_id if chat_id != 0 else None

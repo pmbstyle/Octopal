@@ -1418,6 +1418,58 @@ async def test_internal_worker_followup_binds_item_correlation(monkeypatch):
     assert sent_messages == [(123, "Готово.")]
 
 
+@pytest.mark.asyncio
+async def test_internal_worker_followup_allows_negative_channel_chat_id(monkeypatch):
+    monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
+    monkeypatch.setattr(octo_core, "_QUEUE_IDLE_TIMEOUT_SECONDS", 0.01)
+    octo_core._WORKER_FOLLOWUP_BATCHES.clear()
+
+    sent_messages = []
+
+    class DummyMemory:
+        async def add_message(self, role, text, metadata):
+            return None
+
+    async def _send(chat_id, text):
+        sent_messages.append((chat_id, text))
+
+    async def _route_worker_results_back_to_octo(_octo, _chat_id, _worker_results):
+        return "Готово."
+
+    monkeypatch.setattr(
+        octo_core,
+        "route_worker_results_back_to_octo",
+        _route_worker_results_back_to_octo,
+    )
+
+    octo = Octo(
+        approvals=None,
+        memory=DummyMemory(),
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+        internal_send=_send,
+    )
+
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait(
+        (
+            "worker-1",
+            "finish task",
+            WorkerResult(status="completed", summary="done"),
+            "negative-chat-correlation",
+            "always",
+        )
+    )
+
+    await octo_core._internal_worker(octo, -1001234567890, queue)
+    await asyncio.sleep(0.05)
+
+    assert sent_messages == [(-1001234567890, "Готово.")]
+
+
 def test_octo_does_not_have_web_fetch():
     from octopal.runtime.octo.router import _get_octo_tools
 
