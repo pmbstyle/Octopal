@@ -492,8 +492,9 @@ async def _internal_worker(octo: Any, chat_id: int, queue: asyncio.Queue) -> Non
                     result=result,
                     correlation_id=correlation_id,
                 )
-            # System/internal chat (chat_id <= 0) should never emit user-facing follow-ups.
-            elif chat_id <= 0:
+            # System/internal chat (chat_id == 0) should never emit user-facing follow-ups.
+            # Negative chat IDs are valid for channels such as Telegram groups.
+            elif chat_id == 0:
                 logger.info("Skipping user follow-up for internal chat", chat_id=chat_id)
             elif octo.should_suppress_channel_followups(correlation_id):
                 octo.clear_pending_conversational_closure(correlation_id)
@@ -559,7 +560,7 @@ def _sync_runtime_plan_with_worker_result(
     try:
         step = PlanRunService(store).update_worker_step_result(
             worker_run_id=normalized_worker_id,
-            chat_id=chat_id if chat_id > 0 else None,
+            chat_id=chat_id if chat_id != 0 else None,
             result_status=str(getattr(result, "status", "completed") or "completed"),
             summary=str(getattr(result, "summary", "") or ""),
             output=getattr(result, "output", None),
@@ -626,7 +627,7 @@ async def _route_instruction_request_to_octo(
             reason=decision.reason,
         )
         return
-    if chat_id <= 0:
+    if chat_id == 0:
         logger.info(
             "Skipping user-visible worker instruction follow-up for internal chat",
             chat_id=chat_id,

@@ -11,7 +11,10 @@ import pytest
 from octopal.runtime.octo import core as octo_core
 from octopal.runtime.octo import router as octo_router
 from octopal.runtime.octo.core import Octo
-from octopal.runtime.scheduler.service import SchedulerService
+from octopal.runtime.scheduler.service import (
+    SCHEDULED_TASK_DELIVERY_CHAT_ID_KEY,
+    SchedulerService,
+)
 from octopal.runtime.workers.contracts import WorkerResult
 from octopal.tools.tools import (
     _tool_check_schedule,
@@ -168,6 +171,131 @@ def test_schedule_task_normalizes_valid_frequency(tmp_path: Path) -> None:
         "notify_user": "always",
         "execution_mode": "worker",
     }
+
+
+def test_schedule_task_accepts_explicit_group_delivery_chat_id(tmp_path: Path) -> None:
+    store = _StoreStub()
+    scheduler = SchedulerService(store=store, workspace_dir=tmp_path)
+    payload = json.loads(
+        _tool_schedule_task(
+            {
+                "name": "Group digest",
+                "frequency": "Daily at 08:00",
+                "task": "Generate digest",
+                "delivery_chat_id": "-1001234567890",
+            },
+            {"octo": SimpleNamespace(scheduler=scheduler)},
+        )
+    )
+
+    assert payload["status"] == "scheduled"
+    assert payload["delivery_chat_id"] == "-1001234567890"
+    assert store.last_upsert is not None
+    assert store.last_upsert["metadata"] == {
+        "notify_user": "if_significant",
+        "execution_mode": "octo_task",
+        SCHEDULED_TASK_DELIVERY_CHAT_ID_KEY: "-1001234567890",
+    }
+
+
+def test_schedule_task_accepts_current_chat_delivery_target(tmp_path: Path) -> None:
+    store = _StoreStub()
+    scheduler = SchedulerService(store=store, workspace_dir=tmp_path)
+    payload = json.loads(
+        _tool_schedule_task(
+            {
+                "name": "Group digest",
+                "frequency": "Daily at 08:00",
+                "task": "Generate digest",
+                "delivery_target": "current_chat",
+            },
+            {"octo": SimpleNamespace(scheduler=scheduler), "chat_id": -1001234567890},
+        )
+    )
+
+    assert payload["status"] == "scheduled"
+    assert payload["delivery_chat_id"] == "-1001234567890"
+    assert store.last_upsert is not None
+    assert store.last_upsert["metadata"] == {
+        "notify_user": "if_significant",
+        "execution_mode": "octo_task",
+        SCHEDULED_TASK_DELIVERY_CHAT_ID_KEY: "-1001234567890",
+    }
+
+
+def test_schedule_task_rejects_current_chat_delivery_target_without_chat_context(
+    tmp_path: Path,
+) -> None:
+    scheduler = SchedulerService(store=_StoreStub(), workspace_dir=tmp_path)
+
+    result = _tool_schedule_task(
+        {
+            "name": "Group digest",
+            "frequency": "Daily at 08:00",
+            "task": "Generate digest",
+            "delivery_target": "current_chat",
+        },
+        {"octo": SimpleNamespace(scheduler=scheduler), "chat_id": 0},
+    )
+
+    assert (
+        result
+        == "schedule_task error: delivery_target=current_chat requires an active chat context."
+    )
+
+
+def test_schedule_task_rejects_conflicting_delivery_target_and_chat_id(
+    tmp_path: Path,
+) -> None:
+    scheduler = SchedulerService(store=_StoreStub(), workspace_dir=tmp_path)
+
+    result = _tool_schedule_task(
+        {
+            "name": "Group digest",
+            "frequency": "Daily at 08:00",
+            "task": "Generate digest",
+            "delivery_chat_id": "-1001234567890",
+            "delivery_target": "current_chat",
+        },
+        {"octo": SimpleNamespace(scheduler=scheduler), "chat_id": -1001234567890},
+    )
+
+    assert (
+        result
+        == "schedule_task error: delivery_target and delivery_chat_id cannot both be set."
+    )
+
+
+def test_schedule_task_rejects_invalid_delivery_chat_id(tmp_path: Path) -> None:
+    scheduler = SchedulerService(store=_StoreStub(), workspace_dir=tmp_path)
+
+    result = _tool_schedule_task(
+        {
+            "name": "Group digest",
+            "frequency": "Daily at 08:00",
+            "task": "Generate digest",
+            "delivery_chat_id": "group",
+        },
+        {"octo": SimpleNamespace(scheduler=scheduler)},
+    )
+
+    assert result == "schedule_task error: delivery_chat_id must be a non-zero integer chat ID."
+
+
+def test_schedule_task_rejects_zero_delivery_chat_id(tmp_path: Path) -> None:
+    scheduler = SchedulerService(store=_StoreStub(), workspace_dir=tmp_path)
+
+    result = _tool_schedule_task(
+        {
+            "name": "Group digest",
+            "frequency": "Daily at 08:00",
+            "task": "Generate digest",
+            "delivery_chat_id": 0,
+        },
+        {"octo": SimpleNamespace(scheduler=scheduler)},
+    )
+
+    assert result == "schedule_task error: delivery_chat_id must be a non-zero integer chat ID."
 
 
 def test_schedule_task_rejects_worker_mode_without_worker_id(tmp_path: Path) -> None:
@@ -2030,7 +2158,7 @@ async def test_octo_dispatch_due_scheduled_tasks_uses_explicit_delivery_chat(mon
                         {
                             "notify_user": "always",
                             "execution_mode": "worker",
-                            "delivery_chat_id": "456",
+                            "delivery_chat_id": "-1001234567890",
                         }
                     ),
                     "last_run_at": None,
@@ -2062,7 +2190,65 @@ async def test_octo_dispatch_due_scheduled_tasks_uses_explicit_delivery_chat(mon
     summary = await octo._dispatch_due_scheduled_tasks_once(chat_id=0, max_tasks=5)
 
     assert summary["started"] == 1
-    assert started_calls[0]["chat_id"] == 456
+    assert started_calls[0]["chat_id"] == -1001234567890
+
+
+@pytest.mark.asyncio
+async def test_octo_dispatch_due_scheduled_tasks_does_not_default_to_group_delivery(monkeypatch):
+    started_calls = []
+    scheduler = SchedulerService(
+        store=_StoreStub(
+            tasks=[
+                {
+                    "id": "daily_digest",
+                    "name": "Daily Digest",
+                    "description": "Build digest",
+                    "frequency": "Every 30 minutes",
+                    "worker_id": "writer",
+                    "task_text": "Generate digest",
+                    "inputs_json": "{}",
+                    "metadata_json": json.dumps(
+                        {"notify_user": "always", "execution_mode": "worker"}
+                    ),
+                    "last_run_at": None,
+                    "enabled": 1,
+                }
+            ]
+        ),
+        workspace_dir=Path("."),
+    )
+
+    async def _start_worker_async(self, **kwargs):
+        started_calls.append(kwargs)
+        return {"status": "started", "run_id": "run-1", "worker_id": "run-1"}
+
+    monkeypatch.setattr(octo_core.Octo, "_start_worker_async", _start_worker_async)
+
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=Path(".")),
+        scheduler=scheduler,
+    )
+    octo._scheduled_delivery_chat_ids = [-1001234567890]
+
+    summary = await octo._dispatch_due_scheduled_tasks_once(chat_id=0, max_tasks=5)
+
+    assert summary == {
+        "due_count": 1,
+        "attempted": 0,
+        "started": 0,
+        "completed": 0,
+        "duplicates": 0,
+        "rejected_by_policy": 1,
+        "policy_reasons": {"missing_delivery_target": 1},
+        "errors": 0,
+    }
+    assert started_calls == []
 
 
 @pytest.mark.asyncio
