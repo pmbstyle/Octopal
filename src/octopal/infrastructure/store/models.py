@@ -140,6 +140,29 @@ class OctoDiaryEntryRecord(BaseModel):
     created_at: datetime
 
 
+class OperationalMemoryItemRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    owner_id: str
+    chat_id: int | None = None
+    kind: str
+    statement: str
+    next_action: str | None = None
+    status: str
+    priority: int = 2
+    confidence: float = 0.5
+    source_kind: str | None = None
+    source_ref: str | None = None
+    plan_run_id: str | None = None
+    plan_step_id: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None = None
+
+
 class PlanRunRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 

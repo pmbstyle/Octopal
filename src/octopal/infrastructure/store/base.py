@@ -10,6 +10,7 @@ from octopal.infrastructure.store.models import (
     MemoryFactRecord,
     MemoryFactSourceRecord,
     OctoDiaryEntryRecord,
+    OperationalMemoryItemRecord,
     PermitRecord,
     PlanEventRecord,
     PlanRunRecord,
@@ -123,6 +124,37 @@ class Store(Protocol):
         chat_id: int | None = None,
         limit: int = 20,
     ) -> list[OctoDiaryEntryRecord]: ...
+
+    def upsert_operational_memory_item(self, record: OperationalMemoryItemRecord) -> None: ...
+
+    def list_operational_memory_items(
+        self,
+        owner_id: str,
+        *,
+        chat_id: int | None = None,
+        statuses: list[str] | None = None,
+        kinds: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[OperationalMemoryItemRecord]: ...
+
+    def update_operational_memory_item(
+        self,
+        item_id: str,
+        *,
+        status: str | None = None,
+        plan_run_id: str | None = None,
+        plan_step_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        resolved_at: datetime | None = None,
+    ) -> None: ...
+
+    def resolve_operational_memory_items_for_plan(
+        self,
+        plan_run_id: str,
+        *,
+        status: str,
+        resolved_at: datetime,
+    ) -> int: ...
 
     def create_plan_run(self, run: PlanRunRecord, steps: list[PlanStepRecord]) -> None: ...
 

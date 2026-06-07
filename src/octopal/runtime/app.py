@@ -11,6 +11,7 @@ from octopal.infrastructure.providers.openai_embeddings import OpenAIEmbeddingsP
 from octopal.infrastructure.store.sqlite import SQLiteStore
 from octopal.runtime.memory.canon import CanonService
 from octopal.runtime.memory.facts import FactsService
+from octopal.runtime.memory.operational import OperationalMemoryService
 from octopal.runtime.memory.reflection import ReflectionService
 from octopal.runtime.memory.service import MemoryService
 from octopal.runtime.octo.core import Octo
@@ -66,6 +67,11 @@ def build_octo(settings: Settings) -> Octo:
         max_chars=settings.memory_max_chars,
         facts=facts,
     )
+    operational_memory = OperationalMemoryService(
+        store=store,
+        provider=provider,
+        owner_id=settings.memory_owner_id,
+    )
     canon = CanonService(
         workspace_dir=settings.workspace_dir,
         store=store,
@@ -91,6 +97,7 @@ def build_octo(settings: Settings) -> Octo:
         memory=memory,
         canon=canon,
         facts=facts,
+        operational_memory=operational_memory,
         reflection=reflection,
         scheduler=scheduler,
         mcp_manager=mcp_manager,

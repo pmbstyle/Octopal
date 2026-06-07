@@ -113,6 +113,36 @@ def _memory_channel_context_metadata(source_context: dict[str, Any] | None) -> d
     }
 
 
+def _schedule_operational_memory_extraction(
+    octo: Any,
+    *,
+    chat_id: int,
+    user_message: str,
+    assistant_message: str,
+    channel: str | None,
+    conversation_scope: str | None,
+    correlation_id: str | None,
+) -> None:
+    service = getattr(octo, "operational_memory", None)
+    if service is None or chat_id == 0:
+        return
+
+    async def _run() -> None:
+        try:
+            await service.extract_and_store_turn(
+                chat_id=chat_id,
+                user_message=user_message,
+                assistant_message=assistant_message,
+                channel=channel,
+                conversation_scope=conversation_scope,
+                source_ref=correlation_id,
+            )
+        except Exception:
+            logger.debug("Operational memory extraction task failed", chat_id=chat_id, exc_info=True)
+
+    asyncio.create_task(_run())
+
+
 class OctoMessageRuntimeMixin:
     async def handle_message(
         self,
@@ -380,6 +410,16 @@ class OctoMessageRuntimeMixin:
                         "heartbeat": not track_progress,
                         **_memory_channel_context_metadata(source_context),
                     },
+                )
+            if delivery.user_visible and track_progress:
+                _schedule_operational_memory_extraction(
+                    self,
+                    chat_id=chat_id,
+                    user_message=text,
+                    assistant_message=delivery.text,
+                    channel=channel,
+                    conversation_scope=conversation_scope,
+                    correlation_id=correlation_id,
                 )
             if delivery.user_visible and track_progress:
                 await self.emit_ws_chat_event(

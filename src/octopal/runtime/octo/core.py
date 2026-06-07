@@ -21,6 +21,7 @@ from octopal.infrastructure.providers.base import InferenceProvider
 from octopal.infrastructure.store.base import Store
 from octopal.runtime.memory.canon import CanonService
 from octopal.runtime.memory.facts import FactsService
+from octopal.runtime.memory.operational import OperationalMemoryService
 from octopal.runtime.memory.reflection import ReflectionService
 from octopal.runtime.memory.service import MemoryService
 from octopal.runtime.octo import (
@@ -157,6 +158,7 @@ class Octo(
     memory: MemoryService
     canon: CanonService
     facts: FactsService | None = None
+    operational_memory: OperationalMemoryService | None = None
     reflection: ReflectionService | None = None
     scheduler: SchedulerService | None = None
     mcp_manager: MCPManager | None = None
