@@ -17,6 +17,7 @@ from octopal.infrastructure.store.models import (
     MemoryFactRecord,
     MemoryFactSourceRecord,
     OctoDiaryEntryRecord,
+    OperationalMemoryItemRecord,
     PermitRecord,
     PlanEventRecord,
     PlanRunRecord,
@@ -237,6 +238,32 @@ class SQLiteStore(Store):
             CREATE INDEX IF NOT EXISTS ix_octo_diary_entries_owner_chat_created
                 ON octo_diary_entries (owner_id, chat_id, created_at DESC);
 
+            CREATE TABLE IF NOT EXISTS operational_memory_items (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                chat_id INTEGER,
+                kind TEXT NOT NULL,
+                statement TEXT NOT NULL,
+                next_action TEXT,
+                status TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 2,
+                confidence REAL NOT NULL,
+                source_kind TEXT,
+                source_ref TEXT,
+                plan_run_id TEXT,
+                plan_step_id TEXT,
+                evidence_json TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                resolved_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_operational_memory_owner_chat_status
+                ON operational_memory_items (owner_id, chat_id, status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_operational_memory_plan
+                ON operational_memory_items (plan_run_id, status);
+
             CREATE TABLE IF NOT EXISTS chat_state (
                 chat_id INTEGER PRIMARY KEY,
                 bootstrapped_at TEXT,
@@ -399,6 +426,34 @@ class SQLiteStore(Store):
                 """)
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_octo_diary_entries_owner_chat_created ON octo_diary_entries (owner_id, chat_id, created_at DESC)"
+            )
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS operational_memory_items (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    chat_id INTEGER,
+                    kind TEXT NOT NULL,
+                    statement TEXT NOT NULL,
+                    next_action TEXT,
+                    status TEXT NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 2,
+                    confidence REAL NOT NULL,
+                    source_kind TEXT,
+                    source_ref TEXT,
+                    plan_run_id TEXT,
+                    plan_step_id TEXT,
+                    evidence_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    resolved_at TEXT
+                )
+                """)
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_operational_memory_owner_chat_status ON operational_memory_items (owner_id, chat_id, status, updated_at DESC)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_operational_memory_plan ON operational_memory_items (plan_run_id, status)"
             )
             self._conn.commit()
         except sqlite3.OperationalError:
@@ -1134,6 +1189,129 @@ class SQLiteStore(Store):
             )
         return [self._row_to_octo_diary_entry(row) for row in cursor.fetchall()]
 
+    def upsert_operational_memory_item(self, record: OperationalMemoryItemRecord) -> None:
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO operational_memory_items (
+                id, owner_id, chat_id, kind, statement, next_action, status, priority,
+                confidence, source_kind, source_ref, plan_run_id, plan_step_id,
+                evidence_json, metadata_json, created_at, updated_at, resolved_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.id,
+                record.owner_id,
+                record.chat_id,
+                record.kind,
+                record.statement,
+                record.next_action,
+                record.status,
+                int(record.priority),
+                float(record.confidence),
+                record.source_kind,
+                record.source_ref,
+                record.plan_run_id,
+                record.plan_step_id,
+                _safe_json_dumps(record.evidence),
+                _safe_json_dumps(record.metadata),
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                record.resolved_at.isoformat() if record.resolved_at else None,
+            ),
+        )
+        self._conn.commit()
+
+    def list_operational_memory_items(
+        self,
+        owner_id: str,
+        *,
+        chat_id: int | None = None,
+        statuses: list[str] | None = None,
+        kinds: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[OperationalMemoryItemRecord]:
+        clauses = ["owner_id = ?"]
+        params: list[Any] = [owner_id]
+        if chat_id is not None:
+            clauses.append("(chat_id = ? OR chat_id IS NULL)")
+            params.append(chat_id)
+        normalized_statuses = [str(item).strip() for item in (statuses or []) if str(item).strip()]
+        if normalized_statuses:
+            placeholders = ", ".join("?" for _ in normalized_statuses)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(normalized_statuses)
+        normalized_kinds = [str(item).strip() for item in (kinds or []) if str(item).strip()]
+        if normalized_kinds:
+            placeholders = ", ".join("?" for _ in normalized_kinds)
+            clauses.append(f"kind IN ({placeholders})")
+            params.extend(normalized_kinds)
+        params.append(max(1, int(limit)))
+        cursor = self._conn.execute(
+            f"""
+            SELECT * FROM operational_memory_items
+            WHERE {' AND '.join(clauses)}
+            ORDER BY priority DESC, updated_at DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        return [self._row_to_operational_memory_item(row) for row in cursor.fetchall()]
+
+    def update_operational_memory_item(
+        self,
+        item_id: str,
+        *,
+        status: str | None = None,
+        plan_run_id: str | None = None,
+        plan_step_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        resolved_at: datetime | None = None,
+    ) -> None:
+        updates = ["updated_at = ?"]
+        params: list[Any] = [utc_now().isoformat()]
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if plan_run_id is not None:
+            updates.append("plan_run_id = ?")
+            params.append(plan_run_id)
+        if plan_step_id is not None:
+            updates.append("plan_step_id = ?")
+            params.append(plan_step_id)
+        if metadata is not None:
+            updates.append("metadata_json = ?")
+            params.append(_safe_json_dumps(metadata))
+        if resolved_at is not None:
+            updates.append("resolved_at = ?")
+            params.append(resolved_at.isoformat())
+        params.append(item_id)
+        self._conn.execute(
+            f"UPDATE operational_memory_items SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        self._conn.commit()
+
+    def resolve_operational_memory_items_for_plan(
+        self,
+        plan_run_id: str,
+        *,
+        status: str,
+        resolved_at: datetime,
+    ) -> int:
+        resolved_value = None if status == "blocked" else resolved_at.isoformat()
+        cursor = self._conn.execute(
+            """
+            UPDATE operational_memory_items
+            SET status = ?, resolved_at = ?, updated_at = ?
+            WHERE plan_run_id = ?
+              AND status IN ('active', 'in_progress', 'blocked')
+            """,
+            (status, resolved_value, utc_now().isoformat(), plan_run_id),
+        )
+        self._conn.commit()
+        return int(cursor.rowcount or 0)
+
     def create_plan_run(self, run: PlanRunRecord, steps: list[PlanStepRecord]) -> None:
         with self._lock:
             self._conn.execute(
@@ -1629,6 +1807,28 @@ class SQLiteStore(Store):
             summary=row["summary"],
             details=_loads_json(row["details_json"], {}),
             created_at=_parse_dt(row["created_at"]),
+        )
+
+    def _row_to_operational_memory_item(self, row: sqlite3.Row) -> OperationalMemoryItemRecord:
+        return OperationalMemoryItemRecord(
+            id=row["id"],
+            owner_id=row["owner_id"],
+            chat_id=_row_get(row, "chat_id"),
+            kind=row["kind"],
+            statement=row["statement"],
+            next_action=_row_get(row, "next_action"),
+            status=row["status"],
+            priority=int(row["priority"]),
+            confidence=float(row["confidence"]),
+            source_kind=_row_get(row, "source_kind"),
+            source_ref=_row_get(row, "source_ref"),
+            plan_run_id=_row_get(row, "plan_run_id"),
+            plan_step_id=_row_get(row, "plan_step_id"),
+            evidence=_loads_json(row["evidence_json"], []),
+            metadata=_loads_json(row["metadata_json"], {}),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
+            resolved_at=_parse_dt(row["resolved_at"]) if row["resolved_at"] else None,
         )
 
     def _row_to_plan_run(self, row: sqlite3.Row) -> PlanRunRecord:

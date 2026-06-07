@@ -145,6 +145,14 @@ def _tool_plan_create(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         correlation_id=str(ctx.get("correlation_id") or "").strip() or None,
         metadata=dict((args or {}).get("metadata") or {}),
     )
+    owner_id = str(getattr(getattr(ctx.get("octo"), "operational_memory", None), "owner_id", "default"))
+    _link_commitments_to_plan(
+        service,
+        run.id,
+        dict((args or {}).get("metadata") or {}),
+        chat_id=run.chat_id,
+        owner_id=owner_id,
+    )
     snapshot = service.get_snapshot(run.id)
     return _json({"status": "ok", "run_id": run.id, "snapshot": snapshot})
 
@@ -228,7 +236,46 @@ def _tool_plan_update_step(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             completed_at=utc_now(),
         )
         service.append_event(run_id, "step.blocked", step_id=step_id, data={"error": error})
+        resolver = getattr(service.store, "resolve_operational_memory_items_for_plan", None)
+        if callable(resolver):
+            resolver(run_id, status="blocked", resolved_at=utc_now())
     else:
         return _json({"status": "error", "message": f"Unsupported status: {status}"})
 
     return _json({"status": "ok", "snapshot": service.get_snapshot(run_id)})
+
+
+def _link_commitments_to_plan(
+    service: PlanRunService,
+    run_id: str,
+    metadata: dict[str, Any],
+    *,
+    chat_id: int | None,
+    owner_id: str,
+) -> None:
+    raw_ids = metadata.get("commitment_ids")
+    if isinstance(raw_ids, str):
+        commitment_ids = [raw_ids]
+    elif isinstance(raw_ids, list):
+        commitment_ids = [str(item) for item in raw_ids if str(item).strip()]
+    else:
+        commitment_ids = []
+    if not commitment_ids:
+        return
+    if chat_id is None:
+        return
+    list_items = getattr(service.store, "list_operational_memory_items", None)
+    updater = getattr(service.store, "update_operational_memory_item", None)
+    if not callable(list_items) or not callable(updater):
+        return
+    active_items = list_items(
+        owner_id,
+        chat_id=chat_id,
+        statuses=["active", "in_progress", "blocked"],
+        limit=50,
+    )
+    allowed_ids = {str(item.id) for item in active_items}
+    for commitment_id in commitment_ids[:10]:
+        if commitment_id not in allowed_ids:
+            continue
+        updater(commitment_id, status="in_progress", plan_run_id=run_id)

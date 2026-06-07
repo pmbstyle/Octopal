@@ -467,12 +467,15 @@ async def route_or_reply(
             channel_context=channel_context,
         )
         runtime_plan_context = _build_runtime_plan_context(octo, chat_id)
+        operational_memory_context = _build_operational_memory_context(octo, chat_id)
         messages.append(Message(role="system", content=_build_runtime_plan_guidance()))
         a2a_context = _build_a2a_route_context(octo)
         if a2a_context:
             messages.append(Message(role="system", content=a2a_context))
         if runtime_plan_context:
             messages.append(Message(role="system", content=runtime_plan_context))
+        if operational_memory_context:
+            messages.append(Message(role="system", content=operational_memory_context))
         _log_system_prompt(messages, "route")
 
         plan = await _build_plan(provider, messages, bool(octo_tools))
@@ -2348,6 +2351,18 @@ def _build_runtime_plan_context(octo: Any, chat_id: int, *, limit: int = 3) -> s
         f"{payload}\n"
         "</runtime_plans>"
     )
+
+
+def _build_operational_memory_context(octo: Any, chat_id: int) -> str:
+    service = getattr(octo, "operational_memory", None)
+    if service is None or chat_id == 0:
+        return ""
+    try:
+        context = service.active_context(chat_id)
+    except Exception:
+        logger.debug("Failed to load operational memory context", chat_id=chat_id, exc_info=True)
+        return ""
+    return context if isinstance(context, str) else ""
 
 
 def _build_runtime_plan_guidance() -> str:

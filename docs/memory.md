@@ -13,13 +13,14 @@ The goal of the memory system is simple:
 
 ## The Short Version
 
-Octopal memory has five high-level parts:
+Octopal memory has six high-level parts:
 
 1. recent conversation memory
 2. searchable past memory
 3. durable canon files
 4. current facts derived from durable knowledge and observed history
 5. reset and continuity notes that help Octo resume work after context resets
+6. operational commitments that connect facts, decisions, promises, blockers, and follow-ups to next actions
 
 These parts work together. Not everything is loaded all the time.
 
@@ -114,6 +115,21 @@ This includes things like:
 
 This layer is not the same as canon. It is there to preserve momentum and continuity.
 
+## 6. Operational Commitments
+
+Some remembered things should affect what Octo does next.
+
+For this, Octopal keeps a small operational memory layer for active commitments, rules, blockers, and follow-ups. This layer is extracted semantically from turns by the model and then managed as structured runtime state.
+
+This layer is useful for:
+
+- tracking assistant commitments that still need action
+- preserving follow-ups without relying on raw chat recall
+- linking remembered obligations to runtime plans
+- keeping blockers visible until they are resolved or superseded
+
+Text extraction is language-agnostic. The model decides from meaning, not keyword lists. After extraction, state changes are driven by structured runtime events such as plan completion or blocker status.
+
 ## How Memory Gets Used
 
 Octo does not load all memory all the time.
@@ -125,6 +141,7 @@ Very roughly, the system works like this:
 - searchable memory is pulled in when needed
 - current facts are used when the question is about active state
 - reset continuity notes are mainly used after a context reset
+- operational commitments are surfaced when open obligations, blockers, or follow-ups may affect the next action
 
 This keeps the system practical. The point is not to remember everything equally. The point is to remember the right things at the right time.
 
@@ -137,6 +154,7 @@ A lot of memory is created automatically:
 - semantic/searchable memory
 - fact candidates inferred from memory
 - continuity notes created during context reset
+- operational commitments inferred from user-visible turns
 
 This means the system can improve recall without requiring constant manual upkeep.
 
@@ -149,6 +167,7 @@ The canon is still the place for carefully chosen long-term knowledge. That mean
 - raw chat history is not automatically the same as truth
 - temporary observations are not automatically permanent facts
 - reflection notes are not automatically canon
+- operational commitments are not automatically durable canon
 
 This separation matters. It helps Octo remember more without turning memory into a junk drawer.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -173,6 +174,7 @@ class PlanRunService:
                 current_step_id=step_id,
                 completed_at=now,
             )
+            self._resolve_linked_operational_memory(run_id, status="satisfied", resolved_at=now)
             self.append_event(run_id, "plan.completed", step_id=step_id)
             return
         self.store.update_plan_run(
@@ -202,6 +204,7 @@ class PlanRunService:
             current_step_id=step_id,
             completed_at=now,
         )
+        self._resolve_linked_operational_memory(run_id, status="blocked", resolved_at=now)
         self.append_event(run_id, "step.failed", step_id=step_id, data={"error": error})
 
     def update_worker_step_result(
@@ -272,6 +275,21 @@ class PlanRunService:
             statuses=sorted(PLAN_ACTIVE_STATUSES),
             limit=limit,
         )
+
+    def _resolve_linked_operational_memory(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        resolved_at: datetime,
+    ) -> None:
+        resolver = getattr(self.store, "resolve_operational_memory_items_for_plan", None)
+        if not callable(resolver):
+            return
+        try:
+            resolver(run_id, status=status, resolved_at=resolved_at)
+        except Exception:
+            return
 
     def _build_worker_step_output(
         self,
