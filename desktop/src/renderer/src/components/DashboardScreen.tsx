@@ -280,6 +280,25 @@ function shortId(value?: string | null): string {
   return value.includes("-") ? value.split("-")[0] : value.slice(0, 8);
 }
 
+function planBindingLabel(
+  binding?: DesktopDashboardWorkerRun["plan_binding"],
+): string {
+  if (!binding) {
+    return "-";
+  }
+  return binding.title || binding.step_id || binding.run_id || "plan step";
+}
+
+function planBindingDetail(
+  binding?: DesktopDashboardWorkerRun["plan_binding"],
+): string {
+  if (!binding) {
+    return "No plan step";
+  }
+  const parts = [binding.step_id, binding.status].filter(Boolean);
+  return parts.length > 0 ? parts.join(" / ") : "linked";
+}
+
 function statusClass(status?: string): string {
   const value = String(status ?? "").toLowerCase();
   if (["running", "started", "thinking"].includes(value)) {
@@ -1506,6 +1525,7 @@ export function DashboardScreen({
             <TableHead>
               <TableCell>ID</TableCell>
               <TableCell>{copy("status")}</TableCell>
+              <TableCell>Plan</TableCell>
               <TableCell>{copy("template")}</TableCell>
               <TableCell>{copy("task")}</TableCell>
               <TableCell>{copy("updated")}</TableCell>
@@ -1529,6 +1549,9 @@ export function DashboardScreen({
                   </TableCell>
                   <TableCell className={statusClass(worker.status)}>
                     {worker.status ?? "unknown"}
+                  </TableCell>
+                  <TableCell title={planBindingDetail(worker.plan_binding)}>
+                    {planBindingLabel(worker.plan_binding)}
                   </TableCell>
                   <TableCell>
                     {worker.template_name ?? worker.template_id ?? "-"}
@@ -2486,6 +2509,11 @@ export function DashboardScreen({
                 {selectedWorker.status ?? "unknown"}
               </strong>
             </div>
+            <div>
+              <ListChecks />
+              <span>Plan</span>
+              <strong>{planBindingDetail(selectedWorker.plan_binding)}</strong>
+            </div>
           </div>
 
           <div className="worker-detail-body">
@@ -2580,6 +2608,14 @@ export function DashboardScreen({
                         selectedWorker.template_name ??
                         "-"}
                     </dd>
+                  </div>
+                  <div>
+                    <dt>Plan step</dt>
+                    <dd>{planBindingLabel(selectedWorker.plan_binding)}</dd>
+                  </div>
+                  <div>
+                    <dt>Plan status</dt>
+                    <dd>{planBindingDetail(selectedWorker.plan_binding)}</dd>
                   </div>
                 </dl>
               </Card>

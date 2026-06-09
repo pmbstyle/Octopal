@@ -55,6 +55,14 @@ type WorkerTemplateConfig = {
   can_spawn_children?: boolean;
 };
 
+type PlanBinding = {
+  run_id?: string | null;
+  step_id?: string | null;
+  status?: string | null;
+  title?: string | null;
+  kind?: string | null;
+};
+
 type WorkerRow = {
   id?: string;
   template_name?: string;
@@ -71,6 +79,7 @@ type WorkerRow = {
   parent_worker_id?: string | null;
   spawn_depth?: number;
   template_config?: WorkerTemplateConfig | null;
+  plan_binding?: PlanBinding | null;
 };
 
 type MetricPoint = {
@@ -136,6 +145,21 @@ function hierarchyLabel(worker: WorkerRow): { text: string; isChild: boolean; de
     isChild: false,
     depth,
   };
+}
+
+function planBindingLabel(binding?: PlanBinding | null): string {
+  if (!binding) {
+    return "unbound";
+  }
+  return binding.title || binding.step_id || binding.run_id || "plan step";
+}
+
+function planBindingDetail(binding?: PlanBinding | null): string {
+  if (!binding) {
+    return "No plan step";
+  }
+  const parts = [binding.step_id, binding.status].filter(Boolean);
+  return parts.length > 0 ? parts.join(" / ") : "linked";
 }
 
 function prettifyScheduledKind(kind: string): string {
@@ -623,16 +647,18 @@ export function ControlCenterPage() {
                   <colgroup>
                     <col className="w-[112px]" />
                     <col className="w-[132px]" />
+                    <col className="w-[180px]" />
                     <col className="w-[148px]" />
                     <col className="w-[210px]" />
-                    <col className="w-[36%]" />
-                    <col className="w-[28%]" />
+                    <col className="w-[30%]" />
+                    <col className="w-[24%]" />
                     <col className="w-[180px]" />
                   </colgroup>
                   <TableHeader>
                     <TableRow className="border-white/6 hover:bg-transparent">
                       <TableHead>ID</TableHead>
                       <TableHead>Hierarchy</TableHead>
+                      <TableHead>Plan</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Template</TableHead>
                       <TableHead>Task</TableHead>
@@ -652,6 +678,7 @@ export function ControlCenterPage() {
                       const allowedTools = templateConfig?.available_tools ?? [];
                       const usedTools = worker.tools_used ?? [];
                       const usedToolCounts = countToolUsage(usedTools);
+                      const planBinding = worker.plan_binding ?? null;
 
                       return [
                         <tr
@@ -670,6 +697,16 @@ export function ControlCenterPage() {
                               {hierarchy.isChild ? <span className="text-cyan-400">↳</span> : <span className="text-[var(--text-dim)]">◇</span>}
                               <span>{hierarchy.text}</span>
                             </div>
+                          </TableCell>
+                          <TableCell title={planBinding ? `${planBindingLabel(planBinding)} (${planBindingDetail(planBinding)})` : "No plan step"}>
+                            {planBinding ? (
+                              <div className="min-w-0 space-y-1">
+                                <div className="truncate text-xs font-medium text-cyan-200">{planBindingLabel(planBinding)}</div>
+                                <div className="truncate text-[11px] text-[var(--text-dim)]">{planBindingDetail(planBinding)}</div>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-[var(--text-dim)]">unbound</span>
+                            )}
                           </TableCell>
                           <TableCell>
                             <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${statusPill(worker.status)}`}>
@@ -702,13 +739,14 @@ export function ControlCenterPage() {
                         </tr>,
                         isExpanded ? (
                           <TableRow key={`${workerKey}-details`} className="border-white/6 hover:bg-transparent">
-                            <TableCell colSpan={7} className="p-4">
+                            <TableCell colSpan={8} className="p-4">
                               <div className="space-y-4 rounded-[22px] border border-white/6 bg-black/20 p-4">
                                 <div className="flex flex-wrap gap-2 text-xs">
                                   <Badge variant="outline" className="rounded-full border-white/8 bg-white/[0.04] text-[var(--text-muted)]">Updated {formatLocalDateTime(worker.updated_at)}</Badge>
                                   <Badge variant="outline" className="rounded-full border-white/8 bg-white/[0.04] text-[var(--text-muted)]">Lineage {shortWorkerId(worker.lineage_id)}</Badge>
                                   <Badge variant="outline" className="rounded-full border-white/8 bg-white/[0.04] text-[var(--text-muted)]">Parent {worker.parent_worker_id ? shortWorkerId(worker.parent_worker_id) : "root"}</Badge>
                                   <Badge variant="outline" className="rounded-full border-white/8 bg-white/[0.04] text-[var(--text-muted)]">Depth {worker.spawn_depth ?? 0}</Badge>
+                                  <Badge variant="outline" className="rounded-full border-cyan-400/20 bg-cyan-500/10 text-cyan-100">Plan {planBindingDetail(planBinding)}</Badge>
                                 </div>
 
                                 {worker.summary ? (

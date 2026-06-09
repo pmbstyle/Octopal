@@ -2654,6 +2654,7 @@ def _build_dashboard_snapshot(settings: Settings, last: int, store: SQLiteStore 
                     "summary": w.summary or "",
                     "error": w.error or "",
                     "tools_used": w.tools_used or [],
+                    "plan_binding": _cli_worker_plan_binding_payload(w.id, store),
                 }
                 for w in recent_workers[:last]
             ],
@@ -2762,6 +2763,7 @@ def _build_dashboard_renderable(snapshot: dict, compact: bool = False) -> Align:
     recent.add_column("ID", style="dim", width=8, no_wrap=True)
     recent.add_column("S", width=3, justify="center", no_wrap=True)
     recent.add_column("Age", width=8, justify="right", no_wrap=True)
+    recent.add_column("Plan", width=14, overflow="ellipsis")
     recent.add_column("Task", overflow="ellipsis")
     recent.add_column("Current Activity", style="italic", width=25, overflow="ellipsis")
     if not compact:
@@ -2786,6 +2788,7 @@ def _build_dashboard_renderable(snapshot: dict, compact: bool = False) -> Align:
             display_id,
             _status_icon(str(row["status"])),
             _age_human(updated_at_str),
+            _format_cli_plan_binding(row.get("plan_binding")),
             _truncate(str(row["task"]), 60 if compact else 80),
             str(last_tool),
             *([ts_display] if not compact else []),
@@ -2899,6 +2902,39 @@ def _uptime_human(started_at: str | None) -> str:
         return f"{hours:02}:{minutes:02}:{seconds:02}"
     except Exception:
         return "N/A"
+
+
+def _cli_worker_plan_binding_payload(worker_id: str, store: SQLiteStore | None) -> dict[str, Any] | None:
+    if store is None or not worker_id:
+        return None
+    try:
+        step = store.get_plan_step_by_worker_run_id(worker_id)
+    except Exception:
+        logger.debug(
+            "Failed to load worker plan binding for CLI dashboard",
+            exc_info=True,
+            extra={"worker_id": worker_id},
+        )
+        return None
+    if step is None:
+        return None
+    return {
+        "run_id": step.run_id,
+        "step_id": step.step_id,
+        "status": step.status,
+        "title": step.title,
+        "kind": step.kind,
+    }
+
+
+def _format_cli_plan_binding(binding: Any) -> str:
+    if not isinstance(binding, dict):
+        return "[dim]-[/dim]"
+    step_id = str(binding.get("step_id") or "").strip()
+    status = str(binding.get("status") or "").strip()
+    if step_id and status:
+        return _truncate(f"{step_id}/{status}", 14)
+    return _truncate(step_id or status or "linked", 14)
 
 
 def _status_icon(status: str) -> str:

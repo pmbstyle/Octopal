@@ -1685,6 +1685,7 @@ def _build_snapshot(settings: Settings, store: SQLiteStore, last: int, filters: 
                     "parent_worker_id": w.parent_worker_id,
                     "lineage_id": w.lineage_id,
                     "spawn_depth": w.spawn_depth,
+                    "plan_binding": _worker_plan_binding_payload(w.id, store),
                 }
                 for w in running_nodes
             ],
@@ -2300,7 +2301,31 @@ def _serialize_recent_worker(
         "result_preview": _worker_result_preview(worker),
         "output": output,
         "template_config": template_config,
+        "plan_binding": _worker_plan_binding_payload(worker.id, store),
         "audit_timeline": _worker_audit_timeline(worker.id, store),
+    }
+
+
+def _worker_plan_binding_payload(worker_id: str, store: SQLiteStore | None) -> dict[str, Any] | None:
+    if store is None or not worker_id:
+        return None
+    try:
+        step = store.get_plan_step_by_worker_run_id(worker_id)
+    except Exception:
+        logger.debug(
+            "Failed to load worker plan binding",
+            exc_info=True,
+            extra={"worker_id": worker_id},
+        )
+        return None
+    if step is None:
+        return None
+    return {
+        "run_id": step.run_id,
+        "step_id": step.step_id,
+        "status": step.status,
+        "title": step.title,
+        "kind": step.kind,
     }
 
 

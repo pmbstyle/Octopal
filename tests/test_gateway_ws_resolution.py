@@ -19,11 +19,16 @@ from octopal.gateway.ws import (
     _handle_message,
     _is_local_ws_client,
     _resolve_ws_chat_id,
+    _serialize_worker_snapshot,
     _serialize_ws_chat_history,
     register_ws_routes,
 )
-from octopal.infrastructure.store.models import MemoryEntry
+from octopal.infrastructure.config.settings import Settings
+from octopal.infrastructure.store.models import MemoryEntry, WorkerRecord
+from octopal.infrastructure.store.sqlite import SQLiteStore
 from octopal.runtime.octo.core import OctoReply
+from octopal.runtime.plans import PlanRunService
+from octopal.utils import utc_now
 
 
 def test_resolve_ws_chat_id_returns_positive_when_no_allowlist() -> None:
@@ -76,6 +81,42 @@ def test_websocket_requires_dashboard_token_when_configured() -> None:
 
         with client.websocket_connect("/ws?token=secret-token") as ws:
             assert ws.receive_json() == {"type": "workers_snapshot", "workers": []}
+
+
+def test_serialize_worker_snapshot_exposes_plan_binding(tmp_path: Path) -> None:
+    settings = Settings(
+        TELEGRAM_BOT_TOKEN="123:abc",
+        OCTOPAL_STATE_DIR=tmp_path / "state",
+        OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
+    )
+    store = SQLiteStore(settings)
+    now = utc_now()
+    worker_id = "worker-plan-1"
+    worker = WorkerRecord(
+        id=worker_id,
+        status="running",
+        task="Patch parser",
+        granted_caps=[],
+        created_at=now,
+        updated_at=now,
+    )
+    store.create_worker(worker)
+    plan = PlanRunService(store).create_run(
+        goal="Patch parser bug",
+        chat_id=123,
+        steps=[{"id": "patch", "kind": "worker", "title": "Patch parser"}],
+    )
+    PlanRunService(store).bind_worker_step(plan.id, "patch", worker_id)
+
+    snapshot = _serialize_worker_snapshot([worker], store=store)
+
+    assert snapshot[0]["plan_binding"] == {
+        "run_id": plan.id,
+        "step_id": "patch",
+        "status": "awaiting_worker",
+        "title": "Patch parser",
+        "kind": "worker",
+    }
 
 
 def test_new_websocket_connection_takes_over_previous_session() -> None:

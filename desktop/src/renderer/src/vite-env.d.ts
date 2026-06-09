@@ -191,6 +191,13 @@ type DesktopDashboardWorkerRun = {
   spawn_depth?: number;
   result_preview?: string;
   output?: Record<string, unknown> | null;
+  plan_binding?: {
+    run_id?: string | null;
+    step_id?: string | null;
+    status?: string | null;
+    title?: string | null;
+    kind?: string | null;
+  } | null;
   template_config?: {
     model?: string | null;
     max_thinking_steps?: number | null;
