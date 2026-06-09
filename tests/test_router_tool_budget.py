@@ -13,6 +13,7 @@ from octopal.runtime.octo.delivery import (
     suppress_user_delivery,
 )
 from octopal.runtime.octo.router import (
+    RuntimeActionContract,
     _budget_tool_specs,
     _build_worker_result_payload,
     _complete_route_with_tools,
@@ -30,6 +31,7 @@ from octopal.runtime.octo.router import (
     _recover_textual_tool_call,
     _sanitize_messages_for_complete,
     _shrink_tool_specs_for_retry,
+    _update_runtime_action_contracts,
     route_or_reply,
     route_worker_results_back_to_octo,
 )
@@ -1793,6 +1795,54 @@ def test_route_forces_pending_runtime_plan_step_to_runtime_state(monkeypatch) ->
         assert octo.followup_marked == 1
 
     asyncio.run(scenario())
+
+
+def test_parallel_worker_launch_resolves_bound_runtime_action_contract() -> None:
+    contracts = [
+        RuntimeActionContract(
+            run_id="plan-1",
+            step_id="collect",
+            kind="worker",
+            title="Collect evidence",
+        ),
+        RuntimeActionContract(
+            run_id="plan-1",
+            step_id="summarize",
+            kind="worker",
+            title="Summarize evidence",
+        ),
+    ]
+    parallel_result = {
+        "status": "partial",
+        "launches": [
+            {
+                "status": "started",
+                "worker_id": "worker-1",
+                "plan_binding": {
+                    "status": "ok",
+                    "run_id": "plan-1",
+                    "step_id": "collect",
+                    "worker_run_id": "worker-1",
+                },
+            },
+            {
+                "status": "error",
+                "plan_binding": {
+                    "status": "not_found",
+                    "run_id": "plan-1",
+                    "step_id": "missing",
+                },
+            },
+        ],
+    }
+
+    remaining = _update_runtime_action_contracts(
+        contracts,
+        tool_name="start_workers_parallel",
+        tool_result=json.dumps(parallel_result),
+    )
+
+    assert remaining == [contracts[1]]
 
 
 def test_route_retries_with_fewer_tools_after_invalid_tool_payload(monkeypatch) -> None:
