@@ -141,6 +141,56 @@ def test_start_workers_parallel_launches_multiple() -> None:
     assert all(item["worker_id"] for item in result["launches"])
 
 
+def test_start_workers_parallel_rejects_tools_outside_template_allowlist() -> None:
+    templates = [
+        _template("coder", "fix code and bugs", ["fs_read"], ["filesystem_read"]),
+    ]
+
+    class _Store:
+        def list_worker_templates(self):
+            return templates
+
+        def get_worker_template(self, worker_id: str):
+            for item in templates:
+                if item.id == worker_id:
+                    return item
+            return None
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+
+        async def _start_worker_async(self, **kwargs):
+            raise AssertionError("worker launch should have been rejected")
+
+    async def _scenario() -> dict:
+        payload = await _tool_start_workers_parallel(
+            {
+                "tasks": [
+                    {
+                        "task": "Inspect parser",
+                        "worker_id": "coder",
+                        "tools": ["fs_read", "exec_run"],
+                    },
+                ],
+                "max_parallel": 1,
+            },
+            {"octo": _Octo(), "chat_id": 123},
+        )
+        return json.loads(payload)
+
+    result = asyncio.run(_scenario())
+
+    assert result["status"] == "partial"
+    assert result["started_count"] == 0
+    assert result["failed_count"] == 1
+    assert result["followup_required"] is False
+    assert result["next_best_action"] == "continue_current_plan"
+    assert result["launches"][0]["status"] == "error"
+    assert "requested tools exceed template contract" in result["launches"][0]["error"]
+    assert "exec_run" in result["launches"][0]["error"]
+
+
 def test_start_workers_parallel_forwards_allowed_paths_per_task() -> None:
     templates = [
         _template("coder", "fix code and bugs", ["fs_read"], ["filesystem_read"]),

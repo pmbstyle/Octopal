@@ -102,7 +102,7 @@ def get_worker_tools() -> list[ToolSpec]:
                     "tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Override default tools for this task (optional).",
+                        "description": "Optional subset of this template's tools for this task; cannot add tools outside the template contract.",
                     },
                     "timeout_seconds": {
                         "type": "number",
@@ -177,7 +177,7 @@ def get_worker_tools() -> list[ToolSpec]:
                     "tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Override default tools for this task (optional).",
+                        "description": "Optional subset of this template's tools for this task; cannot add tools outside the template contract.",
                     },
                     "timeout_seconds": {
                         "type": "number",
@@ -229,14 +229,18 @@ def get_worker_tools() -> list[ToolSpec]:
                 "properties": {
                     "tasks": {
                         "type": "array",
-                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, tools, timeout_seconds, required_tools, required_permissions, required_tool_calls, plan_run_id, and plan_step_id.",
+                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, a subset-only tools override, timeout_seconds, required_tools, required_permissions, required_tool_calls, plan_run_id, plan_step_id, and allowed_paths.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "worker_id": {"type": "string"},
                                 "task": {"type": "string"},
                                 "inputs": {"type": "object", "additionalProperties": True},
-                                "tools": {"type": "array", "items": {"type": "string"}},
+                                "tools": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Optional subset of the selected template's tools; cannot add tools outside the template contract.",
+                                },
                                 "timeout_seconds": {"type": "number"},
                                 "required_tools": {"type": "array", "items": {"type": "string"}},
                                 "required_permissions": {
@@ -1136,6 +1140,13 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
 
         selected_worker_id = str(resolution["worker_id"])
         template = resolution["template"]
+        tool_validation_error = _validate_requested_worker_tools(
+            requested_tools=tools,
+            template_tools=getattr(template, "available_tools", []),
+            error_prefix="start_workers_parallel error",
+        )
+        if tool_validation_error:
+            return {"index": index, "status": "error", "error": tool_validation_error}
         tool_validation_error = _validate_required_tool_calls_available(
             required_tool_calls=required_tool_calls,
             requested_tools=tools,
