@@ -221,14 +221,15 @@ def get_worker_tools() -> list[ToolSpec]:
             description=(
                 "Launch multiple explicitly selected worker tasks in parallel and return run IDs. "
                 "Each worker still gets its own scratch workspace. "
-                "For any shared project files, set allowed_paths per task with the smallest explicit path set."
+                "For any shared project files, set allowed_paths per task with the smallest explicit path set. "
+                "When a task executes a durable runtime plan step, pass plan_run_id and plan_step_id on that task."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "tasks": {
                         "type": "array",
-                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, tools, timeout_seconds, required_tools, required_permissions, required_tool_calls.",
+                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, tools, timeout_seconds, required_tools, required_permissions, required_tool_calls, plan_run_id, and plan_step_id.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -245,6 +246,14 @@ def get_worker_tools() -> list[ToolSpec]:
                                 "required_tool_calls": {
                                     "type": "array",
                                     "items": {"type": "string"},
+                                },
+                                "plan_run_id": {
+                                    "type": "string",
+                                    "description": "Optional runtime plan id when this worker executes a specific durable plan step.",
+                                },
+                                "plan_step_id": {
+                                    "type": "string",
+                                    "description": "Optional runtime plan step id to bind to the launched worker run.",
                                 },
                                 "allowed_paths": {
                                     "type": "array",
@@ -1135,6 +1144,14 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
         )
         if tool_validation_error:
             return {"index": index, "status": "error", "error": tool_validation_error}
+        plan_binding_error = _validate_plan_step_binding_request(octo=octo, args=item)
+        if plan_binding_error:
+            return {
+                "index": index,
+                "status": "error",
+                "error": plan_binding_error.get("message") or "plan binding is invalid",
+                "plan_binding": plan_binding_error,
+            }
         if child_ctx is not None:
             policy_error = _validate_child_spawn_policy(
                 octo=octo,
@@ -1166,9 +1183,20 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
                 ),
             )
 
+        status = str(launch.get("status", "started"))
+        worker_run_id = str(launch.get("worker_id") or launch.get("run_id") or "").strip()
+        plan_binding = (
+            _bind_plan_step_for_worker_launch(
+                octo=octo,
+                args=item,
+                worker_run_id=worker_run_id,
+            )
+            if status == "started"
+            else _skipped_plan_step_binding(item)
+        )
         return {
             "index": index,
-            "status": launch.get("status", "started"),
+            "status": status,
             "worker_id": launch.get("worker_id"),
             "run_id": launch.get("run_id"),
             "worker_template_id": selected_worker_id,
@@ -1177,6 +1205,7 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
             "parent_worker_id": launch.get("parent_worker_id"),
             "root_task_id": launch.get("root_task_id"),
             "spawn_depth": launch.get("spawn_depth"),
+            **({"plan_binding": plan_binding} if plan_binding else {}),
         }
 
     launches = await asyncio.gather(*[_launch(item, idx) for idx, item in enumerate(tasks)])
