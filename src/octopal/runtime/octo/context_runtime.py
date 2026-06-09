@@ -44,6 +44,13 @@ from octopal.utils import utc_now
 logger = structlog.get_logger(__name__)
 
 
+def _default_context_reset_reason(health: dict[str, Any]) -> str:
+    context_health = str(health.get("context_health", "") or "").strip().upper()
+    if context_health in {"WATCH", "RESET_SOON"}:
+        return f"context health is {context_health}"
+    return "context reset requested"
+
+
 class OctoContextRuntimeMixin:
     async def get_context_health_snapshot(self, chat_id: int) -> dict[str, Any]:
         trace_started_at_ms = now_ms()
@@ -202,7 +209,8 @@ class OctoContextRuntimeMixin:
         if mode not in {"soft", "hard"}:
             mode = "soft"
 
-        reason = str(args.get("reason", "") or "").strip() or "context overloaded"
+        raw_reason = str(args.get("reason", "") or "").strip()
+        reason = raw_reason or "context reset requested"
         confidence = _coerce_float(args.get("confidence"), default=0.8)
         confirm = bool(args.get("confirm", False))
         trace_metadata: dict[str, Any] = {
@@ -223,6 +231,9 @@ class OctoContextRuntimeMixin:
         trace_output: dict[str, Any] | None = None
         try:
             health = await self.get_context_health_snapshot(chat_id)
+            if not raw_reason:
+                reason = _default_context_reset_reason(health)
+                trace_metadata["reason"] = reason
 
             progress_rev = int(self._progress_revision_by_chat.get(chat_id, 0))
             last_reset_rev = int(self._last_reset_progress_revision_by_chat.get(chat_id, -1))

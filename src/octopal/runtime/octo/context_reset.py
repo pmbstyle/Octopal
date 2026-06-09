@@ -59,6 +59,7 @@ def render_handoff_markdown(handoff: dict[str, Any]) -> str:
     lines = [
         "# Octo Handoff",
         "",
+        f"- chat_id: {handoff.get('chat_id', '')}",
         f"- created_at: {handoff.get('created_at', '')}",
         f"- mode: {handoff.get('mode', 'soft')}",
         f"- reason: {handoff.get('reason', '')}",
@@ -95,6 +96,9 @@ def render_handoff_markdown(handoff: dict[str, Any]) -> str:
         "error_streak",
         "no_progress_turns",
         "resets_since_progress",
+        "context_health",
+        "watch_signal_count",
+        "watch_escalation_streak",
         "overload_score",
     ):
         lines.append(f"- {key}: {health.get(key, 0)}")
@@ -103,17 +107,21 @@ def render_handoff_markdown(handoff: dict[str, Any]) -> str:
 
 def append_context_audit_markdown(path: Path, handoff: dict[str, Any]) -> None:
     timestamp = str(handoff.get("created_at", ""))
+    chat_id = str(handoff.get("chat_id", ""))
     mode = str(handoff.get("mode", "soft"))
     reason = str(handoff.get("reason", ""))
     confidence = str(handoff.get("confidence", ""))
     health = handoff.get("health_snapshot") or {}
     section = (
         f"\n## {timestamp} | mode={mode}\n"
+        f"- chat_id: {chat_id}\n"
         f"- reason: {reason}\n"
         f"- confidence: {confidence}\n"
         f"- context_size_estimate: {health.get('context_size_estimate', 0)}\n"
         f"- repetition_score: {health.get('repetition_score', 0)}\n"
         f"- no_progress_turns: {health.get('no_progress_turns', 0)}\n"
+        f"- context_health: {health.get('context_health', '')}\n"
+        f"- watch_signal_count: {health.get('watch_signal_count', 0)}\n"
         f"- overload_score: {health.get('overload_score', 0)}\n"
     )
     existing = path.read_text(encoding="utf-8") if path.exists() else "# Context Reset Audit\n"
