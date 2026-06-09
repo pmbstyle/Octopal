@@ -258,6 +258,69 @@ def test_start_worker_binds_runtime_plan_step(tmp_path: Path) -> None:
     assert step.worker_run_id == "run-1"
 
 
+def test_start_worker_rejects_invalid_plan_binding_before_launch(tmp_path: Path) -> None:
+    plan_store = _sqlite_store(tmp_path)
+    template = _template(
+        "coder",
+        "Coder",
+        "Handles code refactors and bugfixes",
+        ["fs_read"],
+        ["filesystem_read"],
+    )
+    plan = PlanRunService(plan_store).create_run(
+        goal="Fix bug",
+        chat_id=123,
+        steps=[{"id": "patch", "kind": "worker", "title": "Patch code"}],
+    )
+
+    class _Store:
+        def list_worker_templates(self):
+            return [template]
+
+        def get_worker_template(self, worker_id: str):
+            return template if worker_id == template.id else None
+
+        def __getattr__(self, name: str):
+            return getattr(plan_store, name)
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+            self.launch_called = False
+
+        async def _start_worker_async(self, **kwargs):
+            self.launch_called = True
+            raise AssertionError("worker launch should be rejected before dispatch")
+
+    octo = _Octo()
+
+    async def _scenario() -> dict:
+        payload = await _tool_start_worker(
+            {
+                "task": "Fix parser bug",
+                "worker_id": "coder",
+                "plan_run_id": plan.id,
+                "plan_step_id": "missing",
+            },
+            {"octo": octo, "chat_id": 123},
+        )
+        return json.loads(payload)
+
+    result = asyncio.run(_scenario())
+    assert result["status"] == "error"
+    assert result["followup_required"] is False
+    assert result["plan_binding"] == {
+        "status": "not_found",
+        "run_id": plan.id,
+        "step_id": "missing",
+        "message": "plan step was not found",
+    }
+    assert octo.launch_called is False
+    saved_step = plan_store.get_plan_steps(plan.id)[0]
+    assert saved_step.status == "pending"
+    assert saved_step.worker_run_id is None
+
+
 def test_start_worker_does_not_bind_duplicate_skip_to_plan_step(tmp_path: Path) -> None:
     plan_store = _sqlite_store(tmp_path)
     template = _template(

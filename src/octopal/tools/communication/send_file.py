@@ -81,7 +81,7 @@ async def send_file_to_user(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         return _error("active user channel does not support file delivery")
 
     chat_id = int(ctx.get("chat_id", 0) or 0)
-    if chat_id <= 0:
+    if chat_id == 0:
         return _error("send_file_to_user requires a valid chat_id")
 
     base_dir = ctx.get("base_dir")

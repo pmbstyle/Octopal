@@ -2302,7 +2302,7 @@ def _build_a2a_route_context(octo: Any) -> str:
 
 def _build_runtime_plan_context(octo: Any, chat_id: int, *, limit: int = 3) -> str:
     store = getattr(octo, "store", None)
-    if store is None or chat_id <= 0:
+    if store is None or chat_id == 0:
         return ""
     try:
         service = PlanRunService(store)

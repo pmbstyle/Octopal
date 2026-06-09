@@ -23,7 +23,7 @@ PLAN_ACTIVE_STATUSES = {
     "awaiting_user",
 }
 PLAN_TERMINAL_STATUSES = {"completed", "failed", "cancelled", "blocked"}
-STEP_ACTIVE_STATUSES = {"running", "awaiting_worker", "awaiting_approval", "awaiting_input"}
+STEP_ACTIVE_STATUSES = {"running", "awaiting_worker", "awaiting_approval", "awaiting_user"}
 STEP_TERMINAL_STATUSES = {"completed", "failed", "skipped", "cancelled", "blocked"}
 
 
