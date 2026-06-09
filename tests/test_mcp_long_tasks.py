@@ -117,6 +117,45 @@ async def test_phone_start_schedules_result_poll_and_marks_followup(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_phone_start_schedules_result_poll_for_negative_group_chat_id(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_INITIAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(
+        mcp_long_tasks,
+        "_route_worker_results_back_to_octo_callable",
+        lambda: _route_with_text("Octo routed group phone result."),
+    )
+
+    octo = DummyOcto()
+    group_chat_id = -1001234567890
+    tracked = maybe_track_mcp_long_task(
+        octo=octo,
+        chat_id=group_chat_id,
+        correlation_id="turn-group",
+        tool_name="mcp_glm_cellphone_start_phone_task",
+        args={"query": "NASA X"},
+        result=[{"type": "text", "text": '{"task_id":"phone-group","status":"running"}'}],
+        server_id="glm_cellphone",
+        remote_tool_name="start_phone_task",
+    )
+
+    assert tracked is True
+    assert octo.marked == ["turn-group"]
+
+    await asyncio.sleep(0.01)
+
+    assert octo.mcp_manager.calls == [
+        ("glm_cellphone", "get_phone_task_status", {"task_id": "phone-group"}),
+        ("glm_cellphone", "get_phone_task_result", {"task_id": "phone-group"}),
+    ]
+    assert octo.sent == [(group_chat_id, "Octo routed group phone result.")]
+    assert any(
+        role == "assistant" and metadata.get("chat_id") == group_chat_id
+        for role, _text, metadata in octo.memory.messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_raw_mcp_status_call_schedules_result_poll(monkeypatch) -> None:
     monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_INITIAL_DELAY_SECONDS", 0)
     monkeypatch.setattr(mcp_long_tasks, "_MCP_LONG_TASK_POLL_INTERVAL_SECONDS", 0)
