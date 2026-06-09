@@ -175,6 +175,78 @@ def test_plan_tools_link_and_resolve_operational_memory(tmp_path: Path) -> None:
     assert resolved[0].resolved_at is not None
 
 
+def test_plan_tools_link_and_resolve_group_commitment_from_string_chat_id(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    now = utc_now()
+    group_chat_id = -1001234567890
+    store.upsert_operational_memory_item(
+        OperationalMemoryItemRecord(
+            id="omem-group",
+            owner_id="default",
+            chat_id=group_chat_id,
+            kind="assistant_commitment",
+            statement="Nika will inspect the group report.",
+            next_action="Inspect the group report and summarize findings.",
+            status="active",
+            priority=3,
+            confidence=0.9,
+            source_kind="turn",
+            source_ref="turn-group",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    ctx = {
+        "octo": SimpleNamespace(store=store),
+        "chat_id": str(group_chat_id),
+        "correlation_id": "turn-group",
+    }
+
+    created = json.loads(
+        _tool("plan_create").handler(
+            {
+                "goal": "Inspect group report",
+                "metadata": {"commitment_ids": ["omem-group"]},
+                "steps": [{"id": "inspect", "kind": "tool", "title": "Inspect report"}],
+            },
+            ctx,
+        )
+    )
+    active = json.loads(_tool("plan_status").handler({"active_only": True}, ctx))
+
+    linked = store.list_operational_memory_items(
+        "default",
+        chat_id=group_chat_id,
+        statuses=["in_progress"],
+        limit=10,
+    )
+    assert created["snapshot"]["run"]["chat_id"] == group_chat_id
+    assert active["count"] == 1
+    assert active["plans"][0]["id"] == created["run_id"]
+    assert linked[0].plan_run_id == created["run_id"]
+
+    _tool("plan_update_step").handler(
+        {
+            "run_id": created["run_id"],
+            "step_id": "inspect",
+            "status": "completed",
+            "output": {"summary": "Group report inspected"},
+        },
+        ctx,
+    )
+
+    resolved = store.list_operational_memory_items(
+        "default",
+        chat_id=group_chat_id,
+        statuses=["satisfied"],
+        limit=10,
+    )
+    assert len(resolved) == 1
+    assert resolved[0].resolved_at is not None
+
+
 def test_plan_tools_do_not_link_commitment_from_another_chat(tmp_path: Path) -> None:
     store = _store(tmp_path)
     now = utc_now()
@@ -213,4 +285,47 @@ def test_plan_tools_do_not_link_commitment_from_another_chat(tmp_path: Path) -> 
         limit=10,
     )
     assert len(rows) == 1
+    assert rows[0].plan_run_id is None
+
+
+def test_plan_tools_do_not_link_global_operational_memory_item(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    now = utc_now()
+    store.upsert_operational_memory_item(
+        OperationalMemoryItemRecord(
+            id="omem-global",
+            owner_id="default",
+            chat_id=None,
+            kind="assistant_commitment",
+            statement="Nika will maintain a global rollout checklist.",
+            next_action="Keep the rollout checklist current.",
+            status="active",
+            priority=3,
+            confidence=0.9,
+            source_kind="turn",
+            source_ref="turn-global",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    ctx = {"octo": SimpleNamespace(store=store), "chat_id": 42, "correlation_id": "turn-42"}
+
+    _tool("plan_create").handler(
+        {
+            "goal": "Inspect CI",
+            "metadata": {"commitment_ids": ["omem-global"]},
+            "steps": [{"id": "inspect", "kind": "tool", "title": "Inspect CI"}],
+        },
+        ctx,
+    )
+
+    rows = store.list_operational_memory_items(
+        "default",
+        chat_id=42,
+        statuses=["active"],
+        limit=10,
+    )
+    assert len(rows) == 1
+    assert rows[0].id == "omem-global"
+    assert rows[0].chat_id is None
     assert rows[0].plan_run_id is None
