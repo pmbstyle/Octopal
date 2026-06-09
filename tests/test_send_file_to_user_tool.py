@@ -13,7 +13,9 @@ class _FakeOcto:
     def __init__(self) -> None:
         self.sent: list[dict[str, object]] = []
 
-    async def internal_send_file(self, chat_id: int, file_path: str, *, caption: str | None = None) -> None:
+    async def internal_send_file(
+        self, chat_id: int, file_path: str, *, caption: str | None = None
+    ) -> None:
         self.sent.append({"chat_id": chat_id, "file_path": file_path, "caption": caption})
 
 
@@ -35,6 +37,26 @@ def test_send_file_to_user_sends_existing_workspace_file(tmp_path: Path) -> None
     assert data["source"] == "path"
     assert octo.sent == [
         {"chat_id": 42, "file_path": str(target.resolve()), "caption": "Here you go"}
+    ]
+
+
+def test_send_file_to_user_accepts_negative_group_chat_id(tmp_path: Path) -> None:
+    octo = _FakeOcto()
+    target = tmp_path / "reports" / "group.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("hello group", encoding="utf-8")
+
+    payload = asyncio.run(
+        send_file_to_user(
+            {"path": "reports/group.txt"},
+            {"octo": octo, "chat_id": -1001234567890, "base_dir": tmp_path},
+        )
+    )
+    data = json.loads(payload)
+
+    assert data["status"] == "success"
+    assert octo.sent == [
+        {"chat_id": -1001234567890, "file_path": str(target.resolve()), "caption": None}
     ]
 
 

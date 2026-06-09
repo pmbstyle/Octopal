@@ -73,7 +73,9 @@ def test_build_octo_prompt_includes_reflection_on_wakeup(tmp_path: Path) -> None
             wake_notice="You woke up after a reset.",
             reflection=reflection,
         )
-        merged = "\n".join(str(message.content) for message in messages if isinstance(message.content, str))
+        merged = "\n".join(
+            str(message.content) for message in messages if isinstance(message.content, str)
+        )
         assert "Wake-up directive after context reset:" in merged
         assert "Recent reflection relevant to this wake-up:" in merged
         assert "Resume the task." in merged
@@ -81,7 +83,8 @@ def test_build_octo_prompt_includes_reflection_on_wakeup(tmp_path: Path) -> None
     asyncio.run(scenario())
 
 
-def test_octo_context_reset_records_reflection_entry(tmp_path: Path) -> None:
+def test_octo_context_reset_records_reflection_entry(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(tmp_path / "workspace"))
     store = SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
     reflection = ReflectionService(store=store, owner_id="default")
 
@@ -117,3 +120,45 @@ def test_octo_context_reset_records_reflection_entry(tmp_path: Path) -> None:
     assert len(entries) == 1
     assert entries[0].kind == "context_reset"
     assert "Resume testing." in entries[0].summary
+    handoff_text = (tmp_path / "workspace" / "memory" / "handoff.md").read_text(encoding="utf-8")
+    assert "- chat_id: 99" in handoff_text
+    assert "- context_health: OK" in handoff_text
+
+
+def test_context_reset_default_reason_does_not_claim_overload_when_health_is_ok(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(tmp_path / "workspace"))
+    store = SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
+
+    class DummyMemory:
+        async def add_message(self, role: str, content: str, metadata: dict):
+            return None
+
+    octo = Octo(
+        provider=object(),
+        store=store,
+        policy=object(),
+        runtime=object(),
+        approvals=object(),
+        memory=DummyMemory(),
+        canon=object(),
+    )
+
+    async def scenario() -> None:
+        result = await octo.request_context_reset(
+            77,
+            {
+                "mode": "soft",
+                "goal_now": "Resume testing.",
+                "next_step": "Review the latest handoff.",
+            },
+        )
+        assert result["status"] == "reset_complete"
+        assert result["handoff"]["reason"] == "context reset requested"
+        assert result["handoff"]["health_snapshot"]["context_health"] == "OK"
+
+    asyncio.run(scenario())
+    handoff_text = (tmp_path / "workspace" / "memory" / "handoff.md").read_text(encoding="utf-8")
+    assert "- reason: context reset requested" in handoff_text
+    assert "- context_health: OK" in handoff_text

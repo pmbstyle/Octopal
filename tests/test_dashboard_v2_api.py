@@ -11,6 +11,7 @@ from octopal.infrastructure.config.models import ConnectorInstanceConfig, Octopa
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.store.models import AuditEvent, WorkerRecord
 from octopal.infrastructure.store.sqlite import SQLiteStore
+from octopal.runtime.plans import PlanRunService
 from octopal.runtime.state import (
     update_last_internal_heartbeat,
     update_last_message,
@@ -284,6 +285,51 @@ def test_dashboard_v2_workers_exposes_worker_result_details(tmp_path) -> None:
         "worker_result",
     ]
     assert "Sync finished successfully" in recent[0]["audit_timeline"][1]["data_preview"]
+
+
+def test_dashboard_v2_workers_exposes_plan_binding_for_linked_worker(tmp_path) -> None:
+    settings = Settings(
+        TELEGRAM_BOT_TOKEN="123:abc",
+        OCTOPAL_STATE_DIR=tmp_path / "state",
+        OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
+    )
+    app = build_app(settings)
+    store = SQLiteStore(settings)
+    now = utc_now()
+    worker_id = "worker-plan-1"
+    store.create_worker(
+        WorkerRecord(
+            id=worker_id,
+            status="running",
+            task="Patch parser",
+            granted_caps=[],
+            created_at=now,
+            updated_at=now,
+            template_name="Code Worker",
+        )
+    )
+    plan = PlanRunService(store).create_run(
+        goal="Patch parser bug",
+        chat_id=123,
+        steps=[{"id": "patch", "kind": "worker", "title": "Patch parser"}],
+    )
+    PlanRunService(store).bind_worker_step(plan.id, "patch", worker_id)
+    app.state.dashboard_store = store
+    client = TestClient(app)
+
+    response = client.get("/api/dashboard/v2/workers")
+    assert response.status_code == 200
+
+    workers = response.json()["workers"]
+    expected_binding = {
+        "run_id": plan.id,
+        "step_id": "patch",
+        "status": "awaiting_worker",
+        "title": "Patch parser",
+        "kind": "worker",
+    }
+    assert workers["recent"][0]["plan_binding"] == expected_binding
+    assert workers["topology"][0]["plan_binding"] == expected_binding
 
 
 def test_dashboard_v2_workers_returns_16_recent_workers_by_default(tmp_path) -> None:

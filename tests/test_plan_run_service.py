@@ -193,6 +193,27 @@ def test_plan_service_keeps_instruction_request_step_active(tmp_path: Path) -> N
     assert store.list_plan_events(run.id)[-1].event_type == "step.worker_instruction_requested"
 
 
+def test_plan_service_keeps_legacy_awaiting_input_runs_active(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    service = PlanRunService(store)
+    run = service.create_run(
+        goal="Ask user for missing detail",
+        chat_id=123,
+        steps=[{"id": "ask", "kind": "octo", "title": "Ask user"}],
+    )
+    store.update_plan_run(run.id, status="awaiting_input", current_step_id="ask")
+    store.update_plan_step(run.id, "ask", status="awaiting_input")
+
+    active = service.active_runs_for_chat(123)
+    snapshot = service.get_snapshot(run.id)
+
+    assert [item.id for item in active] == [run.id]
+    assert active[0].status == "awaiting_user"
+    assert snapshot is not None
+    assert snapshot["run"]["status"] == "awaiting_user"
+    assert snapshot["steps"][0]["status"] == "awaiting_user"
+
+
 def test_followup_pipeline_syncs_runtime_plan_before_routing(tmp_path: Path) -> None:
     store = _store(tmp_path)
     service = PlanRunService(store)

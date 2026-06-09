@@ -141,18 +141,48 @@ def _extract_ws_saved_file_paths(
     return saved_paths
 
 
-def _serialize_worker_snapshot(rows: list[Any]) -> list[dict[str, Any]]:
+def _serialize_worker_snapshot(rows: list[Any], *, store: Any | None = None) -> list[dict[str, Any]]:
     snapshot: list[dict[str, Any]] = []
     for row in rows:
         if hasattr(row, "model_dump"):
             try:
-                snapshot.append(row.model_dump(mode="json"))
+                payload = row.model_dump(mode="json")
             except TypeError:
-                snapshot.append(row.model_dump())
+                payload = row.model_dump()
+            plan_binding = _worker_plan_binding_payload(store, str(payload.get("id") or ""))
+            if plan_binding:
+                payload["plan_binding"] = plan_binding
+            snapshot.append(payload)
             continue
         if isinstance(row, dict):
-            snapshot.append(dict(row))
+            payload = dict(row)
+            plan_binding = _worker_plan_binding_payload(store, str(payload.get("id") or ""))
+            if plan_binding:
+                payload["plan_binding"] = plan_binding
+            snapshot.append(payload)
     return snapshot
+
+
+def _worker_plan_binding_payload(store: Any | None, worker_id: str) -> dict[str, Any] | None:
+    if store is None or not worker_id:
+        return None
+    getter = getattr(store, "get_plan_step_by_worker_run_id", None)
+    if not callable(getter):
+        return None
+    try:
+        step = getter(worker_id)
+    except Exception:
+        logger.debug("Failed to load worker plan binding for WebSocket snapshot", exc_info=True)
+        return None
+    if step is None:
+        return None
+    return {
+        "run_id": getattr(step, "run_id", None),
+        "step_id": getattr(step, "step_id", None),
+        "status": getattr(step, "status", None),
+        "title": getattr(step, "title", None),
+        "kind": getattr(step, "kind", None),
+    }
 
 
 def _is_ws_history_entry(entry: Any) -> bool:
@@ -457,8 +487,9 @@ def register_ws_routes(app: FastAPI) -> None:
             await socket.close(code=status.WS_1013_TRY_AGAIN_LATER)
             return
 
+        worker_store = getattr(octo, "store", None)
         try:
-            active_workers = await asyncio.to_thread(octo.store.get_active_workers)
+            active_workers = await asyncio.to_thread(worker_store.get_active_workers)
         except Exception:
             logger.debug(
                 "Failed to load active workers snapshot for WebSocket session", exc_info=True
@@ -468,7 +499,7 @@ def register_ws_routes(app: FastAPI) -> None:
             session,
             {
                 "type": "workers_snapshot",
-                "workers": _serialize_worker_snapshot(active_workers),
+                "workers": _serialize_worker_snapshot(active_workers, store=worker_store),
             },
             event_name="workers_snapshot",
         )

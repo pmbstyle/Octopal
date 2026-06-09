@@ -102,7 +102,7 @@ def get_worker_tools() -> list[ToolSpec]:
                     "tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Override default tools for this task (optional).",
+                        "description": "Optional subset of this template's tools for this task; cannot add tools outside the template contract.",
                     },
                     "timeout_seconds": {
                         "type": "number",
@@ -177,7 +177,7 @@ def get_worker_tools() -> list[ToolSpec]:
                     "tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Override default tools for this task (optional).",
+                        "description": "Optional subset of this template's tools for this task; cannot add tools outside the template contract.",
                     },
                     "timeout_seconds": {
                         "type": "number",
@@ -221,25 +221,44 @@ def get_worker_tools() -> list[ToolSpec]:
             description=(
                 "Launch multiple explicitly selected worker tasks in parallel and return run IDs. "
                 "Each worker still gets its own scratch workspace. "
-                "For any shared project files, set allowed_paths per task with the smallest explicit path set."
+                "For any shared project files, set allowed_paths per task with the smallest explicit path set. "
+                "When a task executes a durable runtime plan step, pass plan_run_id and plan_step_id on that task."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "tasks": {
                         "type": "array",
-                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, tools, timeout_seconds, required_tools, required_permissions, required_tool_calls.",
+                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, a subset-only tools override, timeout_seconds, required_tools, required_permissions, required_tool_calls, plan_run_id, plan_step_id, and allowed_paths.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "worker_id": {"type": "string"},
                                 "task": {"type": "string"},
                                 "inputs": {"type": "object", "additionalProperties": True},
-                                "tools": {"type": "array", "items": {"type": "string"}},
+                                "tools": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Optional subset of the selected template's tools; cannot add tools outside the template contract.",
+                                },
                                 "timeout_seconds": {"type": "number"},
                                 "required_tools": {"type": "array", "items": {"type": "string"}},
-                                "required_permissions": {"type": "array", "items": {"type": "string"}},
-                                "required_tool_calls": {"type": "array", "items": {"type": "string"}},
+                                "required_permissions": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "required_tool_calls": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "plan_run_id": {
+                                    "type": "string",
+                                    "description": "Optional runtime plan id when this worker executes a specific durable plan step.",
+                                },
+                                "plan_step_id": {
+                                    "type": "string",
+                                    "description": "Optional runtime plan step id to bind to the launched worker run.",
+                                },
                                 "allowed_paths": {
                                     "type": "array",
                                     "items": {"type": "string"},
@@ -433,7 +452,7 @@ def get_worker_tools() -> list[ToolSpec]:
                     "path": {
                         "type": "string",
                         "description": "Dotted path to the desired data (e.g., 'data.users.0.name').",
-                    }
+                    },
                 },
                 "required": ["worker_id", "path"],
                 "additionalProperties": False,
@@ -513,7 +532,10 @@ def get_worker_tools() -> list[ToolSpec]:
                     },
                     "name": {"type": "string", "description": "New name (optional)."},
                     "description": {"type": "string", "description": "New description (optional)."},
-                    "system_prompt": {"type": "string", "description": "New system prompt (optional)."},
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "New system prompt (optional).",
+                    },
                     "available_tools": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -525,9 +547,18 @@ def get_worker_tools() -> list[ToolSpec]:
                         "description": "New permissions (optional).",
                     },
                     "model": {"type": "string", "description": "New model override (optional)."},
-                    "max_thinking_steps": {"type": "number", "description": "New max steps (optional)."},
-                    "default_timeout_seconds": {"type": "number", "description": "New timeout (optional)."},
-                    "can_spawn_children": {"type": "boolean", "description": "Enable/disable child spawning (optional)."},
+                    "max_thinking_steps": {
+                        "type": "number",
+                        "description": "New max steps (optional).",
+                    },
+                    "default_timeout_seconds": {
+                        "type": "number",
+                        "description": "New timeout (optional).",
+                    },
+                    "can_spawn_children": {
+                        "type": "boolean",
+                        "description": "Enable/disable child spawning (optional).",
+                    },
                     "allowed_child_templates": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -583,10 +614,14 @@ def _tool_list_workers(args: dict[str, object], ctx: dict[str, object]) -> str:
             worker_info["children"] = allowed_child_templates
         template_list.append(worker_info)
 
-    return json.dumps({
-        "count": len(template_list),
-        "workers": template_list,
-    }, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(
+        {
+            "count": len(template_list),
+            "workers": template_list,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _tool_create_worker_template(args: dict[str, object], ctx: dict[str, object]) -> str:
@@ -616,13 +651,23 @@ def _tool_create_worker_template(args: dict[str, object], ctx: dict[str, object]
         return f"create_worker_template error: worker '{worker_id}' already exists. Use update_worker_template to modify it."
 
     # Get optional parameters with defaults
-    available_tools = args.get("available_tools") if isinstance(args.get("available_tools"), list) else []
-    required_permissions = args.get("required_permissions") if isinstance(args.get("required_permissions"), list) else []
+    available_tools = (
+        args.get("available_tools") if isinstance(args.get("available_tools"), list) else []
+    )
+    required_permissions = (
+        args.get("required_permissions")
+        if isinstance(args.get("required_permissions"), list)
+        else []
+    )
     available_tools = _normalize_str_list(available_tools)
     required_permissions = _infer_required_permissions(available_tools, required_permissions)
     model = str(args.get("model", "")).strip() or None
-    max_thinking_steps = int(args.get("max_thinking_steps")) if args.get("max_thinking_steps") else 10
-    default_timeout_seconds = int(args.get("default_timeout_seconds")) if args.get("default_timeout_seconds") else 300
+    max_thinking_steps = (
+        int(args.get("max_thinking_steps")) if args.get("max_thinking_steps") else 10
+    )
+    default_timeout_seconds = (
+        int(args.get("default_timeout_seconds")) if args.get("default_timeout_seconds") else 300
+    )
     can_spawn_children = bool(args.get("can_spawn_children", False))
     allowed_child_templates = _normalize_str_list(args.get("allowed_child_templates"))
 
@@ -652,17 +697,20 @@ def _tool_create_worker_template(args: dict[str, object], ctx: dict[str, object]
     except Exception as e:
         return f"create_worker_template error: failed to write worker.json: {e}"
 
-    return json.dumps({
-        "status": "created",
-        "worker_id": worker_id,
-        "name": name,
-        "description": description,
-        "available_tools": available_tools,
-        "required_permissions": required_permissions,
-        "can_spawn_children": can_spawn_children,
-        "allowed_child_templates": allowed_child_templates,
-        "message": f"Worker template '{name}' created successfully at workers/{worker_id}/worker.json"
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "status": "created",
+            "worker_id": worker_id,
+            "name": name,
+            "description": description,
+            "available_tools": available_tools,
+            "required_permissions": required_permissions,
+            "can_spawn_children": can_spawn_children,
+            "allowed_child_templates": allowed_child_templates,
+            "message": f"Worker template '{name}' created successfully at workers/{worker_id}/worker.json",
+        },
+        ensure_ascii=False,
+    )
 
 
 def _tool_update_worker_template(args: dict[str, object], ctx: dict[str, object]) -> str:
@@ -698,7 +746,9 @@ def _tool_update_worker_template(args: dict[str, object], ctx: dict[str, object]
     if isinstance(args.get("available_tools"), list):
         existing_config["available_tools"] = _normalize_str_list(args.get("available_tools"))
     if isinstance(args.get("required_permissions"), list):
-        existing_config["required_permissions"] = _normalize_str_list(args.get("required_permissions"))
+        existing_config["required_permissions"] = _normalize_str_list(
+            args.get("required_permissions")
+        )
     if args.get("model"):
         existing_config["model"] = str(args.get("model")).strip()
     if args.get("max_thinking_steps"):
@@ -708,7 +758,9 @@ def _tool_update_worker_template(args: dict[str, object], ctx: dict[str, object]
     if "can_spawn_children" in args:
         existing_config["can_spawn_children"] = bool(args.get("can_spawn_children"))
     if isinstance(args.get("allowed_child_templates"), list):
-        existing_config["allowed_child_templates"] = _normalize_str_list(args.get("allowed_child_templates"))
+        existing_config["allowed_child_templates"] = _normalize_str_list(
+            args.get("allowed_child_templates")
+        )
 
     existing_config["available_tools"] = _normalize_str_list(existing_config.get("available_tools"))
     existing_config["required_permissions"] = _infer_required_permissions(
@@ -722,15 +774,20 @@ def _tool_update_worker_template(args: dict[str, object], ctx: dict[str, object]
     except Exception as e:
         return f"update_worker_template error: failed to write worker.json: {e}"
 
-    return json.dumps({
-        "status": "updated",
-        "worker_id": worker_id,
-        "name": existing_config["name"],
-        "description": existing_config["description"],
-        "can_spawn_children": bool(existing_config.get("can_spawn_children", False)),
-        "allowed_child_templates": _normalize_str_list(existing_config.get("allowed_child_templates")),
-        "message": f"Worker template '{existing_config['name']}' updated successfully at workers/{worker_id}/worker.json"
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "status": "updated",
+            "worker_id": worker_id,
+            "name": existing_config["name"],
+            "description": existing_config["description"],
+            "can_spawn_children": bool(existing_config.get("can_spawn_children", False)),
+            "allowed_child_templates": _normalize_str_list(
+                existing_config.get("allowed_child_templates")
+            ),
+            "message": f"Worker template '{existing_config['name']}' updated successfully at workers/{worker_id}/worker.json",
+        },
+        ensure_ascii=False,
+    )
 
 
 def _infer_required_permissions(available_tools: object, required_permissions: object) -> list[str]:
@@ -755,6 +812,7 @@ def _infer_required_permissions(available_tools: object, required_permissions: o
 def _tool_delete_worker_template(args: dict[str, object], ctx: dict[str, object]) -> str:
     """Delete a worker template by removing its directory."""
     import shutil
+
     base_dir: Path = ctx.get("base_dir", Path("workspace"))
 
     worker_id = str(args.get("id", "")).strip()
@@ -776,11 +834,14 @@ def _tool_delete_worker_template(args: dict[str, object], ctx: dict[str, object]
     except Exception as e:
         return f"delete_worker_template error: failed to delete directory: {e}"
 
-    return json.dumps({
-        "status": "deleted",
-        "worker_id": worker_id,
-        "message": f"Worker template '{worker_id}' deleted successfully. Directory workers/{worker_id}/ has been removed."
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "status": "deleted",
+            "worker_id": worker_id,
+            "message": f"Worker template '{worker_id}' deleted successfully. Directory workers/{worker_id}/ has been removed.",
+        },
+        ensure_ascii=False,
+    )
 
 
 async def _tool_start_worker(args: dict[str, object], ctx: dict[str, object]) -> str:
@@ -845,6 +906,20 @@ async def _start_worker_common(
     if required_call_validation_error:
         return required_call_validation_error
 
+    plan_binding_error = _validate_plan_step_binding_request(octo=octo, args=args)
+    if plan_binding_error:
+        return json.dumps(
+            {
+                "status": "error",
+                "worker_template_id": worker_id or None,
+                "message": plan_binding_error.get("message") or "plan binding is invalid",
+                "followup_required": False,
+                "next_best_action": "continue_current_plan",
+                "plan_binding": plan_binding_error,
+            },
+            ensure_ascii=False,
+        )
+
     child_ctx = _extract_child_context(caller_worker)
     if child_ctx is not None:
         policy_error = _validate_child_spawn_policy(
@@ -887,7 +962,9 @@ async def _start_worker_common(
         message = "Duplicate worker task detected in this turn; skipped starting a new worker."
     else:
         message = f"Worker start returned status={status}."
-    followup_required = status in {"started", "skipped_duplicate"} and bool(launched_worker_id or run_id)
+    followup_required = status in {"started", "skipped_duplicate"} and bool(
+        launched_worker_id or run_id
+    )
     next_best_action = "wait_for_worker_progress" if followup_required else "continue_current_plan"
     plan_binding = (
         _bind_plan_step_for_worker_launch(
@@ -899,21 +976,68 @@ async def _start_worker_common(
         else _skipped_plan_step_binding(args)
     )
 
-    return json.dumps({
-        "status": status,
-        "worker_template_id": worker_id,
-        "worker_id": launched_worker_id,
-        "run_id": run_id,
-        "scheduled_task_id": scheduled_task_id,
-        "lineage_id": launch.get("lineage_id"),
-        "parent_worker_id": launch.get("parent_worker_id"),
-        "root_task_id": launch.get("root_task_id"),
-        "spawn_depth": launch.get("spawn_depth"),
-        "message": message,
-        "followup_required": followup_required,
-        "next_best_action": next_best_action,
-        **({"plan_binding": plan_binding} if plan_binding else {}),
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "status": status,
+            "worker_template_id": worker_id,
+            "worker_id": launched_worker_id,
+            "run_id": run_id,
+            "scheduled_task_id": scheduled_task_id,
+            "lineage_id": launch.get("lineage_id"),
+            "parent_worker_id": launch.get("parent_worker_id"),
+            "root_task_id": launch.get("root_task_id"),
+            "spawn_depth": launch.get("spawn_depth"),
+            "message": message,
+            "followup_required": followup_required,
+            "next_best_action": next_best_action,
+            **({"plan_binding": plan_binding} if plan_binding else {}),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _validate_plan_step_binding_request(
+    *,
+    octo: Octo,
+    args: dict[str, object],
+) -> dict[str, object] | None:
+    plan_run_id = str(args.get("plan_run_id") or "").strip()
+    plan_step_id = str(args.get("plan_step_id") or "").strip()
+    if not plan_run_id and not plan_step_id:
+        return None
+    if not plan_run_id or not plan_step_id:
+        return {
+            "status": "error",
+            "run_id": plan_run_id or None,
+            "step_id": plan_step_id or None,
+            "message": "plan_run_id and plan_step_id must be provided together",
+        }
+    store = getattr(octo, "store", None)
+    if store is None:
+        return {
+            "status": "error",
+            "run_id": plan_run_id,
+            "step_id": plan_step_id,
+            "message": "Octo store is unavailable",
+        }
+    service = PlanRunService(store)
+    snapshot = service.get_snapshot(plan_run_id)
+    if snapshot is None:
+        return {
+            "status": "not_found",
+            "run_id": plan_run_id,
+            "step_id": plan_step_id,
+            "message": "plan run was not found",
+        }
+    known_steps = {str(step.get("step_id") or "") for step in snapshot.get("steps") or []}
+    if plan_step_id not in known_steps:
+        return {
+            "status": "not_found",
+            "run_id": plan_run_id,
+            "step_id": plan_step_id,
+            "message": "plan step was not found",
+        }
+    return None
 
 
 def _bind_plan_step_for_worker_launch(
@@ -1016,6 +1140,13 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
 
         selected_worker_id = str(resolution["worker_id"])
         template = resolution["template"]
+        tool_validation_error = _validate_requested_worker_tools(
+            requested_tools=tools,
+            template_tools=getattr(template, "available_tools", []),
+            error_prefix="start_workers_parallel error",
+        )
+        if tool_validation_error:
+            return {"index": index, "status": "error", "error": tool_validation_error}
         tool_validation_error = _validate_required_tool_calls_available(
             required_tool_calls=required_tool_calls,
             requested_tools=tools,
@@ -1024,6 +1155,14 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
         )
         if tool_validation_error:
             return {"index": index, "status": "error", "error": tool_validation_error}
+        plan_binding_error = _validate_plan_step_binding_request(octo=octo, args=item)
+        if plan_binding_error:
+            return {
+                "index": index,
+                "status": "error",
+                "error": plan_binding_error.get("message") or "plan binding is invalid",
+                "plan_binding": plan_binding_error,
+            }
         if child_ctx is not None:
             policy_error = _validate_child_spawn_policy(
                 octo=octo,
@@ -1055,9 +1194,20 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
                 ),
             )
 
+        status = str(launch.get("status", "started"))
+        worker_run_id = str(launch.get("worker_id") or launch.get("run_id") or "").strip()
+        plan_binding = (
+            _bind_plan_step_for_worker_launch(
+                octo=octo,
+                args=item,
+                worker_run_id=worker_run_id,
+            )
+            if status == "started"
+            else _skipped_plan_step_binding(item)
+        )
         return {
             "index": index,
-            "status": launch.get("status", "started"),
+            "status": status,
             "worker_id": launch.get("worker_id"),
             "run_id": launch.get("run_id"),
             "worker_template_id": selected_worker_id,
@@ -1066,10 +1216,13 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
             "parent_worker_id": launch.get("parent_worker_id"),
             "root_task_id": launch.get("root_task_id"),
             "spawn_depth": launch.get("spawn_depth"),
+            **({"plan_binding": plan_binding} if plan_binding else {}),
         }
 
     launches = await asyncio.gather(*[_launch(item, idx) for idx, item in enumerate(tasks)])
-    started = sum(1 for item in launches if str(item.get("status")) in {"started", "skipped_duplicate"})
+    started = sum(
+        1 for item in launches if str(item.get("status")) in {"started", "skipped_duplicate"}
+    )
     failed = len(launches) - started
     followup_required = started > 0
     return json.dumps(
@@ -1080,7 +1233,9 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
             "max_parallel": max_parallel,
             "launches": launches,
             "followup_required": followup_required,
-            "next_best_action": "wait_for_worker_progress" if followup_required else "continue_current_plan",
+            "next_best_action": (
+                "wait_for_worker_progress" if followup_required else "continue_current_plan"
+            ),
         },
         ensure_ascii=False,
     )
@@ -1129,7 +1284,9 @@ def _tool_synthesize_worker_results(args: dict[str, object], ctx: dict[str, obje
             ready_progress.append(
                 {
                     "worker_id": wid,
-                    "summary_hash": hashlib.sha256(summary.encode("utf-8")).hexdigest() if summary else None,
+                    "summary_hash": (
+                        hashlib.sha256(summary.encode("utf-8")).hexdigest() if summary else None
+                    ),
                 }
             )
             if summary:
@@ -1163,9 +1320,13 @@ def _tool_synthesize_worker_results(args: dict[str, object], ctx: dict[str, obje
             "No completed worker results are ready yet. Do not synthesize yet; wait for worker progress."
         )
     elif failed:
-        synthesis_lines.append("No completed worker results are available. Inspect the worker failures instead.")
+        synthesis_lines.append(
+            "No completed worker results are available. Inspect the worker failures instead."
+        )
     elif missing:
-        synthesis_lines.append("No completed worker results are available. Some worker IDs could not be found.")
+        synthesis_lines.append(
+            "No completed worker results are available. Some worker IDs could not be found."
+        )
     else:
         synthesis_lines.append("No completed worker results are available yet.")
     if failed:
@@ -1183,7 +1344,9 @@ def _tool_synthesize_worker_results(args: dict[str, object], ctx: dict[str, obje
 
     conflicting = len(summary_hashes) > 1
     if conflicting:
-        synthesis_lines.append("Potential conflict detected: completed workers reported different summaries.")
+        synthesis_lines.append(
+            "Potential conflict detected: completed workers reported different summaries."
+        )
 
     status = "ready"
     next_best_action = "continue_current_plan"
@@ -1256,7 +1419,10 @@ async def _tool_stop_worker(args: dict[str, object], ctx: dict[str, object]) -> 
     if not worker_id:
         return "stop_worker error: worker_id is required."
     stopped = await octo.runtime.stop_worker(worker_id)
-    return json.dumps({"status": "stopped" if stopped else "not_found", "worker_id": worker_id}, ensure_ascii=False)
+    return json.dumps(
+        {"status": "stopped" if stopped else "not_found", "worker_id": worker_id},
+        ensure_ascii=False,
+    )
 
 
 async def _tool_answer_worker_instruction(args: dict[str, object], ctx: dict[str, object]) -> str:
@@ -1341,11 +1507,14 @@ def _tool_get_worker_status(args: dict[str, object], ctx: dict[str, object]) -> 
 
     worker = octo.store.get_worker(worker_id)
     if not worker:
-        return json.dumps({
-            "status": "not_found",
-            "worker_id": worker_id,
-            "message": "Worker not found. It may be from an old conversation or never existed."
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "status": "not_found",
+                "worker_id": worker_id,
+                "message": "Worker not found. It may be from an old conversation or never existed.",
+            },
+            ensure_ascii=False,
+        )
     worker = _reconcile_stale_worker_status(octo, worker)
 
     payload = {
@@ -1374,24 +1543,29 @@ def _tool_list_active_workers(args: dict[str, object], ctx: dict[str, object]) -
     workers = _reconcile_stale_active_workers(octo, workers, older_than_minutes=older_than_minutes)
     worker_list = []
     for w in workers:
-        worker_list.append({
-            "worker_id": w.id,
-            "status": w.status,
-            "task": w.task,
-            "lineage_id": w.lineage_id,
-            "parent_worker_id": w.parent_worker_id,
-            "root_task_id": w.root_task_id,
-            "spawn_depth": w.spawn_depth,
-            "created_at": w.created_at.isoformat(),
-            "updated_at": w.updated_at.isoformat(),
-            "summary": w.summary,
-            "error": w.error,
-        })
+        worker_list.append(
+            {
+                "worker_id": w.id,
+                "status": w.status,
+                "task": w.task,
+                "lineage_id": w.lineage_id,
+                "parent_worker_id": w.parent_worker_id,
+                "root_task_id": w.root_task_id,
+                "spawn_depth": w.spawn_depth,
+                "created_at": w.created_at.isoformat(),
+                "updated_at": w.updated_at.isoformat(),
+                "summary": w.summary,
+                "error": w.error,
+            }
+        )
 
-    return json.dumps({
-        "count": len(worker_list),
-        "workers": worker_list,
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "count": len(worker_list),
+            "workers": worker_list,
+        },
+        ensure_ascii=False,
+    )
 
 
 def _tool_worker_session_status(args: dict[str, object], ctx: dict[str, object]) -> str:
@@ -1400,7 +1574,9 @@ def _tool_worker_session_status(args: dict[str, object], ctx: dict[str, object])
     recent_limit = max(1, min(50, int(args.get("recent_limit") or 12)))
 
     active_workers = octo.store.get_active_workers(older_than_minutes=older_than_minutes)
-    active_workers = _reconcile_stale_active_workers(octo, active_workers, older_than_minutes=older_than_minutes)
+    active_workers = _reconcile_stale_active_workers(
+        octo, active_workers, older_than_minutes=older_than_minutes
+    )
     recent_workers = (
         octo.store.list_recent_workers(recent_limit)
         if hasattr(octo.store, "list_recent_workers")
@@ -1447,9 +1623,13 @@ def _tool_worker_session_status(args: dict[str, object], ctx: dict[str, object])
     if running > 0:
         hints.append(f"{running} worker(s) currently in flight.")
     if failed_recent > 0:
-        hints.append(f"{failed_recent} recent worker run(s) failed; inspect summaries before retrying.")
+        hints.append(
+            f"{failed_recent} recent worker run(s) failed; inspect summaries before retrying."
+        )
     if any((worker.spawn_depth or 0) > 0 for worker in active_workers):
-        hints.append("Active child-worker lineage detected; prefer synthesis or status checks before spawning more.")
+        hints.append(
+            "Active child-worker lineage detected; prefer synthesis or status checks before spawning more."
+        )
     if not hints:
         hints.append("Worker fabric looks quiet and healthy.")
 
@@ -1533,7 +1713,9 @@ def _tool_worker_yield(args: dict[str, object], ctx: dict[str, object]) -> str:
             f"{len(failed_workers)} worker run(s) failed or stopped; inspect summaries before retrying."
         )
     if lineage_id and pending_workers:
-        hints.append("Focused lineage still has active children; avoid spawning more work in the same tree.")
+        hints.append(
+            "Focused lineage still has active children; avoid spawning more work in the same tree."
+        )
     if synthesize_recommended:
         hints.append("All requested runs are done; synthesis is the cleanest next step.")
     elif collect_results_recommended:
@@ -1602,14 +1784,21 @@ def _reconcile_stale_worker_status(octo: Octo, worker: Any) -> Any:
     return refreshed or worker
 
 
-def _reconcile_stale_active_workers(octo: Octo, workers: list[Any], older_than_minutes: int) -> list[Any]:
+def _reconcile_stale_active_workers(
+    octo: Octo, workers: list[Any], older_than_minutes: int
+) -> list[Any]:
     stale_ids: list[str] = []
     runtime = getattr(octo, "runtime", None)
     if not runtime or not hasattr(runtime, "is_worker_running"):
         return workers
     grace_cutoff = utc_now() - timedelta(minutes=2)
     for worker in workers:
-        if worker.status not in {"started", "running", "waiting_for_children", "awaiting_instruction"}:
+        if worker.status not in {
+            "started",
+            "running",
+            "waiting_for_children",
+            "awaiting_instruction",
+        }:
             continue
         if worker.updated_at >= grace_cutoff:
             continue
@@ -1687,9 +1876,11 @@ def _serialize_worker_run(worker: Any) -> dict[str, object]:
         "lineage_id": getattr(worker, "lineage_id", None),
         "parent_worker_id": getattr(worker, "parent_worker_id", None),
         "spawn_depth": getattr(worker, "spawn_depth", None),
-        "updated_at": getattr(worker, "updated_at", None).isoformat()
-        if getattr(worker, "updated_at", None) is not None
-        else None,
+        "updated_at": (
+            getattr(worker, "updated_at", None).isoformat()
+            if getattr(worker, "updated_at", None) is not None
+            else None
+        ),
         "summary": getattr(worker, "summary", None),
         "error": getattr(worker, "error", None),
     }
@@ -1737,11 +1928,10 @@ def _tool_get_worker_result(args: dict[str, object], ctx: dict[str, object]) -> 
 
     worker = octo.store.get_worker(worker_id)
     if not worker:
-        return json.dumps({
-            "status": "not_found",
-            "worker_id": worker_id,
-            "message": "Worker not found."
-        }, ensure_ascii=False)
+        return json.dumps(
+            {"status": "not_found", "worker_id": worker_id, "message": "Worker not found."},
+            ensure_ascii=False,
+        )
 
     if worker.status == "completed":
         payload = {
@@ -1808,7 +1998,9 @@ def _tool_get_worker_output_path(args: dict[str, object], ctx: dict[str, object]
         return json.dumps({"status": "not_found", "worker_id": worker_id}, ensure_ascii=False)
 
     if worker.status != "completed":
-        return json.dumps({"status": worker.status, "message": "Worker result not available."}, ensure_ascii=False)
+        return json.dumps(
+            {"status": worker.status, "message": "Worker result not available."}, ensure_ascii=False
+        )
 
     output = worker.output or {}
     current = output
@@ -1819,24 +2011,33 @@ def _tool_get_worker_output_path(args: dict[str, object], ctx: dict[str, object]
             if part in current:
                 current = current[part]
             else:
-                return json.dumps({"error": f"Path not found: {path} (missing key '{part}')"}, ensure_ascii=False)
+                return json.dumps(
+                    {"error": f"Path not found: {path} (missing key '{part}')"}, ensure_ascii=False
+                )
         elif isinstance(current, list):
             try:
                 idx = int(part)
                 if 0 <= idx < len(current):
                     current = current[idx]
                 else:
-                    return json.dumps({"error": f"Path not found: {path} (index '{idx}' out of range)"}, ensure_ascii=False)
+                    return json.dumps(
+                        {"error": f"Path not found: {path} (index '{idx}' out of range)"},
+                        ensure_ascii=False,
+                    )
             except ValueError:
-                return json.dumps({"error": f"Path not found: {path} (expected index for list, got '{part}')"}, ensure_ascii=False)
+                return json.dumps(
+                    {"error": f"Path not found: {path} (expected index for list, got '{part}')"},
+                    ensure_ascii=False,
+                )
         else:
-            return json.dumps({"error": f"Path not found: {path} (cannot traverse into non-container type at '{part}')"}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "error": f"Path not found: {path} (cannot traverse into non-container type at '{part}')"
+                },
+                ensure_ascii=False,
+            )
 
-    return json.dumps({
-        "worker_id": worker_id,
-        "path": path,
-        "value": current
-    }, ensure_ascii=False)
+    return json.dumps({"worker_id": worker_id, "path": path, "value": current}, ensure_ascii=False)
 
 
 def _tool_propose_knowledge(args: dict[str, object], ctx: dict[str, object]) -> str:
@@ -2048,7 +2249,9 @@ def _validate_requested_worker_tools(
 
     normalized_requested = _normalize_tool_name_list(requested_tools)
     allowed_tools = set(_effective_template_tool_names(template_tools))
-    unexpected = sorted(tool_name for tool_name in normalized_requested if tool_name not in allowed_tools)
+    unexpected = sorted(
+        tool_name for tool_name in normalized_requested if tool_name not in allowed_tools
+    )
     if unexpected:
         return (
             f"{error_prefix}: requested tools exceed template contract "

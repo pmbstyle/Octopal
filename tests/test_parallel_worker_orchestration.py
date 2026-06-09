@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 from octopal.infrastructure.store.models import WorkerRecord, WorkerTemplateRecord
+from octopal.infrastructure.store.sqlite import SQLiteStore
+from octopal.runtime.plans import PlanRunService
 from octopal.tools.workers.management import (
     _tool_list_workers,
     _tool_start_workers_parallel,
@@ -37,6 +40,16 @@ def _template(
         created_at=now,
         updated_at=now,
     )
+
+
+class _StoreSettings:
+    def __init__(self, state_dir: Path, workspace_dir: Path) -> None:
+        self.state_dir = state_dir
+        self.workspace_dir = workspace_dir
+
+
+def _sqlite_store(tmp_path: Path) -> SQLiteStore:
+    return SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
 
 
 def test_list_workers_returns_compact_capability_payload() -> None:
@@ -128,6 +141,56 @@ def test_start_workers_parallel_launches_multiple() -> None:
     assert all(item["worker_id"] for item in result["launches"])
 
 
+def test_start_workers_parallel_rejects_tools_outside_template_allowlist() -> None:
+    templates = [
+        _template("coder", "fix code and bugs", ["fs_read"], ["filesystem_read"]),
+    ]
+
+    class _Store:
+        def list_worker_templates(self):
+            return templates
+
+        def get_worker_template(self, worker_id: str):
+            for item in templates:
+                if item.id == worker_id:
+                    return item
+            return None
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+
+        async def _start_worker_async(self, **kwargs):
+            raise AssertionError("worker launch should have been rejected")
+
+    async def _scenario() -> dict:
+        payload = await _tool_start_workers_parallel(
+            {
+                "tasks": [
+                    {
+                        "task": "Inspect parser",
+                        "worker_id": "coder",
+                        "tools": ["fs_read", "exec_run"],
+                    },
+                ],
+                "max_parallel": 1,
+            },
+            {"octo": _Octo(), "chat_id": 123},
+        )
+        return json.loads(payload)
+
+    result = asyncio.run(_scenario())
+
+    assert result["status"] == "partial"
+    assert result["started_count"] == 0
+    assert result["failed_count"] == 1
+    assert result["followup_required"] is False
+    assert result["next_best_action"] == "continue_current_plan"
+    assert result["launches"][0]["status"] == "error"
+    assert "requested tools exceed template contract" in result["launches"][0]["error"]
+    assert "exec_run" in result["launches"][0]["error"]
+
+
 def test_start_workers_parallel_forwards_allowed_paths_per_task() -> None:
     templates = [
         _template("coder", "fix code and bugs", ["fs_read"], ["filesystem_read"]),
@@ -151,7 +214,7 @@ def test_start_workers_parallel_forwards_allowed_paths_per_task() -> None:
         async def _start_worker_async(self, **kwargs):
             self.launches.append(kwargs)
             run_id = f"run-{len(self.launches)}"
-            return {"status": "started", "worker_id": run_id, "run_id": run_id, **kwargs}
+            return {**kwargs, "status": "started", "worker_id": run_id, "run_id": run_id}
 
     octo = _Octo()
 
@@ -202,7 +265,7 @@ def test_start_workers_parallel_passes_null_model_to_runtime() -> None:
         async def _start_worker_async(self, **kwargs):
             self.launches.append(kwargs)
             run_id = f"run-{len(self.launches)}"
-            return {"status": "started", "worker_id": run_id, "run_id": run_id, **kwargs}
+            return {**kwargs, "status": "started", "worker_id": run_id, "run_id": run_id}
 
     octo = _Octo()
 
@@ -222,6 +285,92 @@ def test_start_workers_parallel_passes_null_model_to_runtime() -> None:
     assert result["followup_required"] is True
     assert result["next_best_action"] == "wait_for_worker_progress"
     assert octo.launches[0]["model"] is None
+
+
+def test_start_workers_parallel_binds_valid_plan_steps_and_rejects_invalid_ones(
+    tmp_path: Path,
+) -> None:
+    plan_store = _sqlite_store(tmp_path)
+    template = _template("coder", "fix code and bugs", ["fs_read"], ["filesystem_read"])
+    plan = PlanRunService(plan_store).create_run(
+        goal="Patch two areas",
+        chat_id=123,
+        steps=[
+            {"id": "parser", "kind": "worker", "title": "Patch parser"},
+            {"id": "tests", "kind": "worker", "title": "Patch tests"},
+        ],
+    )
+
+    class _Store:
+        def list_worker_templates(self):
+            return [template]
+
+        def get_worker_template(self, worker_id: str):
+            return template if worker_id == template.id else None
+
+        def __getattr__(self, name: str):
+            return getattr(plan_store, name)
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+            self.launches: list[dict[str, object]] = []
+
+        async def _start_worker_async(self, **kwargs):
+            self.launches.append(kwargs)
+            run_id = f"run-{len(self.launches)}"
+            return {**kwargs, "status": "started", "worker_id": run_id, "run_id": run_id}
+
+    octo = _Octo()
+
+    async def _scenario() -> dict:
+        payload = await _tool_start_workers_parallel(
+            {
+                "tasks": [
+                    {
+                        "task": "Patch parser",
+                        "worker_id": "coder",
+                        "plan_run_id": plan.id,
+                        "plan_step_id": "parser",
+                    },
+                    {
+                        "task": "Patch missing step",
+                        "worker_id": "coder",
+                        "plan_run_id": plan.id,
+                        "plan_step_id": "missing",
+                    },
+                ],
+                "max_parallel": 2,
+            },
+            {"octo": octo, "chat_id": 123},
+        )
+        return json.loads(payload)
+
+    result = asyncio.run(_scenario())
+    steps = {step.step_id: step for step in plan_store.get_plan_steps(plan.id)}
+
+    assert result["status"] == "partial"
+    assert result["started_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["followup_required"] is True
+    assert len(octo.launches) == 1
+    assert result["launches"][0]["plan_binding"] == {
+        "status": "ok",
+        "run_id": plan.id,
+        "step_id": "parser",
+        "worker_run_id": "run-1",
+    }
+    assert result["launches"][1]["status"] == "error"
+    assert result["launches"][1]["plan_binding"] == {
+        "status": "not_found",
+        "run_id": plan.id,
+        "step_id": "missing",
+        "message": "plan step was not found",
+    }
+    assert steps["parser"].status == "awaiting_worker"
+    assert steps["parser"].worker_run_id == "run-1"
+    assert steps["tests"].status == "pending"
+    assert steps["tests"].worker_run_id is None
 
 
 def test_synthesize_worker_results_reports_completed_failed_and_pending() -> None:

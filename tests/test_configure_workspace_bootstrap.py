@@ -8,6 +8,7 @@ from pathlib import Path
 from octopal.cli.configure import _ensure_workspace_bootstrap
 from octopal.runtime.octo.prompt_builder import build_bootstrap_context_prompt
 from octopal.runtime.workers.loader import discover_worker_templates
+from octopal.tools.catalog import get_tools
 
 
 def test_workspace_bootstrap_creates_required_markdown(tmp_path: Path) -> None:
@@ -133,3 +134,20 @@ def test_bootstrap_worker_templates_align_with_current_runtime_expectations(tmp_
         (workspace / "workers" / "research_coordinator" / "worker.json").read_text(encoding="utf-8")
     )
     assert raw_coordinator["required_permissions"] == ["worker_manage"]
+
+
+def test_default_worker_template_tools_exist_in_runtime_catalog() -> None:
+    known_tools = {tool.name for tool in get_tools(mcp_manager=None)}
+    missing: dict[str, list[str]] = {}
+
+    for path in (Path("workspace_templates") / "workers").glob("*/worker.json"):
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        unknown = sorted(
+            tool_name
+            for tool_name in raw.get("available_tools", [])
+            if tool_name not in known_tools
+        )
+        if unknown:
+            missing[path.parent.name] = unknown
+
+    assert missing == {}

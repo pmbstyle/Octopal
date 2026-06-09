@@ -88,6 +88,30 @@ def test_runtime_plan_context_is_compact_and_preserves_focus(tmp_path: Path) -> 
     assert "without cancelling or overwriting" in context
 
 
+def test_runtime_plan_context_includes_negative_group_chat_ids(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    group_chat_id = -1001234567890
+    ctx = {"octo": SimpleNamespace(store=store), "chat_id": group_chat_id}
+    created = json.loads(
+        _tool("plan_create").handler(
+            {
+                "goal": "Follow up in the group",
+                "steps": [
+                    {"id": "collect", "kind": "worker", "title": "Collect details"},
+                    {"id": "reply", "kind": "final", "title": "Reply to group"},
+                ],
+            },
+            ctx,
+        )
+    )
+
+    context = _build_runtime_plan_context(SimpleNamespace(store=store), group_chat_id)
+
+    assert "Runtime plan state is active" in context
+    assert created["run_id"] in context
+    assert "Follow up in the group" in context
+
+
 def test_plan_update_step_reports_unknown_step(tmp_path: Path) -> None:
     store = _store(tmp_path)
     ctx = {"octo": SimpleNamespace(store=store), "chat_id": 42}

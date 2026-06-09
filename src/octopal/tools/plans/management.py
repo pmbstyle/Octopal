@@ -128,6 +128,18 @@ def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _coerce_chat_id(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
 def _tool_plan_create(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     service = _service(ctx)
     goal = str((args or {}).get("goal") or "").strip()
@@ -136,16 +148,18 @@ def _tool_plan_create(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     steps = list((args or {}).get("steps") or [])
     if not steps:
         return _json({"status": "error", "message": "steps must contain at least one step"})
-    chat_id = ctx.get("chat_id")
+    chat_id = _coerce_chat_id(ctx.get("chat_id"))
     run = service.create_run(
         goal=goal,
         steps=steps,
-        chat_id=int(chat_id) if isinstance(chat_id, int) or str(chat_id).isdigit() else None,
+        chat_id=chat_id,
         source=str((args or {}).get("source") or "adhoc").strip() or "adhoc",
         correlation_id=str(ctx.get("correlation_id") or "").strip() or None,
         metadata=dict((args or {}).get("metadata") or {}),
     )
-    owner_id = str(getattr(getattr(ctx.get("octo"), "operational_memory", None), "owner_id", "default"))
+    owner_id = str(
+        getattr(getattr(ctx.get("octo"), "operational_memory", None), "owner_id", "default")
+    )
     _link_commitments_to_plan(
         service,
         run.id,
@@ -168,7 +182,7 @@ def _tool_plan_status(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
     limit = max(1, min(int((args or {}).get("limit") or 10), 20))
     active_only = bool((args or {}).get("active_only", True))
-    chat_id = int(ctx.get("chat_id") or 0)
+    chat_id = _coerce_chat_id(ctx.get("chat_id")) or 0
     if active_only:
         runs = service.active_runs_for_chat(chat_id, limit=limit)
     else:
@@ -262,7 +276,7 @@ def _link_commitments_to_plan(
         commitment_ids = []
     if not commitment_ids:
         return
-    if chat_id is None:
+    if chat_id is None or chat_id == 0:
         return
     list_items = getattr(service.store, "list_operational_memory_items", None)
     updater = getattr(service.store, "update_operational_memory_item", None)
@@ -274,7 +288,7 @@ def _link_commitments_to_plan(
         statuses=["active", "in_progress", "blocked"],
         limit=50,
     )
-    allowed_ids = {str(item.id) for item in active_items}
+    allowed_ids = {str(item.id) for item in active_items if item.chat_id == chat_id}
     for commitment_id in commitment_ids[:10]:
         if commitment_id not in allowed_ids:
             continue

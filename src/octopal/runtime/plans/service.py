@@ -23,8 +23,11 @@ PLAN_ACTIVE_STATUSES = {
     "awaiting_user",
 }
 PLAN_TERMINAL_STATUSES = {"completed", "failed", "cancelled", "blocked"}
-STEP_ACTIVE_STATUSES = {"running", "awaiting_worker", "awaiting_approval", "awaiting_input"}
+STEP_ACTIVE_STATUSES = {"running", "awaiting_worker", "awaiting_approval", "awaiting_user"}
 STEP_TERMINAL_STATUSES = {"completed", "failed", "skipped", "cancelled", "blocked"}
+PLAN_STATUS_ALIASES = {"awaiting_input": "awaiting_user"}
+STEP_STATUS_ALIASES = {"awaiting_input": "awaiting_user"}
+PLAN_ACTIVE_STORAGE_STATUSES = PLAN_ACTIVE_STATUSES | set(PLAN_STATUS_ALIASES)
 
 
 @dataclass(frozen=True)
@@ -122,9 +125,16 @@ class PlanRunService:
             return None
         steps = self.store.get_plan_steps(run_id)
         next_step = self._next_actionable_step(steps)
+        run_payload = run.model_dump(mode="json")
+        run_payload["status"] = self._canonical_plan_status(run.status)
+        step_payloads = []
+        for step in steps:
+            payload = step.model_dump(mode="json")
+            payload["status"] = self._canonical_step_status(step.status)
+            step_payloads.append(payload)
         return {
-            "run": run.model_dump(mode="json"),
-            "steps": [step.model_dump(mode="json") for step in steps],
+            "run": run_payload,
+            "steps": step_payloads,
             "next_step": next_step.model_dump(mode="json") if next_step else None,
         }
 
@@ -270,11 +280,24 @@ class PlanRunService:
         return event
 
     def active_runs_for_chat(self, chat_id: int, *, limit: int = 10) -> list[PlanRunRecord]:
-        return self.store.list_plan_runs(
+        runs = self.store.list_plan_runs(
             chat_id=chat_id,
-            statuses=sorted(PLAN_ACTIVE_STATUSES),
+            statuses=sorted(PLAN_ACTIVE_STORAGE_STATUSES),
             limit=limit,
         )
+        return [self._canonical_plan_run(run) for run in runs]
+
+    def _canonical_plan_status(self, status: str) -> str:
+        return PLAN_STATUS_ALIASES.get(status, status)
+
+    def _canonical_step_status(self, status: str) -> str:
+        return STEP_STATUS_ALIASES.get(status, status)
+
+    def _canonical_plan_run(self, run: PlanRunRecord) -> PlanRunRecord:
+        canonical_status = self._canonical_plan_status(run.status)
+        if canonical_status == run.status:
+            return run
+        return run.model_copy(update={"status": canonical_status})
 
     def _resolve_linked_operational_memory(
         self,

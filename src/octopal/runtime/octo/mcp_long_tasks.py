@@ -155,7 +155,7 @@ def _schedule_phone_task_poll(
     task: _PendingMCPTask,
     immediate: bool = False,
 ) -> None:
-    if chat_id <= 0 or not task.task_id:
+    if chat_id == 0 or not task.task_id:
         return
     tasks = getattr(octo, "_pending_mcp_long_tasks", None)
     if tasks is None:

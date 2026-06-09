@@ -4,10 +4,14 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from octopal.infrastructure.store.models import WorkerTemplateRecord
 from octopal.infrastructure.store.sqlite import SQLiteStore
+from octopal.runtime.octo.followup_pipeline import _sync_runtime_plan_with_worker_result
+from octopal.runtime.octo.router import _build_runtime_plan_context
 from octopal.runtime.plans import PlanRunService
+from octopal.runtime.workers.contracts import WorkerResult
 from octopal.tools.workers.management import (
     _infer_allowed_paths_from_task,
     _infer_allowed_paths_from_values,
@@ -256,6 +260,159 @@ def test_start_worker_binds_runtime_plan_step(tmp_path: Path) -> None:
     step = plan_store.get_plan_steps(plan.id)[0]
     assert step.status == "awaiting_worker"
     assert step.worker_run_id == "run-1"
+
+
+def test_runtime_plan_worker_lifecycle_stays_bound_through_followup(tmp_path: Path) -> None:
+    plan_store = _sqlite_store(tmp_path)
+    template = _template(
+        "researcher",
+        "Researcher",
+        "Collects durable evidence",
+        ["fs_read"],
+        ["filesystem_read"],
+    )
+    plan = PlanRunService(plan_store).create_run(
+        goal="Collect release evidence",
+        chat_id=123,
+        steps=[
+            {"id": "collect", "kind": "worker", "title": "Collect evidence"},
+            {"id": "reply", "kind": "final", "title": "Reply with summary"},
+        ],
+    )
+
+    class _Store:
+        def list_worker_templates(self):
+            return [template]
+
+        def get_worker_template(self, worker_id: str):
+            return template if worker_id == template.id else None
+
+        def __getattr__(self, name: str):
+            return getattr(plan_store, name)
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+
+        async def _start_worker_async(self, **kwargs):
+            return {
+                **kwargs,
+                "status": "started",
+                "worker_id": "worker-run-1",
+                "run_id": "worker-run-1",
+            }
+
+    octo = _Octo()
+    before_context = _build_runtime_plan_context(SimpleNamespace(store=plan_store), 123)
+
+    async def _scenario() -> dict:
+        payload = await _tool_start_worker(
+            {
+                "task": "Collect release evidence",
+                "worker_id": "researcher",
+                "plan_run_id": plan.id,
+                "plan_step_id": "collect",
+            },
+            {"octo": octo, "chat_id": 123},
+        )
+        return json.loads(payload)
+
+    launch = asyncio.run(_scenario())
+    _sync_runtime_plan_with_worker_result(
+        SimpleNamespace(store=plan_store),
+        123,
+        worker_id="worker-run-1",
+        result=WorkerResult(
+            status="completed",
+            summary="Release evidence collected.",
+            output={"artifact_summary": {"durable_paths": ["reports/release.md"]}},
+            tools_used=["fs_read"],
+        ),
+    )
+
+    saved = plan_store.get_plan_run(plan.id)
+    steps = plan_store.get_plan_steps(plan.id)
+    after_context = _build_runtime_plan_context(SimpleNamespace(store=plan_store), 123)
+
+    assert "Collect release evidence" in before_context
+    assert launch["plan_binding"] == {
+        "status": "ok",
+        "run_id": plan.id,
+        "step_id": "collect",
+        "worker_run_id": "worker-run-1",
+    }
+    assert saved is not None
+    assert saved.status == "needs_next_step"
+    assert saved.current_step_id == "reply"
+    assert steps[0].status == "completed"
+    assert steps[0].output["worker_status"] == "completed"
+    assert steps[0].output["summary"] == "Release evidence collected."
+    assert steps[1].status == "pending"
+    assert "worker-run-1" in after_context
+    assert "Release evidence collected." in after_context
+
+
+def test_start_worker_rejects_invalid_plan_binding_before_launch(tmp_path: Path) -> None:
+    plan_store = _sqlite_store(tmp_path)
+    template = _template(
+        "coder",
+        "Coder",
+        "Handles code refactors and bugfixes",
+        ["fs_read"],
+        ["filesystem_read"],
+    )
+    plan = PlanRunService(plan_store).create_run(
+        goal="Fix bug",
+        chat_id=123,
+        steps=[{"id": "patch", "kind": "worker", "title": "Patch code"}],
+    )
+
+    class _Store:
+        def list_worker_templates(self):
+            return [template]
+
+        def get_worker_template(self, worker_id: str):
+            return template if worker_id == template.id else None
+
+        def __getattr__(self, name: str):
+            return getattr(plan_store, name)
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+            self.launch_called = False
+
+        async def _start_worker_async(self, **kwargs):
+            self.launch_called = True
+            raise AssertionError("worker launch should be rejected before dispatch")
+
+    octo = _Octo()
+
+    async def _scenario() -> dict:
+        payload = await _tool_start_worker(
+            {
+                "task": "Fix parser bug",
+                "worker_id": "coder",
+                "plan_run_id": plan.id,
+                "plan_step_id": "missing",
+            },
+            {"octo": octo, "chat_id": 123},
+        )
+        return json.loads(payload)
+
+    result = asyncio.run(_scenario())
+    assert result["status"] == "error"
+    assert result["followup_required"] is False
+    assert result["plan_binding"] == {
+        "status": "not_found",
+        "run_id": plan.id,
+        "step_id": "missing",
+        "message": "plan step was not found",
+    }
+    assert octo.launch_called is False
+    saved_step = plan_store.get_plan_steps(plan.id)[0]
+    assert saved_step.status == "pending"
+    assert saved_step.worker_run_id is None
 
 
 def test_start_worker_does_not_bind_duplicate_skip_to_plan_step(tmp_path: Path) -> None:

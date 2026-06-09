@@ -2302,7 +2302,7 @@ def _build_a2a_route_context(octo: Any) -> str:
 
 def _build_runtime_plan_context(octo: Any, chat_id: int, *, limit: int = 3) -> str:
     store = getattr(octo, "store", None)
-    if store is None or chat_id <= 0:
+    if store is None or chat_id == 0:
         return ""
     try:
         service = PlanRunService(store)
@@ -3103,8 +3103,10 @@ def _update_runtime_action_contracts(
         return contracts
 
     remaining = list(contracts)
-    if tool_name == "start_worker":
+    if tool_name in {"start_worker", "start_child_worker"}:
         remaining = _resolve_contracts_from_worker_launch(remaining, structured)
+    elif tool_name == "start_workers_parallel":
+        remaining = _resolve_contracts_from_parallel_worker_launch(remaining, structured)
     elif tool_name == "plan_update_step":
         remaining = _resolve_contracts_from_plan_snapshot(remaining, structured)
 
@@ -3177,6 +3179,20 @@ def _resolve_contracts_from_worker_launch(
         for contract in contracts
         if not (contract.run_id == run_id and contract.step_id == step_id)
     ]
+
+
+def _resolve_contracts_from_parallel_worker_launch(
+    contracts: list[RuntimeActionContract],
+    structured: dict[str, Any],
+) -> list[RuntimeActionContract]:
+    launches = structured.get("launches")
+    if not isinstance(launches, list):
+        return contracts
+    remaining = list(contracts)
+    for launch in launches:
+        if isinstance(launch, dict):
+            remaining = _resolve_contracts_from_worker_launch(remaining, launch)
+    return remaining
 
 
 def _resolve_contracts_from_plan_snapshot(

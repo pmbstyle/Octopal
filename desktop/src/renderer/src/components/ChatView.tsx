@@ -153,22 +153,40 @@ function workerSnapshotName(worker: Record<string, unknown>): string {
   );
 }
 
+function workerPlanBindingText(worker: Record<string, unknown>): string {
+  const binding = recordValue(worker.plan_binding);
+  if (Object.keys(binding).length === 0) {
+    return "";
+  }
+  const label =
+    stringValue(binding.title) ||
+    stringValue(binding.step_id) ||
+    stringValue(binding.run_id) ||
+    "plan step";
+  const detail = [stringValue(binding.step_id), stringValue(binding.status)]
+    .filter(Boolean)
+    .join(" / ");
+  return detail ? `${label} (${detail})` : label;
+}
+
 function workerSnapshotText(worker: Record<string, unknown>): string {
   const name = workerSnapshotName(worker);
   const status = stringValue(worker.status, "unknown").toLowerCase();
+  const planText = workerPlanBindingText(worker);
+  const suffix = planText ? ` · plan ${planText}` : "";
   if (status === "running") {
-    return `${name} worker is running`;
+    return `${name} worker is running${suffix}`;
   }
   if (status === "waiting_for_children") {
-    return `${name} worker is waiting for child workers`;
+    return `${name} worker is waiting for child workers${suffix}`;
   }
   if (status === "awaiting_instruction") {
-    return `${name} worker is awaiting instruction`;
+    return `${name} worker is awaiting instruction${suffix}`;
   }
   if (["started", "completed", "failed", "stopped"].includes(status)) {
-    return `${name} worker ${status}`;
+    return `${name} worker ${status}${suffix}`;
   }
-  return `${name} worker status: ${status}`;
+  return `${name} worker status: ${status}${suffix}`;
 }
 
 function activityStatusText(text: string): string {
