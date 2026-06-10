@@ -62,6 +62,12 @@ _CHILD_SPAWN_TOOL_NAMES = {
     "start_child_worker",
     "start_workers_parallel",
 }
+_INJECTED_ORCHESTRATION_TOOL_NAMES = {
+    "answer_worker_instruction",
+    "orchestration_plan_create",
+    "orchestration_plan_status",
+    "orchestration_plan_update_item",
+}
 _PERMISSION_ALIASES = {
     "spawn_children": "worker_manage",
 }
@@ -1030,6 +1036,7 @@ class WorkerRuntime:
                             "awaiting_instruction_count": len(awaiting_instruction),
                         },
                     )
+                    await self._sync_orchestration_plan_with_child_batch(spec, resume)
                     await self._write_to_worker(
                         process,
                         {"type": "resume_children", "child_batch": resume.model_dump(mode="json")},
@@ -1064,6 +1071,7 @@ class WorkerRuntime:
                             "missing_count": len(missing),
                         },
                     )
+                    await self._sync_orchestration_plan_with_child_batch(spec, resume)
                     await self._write_to_worker(
                         process,
                         {"type": "resume_children", "child_batch": resume.model_dump(mode="json")},
@@ -1074,6 +1082,31 @@ class WorkerRuntime:
         finally:
             if pause_tracker is not None:
                 pause_tracker.resume()
+
+    async def _sync_orchestration_plan_with_child_batch(
+        self,
+        spec: WorkerSpec,
+        resume: ChildBatchResume,
+    ) -> None:
+        if self.octo is None:
+            return
+        try:
+            from octopal.tools.workers.management import (
+                sync_orchestration_plan_with_child_batch,
+            )
+
+            await asyncio.to_thread(
+                sync_orchestration_plan_with_child_batch,
+                octo=self.octo,
+                parent_worker_id=spec.id,
+                child_batch=resume.model_dump(mode="json"),
+            )
+        except Exception:
+            logger.debug(
+                "Failed to sync orchestration plan with child batch",
+                worker_id=spec.id,
+                exc_info=True,
+            )
 
     async def _await_instruction(
         self,
@@ -1547,7 +1580,11 @@ class WorkerRuntime:
                     self.store.update_worker_result,
                     spec.id,
                     summary=result.summary,
-                    output=result.output,
+                    output=_merge_existing_orchestration_plan_output(
+                        self.store,
+                        spec.id,
+                        result.output,
+                    ),
                     error=_worker_result_error_text(result) if worker_status == "failed" else None,
                     tools_used=result.tools_used,
                 )
@@ -1844,6 +1881,26 @@ def _worker_result_error_text(result: WorkerResult) -> str:
     return summary or "Worker reported failure"
 
 
+def _merge_existing_orchestration_plan_output(
+    store: Store,
+    worker_id: str,
+    output: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    try:
+        existing = store.get_worker(worker_id)
+    except Exception:
+        return output
+    existing_output = getattr(existing, "output", None) if existing is not None else None
+    if not isinstance(existing_output, dict):
+        return output
+    plan = existing_output.get("_orchestration_plan")
+    if not isinstance(plan, dict):
+        return output
+    merged = dict(output or {})
+    merged.setdefault("_orchestration_plan", plan)
+    return merged
+
+
 def _sanitize_worker_text(text: str) -> str:
     import re
 
@@ -2133,7 +2190,7 @@ def _allows_injected_worker_tool(
     allowed_tools: set[str] | None = None,
 ) -> bool:
     """Mirror agent-worker injected tools at the runtime bridge boundary."""
-    if normalized_tool_name != "answer_worker_instruction":
+    if normalized_tool_name not in _INJECTED_ORCHESTRATION_TOOL_NAMES:
         return False
     tools = allowed_tools if allowed_tools is not None else set(_normalize_name_list(spec.available_tools))
     return bool(tools & _CHILD_SPAWN_TOOL_NAMES)

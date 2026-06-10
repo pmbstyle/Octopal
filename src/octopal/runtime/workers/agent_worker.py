@@ -112,6 +112,9 @@ _OCTO_PROXY_TOOLS = {
     "start_worker",
     "start_child_worker",
     "start_workers_parallel",
+    "orchestration_plan_create",
+    "orchestration_plan_status",
+    "orchestration_plan_update_item",
     "synthesize_worker_results",
     "stop_worker",
     "get_worker_status",
@@ -132,6 +135,11 @@ _ORCHESTRATION_PROGRESS_TOOLS = {
 _CHILD_SPAWN_TOOLS = {
     "start_child_worker",
     "start_workers_parallel",
+}
+_ORCHESTRATION_PLAN_TOOLS = {
+    "orchestration_plan_create",
+    "orchestration_plan_status",
+    "orchestration_plan_update_item",
 }
 _SKILL_TOOL_NAMES = {
     "list_skills",
@@ -673,6 +681,10 @@ def _build_worker_coordination_prompt(*, has_child_spawn_tools: bool) -> str:
                 "",
                 "Parent-worker coordination:",
                 (
+                    "- For multi-child work, create a scoped orchestration plan before fan-out. "
+                    "Bind each child launch with orchestration_item_id so runtime progress stays visible."
+                ),
+                (
                     "- You can start child workers for independent subtasks. After starting children, "
                     "the runtime pauses you until the child batch completes or a child asks for instruction."
                 ),
@@ -894,6 +906,21 @@ async def execute_agent_task(
         )
         if answer_tool is not None:
             filtered_tools.append(_make_octo_proxy_tool(answer_tool, worker))
+    if has_child_spawn_tools:
+        existing_tool_names = {getattr(tool, "name", "") for tool in filtered_tools}
+        for plan_tool_name in sorted(_ORCHESTRATION_PLAN_TOOLS):
+            if plan_tool_name in existing_tool_names:
+                continue
+            plan_tool = next(
+                (
+                    tool
+                    for tool in available_tools
+                    if getattr(tool, "name", "") == plan_tool_name
+                ),
+                None,
+            )
+            if plan_tool is not None:
+                filtered_tools.append(_make_octo_proxy_tool(plan_tool, worker))
     filtered_tools.append(_make_request_instruction_tool(worker))
 
     # Add MCP tools from spec

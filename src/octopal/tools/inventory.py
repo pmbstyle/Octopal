@@ -270,6 +270,23 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
         profile_tags=("communication", "coding", "research"),
         capabilities=("worker_read",),
     ),
+    "orchestration_plan_create": ToolMetadata(
+        category="workers",
+        risk="guarded",
+        profile_tags=("coding", "research", "ops"),
+        capabilities=("worker_coordination", "worker_plan_write"),
+    ),
+    "orchestration_plan_status": ToolMetadata(
+        category="workers",
+        profile_tags=("coding", "research", "ops"),
+        capabilities=("worker_coordination", "worker_plan_read"),
+    ),
+    "orchestration_plan_update_item": ToolMetadata(
+        category="workers",
+        risk="guarded",
+        profile_tags=("coding", "research", "ops"),
+        capabilities=("worker_coordination", "worker_plan_write"),
+    ),
     "start_worker": ToolMetadata(
         category="workers",
         risk="guarded",

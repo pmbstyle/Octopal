@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
+import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,6 +35,27 @@ _WORKER_BLOCKED_TOOL_NAMES = {
 _WORKER_PERMISSION_ALIASES = {
     "spawn_children": "worker_manage",
 }
+_ORCHESTRATION_PLAN_KEY = "_orchestration_plan"
+_ORCHESTRATION_ITEM_STATUSES = {
+    "todo",
+    "running",
+    "awaiting_worker",
+    "awaiting_instruction",
+    "completed",
+    "failed",
+    "blocked",
+    "skipped",
+    "stopped",
+    "missing",
+}
+_ORCHESTRATION_TERMINAL_STATUSES = {
+    "completed",
+    "failed",
+    "blocked",
+    "skipped",
+    "stopped",
+    "missing",
+}
 _ALLOWED_PATHS_GUIDANCE = (
     "Workers always keep their own private scratch workspace. "
     "Use allowed_paths only when the worker needs files from Octo's main workspace, "
@@ -44,6 +66,232 @@ _ALLOWED_PATHS_GUIDANCE = (
 
 def _infer_allowed_paths_from_task(task: str) -> list[str] | None:
     return _infer_allowed_paths_from_values(task)
+
+
+def _worker_context_spec(ctx: dict[str, object]) -> Any | None:
+    worker = ctx.get("worker")
+    return getattr(worker, "spec", None)
+
+
+def _worker_context_id(ctx: dict[str, object]) -> str:
+    spec = _worker_context_spec(ctx)
+    return str(getattr(spec, "id", "") or "").strip()
+
+
+def _worker_context_is_orchestrator(ctx: dict[str, object]) -> bool:
+    spec = _worker_context_spec(ctx)
+    tool_names = {str(tool).strip() for tool in getattr(spec, "available_tools", []) or []}
+    return bool(tool_names & {"start_child_worker", "start_workers_parallel"})
+
+
+def _orchestration_access_error(ctx: dict[str, object]) -> str | None:
+    if not _worker_context_id(ctx):
+        return "orchestration plan tools require a worker context."
+    if not _worker_context_is_orchestrator(ctx):
+        return "orchestration plan tools are only available to child-spawning workers."
+    octo = ctx.get("octo")
+    if octo is None or getattr(octo, "store", None) is None:
+        return "orchestration plan tools require an active Octo store."
+    return None
+
+
+def _normalize_orchestration_item_id(value: object) -> str:
+    text = str(value or "").strip()
+    if text:
+        return text[:80]
+    return f"item-{uuid.uuid4().hex[:8]}"
+
+
+def _normalize_orchestration_status(value: object, *, default: str = "todo") -> str:
+    status = str(value or default).strip().lower()
+    if status not in _ORCHESTRATION_ITEM_STATUSES:
+        return default
+    return status
+
+
+def _load_orchestration_output(
+    octo: Any, worker_id: str
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    worker = octo.store.get_worker(worker_id)
+    output = dict(getattr(worker, "output", None) or {}) if worker is not None else {}
+    raw_plan = output.get(_ORCHESTRATION_PLAN_KEY)
+    plan = dict(raw_plan) if isinstance(raw_plan, dict) else None
+    return output, plan
+
+
+def _save_orchestration_plan(octo: Any, worker_id: str, plan: dict[str, Any]) -> dict[str, Any]:
+    output, _ = _load_orchestration_output(octo, worker_id)
+    now = utc_now().isoformat()
+    plan["updated_at"] = now
+    output[_ORCHESTRATION_PLAN_KEY] = plan
+    octo.store.update_worker_result(worker_id, output=output)
+    return plan
+
+
+def _plan_items_by_id(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    items = plan.get("items")
+    if not isinstance(items, list):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        if item_id:
+            out[item_id] = item
+    return out
+
+
+def _derive_orchestration_plan_status(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "planned"
+    statuses = {str(item.get("status") or "todo") for item in items}
+    if statuses <= {"completed", "skipped"}:
+        return "completed"
+    if statuses & {"failed", "blocked", "stopped", "missing"}:
+        return "needs_attention"
+    if statuses & {"running", "awaiting_worker", "awaiting_instruction"}:
+        return "running"
+    return "planned"
+
+
+def _update_orchestration_item(
+    *,
+    octo: Any,
+    worker_id: str,
+    item_id: str,
+    status: str,
+    worker_run_id: str | None = None,
+    worker_template_id: str | None = None,
+    summary: str | None = None,
+    output: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    _, plan = _load_orchestration_output(octo, worker_id)
+    if plan is None:
+        return {"status": "error", "message": "orchestration plan was not found"}
+    items = plan.get("items")
+    if not isinstance(items, list):
+        return {"status": "error", "message": "orchestration plan has no items"}
+    by_id = _plan_items_by_id(plan)
+    item = by_id.get(item_id)
+    if item is None:
+        return {"status": "not_found", "item_id": item_id}
+    now = utc_now().isoformat()
+    item["status"] = status
+    item["updated_at"] = now
+    if status in _ORCHESTRATION_TERMINAL_STATUSES:
+        item["completed_at"] = now
+        if status in {"completed", "skipped"}:
+            item.pop("error", None)
+    else:
+        item.pop("completed_at", None)
+        item.pop("summary", None)
+        item.pop("output", None)
+        item.pop("error", None)
+    if worker_run_id:
+        item["worker_run_id"] = worker_run_id
+    if worker_template_id:
+        item["worker_template_id"] = worker_template_id
+    if summary is not None:
+        item["summary"] = summary
+    if output is not None:
+        item["output"] = output
+    if error is not None:
+        item["error"] = error
+    plan["status"] = _derive_orchestration_plan_status(
+        [item for item in items if isinstance(item, dict)]
+    )
+    saved = _save_orchestration_plan(octo, worker_id, plan)
+    return {"status": "ok", "plan": saved, "item": item}
+
+
+def _tool_orchestration_plan_create(args: dict[str, object], ctx: dict[str, object]) -> str:
+    access_error = _orchestration_access_error(ctx)
+    if access_error:
+        return json.dumps({"status": "error", "message": access_error}, ensure_ascii=False)
+    goal = str(args.get("goal") or "").strip()
+    raw_items = args.get("items")
+    if not goal:
+        return json.dumps({"status": "error", "message": "goal is required"}, ensure_ascii=False)
+    if not isinstance(raw_items, list) or not raw_items:
+        return json.dumps(
+            {"status": "error", "message": "items must be a non-empty array"}, ensure_ascii=False
+        )
+    now = utc_now().isoformat()
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw_item in enumerate(raw_items[:20]):
+        if not isinstance(raw_item, dict):
+            continue
+        item_id = _normalize_orchestration_item_id(raw_item.get("id") or f"item-{index + 1}")
+        if item_id in seen:
+            item_id = f"{item_id}-{index + 1}"
+        seen.add(item_id)
+        title = str(raw_item.get("title") or item_id).strip()[:240] or item_id
+        item = {
+            "id": item_id,
+            "title": title,
+            "status": _normalize_orchestration_status(raw_item.get("status")),
+            "created_at": now,
+            "updated_at": now,
+        }
+        task = str(raw_item.get("task") or "").strip()
+        if task:
+            item["task"] = task
+        worker_template_id = str(raw_item.get("worker_template_id") or "").strip()
+        if worker_template_id:
+            item["worker_template_id"] = worker_template_id
+        items.append(item)
+    if not items:
+        return json.dumps(
+            {"status": "error", "message": "items must contain at least one object"},
+            ensure_ascii=False,
+        )
+    plan = {
+        "goal": goal,
+        "status": _derive_orchestration_plan_status(items),
+        "items": items,
+        "created_at": now,
+        "updated_at": now,
+    }
+    saved = _save_orchestration_plan(ctx["octo"], _worker_context_id(ctx), plan)
+    return json.dumps({"status": "ok", "plan": saved}, ensure_ascii=False)
+
+
+def _tool_orchestration_plan_status(args: dict[str, object], ctx: dict[str, object]) -> str:
+    access_error = _orchestration_access_error(ctx)
+    if access_error:
+        return json.dumps({"status": "error", "message": access_error}, ensure_ascii=False)
+    _, plan = _load_orchestration_output(ctx["octo"], _worker_context_id(ctx))
+    if plan is None:
+        return json.dumps(
+            {"status": "not_found", "message": "orchestration plan was not found"},
+            ensure_ascii=False,
+        )
+    return json.dumps({"status": "ok", "plan": plan}, ensure_ascii=False)
+
+
+def _tool_orchestration_plan_update_item(args: dict[str, object], ctx: dict[str, object]) -> str:
+    access_error = _orchestration_access_error(ctx)
+    if access_error:
+        return json.dumps({"status": "error", "message": access_error}, ensure_ascii=False)
+    item_id = str(args.get("item_id") or "").strip()
+    if not item_id:
+        return json.dumps({"status": "error", "message": "item_id is required"}, ensure_ascii=False)
+    status = _normalize_orchestration_status(args.get("status"))
+    result = _update_orchestration_item(
+        octo=ctx["octo"],
+        worker_id=_worker_context_id(ctx),
+        item_id=item_id,
+        status=status,
+        worker_run_id=str(args.get("worker_run_id") or "").strip() or None,
+        worker_template_id=str(args.get("worker_template_id") or "").strip() or None,
+        summary=str(args.get("summary") or "").strip() or None,
+        output=args.get("output") if isinstance(args.get("output"), dict) else None,
+        error=str(args.get("error") or "").strip() or None,
+    )
+    return json.dumps(result, ensure_ascii=False)
 
 
 def get_worker_tools() -> list[ToolSpec]:
@@ -69,6 +317,74 @@ def get_worker_tools() -> list[ToolSpec]:
             },
             permission="network",
             handler=_tool_propose_knowledge,
+        ),
+        ToolSpec(
+            name="orchestration_plan_create",
+            description=(
+                "Create or replace the current orchestrator worker's scoped execution plan. "
+                "Use this only from workers that coordinate child workers; it is internal worker "
+                "state, not a user-facing Octo runtime plan."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string"},
+                    "items": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "title": {"type": "string"},
+                                "task": {"type": "string"},
+                                "worker_template_id": {"type": "string"},
+                                "status": {
+                                    "type": "string",
+                                    "enum": sorted(_ORCHESTRATION_ITEM_STATUSES),
+                                },
+                            },
+                            "required": ["id", "title"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["goal", "items"],
+                "additionalProperties": False,
+            },
+            permission="worker_manage",
+            handler=_tool_orchestration_plan_create,
+        ),
+        ToolSpec(
+            name="orchestration_plan_status",
+            description="Inspect the current orchestrator worker's scoped execution plan.",
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+            permission="worker_manage",
+            handler=_tool_orchestration_plan_status,
+        ),
+        ToolSpec(
+            name="orchestration_plan_update_item",
+            description=(
+                "Update one item in the current orchestrator worker's scoped execution plan. "
+                "Use this for orchestrator-owned work that is not automatically tied to a child launch."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "item_id": {"type": "string"},
+                    "status": {"type": "string", "enum": sorted(_ORCHESTRATION_ITEM_STATUSES)},
+                    "worker_run_id": {"type": "string"},
+                    "worker_template_id": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "output": {"type": "object", "additionalProperties": True},
+                    "error": {"type": "string"},
+                },
+                "required": ["item_id", "status"],
+                "additionalProperties": False,
+            },
+            permission="worker_manage",
+            handler=_tool_orchestration_plan_update_item,
         ),
         ToolSpec(
             name="list_workers",
@@ -129,6 +445,10 @@ def get_worker_tools() -> list[ToolSpec]:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional permissions the selected worker should include.",
+                    },
+                    "orchestration_item_id": {
+                        "type": "string",
+                        "description": "Optional scoped orchestration plan item id to bind to this child worker run.",
                     },
                     "required_tool_calls": {
                         "type": "array",
@@ -229,7 +549,7 @@ def get_worker_tools() -> list[ToolSpec]:
                 "properties": {
                     "tasks": {
                         "type": "array",
-                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, a subset-only tools override, timeout_seconds, required_tools, required_permissions, required_tool_calls, plan_run_id, plan_step_id, and allowed_paths.",
+                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, a subset-only tools override, timeout_seconds, required_tools, required_permissions, required_tool_calls, plan_run_id, plan_step_id, orchestration_item_id, and allowed_paths.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -246,6 +566,10 @@ def get_worker_tools() -> list[ToolSpec]:
                                 "required_permissions": {
                                     "type": "array",
                                     "items": {"type": "string"},
+                                },
+                                "orchestration_item_id": {
+                                    "type": "string",
+                                    "description": "Optional scoped orchestration plan item id to bind to this child worker run.",
                                 },
                                 "required_tool_calls": {
                                     "type": "array",
@@ -931,6 +1255,25 @@ async def _start_worker_common(
         if policy_error:
             return policy_error
 
+    orchestration_binding_error = _validate_orchestration_item_binding_request(
+        octo=octo,
+        parent_worker_id=child_ctx["run_id"] if child_ctx else None,
+        args=args,
+    )
+    if orchestration_binding_error:
+        return json.dumps(
+            {
+                "status": "error",
+                "worker_template_id": worker_id or None,
+                "message": orchestration_binding_error.get("message")
+                or "orchestration plan binding is invalid",
+                "followup_required": False,
+                "next_best_action": "continue_current_plan",
+                "orchestration_binding": orchestration_binding_error,
+            },
+            ensure_ascii=False,
+        )
+
     allowed_paths = (
         args.get("allowed_paths")
         if "allowed_paths" in args
@@ -975,6 +1318,17 @@ async def _start_worker_common(
         if status == "started"
         else _skipped_plan_step_binding(args)
     )
+    orchestration_binding = (
+        _bind_orchestration_item_for_child_launch(
+            octo=octo,
+            parent_worker_id=child_ctx["run_id"] if child_ctx else None,
+            args=args,
+            worker_run_id=str(launched_worker_id or run_id or "").strip(),
+            worker_template_id=worker_id,
+        )
+        if status == "started"
+        else None
+    )
 
     return json.dumps(
         {
@@ -991,6 +1345,7 @@ async def _start_worker_common(
             "followup_required": followup_required,
             "next_best_action": next_best_action,
             **({"plan_binding": plan_binding} if plan_binding else {}),
+            **({"orchestration_binding": orchestration_binding} if orchestration_binding else {}),
         },
         ensure_ascii=False,
     )
@@ -1099,6 +1454,137 @@ def _skipped_plan_step_binding(args: dict[str, object]) -> dict[str, object] | N
     }
 
 
+def _validate_orchestration_item_binding_request(
+    *,
+    octo: Octo,
+    parent_worker_id: str | None,
+    args: dict[str, object],
+) -> dict[str, object] | None:
+    item_id = str(args.get("orchestration_item_id") or "").strip()
+    if not item_id:
+        return None
+    if not parent_worker_id:
+        return {
+            "status": "error",
+            "item_id": item_id,
+            "message": "orchestration_item_id can only be used from a child-spawning worker",
+        }
+    _, plan = _load_orchestration_output(octo, parent_worker_id)
+    if plan is None:
+        return {
+            "status": "not_found",
+            "item_id": item_id,
+            "message": "orchestration plan was not found",
+        }
+    if item_id not in _plan_items_by_id(plan):
+        return {
+            "status": "not_found",
+            "item_id": item_id,
+            "message": "orchestration plan item was not found",
+        }
+    return None
+
+
+def _bind_orchestration_item_for_child_launch(
+    *,
+    octo: Octo,
+    parent_worker_id: str | None,
+    args: dict[str, object],
+    worker_run_id: str,
+    worker_template_id: str,
+) -> dict[str, object] | None:
+    item_id = str(args.get("orchestration_item_id") or "").strip()
+    if not item_id:
+        return None
+    if not parent_worker_id or not worker_run_id:
+        return {
+            "status": "error",
+            "item_id": item_id,
+            "message": "parent worker id and child worker run id are required",
+        }
+    return _update_orchestration_item(
+        octo=octo,
+        worker_id=parent_worker_id,
+        item_id=item_id,
+        status="awaiting_worker",
+        worker_run_id=worker_run_id,
+        worker_template_id=worker_template_id,
+    )
+
+
+def sync_orchestration_plan_with_child_batch(
+    *,
+    octo: Octo,
+    parent_worker_id: str,
+    child_batch: dict[str, Any],
+) -> dict[str, object] | None:
+    """Update a parent worker's scoped orchestration plan from child-batch outcomes."""
+    if not parent_worker_id or not isinstance(child_batch, dict):
+        return None
+    _, plan = _load_orchestration_output(octo, parent_worker_id)
+    if plan is None:
+        return None
+    items = plan.get("items")
+    if not isinstance(items, list):
+        return None
+    by_child_id: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        worker_run_id = str(item.get("worker_run_id") or "").strip()
+        if worker_run_id:
+            by_child_id[worker_run_id] = item
+    if not by_child_id:
+        return None
+
+    changed = 0
+    now = utc_now().isoformat()
+
+    def _apply_outcome(bucket: str, status: str) -> None:
+        nonlocal changed
+        raw_outcomes = child_batch.get(bucket)
+        if not isinstance(raw_outcomes, list):
+            return
+        for outcome in raw_outcomes:
+            if not isinstance(outcome, dict):
+                continue
+            worker_id = str(outcome.get("worker_id") or "").strip()
+            item = by_child_id.get(worker_id)
+            if item is None:
+                continue
+            current_status = str(item.get("status") or "")
+            if current_status in _ORCHESTRATION_TERMINAL_STATUSES and current_status == status:
+                continue
+            item["status"] = status
+            item["updated_at"] = now
+            if status in _ORCHESTRATION_TERMINAL_STATUSES:
+                item["completed_at"] = now
+            summary = str(outcome.get("summary") or "").strip()
+            if summary:
+                item["summary"] = summary
+            output = outcome.get("output")
+            if isinstance(output, dict):
+                item["output"] = output
+            error = str(outcome.get("error") or "").strip()
+            if error:
+                item["error"] = error
+            changed += 1
+
+    _apply_outcome("completed", "completed")
+    _apply_outcome("failed", "failed")
+    _apply_outcome("stopped", "stopped")
+    _apply_outcome("missing", "missing")
+    _apply_outcome("awaiting_instruction", "awaiting_instruction")
+
+    if not changed:
+        return {"status": "unchanged", "updated_count": 0, "plan": plan}
+    plan["status"] = _derive_orchestration_plan_status(
+        [item for item in items if isinstance(item, dict)]
+    )
+    saved = _save_orchestration_plan(octo, parent_worker_id, plan)
+    return {"status": "ok", "updated_count": changed, "plan": saved}
+
+
 async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, object]) -> str:
     octo: Octo = ctx["octo"]
     chat_id = int(ctx.get("chat_id") or 0)
@@ -1172,6 +1658,19 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
             )
             if policy_error:
                 return {"index": index, "status": "error", "error": policy_error}
+        orchestration_binding_error = _validate_orchestration_item_binding_request(
+            octo=octo,
+            parent_worker_id=child_ctx["run_id"] if child_ctx else None,
+            args=item,
+        )
+        if orchestration_binding_error:
+            return {
+                "index": index,
+                "status": "error",
+                "error": orchestration_binding_error.get("message")
+                or "orchestration plan binding is invalid",
+                "orchestration_binding": orchestration_binding_error,
+            }
         async with sem:
             launch = await octo._start_worker_async(
                 worker_id=selected_worker_id,
@@ -1205,6 +1704,17 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
             if status == "started"
             else _skipped_plan_step_binding(item)
         )
+        orchestration_binding = (
+            _bind_orchestration_item_for_child_launch(
+                octo=octo,
+                parent_worker_id=child_ctx["run_id"] if child_ctx else None,
+                args=item,
+                worker_run_id=worker_run_id,
+                worker_template_id=selected_worker_id,
+            )
+            if status == "started"
+            else None
+        )
         return {
             "index": index,
             "status": status,
@@ -1217,6 +1727,7 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
             "root_task_id": launch.get("root_task_id"),
             "spawn_depth": launch.get("spawn_depth"),
             **({"plan_binding": plan_binding} if plan_binding else {}),
+            **({"orchestration_binding": orchestration_binding} if orchestration_binding else {}),
         }
 
     launches = await asyncio.gather(*[_launch(item, idx) for idx, item in enumerate(tasks)])
