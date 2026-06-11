@@ -11,7 +11,7 @@ from typing import Any
 
 import structlog
 
-from octopal.channels.group_addressing import decide_group_addressing
+from octopal.channels.group_addressing import decide_group_addressing, load_recent_group_context
 from octopal.channels.group_observation import record_passive_group_observation
 from octopal.channels.whatsapp.bridge import WhatsAppBridgeController
 from octopal.channels.whatsapp.ids import (
@@ -318,6 +318,7 @@ class WhatsAppRuntime:
 
         if bool(metadata.get("is_group_chat")):
             provider = getattr(self.octo, "provider", None)
+            recent_context = await load_recent_group_context(self.octo, chat_id=chat_id)
             decision = await decide_group_addressing(
                 provider=provider,
                 settings=self.settings,
@@ -327,6 +328,7 @@ class WhatsAppRuntime:
                 has_attachments=bool(images or saved_file_paths),
                 reply_to_agent=bool(metadata.get("reply_to_agent")),
                 sender_label=str(metadata.get("sender_label", "") or "") or None,
+                recent_context=recent_context,
             )
             if not decision.should_process:
                 await record_passive_group_observation(

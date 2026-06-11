@@ -65,15 +65,33 @@ class _FakeProvider:
 
     async def complete(self, messages, **kwargs):
         self.messages.append(messages)
-        return f'{{"action":"{self.action}","confidence":0.95,"reason":"test"}}'
+        return (
+            f'{{"action":"{self.action}","confidence":0.95,"reason":"test",'
+            '"semantic_review":{'
+            '"is_direct_request_to_this_agent":true,'
+            '"adds_new_information_or_decision_point":true,'
+            '"would_reply_change_conversation_state":true,'
+            '"loop_risk":"low",'
+            '"silence_is_better":false'
+            "}}"
+        )
+
+
+class _FakeMemory:
+    def __init__(self, history=None) -> None:
+        self.history = list(history or [])
+
+    async def get_recent_history(self, chat_id: int, limit: int = 6):
+        return self.history[-limit:]
 
 
 class _FakeOcto:
-    def __init__(self) -> None:
+    def __init__(self, *, recent_history=None) -> None:
         self.handled: list[dict] = []
         self.initialized: list[int] = []
         self.internal_send = None
         self.provider = _FakeProvider()
+        self.memory = _FakeMemory(recent_history)
 
     async def initialize_system(self, *, bot=None, allowed_chat_ids=None) -> None:
         self.initialized = list(allowed_chat_ids or [])
@@ -86,9 +104,7 @@ class _FakeOcto:
         return None
 
 
-def _make_settings(
-    *, mode: str, allowed_numbers: str, allowed_chats: str = ""
-) -> SimpleNamespace:
+def _make_settings(*, mode: str, allowed_numbers: str, allowed_chats: str = "") -> SimpleNamespace:
     return SimpleNamespace(
         whatsapp_mode=mode,
         allowed_whatsapp_numbers=allowed_numbers,
@@ -554,5 +570,55 @@ def test_whatsapp_runtime_handles_addressed_group_message(monkeypatch) -> None:
         assert fake_octo.handled[-1]["text"] == "Octopals, status?"
         assert fake_octo.handled[-1]["kwargs"]["source_channel"] == "whatsapp"
         assert runtime.bridge.sent == [("120363123456789@g.us", "hello back")]
+
+    asyncio.run(scenario())
+
+
+def test_whatsapp_runtime_passes_recent_group_context_to_addressing_gate(monkeypatch) -> None:
+    fake_octo = _FakeOcto(
+        recent_history=[
+            ("user", "Alice, status?", "2026-06-11T10:00:00+00:00"),
+            ("assistant", "Ready.", "2026-06-11T10:01:00+00:00"),
+        ]
+    )
+    fake_octo.provider = _FakeProvider("continue_thread")
+    monkeypatch.setattr(whatsapp_runtime_module, "build_octo", lambda settings: fake_octo)
+    monkeypatch.setattr(whatsapp_runtime_module, "WhatsAppBridgeController", _FakeBridgeController)
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_component_gauges", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        whatsapp_runtime_module, "update_last_message", lambda *args, **kwargs: None
+    )
+
+    runtime = WhatsAppRuntime(
+        _make_settings(
+            mode="separate",
+            allowed_numbers="+15551234567",
+            allowed_chats="120363123456789@g.us",
+        )
+    )
+    runtime.attach_octo_output()
+
+    async def scenario() -> None:
+        result = await runtime.handle_inbound(
+            {
+                "sender": "+15550000000",
+                "conversation": "120363123456789@g.us",
+                "remoteJid": "120363123456789@g.us",
+                "group": True,
+                "fromMe": False,
+                "text": "And production?",
+                "messageId": "wamid-group-3",
+            }
+        )
+        assert result["accepted"] is True
+        payload = fake_octo.provider.messages[-1][-1].content
+        assert '"recent_context"' in payload
+        assert "Alice, status?" in payload
+        assert fake_octo.handled[-1]["kwargs"]["source_channel"] == "whatsapp"
+        assert fake_octo.handled[-1]["kwargs"]["source_context"]["addressing_action"] == (
+            "continue_thread"
+        )
 
     asyncio.run(scenario())
