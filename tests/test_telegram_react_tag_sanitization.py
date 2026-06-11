@@ -274,6 +274,36 @@ def test_telegram_group_message_ignored_before_reaction_or_octo_call(tmp_path) -
     assert metadata["addressing_reason"] == "addressed to another agent"
 
 
+def test_telegram_group_message_from_other_bot_reaches_addressing_gate() -> None:
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=-100211619002, type="supergroup"),
+        from_user=SimpleNamespace(id=222, is_bot=True),
+    )
+    bot = SimpleNamespace(id=111)
+
+    assert telegram_handlers._telegram_bot_authored_message_should_skip(message, bot) is False
+
+
+def test_telegram_message_from_this_bot_is_still_skipped() -> None:
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=-100211619002, type="supergroup"),
+        from_user=SimpleNamespace(id=111, is_bot=True),
+    )
+    bot = SimpleNamespace(id=111)
+
+    assert telegram_handlers._telegram_bot_authored_message_should_skip(message, bot) is True
+
+
+def test_telegram_private_message_from_bot_is_still_skipped() -> None:
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=211619002, type="private"),
+        from_user=SimpleNamespace(id=222, is_bot=True),
+    )
+    bot = SimpleNamespace(id=111)
+
+    assert telegram_handlers._telegram_bot_authored_message_should_skip(message, bot) is True
+
+
 def test_telegram_plain_group_command_is_gated(tmp_path) -> None:
     class DummyProvider:
         async def complete(self, messages, **kwargs):
