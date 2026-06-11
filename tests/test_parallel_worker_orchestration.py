@@ -531,6 +531,66 @@ def test_orchestrator_plan_binds_parallel_child_runs_and_syncs_results(tmp_path:
     assert items["patch"]["error"] == "test fixture missing"
 
 
+def test_partial_orchestrator_plan_stays_running_after_first_child_completes(
+    tmp_path: Path,
+) -> None:
+    store = _sqlite_store(tmp_path)
+    now = datetime.now(UTC)
+    parent_id = "parent-run-1"
+    store.create_worker(
+        WorkerRecord(
+            id=parent_id,
+            status="running",
+            task="Coordinate fix",
+            granted_caps=[],
+            created_at=now,
+            updated_at=now,
+            output={
+                "_orchestration_plan": {
+                    "goal": "Coordinate fix",
+                    "status": "running",
+                    "items": [
+                        {
+                            "id": "research",
+                            "status": "awaiting_worker",
+                            "worker_run_id": "child-run-1",
+                        },
+                        {
+                            "id": "patch",
+                            "status": "todo",
+                        },
+                    ],
+                }
+            },
+        )
+    )
+
+    octo = SimpleNamespace(store=store)
+
+    sync = sync_orchestration_plan_with_child_batch(
+        octo=octo,
+        parent_worker_id=parent_id,
+        child_batch={
+            "completed": [
+                {
+                    "worker_id": "child-run-1",
+                    "status": "completed",
+                    "summary": "Research done.",
+                }
+            ]
+        },
+    )
+
+    assert sync is not None
+    parent = store.get_worker(parent_id)
+    assert parent is not None
+    plan = parent.output["_orchestration_plan"]
+    assert plan["status"] == "running"
+    items = {item["id"]: item for item in plan["items"]}
+    assert items["research"]["status"] == "completed"
+    assert items["patch"]["status"] == "todo"
+
+
 def test_final_worker_output_preserves_existing_orchestration_plan(tmp_path: Path) -> None:
     store = _sqlite_store(tmp_path)
     now = datetime.now(UTC)
