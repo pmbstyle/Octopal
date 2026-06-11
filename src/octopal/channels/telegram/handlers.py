@@ -18,7 +18,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, FSInputFile, Message, ReactionTypeEmoji
 
-from octopal.channels.group_addressing import decide_group_addressing
+from octopal.channels.group_addressing import decide_group_addressing, load_recent_group_context
 from octopal.channels.group_observation import record_passive_group_observation
 from octopal.channels.telegram.access import is_allowed_chat, parse_allowed_chat_ids
 from octopal.channels.telegram.approvals import ApprovalManager
@@ -894,6 +894,7 @@ def _flush_pending_turn_factory(
         is_group_chat = bool(metadata.get("is_group_chat"))
         if is_group_chat:
             provider = getattr(octo, "provider", None)
+            recent_context = await load_recent_group_context(octo, chat_id=chat_id)
             decision = await decide_group_addressing(
                 provider=provider,
                 settings=settings,
@@ -903,6 +904,7 @@ def _flush_pending_turn_factory(
                 has_attachments=bool(images or saved_file_paths),
                 reply_to_agent=bool(metadata.get("reply_to_agent")),
                 sender_label=str(metadata.get("sender_label", "") or "") or None,
+                recent_context=recent_context,
             )
             if not decision.should_process:
                 await record_passive_group_observation(
@@ -1072,6 +1074,8 @@ async def _telegram_group_command_should_run(
 ) -> bool:
     if not _is_telegram_group_chat(message):
         return True
+    if _telegram_command_targets_this_bot(command, bot):
+        return True
     provider = getattr(octo, "provider", None)
     decision = await decide_group_addressing(
         provider=provider,
@@ -1079,10 +1083,7 @@ async def _telegram_group_command_should_run(
         channel="telegram",
         chat_id=message.chat.id,
         text=message.text or message.caption or "",
-        reply_to_agent=(
-            _telegram_reply_targets_this_bot(message, bot)
-            or _telegram_command_targets_this_bot(command, bot)
-        ),
+        reply_to_agent=_telegram_reply_targets_this_bot(message, bot),
         sender_label=_telegram_sender_label(message) or None,
     )
     if decision.should_process:
