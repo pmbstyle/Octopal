@@ -152,6 +152,8 @@ def _derive_orchestration_plan_status(items: list[dict[str, Any]]) -> str:
         return "needs_attention"
     if statuses & {"running", "awaiting_worker", "awaiting_instruction"}:
         return "running"
+    if statuses & {"completed", "skipped"}:
+        return "running"
     return "planned"
 
 
