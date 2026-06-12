@@ -17,17 +17,19 @@
 - `uv sync` installs the project and dev dependencies for day-to-day development.
 - `python -m venv .venv` and `pip install -e .[dev]` are the non-`uv` editable setup path.
 - `uv run octopal configure` runs the interactive configuration wizard and bootstraps missing workspace files.
+- `uv run octopal config show [--reveal-secrets]` prints the effective config for inspection, and `uv run octopal config migrate` writes the current `.env`-backed settings into `config.json`.
 - `uv run octopal start` starts Octopal in background mode.
 - `uv run octopal start --foreground` runs the Octo and gateway in the foreground.
 - `uv run octopal stop`, `uv run octopal restart`, and `uv run octopal status` manage the local runtime.
 - `uv run octopal update` applies the latest release update flow for an existing install.
-- `uv run octopal logs --follow` tails `data/logs/octopal.log`.
+- `uv run octopal logs` prints `data/logs/octopal.log`, and `uv run octopal logs --follow` tails it.
 - `uv run octopal gateway` starts the FastAPI gateway directly.
-- `uv run octopal dashboard --once` prints one dashboard snapshot; `uv run octopal dashboard --watch` runs the live terminal dashboard; `uv run octopal dashboard --json` emits a machine-readable snapshot.
-- `uv run octopal connector status` checks connector authorization/readiness after connector setup flows; `uv run octopal connector auth <name>` and `uv run octopal connector disconnect <name> [--forget-credentials]` handle CLI-based connector auth maintenance.
+- `uv run octopal dashboard --once` prints one dashboard snapshot; `uv run octopal dashboard --watch` runs the live terminal dashboard; `uv run octopal dashboard --json` emits a machine-readable snapshot; `--compact` and `--last <N>` tune terminal output.
+- `uv run octopal connector status [--json]` checks connector authorization/readiness after connector setup flows; `uv run octopal connector auth <name>` and `uv run octopal connector disconnect <name> [--forget-credentials]` handle CLI-based connector auth maintenance.
 - `uv run octopal sync-worker-templates --overwrite` refreshes default worker templates into `workspace/workers`.
-- `uv run octopal memory stats` and `uv run octopal memory cleanup --dry-run` cover common memory maintenance flows.
-- `uv run octopal whatsapp install-bridge`, `uv run octopal whatsapp link`, `uv run octopal whatsapp status`, and `uv run octopal whatsapp logout` manage the WhatsApp bridge lifecycle.
+- `uv run octopal memory stats` and `uv run octopal memory cleanup [--keep-days <days>] [--keep-count <count>] [--dry-run]` cover common memory maintenance flows.
+- `uv run octopal whatsapp install-bridge`, `uv run octopal whatsapp link [--timeout <seconds>]`, `uv run octopal whatsapp status`, and `uv run octopal whatsapp logout` manage the WhatsApp bridge lifecycle.
+- `uv run octopal tools resolve [--profile <name>] [--preset all|octo] [--available-only] [--json]` explains which tools are available and why others are blocked.
 - `uv run octopal skill list`, `uv run octopal skill install <source>`, `uv run octopal skill update <skill-id>`, `uv run octopal skill verify <skill-id>`, `uv run octopal skill enable <skill-id>`, `uv run octopal skill disable <skill-id>`, `uv run octopal skill trust <skill-id>`, `uv run octopal skill untrust <skill-id>`, `uv run octopal skill prepare-env <skill-id>`, `uv run octopal skill remove-env <skill-id>`, and `uv run octopal skill remove <skill-id>` cover the installed skill workflow.
 - `uv run octopal build-worker-image --tag octopal-worker:latest` builds the Docker worker image.
 - `uv run pytest` runs the test suite.
@@ -59,6 +61,7 @@
 ## Security & Configuration Tips
 
 - Use `uv run octopal configure` to manage the primary `config.json` settings.
+- Connector setup is CLI-first: enable services in `uv run octopal configure`, run `uv run octopal connector auth <name>`, check `uv run octopal connector status`, then restart Octopal if the CLI asks for it.
 - If Docker CLI/daemon or the worker image is unavailable, Octopal may temporarily fall back to `same_env`; verify the effective launcher in `uv run octopal status` or the dashboard and treat it as a local-development fallback, not the preferred isolation mode.
 - **Tailscale Integration:** Managed in the `gateway` section of `config.json` via `tailscale_auto_serve` (boolean) and `tailscale_ips` (comma-separated string).
 - Important settings include channel credentials, provider API keys, dashboard protection, and the storage paths in `config.json`.
