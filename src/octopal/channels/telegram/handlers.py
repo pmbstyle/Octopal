@@ -420,19 +420,7 @@ def register_handlers(
                 message_id=message.message_id,
             )
             return
-        if getattr(message.from_user, "is_bot", False):
-            if _is_telegram_group_chat(message) and not _telegram_message_from_this_bot(
-                message, bot
-            ):
-                await record_passive_group_observation(
-                    octo,
-                    channel="telegram",
-                    chat_id=message.chat.id,
-                    text=message.text or message.caption or "",
-                    sender_label=_telegram_sender_label(message),
-                    addressing_action="observe_bot",
-                    addressing_reason="bot-authored group message",
-                )
+        if _telegram_bot_authored_message_should_skip(message, bot):
             logger.info(
                 "Skipping bot-authored Telegram inbound message",
                 chat_id=message.chat.id,
@@ -1062,6 +1050,14 @@ def _telegram_message_from_this_bot(message: Message, bot: Bot) -> bool:
     if bot_id is None or sender_id is None:
         return False
     return int(bot_id) == int(sender_id)
+
+
+def _telegram_bot_authored_message_should_skip(message: Message, bot: Bot) -> bool:
+    if not bool(getattr(getattr(message, "from_user", None), "is_bot", False)):
+        return False
+    return not (
+        _is_telegram_group_chat(message) and not _telegram_message_from_this_bot(message, bot)
+    )
 
 
 async def _telegram_group_command_should_run(
