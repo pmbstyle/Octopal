@@ -1073,6 +1073,7 @@ async def _telegram_group_command_should_run(
     if _telegram_command_targets_this_bot(command, bot):
         return True
     provider = getattr(octo, "provider", None)
+    recent_context = await load_recent_group_context(octo, chat_id=message.chat.id)
     decision = await decide_group_addressing(
         provider=provider,
         settings=settings,
@@ -1081,6 +1082,7 @@ async def _telegram_group_command_should_run(
         text=message.text or message.caption or "",
         reply_to_agent=_telegram_reply_targets_this_bot(message, bot),
         sender_label=_telegram_sender_label(message) or None,
+        recent_context=recent_context,
     )
     if decision.should_process:
         return True
