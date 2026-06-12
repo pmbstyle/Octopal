@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -397,3 +398,62 @@ def test_telegram_reply_to_unknown_bot_does_not_bypass_group_gate(tmp_path) -> N
         )
 
     assert asyncio.run(scenario()) is False
+
+
+def test_telegram_group_command_passes_recent_context_to_provider(tmp_path) -> None:
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def complete(self, messages, **kwargs):
+            self.messages.append(messages)
+            return '{"action":"continue_thread","confidence":0.92,"reason":"follow-up","semantic_review":{"is_direct_request_to_this_agent":true,"adds_new_information_or_decision_point":true,"would_reply_change_conversation_state":true,"loop_risk":"low","silence_is_better":false}}'
+
+    class DummyMemory:
+        async def get_recent_history(self, chat_id, limit=6, **kwargs):
+            assert chat_id == -100211619002
+            assert limit == 8
+            assert kwargs == {}
+            return [
+                ("user", "Alice, check deploy", "2026-06-11T10:00:00+00:00"),
+                ("assistant", "Deploy is running.", "2026-06-11T10:01:00+00:00"),
+            ]
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=-100211619002, type="supergroup"),
+        text="/status",
+        caption=None,
+        from_user=SimpleNamespace(full_name="Slava", username="slava"),
+        reply_to_message=None,
+    )
+    provider = DummyProvider()
+    octo = SimpleNamespace(provider=provider, memory=DummyMemory())
+    settings = Settings(
+        OCTOPAL_STATE_DIR=tmp_path / "state",
+        OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
+    )
+    bot = SimpleNamespace(id=123456, username="AliceBot")
+
+    async def scenario() -> bool:
+        return await telegram_handlers._telegram_group_command_should_run(
+            message,
+            command=CommandObject(command="status"),
+            settings=settings,
+            octo=octo,
+            bot=bot,
+        )
+
+    assert asyncio.run(scenario()) is True
+    payload = json.loads(provider.messages[-1][-1].content)
+    assert payload["recent_context"] == [
+        {
+            "role": "user",
+            "content": "Alice, check deploy",
+            "created_at": "2026-06-11T10:00:00+00:00",
+        },
+        {
+            "role": "assistant",
+            "content": "Deploy is running.",
+            "created_at": "2026-06-11T10:01:00+00:00",
+        },
+    ]
