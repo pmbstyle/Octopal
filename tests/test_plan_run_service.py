@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from octopal.infrastructure.store.sqlite import SQLiteStore
-from octopal.runtime.octo.followup_pipeline import _sync_runtime_plan_with_worker_result
+from octopal.runtime.octo import followup_pipeline
+from octopal.runtime.octo.followup_pipeline import (
+    _build_runtime_plan_continuation,
+    _schedule_runtime_plan_continuation,
+    _sync_runtime_plan_with_worker_result,
+)
 from octopal.runtime.plans import PlanRunService
 from octopal.runtime.workers.contracts import WorkerResult
 
@@ -238,3 +247,247 @@ def test_followup_pipeline_syncs_runtime_plan_before_routing(tmp_path: Path) -> 
     assert saved is not None
     assert saved.status == "needs_next_step"
     assert saved.current_step_id == "summarize"
+
+
+def test_followup_pipeline_builds_continuation_for_next_plan_step(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    service = PlanRunService(store)
+    run = service.create_run(
+        goal="Publish and verify",
+        chat_id=42,
+        steps=[
+            {"id": "publish", "kind": "worker", "title": "Publish"},
+            {
+                "id": "verify",
+                "kind": "octo",
+                "title": "Verify published post",
+                "task": "Check profile visibility and close the plan.",
+            },
+        ],
+    )
+    service.bind_worker_step(run.id, "publish", "worker-123")
+
+    synced = _sync_runtime_plan_with_worker_result(
+        SimpleNamespace(store=store),
+        42,
+        worker_id="worker-123",
+        result=WorkerResult(status="completed", summary="Worker hit its step limit."),
+    )
+
+    continuation = _build_runtime_plan_continuation(
+        synced,
+        worker_id="worker-123",
+        result=WorkerResult(status="completed", summary="Worker hit its step limit."),
+        notify_user=None,
+    )
+
+    assert continuation is not None
+    assert continuation["run_id"] == run.id
+    assert continuation["step_id"] == "verify"
+    assert continuation["notify_policy"] == "always"
+    assert continuation["notify_user"] is True
+    assert f"runtime plan `{run.id}`" in continuation["args"]["task"]
+    assert "Check profile visibility" in continuation["args"]["task"]
+    assert "Worker hit its step limit" in continuation["args"]["context_summary"]
+
+
+def test_followup_pipeline_preserves_if_significant_continuation_notify_policy(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    service = PlanRunService(store)
+    run = service.create_run(
+        goal="Publish and verify",
+        chat_id=42,
+        steps=[
+            {"id": "publish", "kind": "worker", "title": "Publish"},
+            {"id": "verify", "kind": "octo", "title": "Verify"},
+        ],
+    )
+    service.bind_worker_step(run.id, "publish", "worker-123")
+    synced = _sync_runtime_plan_with_worker_result(
+        SimpleNamespace(store=store),
+        42,
+        worker_id="worker-123",
+        result=WorkerResult(status="completed", summary="Published."),
+    )
+
+    continuation = _build_runtime_plan_continuation(
+        synced,
+        worker_id="worker-123",
+        result=WorkerResult(status="completed", summary="Published."),
+        notify_user="if_significant",
+    )
+
+    assert continuation is not None
+    assert continuation["notify_policy"] == "if_significant"
+    assert continuation["notify_user"] is True
+    assert continuation["args"]["notify_user"] is True
+
+
+def test_followup_pipeline_schedules_continuation_for_needs_next_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store(tmp_path)
+    service = PlanRunService(store)
+    run = service.create_run(
+        goal="Collect and summarize",
+        chat_id=42,
+        steps=[
+            {"id": "collect", "kind": "worker", "title": "Collect"},
+            {"id": "summarize", "kind": "final", "title": "Summarize"},
+        ],
+    )
+    service.bind_worker_step(run.id, "collect", "worker-123")
+    synced = _sync_runtime_plan_with_worker_result(
+        SimpleNamespace(store=store),
+        42,
+        worker_id="worker-123",
+        result=WorkerResult(status="completed", summary="Data collected."),
+    )
+    calls: list[dict[str, object]] = []
+
+    async def fake_run(octo, chat_id, args, *, notify_policy):
+        calls.append(
+            {
+                "octo": octo,
+                "chat_id": chat_id,
+                "args": args,
+                "notify_policy": notify_policy,
+            }
+        )
+        return {"status": "continued", "delivered": notify_policy != "never"}
+
+    monkeypatch.setattr(followup_pipeline, "_run_runtime_plan_continuation", fake_run)
+
+    async def scenario() -> None:
+        scheduled = _schedule_runtime_plan_continuation(
+            SimpleNamespace(store=store),
+            42,
+            synced,
+            worker_id="worker-123",
+            task_text="Collect",
+            result=WorkerResult(status="completed", summary="Data collected."),
+            notify_user=None,
+            correlation_id="corr-1",
+        )
+        assert scheduled is True
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+    assert len(calls) == 1
+    assert calls[0]["chat_id"] == 42
+    assert calls[0]["notify_policy"] == "always"
+    assert "summarize" in str(calls[0]["args"])
+
+
+def test_followup_pipeline_runtime_continuation_keeps_if_significant_visible_and_refreshes_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import octopal.tools.catalog as catalog
+
+    store = _store(tmp_path)
+    seen: dict[str, object] = {}
+    refreshed: list[object] = []
+
+    async def fake_tool(args, ctx):
+        seen["args"] = args
+        seen["ctx"] = ctx
+        return json.dumps({"status": "continued", "delivered": True})
+
+    def fake_publish_runtime_metrics(thinking_count: int = 0, *, octo=None) -> None:
+        refreshed.append(octo)
+
+    monkeypatch.setattr(catalog, "_tool_octo_continue_from_control_route", fake_tool)
+    monkeypatch.setattr(followup_pipeline, "_publish_runtime_metrics", fake_publish_runtime_metrics)
+
+    payload = asyncio.run(
+        followup_pipeline._run_runtime_plan_continuation(
+            SimpleNamespace(store=store),
+            42,
+            {"task": "Continue plan", "context_summary": "Worker finished.", "notify_user": True},
+            notify_policy="if_significant",
+        )
+    )
+
+    assert payload == {"status": "continued", "delivered": True}
+    assert isinstance(seen["ctx"], dict)
+    assert seen["ctx"]["control_route_notify_user"] == "always"
+    assert len(refreshed) == 1
+
+
+def test_followup_pipeline_falls_back_to_worker_followup_when_continuation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store(tmp_path)
+    service = PlanRunService(store)
+    run = service.create_run(
+        goal="Collect and summarize",
+        chat_id=42,
+        steps=[
+            {"id": "collect", "kind": "worker", "title": "Collect"},
+            {"id": "summarize", "kind": "final", "title": "Summarize"},
+        ],
+    )
+    service.bind_worker_step(run.id, "collect", "worker-123")
+    result = WorkerResult(status="completed", summary="Data collected.")
+    synced = _sync_runtime_plan_with_worker_result(
+        SimpleNamespace(store=store),
+        42,
+        worker_id="worker-123",
+        result=result,
+    )
+    fallbacks: list[dict[str, object]] = []
+
+    async def fake_run(octo, chat_id, args, *, notify_policy):
+        return {"status": "error", "delivered": False}
+
+    monkeypatch.setattr(followup_pipeline, "_run_runtime_plan_continuation", fake_run)
+
+    async def scenario() -> None:
+        fallback_ready = asyncio.Event()
+
+        async def fake_enqueue(octo, chat_id, correlation_id, *, worker_id, task_text, result, notify_user):
+            fallbacks.append(
+                {
+                    "octo": octo,
+                    "chat_id": chat_id,
+                    "correlation_id": correlation_id,
+                    "worker_id": worker_id,
+                    "task_text": task_text,
+                    "result": result,
+                    "notify_user": notify_user,
+                }
+            )
+            fallback_ready.set()
+
+        monkeypatch.setattr(followup_pipeline, "_enqueue_batched_worker_followup", fake_enqueue)
+        octo = SimpleNamespace(
+            store=store,
+            should_suppress_channel_followups=lambda correlation_id: False,
+            channel_followup_suppression_reason=lambda correlation_id: None,
+        )
+
+        scheduled = _schedule_runtime_plan_continuation(
+            octo,
+            42,
+            synced,
+            worker_id="worker-123",
+            task_text="Collect",
+            result=result,
+            notify_user=None,
+            correlation_id="corr-1",
+        )
+        assert scheduled is True
+        await asyncio.wait_for(fallback_ready.wait(), timeout=1)
+
+    asyncio.run(scenario())
+
+    assert len(fallbacks) == 1
+    assert fallbacks[0]["chat_id"] == 42
+    assert fallbacks[0]["correlation_id"] == "corr-1"
+    assert fallbacks[0]["worker_id"] == "worker-123"
+    assert fallbacks[0]["task_text"] == "Collect"
+    assert fallbacks[0]["notify_user"] is None

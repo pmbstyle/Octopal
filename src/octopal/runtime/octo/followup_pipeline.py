@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from typing import Any
 
@@ -9,7 +10,7 @@ import structlog
 from octopal.infrastructure.logging import correlation_id_var
 from octopal.infrastructure.observability.base import now_ms
 from octopal.infrastructure.observability.helpers import safe_preview, summarize_exception
-from octopal.runtime.metrics import update_component_gauges
+from octopal.runtime.metrics import read_metrics_snapshot, update_component_gauges
 from octopal.runtime.octo.background_tracing import (
     _finish_background_trace_context,
     _start_background_trace_context,
@@ -39,6 +40,7 @@ from octopal.runtime.octo.router import (
 )
 from octopal.runtime.octo.runtime_config import _env_int
 from octopal.runtime.plans import PlanRunService
+from octopal.runtime.plans.service import PLAN_ACTIVE_STORAGE_STATUSES
 from octopal.runtime.scheduler.service import normalize_notify_user_policy
 from octopal.runtime.workers.contracts import WorkerResult
 
@@ -108,17 +110,46 @@ async def _route_worker_results_back_to_octo(*args: Any, **kwargs: Any) -> str:
         return await route_func(*args, **retry_kwargs)
 
 
-def _publish_runtime_metrics(thinking_count: int = 0) -> None:
-    update_component_gauges(
-        "octo",
-        {
-            "followup_queues": len(_FOLLOWUP_QUEUES),
-            "followup_tasks": len(_FOLLOWUP_TASKS),
-            "internal_queues": len(_INTERNAL_QUEUES),
-            "internal_tasks": len(_INTERNAL_TASKS),
-            "thinking_count": thinking_count,
-        },
-    )
+def _runtime_plan_metrics(octo: Any | None = None) -> dict[str, int]:
+    if octo is None:
+        current = read_metrics_snapshot().get("octo", {})
+        if not isinstance(current, dict):
+            return {}
+        return {
+            key: int(current.get(key, 0) or 0)
+            for key in ("active_plan_runs", "needs_next_step_plan_runs")
+            if key in current
+        }
+
+    store = getattr(octo, "store", None)
+    if store is None:
+        return {"active_plan_runs": 0, "needs_next_step_plan_runs": 0}
+    try:
+        active_runs = store.list_plan_runs(
+            statuses=sorted(PLAN_ACTIVE_STORAGE_STATUSES),
+            limit=1000,
+        )
+    except Exception:
+        logger.debug("Failed to collect runtime plan metrics", exc_info=True)
+        return {}
+    return {
+        "active_plan_runs": len(active_runs),
+        "needs_next_step_plan_runs": sum(
+            1 for run in active_runs if str(run.status).strip() == "needs_next_step"
+        ),
+    }
+
+
+def _publish_runtime_metrics(thinking_count: int = 0, *, octo: Any | None = None) -> None:
+    gauges = {
+        "followup_queues": len(_FOLLOWUP_QUEUES),
+        "followup_tasks": len(_FOLLOWUP_TASKS),
+        "internal_queues": len(_INTERNAL_QUEUES),
+        "internal_tasks": len(_INTERNAL_TASKS),
+        "thinking_count": thinking_count,
+    }
+    gauges.update(_runtime_plan_metrics(octo))
+    update_component_gauges("octo", gauges)
 
 
 async def _followup_worker(chat_id: int, queue: asyncio.Queue) -> None:
@@ -477,11 +508,21 @@ async def _internal_worker(octo: Any, chat_id: int, queue: asyncio.Queue) -> Non
                     f"Worker error: {output_error}",
                     {"worker_result": True, "task": task_text, "chat_id": chat_id},
                 )
-            _sync_runtime_plan_with_worker_result(
+            synced_plan = _sync_runtime_plan_with_worker_result(
                 octo,
                 chat_id,
                 worker_id=worker_id,
                 result=result,
+            )
+            continuation_scheduled = _schedule_runtime_plan_continuation(
+                octo,
+                chat_id,
+                synced_plan,
+                worker_id=worker_id,
+                task_text=task_text,
+                result=result,
+                notify_user=notify_user,
+                correlation_id=correlation_id,
             )
             if _is_instruction_request_result(result):
                 await _route_instruction_request_to_octo(
@@ -504,6 +545,14 @@ async def _internal_worker(octo: Any, chat_id: int, queue: asyncio.Queue) -> Non
                     correlation_id=correlation_id,
                     reason=octo.channel_followup_suppression_reason(correlation_id)
                     or "channel_followups_suppressed",
+                )
+            elif continuation_scheduled:
+                octo.clear_pending_conversational_closure(correlation_id)
+                logger.info(
+                    "Internal worker follow-up skipped",
+                    chat_id=chat_id,
+                    correlation_id=correlation_id,
+                    reason="runtime_plan_continuation_scheduled",
                 )
             else:
                 notify_policy = normalize_notify_user_policy(notify_user)
@@ -543,7 +592,7 @@ async def _internal_worker(octo: Any, chat_id: int, queue: asyncio.Queue) -> Non
     _INTERNAL_TASKS.pop(chat_id, None)
     if queue.empty():
         _INTERNAL_QUEUES.pop(chat_id, None)
-    _publish_runtime_metrics()
+    _publish_runtime_metrics(octo=octo)
 
 
 def _sync_runtime_plan_with_worker_result(
@@ -552,13 +601,14 @@ def _sync_runtime_plan_with_worker_result(
     *,
     worker_id: str,
     result: WorkerResult,
-) -> None:
+) -> dict[str, Any] | None:
     store = getattr(octo, "store", None)
     normalized_worker_id = str(worker_id or "").strip()
     if store is None or not normalized_worker_id:
-        return
+        return None
+    service = PlanRunService(store)
     try:
-        step = PlanRunService(store).update_worker_step_result(
+        step = service.update_worker_step_result(
             worker_run_id=normalized_worker_id,
             chat_id=chat_id if chat_id != 0 else None,
             result_status=str(getattr(result, "status", "completed") or "completed"),
@@ -574,8 +624,9 @@ def _sync_runtime_plan_with_worker_result(
             worker_id=normalized_worker_id,
             exc_info=True,
         )
-        return
+        return None
     if step is not None:
+        snapshot = service.get_snapshot(step.run_id)
         logger.info(
             "Synced runtime plan step with worker result",
             chat_id=chat_id,
@@ -584,6 +635,233 @@ def _sync_runtime_plan_with_worker_result(
             plan_step_id=step.step_id,
             worker_result_status=getattr(result, "status", None),
         )
+        _publish_runtime_metrics(octo=octo)
+        return {"step": step, "snapshot": snapshot}
+    _publish_runtime_metrics(octo=octo)
+    return None
+
+
+def _schedule_runtime_plan_continuation(
+    octo: Any,
+    chat_id: int,
+    synced_plan: dict[str, Any] | None,
+    *,
+    worker_id: str,
+    task_text: str,
+    result: WorkerResult,
+    notify_user: str | None,
+    correlation_id: str | None,
+) -> bool:
+    continuation = _build_runtime_plan_continuation(
+        synced_plan,
+        worker_id=worker_id,
+        result=result,
+        notify_user=notify_user,
+    )
+    if continuation is None:
+        return False
+
+    notify_policy = str(continuation["notify_policy"])
+    task = asyncio.create_task(
+        _run_runtime_plan_continuation(
+            octo,
+            chat_id,
+            continuation["args"],
+            notify_policy=notify_policy,
+        )
+    )
+
+    def _log_done(done: asyncio.Task) -> None:
+        fallback_reason = ""
+        try:
+            payload = done.result()
+        except Exception:
+            fallback_reason = "exception"
+            logger.exception(
+                "Runtime plan continuation failed",
+                chat_id=chat_id,
+                plan_run_id=continuation["run_id"],
+                plan_step_id=continuation["step_id"],
+            )
+            payload = {"status": "error"}
+        else:
+            status = str(payload.get("status") if isinstance(payload, dict) else "").strip()
+            if status != "continued":
+                fallback_reason = f"status={status or 'unknown'}"
+        logger.info(
+            "Runtime plan continuation finished",
+            chat_id=chat_id,
+            plan_run_id=continuation["run_id"],
+            plan_step_id=continuation["step_id"],
+            status=payload.get("status") if isinstance(payload, dict) else None,
+            delivered=payload.get("delivered") if isinstance(payload, dict) else None,
+            fallback_reason=fallback_reason or None,
+        )
+        if fallback_reason:
+            asyncio.create_task(
+                _enqueue_runtime_plan_continuation_fallback(
+                    octo,
+                    chat_id,
+                    correlation_id,
+                    worker_id=worker_id,
+                    task_text=task_text,
+                    result=result,
+                    notify_user=notify_user,
+                    reason=fallback_reason,
+                )
+            )
+
+    task.add_done_callback(_log_done)
+    logger.info(
+        "Scheduled runtime plan continuation",
+        chat_id=chat_id,
+        plan_run_id=continuation["run_id"],
+        plan_step_id=continuation["step_id"],
+        notify_user=continuation["notify_user"],
+        notify_policy=notify_policy,
+    )
+    return True
+
+
+def _build_runtime_plan_continuation(
+    synced_plan: dict[str, Any] | None,
+    *,
+    worker_id: str,
+    result: WorkerResult,
+    notify_user: str | None,
+) -> dict[str, Any] | None:
+    if not synced_plan:
+        return None
+    snapshot = synced_plan.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+    run = snapshot.get("run") if isinstance(snapshot.get("run"), dict) else {}
+    next_step = snapshot.get("next_step")
+    if not isinstance(next_step, dict):
+        return None
+    if str(run.get("status") or "").strip().lower() != "needs_next_step":
+        return None
+
+    run_id = str(run.get("id") or "").strip()
+    step_id = str(next_step.get("step_id") or next_step.get("id") or "").strip()
+    if not run_id or not step_id:
+        return None
+    step_kind = str(next_step.get("kind") or "").strip() or "octo"
+    title = str(next_step.get("title") or step_id).strip()
+    task_text = str(next_step.get("task") or title).strip()
+    executor = str(next_step.get("executor") or "").strip()
+    worker_summary = str(getattr(result, "summary", "") or "").strip()
+    policy = normalize_notify_user_policy(notify_user) if notify_user is not None else "always"
+
+    continuation_task = (
+        f"Continue durable runtime plan `{run_id}` from current step `{step_id}`.\n"
+        f"Step kind: {step_kind}.\n"
+        f"Step title: {title}.\n"
+        f"Step task: {task_text}.\n"
+        + (f"Executor hint: {executor}.\n" if executor else "")
+        + "\n"
+        "First inspect the stored plan with `plan_status` if needed. Execute this exact current "
+        "step and keep the runtime plan state current with `plan_update_step` before returning. "
+        "For a worker step, start the worker with the matching `plan_run_id` and `plan_step_id`. "
+        "For an octo/tool/final step, perform the runtime work and then mark the step completed, "
+        "blocked, failed, awaiting_user, or awaiting_approval."
+    )
+    context_summary = (
+        f"Previous worker `{worker_id}` returned status={getattr(result, 'status', None)!r}. "
+        f"Summary: {worker_summary or '(empty)'}"
+    )
+    return {
+        "run_id": run_id,
+        "step_id": step_id,
+        "notify_policy": policy,
+        "notify_user": policy in {"always", "if_significant"},
+        "args": {
+            "task": continuation_task,
+            "context_summary": context_summary,
+            "notify_user": policy in {"always", "if_significant"},
+        },
+    }
+
+
+async def _run_runtime_plan_continuation(
+    octo: Any,
+    chat_id: int,
+    args: dict[str, Any],
+    *,
+    notify_policy: str,
+) -> dict[str, Any]:
+    from octopal.tools.catalog import _tool_octo_continue_from_control_route
+
+    control_notify_policy = "never" if notify_policy == "never" else "always"
+    try:
+        payload = await _tool_octo_continue_from_control_route(
+            args,
+            {
+                "octo": octo,
+                "chat_id": chat_id,
+                "control_route_notify_user": control_notify_policy,
+            },
+        )
+        try:
+            parsed = json.loads(payload)
+        except Exception:
+            return {"status": "unknown", "raw": str(payload)}
+        return parsed if isinstance(parsed, dict) else {"status": "unknown", "raw": parsed}
+    finally:
+        _publish_runtime_metrics(octo=octo)
+
+
+async def _enqueue_runtime_plan_continuation_fallback(
+    octo: Any,
+    chat_id: int,
+    correlation_id: str | None,
+    *,
+    worker_id: str,
+    task_text: str,
+    result: WorkerResult,
+    notify_user: str | None,
+    reason: str,
+) -> None:
+    if chat_id == 0:
+        logger.info(
+            "Runtime plan continuation fallback skipped",
+            chat_id=chat_id,
+            reason="internal_chat",
+        )
+        return
+    if octo.should_suppress_channel_followups(correlation_id):
+        logger.info(
+            "Runtime plan continuation fallback skipped",
+            chat_id=chat_id,
+            reason=octo.channel_followup_suppression_reason(correlation_id)
+            or "channel_followups_suppressed",
+        )
+        return
+
+    notify_policy = normalize_notify_user_policy(notify_user)
+    if notify_policy == "never" and not _result_has_blocking_failure(result):
+        logger.info(
+            "Runtime plan continuation fallback skipped",
+            chat_id=chat_id,
+            reason="scheduled_notify_never",
+        )
+        return
+
+    await _enqueue_batched_worker_followup(
+        octo,
+        chat_id,
+        correlation_id,
+        worker_id=worker_id,
+        task_text=task_text,
+        result=result,
+        notify_user=notify_user,
+    )
+    logger.info(
+        "Runtime plan continuation fallback queued worker follow-up",
+        chat_id=chat_id,
+        worker_id=worker_id,
+        reason=reason,
+    )
 
 
 async def _route_instruction_request_to_octo(
@@ -673,4 +951,4 @@ def _enqueue_internal_result(
     octo.mark_internal_result_pending(correlation_id)
     queue.put_nowait((str(worker_id or "").strip(), task_text, result, correlation_id, notify_user))
     logger.info("Queued internal worker result", chat_id=chat_id, queue_size=queue.qsize())
-    _publish_runtime_metrics()
+    _publish_runtime_metrics(octo=octo)
