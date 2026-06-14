@@ -1107,7 +1107,18 @@ def status() -> None:
     selected_channel = normalize_user_channel(settings.user_channel)
     if metrics:
         grid.add_row("")
-        grid.add_row("Octo Queues", f"[dim]followup=[/dim]{octo_metrics.get('followup_queues', 0)} [dim]internal=[/dim]{octo_metrics.get('internal_queues', 0)}")
+        plan_suffix = ""
+        if int(octo_metrics.get("active_plan_runs", 0) or 0):
+            plan_suffix = (
+                f" [dim]plans=[/dim]{octo_metrics.get('active_plan_runs', 0)}"
+                f" [dim]needs_next=[/dim]{octo_metrics.get('needs_next_step_plan_runs', 0)}"
+            )
+        grid.add_row(
+            "Octo Queues",
+            f"[dim]followup=[/dim]{octo_metrics.get('followup_queues', 0)} "
+            f"[dim]internal=[/dim]{octo_metrics.get('internal_queues', 0)}"
+            f"{plan_suffix}",
+        )
         if selected_channel == "whatsapp":
             grid.add_row(
                 "WhatsApp",

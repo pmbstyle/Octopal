@@ -1798,6 +1798,8 @@ def _build_service_health(
     followup_q = int(octo_runtime_status["followup_queues"])
     internal_q = int(octo_runtime_status["internal_queues"])
     thinking_count = int(octo_runtime_status["thinking_count"])
+    active_plan_runs = int(octo_runtime_status["active_plan_runs"])
+    needs_next_step_plan_runs = int(octo_runtime_status["needs_next_step_plan_runs"])
     out.append(
         {
             "id": "octo",
@@ -1809,6 +1811,8 @@ def _build_service_health(
                 "followup_queues": followup_q,
                 "internal_queues": internal_q,
                 "thinking_count": thinking_count,
+                "active_plan_runs": active_plan_runs,
+                "needs_next_step_plan_runs": needs_next_step_plan_runs,
             },
         }
     )

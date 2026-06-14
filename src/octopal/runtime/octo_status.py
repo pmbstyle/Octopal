@@ -10,8 +10,10 @@ def build_octo_status(octo_metrics: dict[str, Any] | None) -> dict[str, Any]:
     followup_tasks = int(metrics.get("followup_tasks", 0) or 0)
     internal_tasks = int(metrics.get("internal_tasks", 0) or 0)
     thinking_count = int(metrics.get("thinking_count", 0) or 0)
+    active_plan_runs = int(metrics.get("active_plan_runs", 0) or 0)
+    needs_next_step_plan_runs = int(metrics.get("needs_next_step_plan_runs", 0) or 0)
     queue_pressure = followup_queues + internal_queues
-    busy = thinking_count > 0 or queue_pressure > 0
+    busy = thinking_count > 0 or queue_pressure > 0 or active_plan_runs > 0
     state = "thinking" if busy else "idle"
 
     service_status = "ok"
@@ -24,6 +26,10 @@ def build_octo_status(octo_metrics: dict[str, Any] | None) -> dict[str, Any]:
         service_reason = f"queue pressure rising ({queue_pressure})"
     elif thinking_count > 0:
         service_reason = "processing tasks"
+    elif needs_next_step_plan_runs > 0:
+        service_reason = f"{needs_next_step_plan_runs} plan(s) need next step"
+    elif active_plan_runs > 0:
+        service_reason = f"{active_plan_runs} active plan(s)"
 
     return {
         "state": state,
@@ -36,6 +42,8 @@ def build_octo_status(octo_metrics: dict[str, Any] | None) -> dict[str, Any]:
         "internal_queues": internal_queues,
         "followup_tasks": followup_tasks,
         "internal_tasks": internal_tasks,
+        "active_plan_runs": active_plan_runs,
+        "needs_next_step_plan_runs": needs_next_step_plan_runs,
         "queue_pressure": queue_pressure,
         "updated_at": metrics.get("updated_at"),
     }

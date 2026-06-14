@@ -22,6 +22,28 @@ def test_build_octo_status_reports_idle_when_no_work_is_pending() -> None:
     assert payload["service_status"] == "ok"
 
 
+def test_build_octo_status_reports_busy_when_plan_needs_next_step() -> None:
+    payload = build_octo_status(
+        {
+            "followup_queues": 0,
+            "internal_queues": 0,
+            "followup_tasks": 0,
+            "internal_tasks": 0,
+            "thinking_count": 0,
+            "active_plan_runs": 1,
+            "needs_next_step_plan_runs": 1,
+            "updated_at": "2026-03-20T10:05:01+00:00",
+        }
+    )
+
+    assert payload["state"] == "thinking"
+    assert payload["busy"] is True
+    assert payload["label"] == "Busy"
+    assert payload["reason"] == "1 plan(s) need next step"
+    assert payload["active_plan_runs"] == 1
+    assert payload["needs_next_step_plan_runs"] == 1
+
+
 def test_build_octo_status_reports_busy_when_internal_queues_are_non_empty() -> None:
     payload = build_octo_status(
         {
