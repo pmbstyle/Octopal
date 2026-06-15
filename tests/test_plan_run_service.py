@@ -381,7 +381,7 @@ def test_followup_pipeline_schedules_continuation_for_needs_next_step(
     assert "summarize" in str(calls[0]["args"])
 
 
-def test_followup_pipeline_runtime_continuation_keeps_if_significant_visible_and_refreshes_metrics(
+def test_followup_pipeline_runtime_continuation_downgrades_if_significant_to_silent_and_refreshes_metrics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -413,7 +413,7 @@ def test_followup_pipeline_runtime_continuation_keeps_if_significant_visible_and
 
     assert payload == {"status": "continued", "delivered": True}
     assert isinstance(seen["ctx"], dict)
-    assert seen["ctx"]["control_route_notify_user"] == "always"
+    assert seen["ctx"]["control_route_notify_user"] == "never"
     assert len(refreshed) == 1
 
 
