@@ -792,7 +792,10 @@ async def _run_runtime_plan_continuation(
 ) -> dict[str, Any]:
     from octopal.tools.catalog import _tool_octo_continue_from_control_route
 
-    control_notify_policy = "never" if notify_policy == "never" else "always"
+    # Bounded control routes cannot reliably distinguish "significant" from
+    # routine output, so preserve the existing scheduled-control contract and
+    # downgrade that mode to silent delivery.
+    control_notify_policy = "never" if notify_policy in {"never", "if_significant"} else "always"
     try:
         payload = await _tool_octo_continue_from_control_route(
             args,
