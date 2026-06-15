@@ -254,10 +254,29 @@ def _normalize_recent_history_item(item: Any) -> tuple[str, str, str | None]:
     return str(role), str(content), str(created_at) if created_at is not None else None
 
 
-def _format_recent_history_content(content: str, created_at: str | None) -> str:
-    if not created_at:
-        return content
-    return f"Sent at: {created_at}\n\n{content}"
+def _safe_metadata_value(value: str) -> str:
+    return value.replace("\n", " ").replace("\r", " ").strip()
+
+
+def _build_recent_history_metadata_prompt(
+    history: list[tuple[str, str, str | None]],
+) -> str:
+    lines = [
+        f"- [{index}] role={_safe_metadata_value(role)} sent_at={_safe_metadata_value(created_at)}"
+        for index, (role, _content, created_at) in enumerate(history, start=1)
+        if created_at
+    ]
+    if not lines:
+        return ""
+    return "\n".join(
+        [
+            "Recent conversation message metadata:",
+            "- The sent_at values are metadata, not text written by the user or assistant.",
+            "- Use sent_at only for chronology, recency, and relative-time references.",
+            "- Do not quote or restate sent_at values unless the user explicitly asks about message timing.",
+            *lines,
+        ]
+    )
 
 
 def _prune_recent_history_window(
@@ -468,11 +487,16 @@ async def build_octo_prompt(
             )
         )
     if memory_bundle.recent_history:
-        for role, content, created_at in memory_bundle.recent_history:
+        recent_history_metadata = _build_recent_history_metadata_prompt(
+            memory_bundle.recent_history
+        )
+        if recent_history_metadata:
+            messages.append(Message(role="system", content=recent_history_metadata))
+        for role, content, _created_at in memory_bundle.recent_history:
             messages.append(
                 Message(
                     role=role,
-                    content=_format_recent_history_content(content, created_at),
+                    content=content,
                 )
             )
 
