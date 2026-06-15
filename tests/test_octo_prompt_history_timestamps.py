@@ -10,7 +10,7 @@ class DummyCanon:
         return ""
 
 
-def test_build_octo_prompt_adds_timestamps_to_recent_history() -> None:
+def test_build_octo_prompt_adds_recent_history_timestamps_as_metadata() -> None:
     class DummyMemory:
         async def get_context(self, user_text: str, exclude_chat_id: int | None = None):
             return []
@@ -32,8 +32,15 @@ def test_build_octo_prompt_adds_timestamps_to_recent_history() -> None:
         )
 
         contents = [message.content for message in messages if isinstance(message.content, str)]
-        assert "Sent at: 2026-04-28T10:00:00+00:00\n\nstart deployment" in contents
-        assert "Sent at: 2026-04-28T10:01:00+00:00\n\ndeployment started" in contents
+        joined = "\n".join(contents)
+        assert "Recent conversation message metadata:" in joined
+        assert "[1] role=user sent_at=2026-04-28T10:00:00+00:00" in joined
+        assert "[2] role=assistant sent_at=2026-04-28T10:01:00+00:00" in joined
+        assert "not text written by the user or assistant" in joined
+        assert "Do not quote or restate sent_at values" in joined
+        assert "start deployment" in contents
+        assert "deployment started" in contents
+        assert "Sent at:" not in joined
 
     asyncio.run(scenario())
 
@@ -60,8 +67,10 @@ def test_build_octo_prompt_deduplicates_current_user_turn_with_timestamped_histo
         )
 
         contents = [message.content for message in messages if isinstance(message.content, str)]
+        joined = "\n".join(contents)
         assert contents.count("check status") == 1
-        assert "Sent at: 2026-04-28T10:02:00+00:00\n\ncheck status" not in contents
+        assert "sent_at=2026-04-28T10:02:00+00:00" not in joined
+        assert "Sent at:" not in joined
 
     asyncio.run(scenario())
 
