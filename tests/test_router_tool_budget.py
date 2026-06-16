@@ -827,6 +827,238 @@ def test_obvious_continuation_outcome_auto_continues_scheduled_control() -> None
     asyncio.run(scenario())
 
 
+def test_tool_budget_exhaustion_continues_autonomously_instead_of_summarizing() -> None:
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, **kwargs):
+            raise AssertionError("tool-budget fallback should not ask for a summary")
+
+        async def complete_stream(self, messages, *, on_partial, **kwargs):
+            raise AssertionError("streaming should not be used in this test")
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            self.calls += 1
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call-{self.calls}",
+                        "type": "function",
+                        "function": {
+                            "name": "dummy_tool",
+                            "arguments": json.dumps({"idx": self.calls}),
+                        },
+                    }
+                ],
+            }
+
+    class DummyOcto:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.sent: list[tuple[int, str]] = []
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
+            return "Finished after autonomous continuation."
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            self.sent.append((chat_id, text))
+
+    def dummy_tool(args, ctx):
+        return {"status": "ok", "idx": args.get("idx")}
+
+    async def scenario() -> None:
+        octo = DummyOcto()
+        provider = DummyProvider()
+        reply = await _complete_route_with_tools(
+            octo=octo,
+            provider=provider,
+            messages=[Message(role="user", content="finish durable plan")],
+            tool_specs=[
+                ToolSpec(
+                    name="dummy_tool",
+                    description="dummy",
+                    parameters={
+                        "type": "object",
+                        "properties": {"idx": {"type": "integer"}},
+                        "additionalProperties": False,
+                    },
+                    permission="exec",
+                    handler=dummy_tool,
+                )
+            ],
+            ctx={"octo": octo, "chat_id": 123},
+            internal_followup=False,
+            user_text="finish durable plan",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+
+        assert reply == "NO_USER_RESPONSE"
+        assert provider.calls == 10
+        assert len(octo.calls) == 1
+        handoff_text = str(octo.calls[0]["text"])
+        assert "Runtime continuation after tool budget exhaustion" in handoff_text
+        assert "Do not ask the user to say continue" in handoff_text
+        assert octo.sent == [(123, "Finished after autonomous continuation.")]
+
+    asyncio.run(scenario())
+
+
+def test_tool_budget_continuation_honors_notify_never() -> None:
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, **kwargs):
+            raise AssertionError("silent continuation should not fall back to user text")
+
+        async def complete_stream(self, messages, *, on_partial, **kwargs):
+            raise AssertionError("streaming should not be used in this test")
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            self.calls += 1
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call-{self.calls}",
+                        "type": "function",
+                        "function": {
+                            "name": "dummy_tool",
+                            "arguments": json.dumps({"idx": self.calls}),
+                        },
+                    }
+                ],
+            }
+
+    class DummyOcto:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.sent: list[tuple[int, str]] = []
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
+            return "This should stay silent."
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            self.sent.append((chat_id, text))
+
+    async def scenario() -> None:
+        octo = DummyOcto()
+        provider = DummyProvider()
+        reply = await _complete_route_with_tools(
+            octo=octo,
+            provider=provider,
+            messages=[Message(role="user", content="quiet scheduled work")],
+            tool_specs=[
+                ToolSpec(
+                    name="dummy_tool",
+                    description="dummy",
+                    parameters={
+                        "type": "object",
+                        "properties": {"idx": {"type": "integer"}},
+                        "additionalProperties": False,
+                    },
+                    permission="exec",
+                    handler=lambda args, ctx: {"status": "ok", "idx": args.get("idx")},
+                )
+            ],
+            ctx={"octo": octo, "chat_id": 123, "control_route_notify_user": "never"},
+            internal_followup=False,
+            user_text="quiet scheduled work",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+
+        assert reply == "NO_USER_RESPONSE"
+        assert provider.calls == 10
+        assert octo.sent == []
+        handoff_text = str(octo.calls[0]["text"])
+        assert "Delivery policy: complete this continuation silently." in handoff_text
+
+    asyncio.run(scenario())
+
+
+def test_tool_budget_continuation_without_delivery_falls_back_instead_of_preview() -> None:
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.fallback_seen = False
+
+        async def complete(self, messages, **kwargs):
+            self.fallback_seen = any(
+                "Tool execution reached the route budget and autonomous continuation was unavailable"
+                in str(message.get("content", ""))
+                for message in messages
+            )
+            assert self.fallback_seen
+            return "Continuation finished, but delivery needs a normal final response."
+
+        async def complete_stream(self, messages, *, on_partial, **kwargs):
+            raise AssertionError("streaming should not be used in this test")
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            self.calls += 1
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call-{self.calls}",
+                        "type": "function",
+                        "function": {
+                            "name": "dummy_tool",
+                            "arguments": json.dumps({"idx": self.calls}),
+                        },
+                    }
+                ],
+            }
+
+    class DummyOcto:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
+            return "x" * 500
+
+    async def scenario() -> None:
+        octo = DummyOcto()
+        provider = DummyProvider()
+        reply = await _complete_route_with_tools(
+            octo=octo,
+            provider=provider,
+            messages=[Message(role="user", content="finish but cannot send")],
+            tool_specs=[
+                ToolSpec(
+                    name="dummy_tool",
+                    description="dummy",
+                    parameters={
+                        "type": "object",
+                        "properties": {"idx": {"type": "integer"}},
+                        "additionalProperties": False,
+                    },
+                    permission="exec",
+                    handler=lambda args, ctx: {"status": "ok", "idx": args.get("idx")},
+                )
+            ],
+            ctx={"octo": octo, "chat_id": 123},
+            internal_followup=False,
+            user_text="finish but cannot send",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+
+        assert provider.calls == 10
+        assert provider.fallback_seen is True
+        assert reply == "Continuation finished, but delivery needs a normal final response."
+        assert reply != "x" * 240
+
+    asyncio.run(scenario())
+
+
 def test_silent_control_route_suppresses_normal_route_reply_delivery() -> None:
     token = suppress_user_delivery()
     try:
@@ -1059,6 +1291,106 @@ def test_normalize_worker_followup_reply_uses_structured_response_without_phrase
         "I need to send the message from my full orchestration context. "
         "I will send it once I am back in full mode."
     )
+
+
+def test_worker_followup_autonomously_continues_nonfinal_runtime_action(monkeypatch) -> None:
+    import octopal.runtime.octo.router as router
+
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.verifier_seen = False
+
+        async def complete(self, messages, **kwargs):
+            self.verifier_seen = any(
+                "Classify whether a worker-result follow-up output may be delivered"
+                in str(message.get("content", ""))
+                for message in messages
+            )
+            assert self.verifier_seen
+            return (
+                '{"verdict":"requires_continuation","confidence":0.91,'
+                '"reason":"draft describes pending runtime work instead of a final result"}'
+            )
+
+        async def complete_stream(self, messages, *, on_partial, **kwargs):
+            raise AssertionError("streaming should not be used in this test")
+
+    class DummyMemory:
+        async def add_message(self, role, content, metadata=None):
+            return None
+
+    class DummyOcto:
+        store = object()
+        canon = object()
+        facts = None
+        reflection = None
+        is_ws_active = False
+        mcp_manager = None
+
+        def __init__(self) -> None:
+            self.provider = DummyProvider()
+            self.memory = DummyMemory()
+            self.thinking_states: list[bool] = []
+            self.calls: list[dict[str, object]] = []
+            self.sent: list[tuple[int, str]] = []
+
+        async def set_thinking(self, active: bool) -> None:
+            self.thinking_states.append(active)
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
+            return "Done from normal route."
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            self.sent.append((chat_id, text))
+
+    async def fake_build_octo_prompt(**kwargs):
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def fake_build_bootstrap_context_prompt(store, chat_id):
+        return Message(role="system", content="bootstrap")
+
+    async def fake_complete_route_with_tools(**kwargs):
+        return """
+        {
+          "user_response": "I need to continue this from the broader runtime path.",
+          "no_user_response": false,
+          "actions_taken": [],
+          "reason": "needs more runtime action"
+        }
+        """
+
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(
+        router, "build_bootstrap_context_prompt", fake_build_bootstrap_context_prompt
+    )
+    monkeypatch.setattr(router, "_complete_route_with_tools", fake_complete_route_with_tools)
+
+    async def scenario() -> None:
+        octo = DummyOcto()
+        response = await route_worker_results_back_to_octo(
+            octo,
+            123,
+            [
+                (
+                    "worker-1",
+                    "send the final status via the normal runtime",
+                    WorkerResult(summary="needs normal-route continuation"),
+                )
+            ],
+        )
+
+        assert response == "NO_USER_RESPONSE"
+        assert octo.provider.verifier_seen is True
+        assert len(octo.calls) == 1
+        assert len(octo.sent) == 1
+        assert octo.sent[0] == (123, "Done from normal route.")
+        handoff_text = str(octo.calls[0]["text"])
+        assert "Continue the original user request autonomously" in handoff_text
+        assert "Rejected non-final follow-up draft" in handoff_text
+        assert octo.thinking_states == [True, False]
+
+    asyncio.run(scenario())
 
 
 def test_build_worker_result_payload_keeps_preview_text_for_large_output() -> None:
@@ -2193,6 +2525,62 @@ def test_finalize_response_returns_no_user_response_when_rewrite_still_bad() -> 
             internal_followup=True,
         )
         assert result == "NO_USER_RESPONSE"
+
+    asyncio.run(scenario())
+
+
+def test_finalize_response_revises_runtime_plan_state_leak() -> None:
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.review_seen = False
+
+        async def complete(self, messages, **kwargs):
+            self.review_seen = any(
+                "Review a draft user-facing response that was generated after runtime-state tools"
+                in str(message.get("content", ""))
+                for message in messages
+            )
+            assert self.review_seen
+            return json.dumps(
+                {
+                    "verdict": "revised",
+                    "response": (
+                        "Правда про пост: он есть, опубликован, виден и verified. "
+                        "Я неправильно прочитала worker output и составила ложный success, "
+                        "но сам пост настоящий."
+                    ),
+                    "confidence": 0.93,
+                    "reason": "removed runtime plan metadata while preserving user facts",
+                }
+            )
+
+    async def scenario() -> None:
+        provider = DummyProvider()
+        result = await _finalize_response(
+            provider,
+            [
+                Message(role="user", content="проверь пост"),
+                {
+                    "role": "tool",
+                    "name": "plan_update_step",
+                    "content": '{"run_id":"plan-13cfadc5","status":"completed","next_step":null}',
+                },
+            ],
+            (
+                "Plan plan-13cfadc5 is completed — completed_at: "
+                "2026-06-15T22:35:52.287508Z, next_step: null. Now the honest user-facing report.\n\n"
+                "Правда про пост: он есть, опубликован, виден, verified. "
+                "Я неправильно прочитала worker output и составила ложный success — "
+                "но сам пост настоящий."
+            ),
+            internal_followup=False,
+        )
+
+        assert provider.review_seen is True
+        assert "Plan plan-" not in result
+        assert "completed_at" not in result
+        assert "next_step" not in result
+        assert "пост настоящий" in result
 
     asyncio.run(scenario())
 
