@@ -4,6 +4,7 @@ Filesystem-based Worker Template Loader
 Auto-discovers worker templates from the configured workspace's workers directory.
 Each worker is defined in a worker.json file with JSON configuration.
 """
+
 from __future__ import annotations
 
 import json
@@ -94,9 +95,14 @@ def _load_worker_template(worker_file: Path) -> WorkerTemplateRecord | None:
 
     # Validate required fields
     required_fields = [
-        "id", "name", "description", "system_prompt",
-        "available_tools", "required_permissions",
-        "max_thinking_steps", "default_timeout_seconds"
+        "id",
+        "name",
+        "description",
+        "system_prompt",
+        "available_tools",
+        "required_permissions",
+        "max_thinking_steps",
+        "default_timeout_seconds",
     ]
 
     missing = [f for f in required_fields if f not in config]
@@ -128,6 +134,12 @@ def _load_worker_template(worker_file: Path) -> WorkerTemplateRecord | None:
     ):
         logger.error(f"allowed_child_templates must be a list of strings in {worker_file}")
         return None
+    allowed_paths = config.get("allowed_paths", [])
+    if not isinstance(allowed_paths, list) or any(
+        not isinstance(item, str) for item in allowed_paths
+    ):
+        logger.error(f"allowed_paths must be a list of strings in {worker_file}")
+        return None
 
     # Get file modification time for updated_at
     mtime = worker_file.stat().st_mtime
@@ -146,6 +158,7 @@ def _load_worker_template(worker_file: Path) -> WorkerTemplateRecord | None:
         default_timeout_seconds=config["default_timeout_seconds"],
         can_spawn_children=can_spawn_children,
         allowed_child_templates=allowed_child_templates,
+        allowed_paths=[item.strip() for item in allowed_paths if item.strip()],
         created_at=updated_at,  # Use file mtime for both
         updated_at=updated_at,
     )

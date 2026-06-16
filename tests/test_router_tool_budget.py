@@ -2877,6 +2877,294 @@ def test_route_marks_structured_followup_requirement_from_tool_payload(monkeypat
     asyncio.run(scenario())
 
 
+def test_route_retries_when_response_delegates_recoverable_choices(monkeypatch) -> None:
+    tool_calls_seen: list[dict] = []
+
+    recovery_tool = ToolSpec(
+        name="inspect_worker_state",
+        description="Inspect worker state and optionally choose a recovery strategy.",
+        parameters={
+            "type": "object",
+            "properties": {"strategy": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        permission="self_control",
+        handler=lambda args, ctx: tool_calls_seen.append(dict(args or {}))
+        or {"status": "ok", "strategy": (args or {}).get("strategy")},
+    )
+
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.tool_calls = 0
+            self.verifier_seen = False
+
+        async def complete(self, messages, **kwargs):
+            prompt = "\n".join(str(message.get("content", "")) for message in messages)
+            assert "improperly delegates recoverable execution choices" in prompt
+            self.verifier_seen = True
+            return json.dumps(
+                {
+                    "verdict": "requires_autonomous_recovery",
+                    "confidence": 0.92,
+                    "reason": "draft asks user to pick among safe retry paths",
+                }
+            )
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            self.tool_calls += 1
+            if self.tool_calls == 1:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "inspect_worker_state",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                }
+            if self.tool_calls == 2:
+                return {
+                    "content": (
+                        "Диагноз готов, fix — не сработал.\n\n"
+                        "Три варианта на следующий заход:\n"
+                        "1. Увеличить worker timeout\n"
+                        "2. Разбить на 5 single-step воркеров\n"
+                        "3. Самой стучаться в API\n\n"
+                        "Скажи цифру — 1, 2 или 3 — и я пойду в эту сторону."
+                    ),
+                    "tool_calls": [],
+                }
+            if self.tool_calls == 3:
+                assert any(
+                    "delegated recoverable execution choices"
+                    in str(
+                        message.get("content", "")
+                        if isinstance(message, dict)
+                        else getattr(message, "content", "")
+                    )
+                    for message in messages
+                )
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-2",
+                            "type": "function",
+                            "function": {
+                                "name": "inspect_worker_state",
+                                "arguments": '{"strategy":"split_worker"}',
+                            },
+                        }
+                    ],
+                }
+            return {
+                "content": "Я выбрала безопасный следующий шаг сама и запустила split-worker recovery.",
+                "tool_calls": [],
+            }
+
+    class DummyMemory:
+        async def add_message(self, role, content, metadata=None):
+            return None
+
+    class DummyOcto:
+        store = object()
+        canon = object()
+        internal_progress_send = None
+        is_ws_active = False
+
+        async def set_typing(self, chat_id: int, active: bool) -> None:
+            return None
+
+        async def set_thinking(self, active: bool) -> None:
+            return None
+
+        def peek_context_wakeup(self, chat_id: int) -> str:
+            return ""
+
+    async def fake_build_octo_prompt(**kwargs):
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def fake_build_plan(provider, messages, has_tools):
+        return None
+
+    def fake_get_octo_tools(octo, chat_id):
+        return [recovery_tool], {
+            "octo": octo,
+            "chat_id": chat_id,
+            "active_tool_specs": [recovery_tool],
+            "all_tool_specs": [recovery_tool],
+        }
+
+    import octopal.runtime.octo.router as router
+
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(router, "_build_plan", fake_build_plan)
+    monkeypatch.setattr(router, "_get_octo_tools", fake_get_octo_tools)
+
+    async def scenario() -> None:
+        provider = DummyProvider()
+        response = await route_or_reply(
+            DummyOcto(),
+            provider,
+            DummyMemory(),
+            "проверь и почини",
+            123,
+            "",
+        )
+
+        assert provider.verifier_seen is True
+        assert provider.tool_calls == 4
+        assert tool_calls_seen == [{}, {"strategy": "split_worker"}]
+        assert "Скажи цифру" not in response
+        assert (
+            response == "Я выбрала безопасный следующий шаг сама и запустила split-worker recovery."
+        )
+
+    asyncio.run(scenario())
+
+
+def test_route_retries_when_execution_plan_delegates_choices_before_tools(monkeypatch) -> None:
+    tool_calls_seen: list[dict] = []
+
+    repair_tool = ToolSpec(
+        name="repair_pipeline",
+        description="Repair a recoverable pipeline issue.",
+        parameters={
+            "type": "object",
+            "properties": {"target": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        permission="self_control",
+        handler=lambda args, ctx: tool_calls_seen.append(dict(args or {}))
+        or {"status": "ok", "target": (args or {}).get("target")},
+    )
+
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.tool_calls = 0
+            self.verifier_seen = False
+
+        async def complete(self, messages, **kwargs):
+            prompt = "\n".join(str(message.get("content", "")) for message in messages)
+            assert "improperly delegates recoverable execution choices" in prompt
+            assert "<execution_plan>" in prompt
+            self.verifier_seen = True
+            return json.dumps(
+                {
+                    "verdict": "requires_autonomous_recovery",
+                    "confidence": 0.93,
+                    "reason": "draft asks for a choice instead of executing the plan",
+                }
+            )
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            self.tool_calls += 1
+            if self.tool_calls == 1:
+                return {
+                    "content": (
+                        "Дальше два вопроса:\n"
+                        "1. Делать publish сейчас через прямой curl?\n"
+                        "2. Или сначала починить pipeline?\n\n"
+                        "Скажи 1 или 2."
+                    ),
+                    "tool_calls": [],
+                }
+            if self.tool_calls == 2:
+                assert any(
+                    "instead of following the active execution plan"
+                    in str(
+                        message.get("content", "")
+                        if isinstance(message, dict)
+                        else getattr(message, "content", "")
+                    )
+                    for message in messages
+                )
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "repair_pipeline",
+                                "arguments": '{"target":"worker_template"}',
+                            },
+                        }
+                    ],
+                }
+            return {"content": "Починила pipeline и продолжила publish path.", "tool_calls": []}
+
+    class DummyMemory:
+        async def add_message(self, role, content, metadata=None):
+            return None
+
+    class DummyOcto:
+        store = object()
+        canon = object()
+        internal_progress_send = None
+        is_ws_active = False
+
+        async def set_typing(self, chat_id: int, active: bool) -> None:
+            return None
+
+        async def set_thinking(self, active: bool) -> None:
+            return None
+
+        def peek_context_wakeup(self, chat_id: int) -> str:
+            return ""
+
+    async def fake_build_octo_prompt(**kwargs):
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def fake_build_plan(provider, messages, has_tools):
+        assert has_tools is True
+        return {
+            "mode": "execute",
+            "steps": [
+                "Verify why the worker cannot see the Moltbook key",
+                "Repair the worker template or mark a concrete blocker",
+            ],
+            "response": "This planner response must not become the final answer.",
+        }
+
+    def fake_get_octo_tools(octo, chat_id):
+        return [repair_tool], {
+            "octo": octo,
+            "chat_id": chat_id,
+            "active_tool_specs": [repair_tool],
+            "all_tool_specs": [repair_tool],
+        }
+
+    import octopal.runtime.octo.router as router
+
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(router, "_build_plan", fake_build_plan)
+    monkeypatch.setattr(router, "_get_octo_tools", fake_get_octo_tools)
+
+    async def scenario() -> None:
+        provider = DummyProvider()
+        response = await route_or_reply(
+            DummyOcto(),
+            provider,
+            DummyMemory(),
+            "почему нет ключа?",
+            123,
+            "",
+        )
+
+        assert provider.verifier_seen is True
+        assert provider.tool_calls == 3
+        assert tool_calls_seen == [{"target": "worker_template"}]
+        assert "Скажи 1 или 2" not in response
+        assert response == "Починила pipeline и продолжила publish path."
+
+    asyncio.run(scenario())
+
+
 def test_finalize_response_returns_no_user_response_when_non_followup_rewrite_still_bad() -> None:
     class DummyProvider:
         async def complete(self, messages, **kwargs):

@@ -58,6 +58,7 @@ class WorkerTemplateRecord(BaseModel):
     default_timeout_seconds: int = 300
     can_spawn_children: bool = False
     allowed_child_templates: list[str] = Field(default_factory=list)
+    allowed_paths: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

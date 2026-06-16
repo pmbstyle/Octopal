@@ -748,6 +748,142 @@ def test_start_worker_async_infers_longer_timeout_for_context_heavy_network_task
     assert runtime.captured_timeout > 60
 
 
+def test_start_worker_async_merges_template_allowed_paths(monkeypatch) -> None:
+    class _Memory:
+        async def add_message(self, role: str, content: str, metadata: dict):
+            return None
+
+    template = SimpleNamespace(
+        id="moltbook_client",
+        name="Moltbook Client",
+        available_tools=["fs_read", "exec_run"],
+        required_permissions=["filesystem_read", "exec"],
+        default_timeout_seconds=60,
+        allowed_paths=["config"],
+    )
+
+    class _Store:
+        def get_worker_template(self, template_id: str):
+            return template
+
+        def get_worker(self, worker_id: str):
+            return SimpleNamespace(status="completed")
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.allowed_paths = None
+
+        async def run_task(self, task_request, approval_requester=None):
+            self.allowed_paths = task_request.allowed_paths
+            return WorkerResult(summary="ok")
+
+    import octopal.runtime.octo.core as octo_core
+
+    monkeypatch.setattr(octo_core, "_enqueue_internal_result", lambda *args, **kwargs: None)
+
+    runtime = _Runtime()
+    octo = Octo(
+        provider=object(),
+        store=_Store(),
+        policy=object(),
+        runtime=runtime,
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+
+    async def scenario() -> None:
+        launch = await octo._start_worker_async(
+            worker_id="moltbook_client",
+            task="Publish the current draft.",
+            chat_id=1,
+            inputs={},
+            tools=None,
+            model=None,
+            timeout_seconds=None,
+            allowed_paths=["memory/moltbook"],
+        )
+        assert launch["status"] == "started"
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+
+    assert runtime.allowed_paths == ["config", "memory/moltbook"]
+
+
+def test_start_worker_async_mounts_paths_mentioned_by_template_prompt(
+    monkeypatch, tmp_path
+) -> None:
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "moltbook-api-key.txt").write_text("secret", encoding="utf-8")
+
+    class _Memory:
+        async def add_message(self, role: str, content: str, metadata: dict):
+            return None
+
+    template = SimpleNamespace(
+        id="moltbook_client",
+        name="Moltbook Client",
+        available_tools=["fs_read", "exec_run"],
+        required_permissions=["filesystem_read", "exec"],
+        default_timeout_seconds=60,
+        system_prompt="Read config/moltbook-api-key.txt before calling the Moltbook API.",
+        allowed_paths=[],
+    )
+
+    class _Store:
+        def get_worker_template(self, template_id: str):
+            return template
+
+        def get_worker(self, worker_id: str):
+            return SimpleNamespace(status="completed")
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.allowed_paths = None
+
+        async def run_task(self, task_request, approval_requester=None):
+            self.allowed_paths = task_request.allowed_paths
+            return WorkerResult(summary="ok")
+
+    import octopal.runtime.octo.core as octo_core
+
+    monkeypatch.setattr(octo_core, "_enqueue_internal_result", lambda *args, **kwargs: None)
+
+    runtime = _Runtime()
+    octo = Octo(
+        provider=object(),
+        store=_Store(),
+        policy=object(),
+        runtime=runtime,
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+        scheduler=SimpleNamespace(workspace_dir=tmp_path),
+    )
+
+    async def scenario() -> None:
+        launch = await octo._start_worker_async(
+            worker_id="moltbook_client",
+            task="Publish memory/moltbook/draft.md.",
+            chat_id=1,
+            inputs={},
+            tools=None,
+            model=None,
+            timeout_seconds=None,
+            allowed_paths=["memory/moltbook"],
+        )
+        assert launch["status"] == "started"
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+
+    assert runtime.allowed_paths == [
+        "config/moltbook-api-key.txt",
+        "memory/moltbook",
+    ]
+
+
 def test_start_worker_async_keeps_explicit_timeout_override(monkeypatch) -> None:
     class _Memory:
         async def add_message(self, role: str, content: str, metadata: dict):

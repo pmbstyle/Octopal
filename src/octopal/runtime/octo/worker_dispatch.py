@@ -23,6 +23,7 @@ from octopal.runtime.intents.types import ActionIntent
 from octopal.runtime.octo import followup_pipeline as _followup_pipeline
 from octopal.runtime.octo.worker_records import _serialize_worker_record
 from octopal.runtime.octo.worker_timeouts import _resolve_worker_timeout_seconds
+from octopal.runtime.workers.allowed_paths import infer_allowed_paths_from_values
 from octopal.runtime.workers.contracts import TaskRequest, WorkerResult
 
 logger = structlog.get_logger(__name__)
@@ -37,6 +38,21 @@ def _core_callable(name: str, default: Callable[..., Any]) -> Callable[..., Any]
         if callable(candidate):
             return candidate
     return default
+
+
+def _merge_allowed_paths(*values: object) -> list[str] | None:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            path = str(item or "").strip()
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            merged.append(path)
+    return merged or None
 
 
 class OctoWorkerDispatchMixin:
@@ -166,6 +182,16 @@ class OctoWorkerDispatchMixin:
                 tools=tools,
                 scheduled_task_id=scheduled_task_id,
             )
+            scheduler_workspace_dir = getattr(self.scheduler, "workspace_dir", None)
+            template_inferred_allowed_paths = infer_allowed_paths_from_values(
+                getattr(template, "system_prompt", ""),
+                workspace_dir=scheduler_workspace_dir,
+            )
+            effective_allowed_paths = _merge_allowed_paths(
+                getattr(template, "allowed_paths", None),
+                template_inferred_allowed_paths,
+                allowed_paths,
+            )
             dispatch_trace_metadata.update(
                 {
                     "run_id": run_id,
@@ -174,6 +200,7 @@ class OctoWorkerDispatchMixin:
                     "spawn_depth": effective_spawn_depth,
                     "timeout_seconds": resolved_timeout_seconds,
                     "timeout_source": timeout_meta.get("source"),
+                    "allowed_paths_count": len(effective_allowed_paths or []),
                 }
             )
             if scheduled_task_id and self.scheduler:
@@ -234,7 +261,7 @@ class OctoWorkerDispatchMixin:
                 lineage_id=effective_lineage_id,
                 root_task_id=effective_root_task_id,
                 spawn_depth=effective_spawn_depth,
-                allowed_paths=allowed_paths,
+                allowed_paths=effective_allowed_paths,
             )
             self.register_worker_correlation(run_id, correlation_id)
             self.register_worker_chat(run_id, chat_id)
