@@ -1358,10 +1358,24 @@ async def _complete_route_with_tools(
         if had_tool_calls:
             if internal_followup:
                 return "NO_USER_RESPONSE"
+            continuation_reply = await _continue_after_tool_budget_exhaustion(
+                octo=octo,
+                chat_id=int(ctx.get("chat_id", 0) or 0),
+                notify_user=ctx.get("control_route_notify_user", "always"),
+                user_text=user_text,
+                messages=messages,
+            )
+            if continuation_reply is not None:
+                return continuation_reply
             messages.append(
                 Message(
                     role="system",
-                    content="You have reached the tool call limit for this turn. Summarize what you have initiated and let the user know you are processing their request.",
+                    content=(
+                        "Tool execution reached the route budget and autonomous continuation "
+                        "was unavailable. Do not promise later work. Give a concise grounded "
+                        "status: what is complete, what is blocked, and what exact user input "
+                        "or external change is required, if any."
+                    ),
                 )
             )
             final_resp = await _complete_text(
@@ -1552,9 +1566,239 @@ async def route_worker_results_back_to_octo(
             images=None,
             allow_tool_catalog_expansion=False,
         )
-        return _normalize_worker_followup_reply(reply_text)
+        normalized_reply = _normalize_worker_followup_reply(reply_text)
+        if (
+            normalized_reply != "NO_USER_RESPONSE"
+            and not _messages_include_tool_call(messages, "octo_continue_from_control_route")
+            and await _worker_followup_requires_autonomous_continuation(
+                provider=octo.provider,
+                messages=messages,
+                worker_results_payload=payload_json,
+                reply_text=reply_text,
+            )
+        ):
+            continued = await _continue_worker_followup_autonomously(
+                octo=octo,
+                chat_id=chat_id,
+                tool_specs=octo_tools,
+                ctx=ctx,
+                worker_result_prompt=worker_result_prompt,
+                reply_text=reply_text,
+            )
+            if continued:
+                return "NO_USER_RESPONSE"
+            return "I could not finish the remaining work automatically. The task is still active and needs a retry."
+        return normalized_reply
     finally:
         await octo.set_thinking(False)
+
+
+async def _continue_after_tool_budget_exhaustion(
+    *,
+    octo: Any,
+    chat_id: int,
+    notify_user: object,
+    user_text: str,
+    messages: list[Message | dict[str, Any]],
+) -> str | None:
+    if chat_id == 0 or octo is None or not hasattr(octo, "handle_message"):
+        return None
+    if str(user_text or "").count("Runtime continuation after tool budget exhaustion") >= 2:
+        logger.warning("Tool-budget continuation limit reached", chat_id=chat_id)
+        return None
+
+    from octopal.tools.catalog import _tool_octo_continue_from_control_route
+
+    context_summary = (
+        "The previous route exhausted its tool-call budget after executing tools. "
+        "Do not ask the user to say continue merely because the route budget ended. "
+        "Use the current evidence, inspect persisted runtime state if needed, repair "
+        "recoverable issues, and complete or mark the task with a real blocked/user-input state.\n\n"
+        "<previous_route_context>\n"
+        f"{safe_preview(_messages_to_text(messages), limit=12000)}\n"
+        "</previous_route_context>"
+    )
+    try:
+        payload_raw = await _tool_octo_continue_from_control_route(
+            {
+                "task": (
+                    "Runtime continuation after tool budget exhaustion. Continue the original "
+                    "user request autonomously and finish the remaining work end-to-end. "
+                    "If the work cannot be completed, leave durable runtime state that explains "
+                    "the real blocker instead of asking for a generic continuation."
+                ),
+                "context_summary": context_summary,
+                "notify_user": notify_user,
+            },
+            {
+                "octo": octo,
+                "chat_id": chat_id,
+                "control_route_notify_user": notify_user,
+            },
+        )
+    except Exception:
+        logger.exception("Tool-budget autonomous continuation failed", chat_id=chat_id)
+        return None
+
+    payload = _parse_tool_result_payload(payload_raw)
+    if not isinstance(payload, dict):
+        logger.warning(
+            "Tool-budget autonomous continuation returned non-object payload",
+            chat_id=chat_id,
+        )
+        return None
+    status = str(payload.get("status") or "").strip().lower()
+    if status != "continued":
+        logger.warning(
+            "Tool-budget autonomous continuation did not complete",
+            chat_id=chat_id,
+            status=status or None,
+        )
+        return None
+
+    delivered = bool(payload.get("delivered"))
+    continuation_notifies_user = bool(payload.get("notify_user"))
+    logger.info(
+        "Tool-budget route continued autonomously",
+        chat_id=chat_id,
+        delivered=delivered,
+        notify_user=continuation_notifies_user,
+    )
+    if delivered or not continuation_notifies_user:
+        return "NO_USER_RESPONSE"
+    return None
+
+
+def _messages_include_tool_call(messages: list[Message | dict[str, Any]], tool_name: str) -> bool:
+    normalized = str(tool_name or "").strip().lower()
+    if not normalized:
+        return False
+    for message in messages:
+        if isinstance(message, dict):
+            if str(message.get("name") or "").strip().lower() == normalized:
+                return True
+            tool_calls = message.get("tool_calls") or []
+        else:
+            if str(getattr(message, "name", "") or "").strip().lower() == normalized:
+                return True
+            tool_calls = getattr(message, "tool_calls", None) or []
+        if not isinstance(tool_calls, list):
+            continue
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            name = str((call.get("function") or {}).get("name") or "").strip().lower()
+            if name == normalized:
+                return True
+    return False
+
+
+async def _worker_followup_requires_autonomous_continuation(
+    *,
+    provider: InferenceProvider,
+    messages: list[Message | dict[str, Any]],
+    worker_results_payload: str,
+    reply_text: str,
+) -> bool:
+    prompt = (
+        "Classify whether a worker-result follow-up output may be delivered to the user, "
+        "or whether the runtime must continue the task autonomously first.\n"
+        "Return JSON only with this shape:\n"
+        '{"verdict":"final|requires_continuation|requires_user_input|no_user_response",'
+        '"confidence":0.0,"reason":"short"}\n'
+        "Use requires_continuation when the draft is not a final task result, not a direct "
+        "question for missing user input, and instead represents pending runtime work that "
+        "should be completed by the broader route. Judge the speech act and evidence, not "
+        "individual words or banned phrases. Use final for grounded results, real blocked "
+        "states, and normal user-facing questions. Use requires_user_input only when the next "
+        "safe step truly needs the user's decision or missing data.\n\n"
+        "<WORKER_RESULTS>\n"
+        f"{worker_results_payload[:12000]}\n"
+        "</WORKER_RESULTS>\n\n"
+        "<EVIDENCE>\n"
+        f"{_messages_to_text(messages)}\n"
+        "</EVIDENCE>\n\n"
+        "<DRAFT_FOLLOWUP>\n"
+        f"{reply_text}\n"
+        "</DRAFT_FOLLOWUP>"
+    )
+    try:
+        raw = await _complete_text(
+            provider,
+            [Message(role="system", content=prompt)],
+            context="worker_followup_autonomy_verifier",
+        )
+    except Exception:
+        logger.debug("Worker follow-up autonomy verifier skipped", exc_info=True)
+        return False
+
+    payload = _extract_json_object(raw)
+    if not isinstance(payload, dict):
+        return False
+    verdict = str(payload.get("verdict") or "").strip().lower()
+    try:
+        confidence = float(payload.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return verdict == "requires_continuation" and confidence >= 0.55
+
+
+async def _continue_worker_followup_autonomously(
+    *,
+    octo: Any,
+    chat_id: int,
+    tool_specs: list[ToolSpec],
+    ctx: dict[str, Any],
+    worker_result_prompt: str,
+    reply_text: str,
+) -> bool:
+    continuation_spec = _find_active_tool_spec("octo_continue_from_control_route", tool_specs)
+    if continuation_spec is None:
+        logger.warning("Worker follow-up needed autonomous continuation but tool is unavailable")
+        return False
+
+    task = (
+        "Continue the original user request autonomously from the worker updates. "
+        "The worker-result follow-up draft was not a final answer because more runtime action "
+        "is needed. Complete the remaining work end-to-end, repair recoverable issues that "
+        "arise during execution, and ask the user only if missing input or approval is required."
+    )
+    context_summary = (
+        "Worker-result follow-up payload:\n"
+        f"{safe_preview(worker_result_prompt, limit=12000)}\n\n"
+        "Rejected non-final follow-up draft:\n"
+        f"{safe_preview(reply_text, limit=3000)}"
+    )
+    synthetic_call = {
+        "id": f"worker-followup-continuation-{uuid.uuid4().hex[:12]}",
+        "type": "function",
+        "function": {
+            "name": continuation_spec.name,
+            "arguments": json.dumps(
+                {
+                    "task": task,
+                    "context_summary": context_summary,
+                    "notify_user": True,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    }
+    result, meta = await _handle_octo_tool_call(synthetic_call, tool_specs, ctx)
+    payload = _parse_tool_result_payload(result)
+    status = ""
+    if isinstance(payload, dict):
+        status = str(payload.get("status") or "").strip().lower()
+    if not meta.get("had_error") and status == "continued":
+        logger.info("Worker follow-up continued autonomously", chat_id=chat_id)
+        return True
+    logger.warning(
+        "Worker follow-up autonomous continuation failed",
+        chat_id=chat_id,
+        status=status or None,
+        had_error=bool(meta.get("had_error")),
+    )
+    return False
 
 
 def _normalize_worker_followup_reply(raw: str) -> str:
@@ -3809,6 +4053,12 @@ async def _finalize_response(
         if rewritten and not looks_like_textual_tool_invocation(rewritten_visible_text):
             return rewritten
         return "NO_USER_RESPONSE"
+    if _messages_include_runtime_state_context(messages):
+        cleaned = await _review_runtime_state_user_response(
+            provider=provider,
+            messages=messages,
+            candidate=cleaned,
+        )
     return cleaned
 
 
@@ -3883,6 +4133,86 @@ async def _needs_action_or_blocked_retry(
     except (TypeError, ValueError):
         confidence = 0.0
     return verdict == "requires_runtime_action_state" and confidence >= 0.55
+
+
+def _messages_include_runtime_state_context(messages: list[Message | dict[str, Any]]) -> bool:
+    runtime_tool_names = {
+        "plan_create",
+        "plan_status",
+        "plan_update_step",
+        "octo_continue_from_control_route",
+        "execute_self_queue_item",
+        "octo_self_queue_add",
+        "octo_self_queue_update",
+    }
+    for message in messages[-12:]:
+        if isinstance(message, dict):
+            role = str(message.get("role") or "").strip().lower()
+            name = str(message.get("name") or "").strip().lower()
+            tool_calls = message.get("tool_calls") or []
+        else:
+            role = str(getattr(message, "role", "") or "").strip().lower()
+            name = str(getattr(message, "name", "") or "").strip().lower()
+            tool_calls = getattr(message, "tool_calls", None) or []
+        if role == "tool" and name in runtime_tool_names:
+            return True
+        if not isinstance(tool_calls, list):
+            continue
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            call_name = str((call.get("function") or {}).get("name") or "").strip().lower()
+            if call_name in runtime_tool_names:
+                return True
+    return False
+
+
+async def _review_runtime_state_user_response(
+    *,
+    provider: InferenceProvider,
+    messages: list[Message | dict[str, Any]],
+    candidate: str,
+) -> str:
+    if not normalize_plain_text(candidate or "") or should_suppress_user_delivery(candidate):
+        return candidate
+    prompt = (
+        "Review a draft user-facing response that was generated after runtime-state tools were used.\n"
+        "Return JSON only with this shape:\n"
+        '{"verdict":"approved|revised","response":"...","confidence":0.0,"reason":"short"}\n'
+        "Approve if the draft is a clean user-facing answer. Revise only when runtime/debug "
+        "state, tool bookkeeping, plan metadata, or execution-contract narration is exposed "
+        "as part of the answer. Preserve all useful user-level facts, corrections, results, "
+        "and next actions; remove only service-level scaffolding. Do not classify from banned "
+        "words alone; judge whether the text is useful to the user or internal machinery leaking.\n\n"
+        "<EVIDENCE>\n"
+        f"{_messages_to_text(messages)}\n"
+        "</EVIDENCE>\n\n"
+        "<DRAFT_RESPONSE>\n"
+        f"{candidate}\n"
+        "</DRAFT_RESPONSE>"
+    )
+    try:
+        raw = await _complete_text(
+            provider,
+            [Message(role="system", content=prompt)],
+            context="runtime_state_response_review",
+        )
+    except Exception:
+        logger.debug("Runtime-state response review skipped", exc_info=True)
+        return candidate
+
+    payload = _extract_json_object(raw)
+    if not isinstance(payload, dict):
+        return candidate
+    verdict = str(payload.get("verdict") or "").strip().lower()
+    try:
+        confidence = float(payload.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    response = sanitize_user_facing_text_preserving_reaction(str(payload.get("response") or ""))
+    if verdict == "revised" and confidence >= 0.55 and response:
+        return response
+    return candidate
 
 
 async def _verify_final_response(
