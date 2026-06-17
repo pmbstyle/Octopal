@@ -965,9 +965,11 @@ async def _complete_route_with_tools(
         vision_tool_fallback_used = False
         structured_followup_required = False
         unbacked_action_retry_used = False
+        delegated_recovery_retry_used = False
         auto_continuation_attempted = False
         runtime_action_contracts: list[RuntimeActionContract] = []
         runtime_action_retry_count = 0
+        execution_plan_active = _messages_include_execution_plan(messages)
 
         for _ in range(max_attempts):
             try:
@@ -1311,6 +1313,44 @@ async def _complete_route_with_tools(
                                 "runtime state. Continue this same turn now: call the appropriate tool, add/execute "
                                 "a self-queue item, or rewrite the response as a clear blocked/clarifying answer. "
                                 "Do not describe future work unless this turn creates a concrete runtime action."
+                            ),
+                        )
+                    )
+                    continue
+                if (
+                    (had_tool_calls or execution_plan_active)
+                    and not delegated_recovery_retry_used
+                    and await _needs_autonomous_recovery_retry(
+                        provider=provider,
+                        messages=messages,
+                        candidate=str(content_raw),
+                    )
+                ):
+                    delegated_recovery_retry_used = True
+                    logger.warning(
+                        "Assistant response delegated recoverable action choices; forcing autonomous recovery retry",
+                        preview=str(content_raw)[:200],
+                    )
+                    retry_reason = (
+                        "instead of following the active execution plan"
+                        if execution_plan_active
+                        else "instead of continuing autonomously after using tools"
+                    )
+                    messages.append(Message(role="assistant", content=str(content_raw)))
+                    messages.append(
+                        Message(
+                            role="system",
+                            content=(
+                                "Your previous answer delegated recoverable execution choices to the user "
+                                f"{retry_reason}. "
+                                "Choose the best safe next action yourself and act now with available tools. "
+                                "Prefer bounded, lower-risk recovery such as a smaller retry, decomposition, "
+                                "state inspection, or durable task update before asking the user. "
+                                "Ask the user only for a real human-only blocker: missing credentials, "
+                                "approval for risky or irreversible work, a product choice with no safe default, "
+                                "or an external state change you cannot perform. If truly blocked, record the "
+                                "durable runtime state and explain the concrete blocker without generic "
+                                "continue-later language."
                             ),
                         )
                     )
@@ -4006,7 +4046,7 @@ def _normalize_plan_payload(payload: dict[str, Any], has_tools: bool) -> dict[st
 
     if not steps:
         return None
-    return {"mode": "execute", "steps": steps[:_MAX_PLAN_STEPS], "response": response}
+    return {"mode": "execute", "steps": steps[:_MAX_PLAN_STEPS], "response": ""}
 
 
 async def _finalize_response(
@@ -4135,6 +4175,59 @@ async def _needs_action_or_blocked_retry(
     return verdict == "requires_runtime_action_state" and confidence >= 0.55
 
 
+async def _needs_autonomous_recovery_retry(
+    *,
+    provider: InferenceProvider,
+    messages: list[Message | dict[str, Any]],
+    candidate: str,
+) -> bool:
+    if not normalize_plain_text(candidate or "") or should_suppress_user_delivery(candidate):
+        return False
+    if len(re.findall(r"(?m)^\s*(?:\d+[\).]|[-*])\s+\S", candidate or "")) < 2:
+        return False
+    prompt = (
+        "Classify whether a draft assistant response improperly delegates recoverable execution "
+        "choices to the user after tools have already run or an execution plan is active.\n"
+        "Return JSON only with this shape:\n"
+        '{"verdict":"final|requires_autonomous_recovery","confidence":0.0,"reason":"short"}\n'
+        "Use requires_autonomous_recovery when the draft lists alternative implementation/retry/"
+        "diagnostic paths and asks the user to choose, continue, retry, or approve a generic next "
+        "attempt, while the evidence shows the assistant still has safe available actions it can "
+        "take itself. Prefer autonomous recovery for bounded retries, smaller scoped workers, "
+        "state inspection, durable note/plan updates, or choosing a conservative default.\n"
+        "Use final when the draft gives a completed result, a real blocked state, or asks for "
+        "human-only input: missing credentials, destructive/risky approval, policy permission, "
+        "private preference, ambiguous product choice with no safe default, or an external state "
+        "change the assistant cannot perform. Do not classify from banned words; judge the speech "
+        "act and whether the next step is recoverable without the user.\n\n"
+        "<EVIDENCE>\n"
+        f"{_messages_to_text(messages)}\n"
+        "</EVIDENCE>\n\n"
+        "<DRAFT_RESPONSE>\n"
+        f"{candidate}\n"
+        "</DRAFT_RESPONSE>"
+    )
+    try:
+        raw = await _complete_text(
+            provider,
+            [Message(role="system", content=prompt)],
+            context="autonomous_recovery_verifier",
+        )
+    except Exception:
+        logger.debug("Autonomous-recovery verifier skipped due to provider error", exc_info=True)
+        return False
+
+    payload = _extract_json_object(raw)
+    if not isinstance(payload, dict):
+        return False
+    verdict = str(payload.get("verdict") or "").strip().lower()
+    try:
+        confidence = float(payload.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return verdict == "requires_autonomous_recovery" and confidence >= 0.55
+
+
 def _messages_include_runtime_state_context(messages: list[Message | dict[str, Any]]) -> bool:
     runtime_tool_names = {
         "plan_create",
@@ -4164,6 +4257,17 @@ def _messages_include_runtime_state_context(messages: list[Message | dict[str, A
             call_name = str((call.get("function") or {}).get("name") or "").strip().lower()
             if call_name in runtime_tool_names:
                 return True
+    return False
+
+
+def _messages_include_execution_plan(messages: list[Message | dict[str, Any]]) -> bool:
+    for message in messages[-12:]:
+        if isinstance(message, dict):
+            content = str(message.get("content") or "")
+        else:
+            content = str(getattr(message, "content", "") or "")
+        if "<execution_plan>" in content and "</execution_plan>" in content:
+            return True
     return False
 
 
