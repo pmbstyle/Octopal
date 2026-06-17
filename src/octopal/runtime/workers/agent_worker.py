@@ -44,6 +44,7 @@ _MAX_TOOL_ITERS = 10
 _DEFAULT_TOOL_TIMEOUT_SECONDS = 60
 _DEFAULT_MAX_STEP_CAP = 30
 _MAX_EMPTY_TURNS = 3
+_MAX_MALFORMED_RESULT_TURNS = 2
 _ORCHESTRATION_STALL_WARNING_THRESHOLD = 2
 _ORCHESTRATION_STALL_CRITICAL_THRESHOLD = 3
 _ORCHESTRATION_STALL_WARNING_MIN_ELAPSED_SECONDS = 15
@@ -102,7 +103,7 @@ _RESULT_SCHEMA = {
         "output": {"type": ["object", "array", "string", "number", "boolean", "null"]},
         "questions": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["type", "summary"],
+    "required": ["type", "summary", "output"],
     "additionalProperties": True,
 }
 logger = structlog.get_logger(__name__)
@@ -290,11 +291,41 @@ def _build_worker_task_prompt(task: str, inputs: Any) -> str:
 def _build_worker_completion_protocol_prompt() -> str:
     return (
         "Completion protocol:\n"
-        '- When done, return JSON with type="result", summary, and optional output/questions.\n'
+        '- When done, return JSON with type="result", summary, and output/questions.\n'
+        "- Put findings, records, paths, and domain results in output.\n"
         "- Use questions only when blocked after request_instruction times out or the task must stop.\n"
         "- summary is internal; do not treat it as user-facing copy.\n"
-        "- Never present transport/debug/auth details, retries, truncation counts, or orchestration status as user-facing content."
+        "- Never present transport/debug/auth details, retries, truncation counts, or orchestration as user-facing."
     )
+
+
+def _build_structured_result_retry_prompt() -> str:
+    return (
+        "Your previous response was not a valid worker completion result. "
+        "Do not call any tools again. Return exactly one JSON object and nothing else. "
+        "Required shape: "
+        '{"type":"result","status":"completed","summary":"short internal summary",'
+        '"output":{...},"questions":[]}. '
+        "Put all task findings and produced data in output. If the previous response was "
+        'itself the task result, wrap it in output. Use status="failed" only if the task '
+        "could not be completed."
+    )
+
+
+def _completed_result_missing_output(result_block: dict[str, Any], tools_used: list[str]) -> bool:
+    status = str(result_block.get("status") or "completed").strip().lower()
+    if status == "failed" or not tools_used:
+        return False
+    if "output" not in result_block:
+        return True
+    output = result_block.get("output")
+    if output is None:
+        return True
+    if isinstance(output, dict):
+        return not any(not str(key).startswith("_") for key in output)
+    if isinstance(output, str):
+        return not output.strip()
+    return False
 
 
 def _tool_schema_chars(tools: list[Any]) -> int:
@@ -912,11 +943,7 @@ async def execute_agent_task(
             if plan_tool_name in existing_tool_names:
                 continue
             plan_tool = next(
-                (
-                    tool
-                    for tool in available_tools
-                    if getattr(tool, "name", "") == plan_tool_name
-                ),
+                (tool for tool in available_tools if getattr(tool, "name", "") == plan_tool_name),
                 None,
             )
             if plan_tool is not None:
@@ -1038,16 +1065,19 @@ Available tools:
     joined_child_results_by_id: dict[str, dict[str, Any]] = {}
     pending_child_wait_ids: list[str] = []
     paused_seconds = 0.0
+    malformed_result_turns = 0
 
     while thinking_steps < effective_max_steps:
         llm_start = time.perf_counter()
+        force_structured_result = malformed_result_turns > 0
+        llm_tools = [] if force_structured_result else filtered_tools
         _record_worker_llm_context_snapshot(
             telemetry,
             messages=messages,
-            tools=filtered_tools,
+            tools=llm_tools,
             step=thinking_steps,
         )
-        force_fs_write = _required_tool_call_missing(
+        force_fs_write = not force_structured_result and _required_tool_call_missing(
             spec.required_tool_calls,
             tools_used,
             "fs_write",
@@ -1056,7 +1086,7 @@ Available tools:
             response = await _call_llm(
                 provider,
                 messages,
-                filtered_tools,
+                llm_tools,
                 tool_choice=_force_tool_choice("fs_write") if force_fs_write else "auto",
                 response_format_enabled=not force_fs_write,
             )
@@ -1377,6 +1407,45 @@ Available tools:
                     )
                     thinking_steps += 1
                     continue
+                if _completed_result_missing_output(result_block, tools_used):
+                    malformed_result_turns += 1
+                    telemetry["malformed_result_turns"] = malformed_result_turns
+                    messages.append({"role": "assistant", "content": content})
+                    if (
+                        malformed_result_turns <= _MAX_MALFORMED_RESULT_TURNS
+                        and thinking_steps + 1 < effective_max_steps
+                    ):
+                        await worker.log(
+                            "warning",
+                            (
+                                "Worker returned structured completion without output; "
+                                "requesting JSON result"
+                            ),
+                        )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": _build_structured_result_retry_prompt(),
+                            }
+                        )
+                        thinking_steps += 1
+                        continue
+                    return WorkerResult(
+                        status="failed",
+                        summary="Task failed: worker did not return structured output.",
+                        output=_attach_telemetry(
+                            {
+                                "degraded": True,
+                                "reason": "missing_structured_output",
+                                "final_text": _truncate_text(content, 1000),
+                                "malformed_result_turns": malformed_result_turns,
+                            },
+                            telemetry,
+                        ),
+                        knowledge_proposals=worker.knowledge_proposals,
+                        thinking_steps=thinking_steps + 1,
+                        tools_used=tools_used,
+                    )
                 cycle_steps = thinking_steps + 1
                 return WorkerResult(
                     status=(
@@ -1393,7 +1462,9 @@ Available tools:
                     tools_used=tools_used,
                 )
 
-            # If model produced plain text with no tool call, treat it as completion.
+            # Plain text is not a valid worker completion. Retry once in result-only
+            # mode so side-effecting tools are not called again, then fail loudly
+            # instead of recording a telemetry-only "success".
             if content:
                 if _required_tool_call_missing(spec.required_tool_calls, tools_used, "fs_write"):
                     messages.append({"role": "assistant", "content": content})
@@ -1409,12 +1480,40 @@ Available tools:
                     )
                     thinking_steps += 1
                     continue
-                cycle_steps = thinking_steps + 1
+                malformed_result_turns += 1
+                telemetry["malformed_result_turns"] = malformed_result_turns
+                messages.append({"role": "assistant", "content": content})
+                if (
+                    malformed_result_turns <= _MAX_MALFORMED_RESULT_TURNS
+                    and thinking_steps + 1 < effective_max_steps
+                ):
+                    await worker.log(
+                        "warning",
+                        "Worker returned non-structured completion; requesting JSON result",
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": _build_structured_result_retry_prompt(),
+                        }
+                    )
+                    thinking_steps += 1
+                    continue
+
                 return WorkerResult(
-                    summary=content,
-                    output=_attach_telemetry(None, telemetry),
+                    status="failed",
+                    summary="Task failed: worker did not return a structured result.",
+                    output=_attach_telemetry(
+                        {
+                            "degraded": True,
+                            "reason": "missing_structured_result",
+                            "final_text": _truncate_text(content, 1000),
+                            "malformed_result_turns": malformed_result_turns,
+                        },
+                        telemetry,
+                    ),
                     knowledge_proposals=worker.knowledge_proposals,
-                    thinking_steps=cycle_steps,
+                    thinking_steps=thinking_steps + 1,
                     tools_used=tools_used,
                 )
 
@@ -1450,12 +1549,15 @@ def _extract_result_block(content: str) -> dict[str, Any] | None:
         return None
 
     candidates = [content]
+    legacy_output_candidates: list[str] = []
     stripped = content.strip()
     if stripped.startswith("```"):
         lines = stripped.splitlines()
         if len(lines) >= 3 and lines[-1].strip() == "```":
             body = "\n".join(lines[1:-1]).strip()
             candidates.append(body)
+            legacy_output_candidates.append(body)
+    legacy_output_candidates.extend(_extract_fenced_json_candidates(stripped))
 
     for candidate in candidates:
         try:
@@ -1470,7 +1572,41 @@ def _extract_result_block(content: str) -> dict[str, Any] | None:
         normalized = _normalize_result_payload(payload)
         if normalized is not None:
             return normalized
+
+    if stripped.startswith(("{", "[")):
+        legacy_output_candidates.append(stripped)
+    for candidate in legacy_output_candidates:
+        try:
+            payload = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        normalized = _normalize_legacy_output_payload(payload)
+        if normalized is not None:
+            return normalized
     return None
+
+
+def _extract_fenced_json_candidates(content: str) -> list[str]:
+    candidates: list[str] = []
+    lines = content.splitlines()
+    index = 0
+    while index < len(lines):
+        opener = lines[index].strip().lower()
+        if not opener.startswith("```"):
+            index += 1
+            continue
+        language = opener[3:].strip()
+        body_start = index + 1
+        index = body_start
+        while index < len(lines) and lines[index].strip() != "```":
+            index += 1
+        if index >= len(lines):
+            break
+        body = "\n".join(lines[body_start:index]).strip()
+        if body and (not language or language == "json"):
+            candidates.append(body)
+        index += 1
+    return candidates
 
 
 def _iter_embedded_json_objects(content: str):
@@ -1502,6 +1638,26 @@ def _normalize_result_payload(payload: Any) -> dict[str, Any] | None:
 
     if _is_valid_result_payload(normalized):
         return normalized
+    return None
+
+
+def _normalize_legacy_output_payload(payload: Any) -> dict[str, Any] | None:
+    if isinstance(payload, dict):
+        if payload.get("type") == "result":
+            return _normalize_result_payload(payload)
+        if not payload:
+            return None
+        return {
+            "type": "result",
+            "summary": "Task completed",
+            "output": payload,
+        }
+    if isinstance(payload, list):
+        return {
+            "type": "result",
+            "summary": "Task completed",
+            "output": {"result": payload},
+        }
     return None
 
 
@@ -1860,7 +2016,7 @@ def _is_valid_result_payload(payload: dict[str, Any]) -> bool:
     except ValidationError:
         return False
     except Exception:
-        return "summary" in payload
+        return "summary" in payload and "output" in payload
 
 
 def _classify_tool_error(text: str) -> str:
@@ -2011,7 +2167,12 @@ def _auto_tune_max_steps(base_steps: int, available_tools: list[str], system_pro
 
 
 def _attach_telemetry(output: Any, telemetry: dict[str, Any]) -> dict[str, Any]:
-    payload = output if isinstance(output, dict) else {}
+    if isinstance(output, dict):
+        payload = dict(output)
+    elif output is None:
+        payload = {}
+    else:
+        payload = {"result": output}
     payload["_telemetry"] = telemetry
     return payload
 

@@ -467,6 +467,23 @@ def test_extract_result_block_reads_embedded_failure_payload() -> None:
     assert result["summary"] == "Failed to connect to Cobalt API server"
 
 
+def test_extract_result_block_wraps_fenced_domain_json_as_output() -> None:
+    result = _extract_result_block("""All done. Here is the result:
+
+```json
+{"summary":"Newsletter summary","threads":[{"subject":"Hello"}],"marked_digested":1}
+```
+""")
+
+    assert result is not None
+    assert result["summary"] == "Task completed"
+    assert result["output"] == {
+        "summary": "Newsletter summary",
+        "threads": [{"subject": "Hello"}],
+        "marked_digested": 1,
+    }
+
+
 def test_detect_orchestration_stall_warns_and_breaks_on_repeated_no_progress() -> None:
     history = [
         {
@@ -683,7 +700,7 @@ def test_execute_agent_task_counts_completed_cycles_not_raw_llm_calls(
                     }
                 ]
             },
-            {"content": '{"type":"result","summary":"done"}'},
+            {"content": '{"type":"result","summary":"done","output":{"ok":true}}'},
         ]
     )
 
@@ -745,6 +762,210 @@ def test_execute_agent_task_stops_after_repeated_empty_turns(monkeypatch, tmp_pa
     assert result.output["_telemetry"]["empty_turns"] == 3
 
 
+def test_execute_agent_task_repairs_plain_text_completion_without_tools(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    worker = _dummy_worker()
+
+    async def _noop_log(level: str, message: str) -> None:
+        return None
+
+    monkeypatch.setattr(worker, "log", _noop_log)
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
+    monkeypatch.setattr(
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
+        lambda settings, model=None, config=None: object(),
+    )
+
+    tool = ToolSpec(
+        name="side_effect",
+        description="side effect",
+        parameters={"type": "object"},
+        permission="filesystem_read",
+        handler=lambda args, ctx: {"ok": True},
+        is_async=False,
+    )
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.get_tools", lambda: [tool])
+
+    responses = iter(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "function": {"name": "side_effect", "arguments": "{}"},
+                    }
+                ]
+            },
+            {"content": "Email digest completed. Found 1 new thread."},
+            {
+                "content": (
+                    '{"type":"result","summary":"Email digest completed",'
+                    '"output":{"threads":[{"subject":"Hello"}],"marked_digested":1}}'
+                )
+            },
+        ]
+    )
+    tool_names_by_call: list[list[str]] = []
+
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
+        tool_names_by_call.append([tool.name for tool in tools])
+        return next(responses)
+
+    async def _fake_execute_tool(
+        tool_name,
+        tool_input,
+        workspace_root,
+        worker_dir,
+        worker_obj,
+        tool_map,
+        *,
+        timeout_seconds=None,
+    ):
+        return {"ok": True}, {
+            "retries": 0,
+            "timed_out": False,
+            "had_error": False,
+            "error_type": "none",
+        }
+
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker._call_llm", _fake_call_llm)
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker._execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(execute_agent_task(worker, tmp_path, tmp_path))
+
+    assert result.status == "completed"
+    assert result.output is not None
+    assert result.output["threads"] == [{"subject": "Hello"}]
+    assert result.output["marked_digested"] == 1
+    assert result.output["_telemetry"]["malformed_result_turns"] == 1
+    assert result.tools_used == ["side_effect"]
+    assert tool_names_by_call == [
+        ["side_effect", "request_instruction"],
+        ["side_effect", "request_instruction"],
+        [],
+    ]
+
+
+def test_execute_agent_task_repairs_structured_completion_without_output(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    worker = _dummy_worker()
+
+    async def _noop_log(level: str, message: str) -> None:
+        return None
+
+    monkeypatch.setattr(worker, "log", _noop_log)
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
+    monkeypatch.setattr(
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
+        lambda settings, model=None, config=None: object(),
+    )
+
+    tool = ToolSpec(
+        name="fetch",
+        description="fetch",
+        parameters={"type": "object"},
+        permission="filesystem_read",
+        handler=lambda args, ctx: {"records": [1]},
+        is_async=False,
+    )
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.get_tools", lambda: [tool])
+
+    responses = iter(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "function": {"name": "fetch", "arguments": "{}"},
+                    }
+                ]
+            },
+            {"content": '{"type":"result","summary":"done","output":{}}'},
+            {"content": '{"type":"result","summary":"done","output":{"records":[1]}}'},
+        ]
+    )
+    tool_names_by_call: list[list[str]] = []
+
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
+        tool_names_by_call.append([tool.name for tool in tools])
+        return next(responses)
+
+    async def _fake_execute_tool(
+        tool_name,
+        tool_input,
+        workspace_root,
+        worker_dir,
+        worker_obj,
+        tool_map,
+        *,
+        timeout_seconds=None,
+    ):
+        return {"records": [1]}, {
+            "retries": 0,
+            "timed_out": False,
+            "had_error": False,
+            "error_type": "none",
+        }
+
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker._call_llm", _fake_call_llm)
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker._execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(execute_agent_task(worker, tmp_path, tmp_path))
+
+    assert result.status == "completed"
+    assert result.output is not None
+    assert result.output["records"] == [1]
+    assert result.output["_telemetry"]["malformed_result_turns"] == 1
+    assert tool_names_by_call == [
+        ["fetch", "request_instruction"],
+        ["fetch", "request_instruction"],
+        [],
+    ]
+
+
+def test_execute_agent_task_fails_repeated_plain_text_completion(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    worker = _dummy_worker()
+
+    async def _noop_log(level: str, message: str) -> None:
+        return None
+
+    monkeypatch.setattr(worker, "log", _noop_log)
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
+    monkeypatch.setattr(
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
+        lambda settings, model=None, config=None: object(),
+    )
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.get_tools", lambda: [])
+
+    responses = iter(
+        [
+            {"content": "I did it."},
+            {"content": "Still done, no JSON."},
+            {"content": "Still not JSON."},
+        ]
+    )
+
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
+        return next(responses)
+
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker._call_llm", _fake_call_llm)
+
+    result = asyncio.run(execute_agent_task(worker, tmp_path, tmp_path))
+
+    assert result.status == "failed"
+    assert result.summary == "Task failed: worker did not return a structured result."
+    assert result.output is not None
+    assert result.output["reason"] == "missing_structured_result"
+    assert result.output["malformed_result_turns"] == 3
+
+
 def test_execute_agent_task_does_not_charge_step_for_throttled_poll_round(
     monkeypatch,
     tmp_path: Path,
@@ -784,7 +1005,7 @@ def test_execute_agent_task_does_not_charge_step_for_throttled_poll_round(
                     }
                 ]
             },
-            {"content": '{"type":"result","summary":"done"}'},
+            {"content": '{"type":"result","summary":"done","output":{"ok":true}}'},
         ]
     )
 
@@ -856,7 +1077,7 @@ def test_execute_agent_task_injects_request_instruction_without_parent_answer_to
 
     responses = iter(
         [
-            {"content": '{"type":"result","summary":"done"}'},
+            {"content": '{"type":"result","summary":"done","output":{}}'},
         ]
     )
 
@@ -985,7 +1206,7 @@ def test_execute_agent_task_does_not_charge_step_for_parent_instruction_answer(
                     }
                 ]
             },
-            {"content": '{"type":"result","summary":"done"}'},
+            {"content": '{"type":"result","summary":"done","output":{"ok":true}}'},
         ]
     )
 
