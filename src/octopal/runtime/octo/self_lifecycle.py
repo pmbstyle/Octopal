@@ -39,6 +39,9 @@ from octopal.runtime.self_control import (
     due_self_update_requests as _default_due_self_update_requests,
 )
 from octopal.runtime.self_control import (
+    find_recent_control_action as _default_find_recent_control_action,
+)
+from octopal.runtime.self_control import (
     launch_restart_helper as _default_launch_restart_helper,
 )
 from octopal.runtime.self_control import (
@@ -183,6 +186,29 @@ class OctoSelfLifecycleMixin:
                 "message": "Self restart requires confirm=true.",
             }
 
+        state_dir = Path(runtime_settings.state_dir)
+        if not bool(args.get("force", False)):
+            find_recent_control_action = _core_callable(
+                "find_recent_control_action", _default_find_recent_control_action
+            )
+            duplicate = await asyncio.to_thread(
+                find_recent_control_action,
+                state_dir,
+                action=SELF_RESTART_ACTION,
+                requested_by=SELF_RESTART_REQUESTED_BY,
+                chat_id=chat_id,
+            )
+            if duplicate is not None:
+                return {
+                    "status": "duplicate_recent_control_action",
+                    "action": "octo_restart_self",
+                    "message": (
+                        "A recent self restart for this chat is already pending or completed. "
+                        "Use force=true only when the user explicitly asks for another restart."
+                    ),
+                    "duplicate": duplicate,
+                }
+
         confidence = _coerce_float(args.get("confidence"), default=0.8)
         delay_seconds = _coerce_int(args.get("delay_seconds"), default=5, minimum=3, maximum=60)
         health = await self.get_context_health_snapshot(chat_id)
@@ -215,7 +241,6 @@ class OctoSelfLifecycleMixin:
                 os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace"),
             )
         ).resolve()
-        state_dir = Path(runtime_settings.state_dir)
         file_info = await asyncio.to_thread(_persist_context_reset_files, workspace_dir, handoff)
         append_control_request = _core_callable(
             "append_control_request", _default_append_control_request
@@ -295,6 +320,29 @@ class OctoSelfLifecycleMixin:
                 "message": "Self update requires confirm=true.",
             }
 
+        state_dir = Path(runtime_settings.state_dir)
+        if not bool(args.get("force", False)):
+            find_recent_control_action = _core_callable(
+                "find_recent_control_action", _default_find_recent_control_action
+            )
+            duplicate = await asyncio.to_thread(
+                find_recent_control_action,
+                state_dir,
+                action=SELF_UPDATE_ACTION,
+                requested_by=SELF_UPDATE_REQUESTED_BY,
+                chat_id=chat_id,
+            )
+            if duplicate is not None:
+                return {
+                    "status": "duplicate_recent_control_action",
+                    "action": "octo_update_self",
+                    "message": (
+                        "A recent self update for this chat is already pending or completed. "
+                        "Use force=true only when the user explicitly asks for another update."
+                    ),
+                    "duplicate": duplicate,
+                }
+
         project_root = Path(__file__).resolve().parents[4]
         check_update_status = _core_callable("check_update_status", _default_check_update_status)
         update_status = await asyncio.to_thread(check_update_status, project_root)
@@ -340,7 +388,6 @@ class OctoSelfLifecycleMixin:
                 os.getenv("OCTOPAL_WORKSPACE_DIR", "workspace"),
             )
         ).resolve()
-        state_dir = Path(runtime_settings.state_dir)
         file_info = await asyncio.to_thread(_persist_context_reset_files, workspace_dir, handoff)
         append_control_request = _core_callable(
             "append_control_request", _default_append_control_request
