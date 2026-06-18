@@ -21,6 +21,10 @@ SELF_RESTART_ACTION = "restart_service"
 SELF_RESTART_REQUESTED_BY = "octo_self_restart"
 SELF_UPDATE_ACTION = "update_service"
 SELF_UPDATE_REQUESTED_BY = "octo_self_update"
+RECENT_CONTROL_ACTION_WINDOW_SECONDS = 15 * 60
+
+_CONTROL_SUCCESS_STATUSES = {"executed", "restart_executed"}
+_CONTROL_FAILURE_STATUSES = {"cleared", "error", "update_failed", "restart_failed"}
 
 
 def append_control_request(
@@ -66,6 +70,68 @@ def append_control_ack(
     }
     _append_jsonl(state_dir / CONTROL_ACKS_FILE, item)
     return item
+
+
+def find_recent_control_action(
+    state_dir: Path,
+    *,
+    action: str,
+    requested_by: str,
+    chat_id: int | None = None,
+    now: datetime | None = None,
+    window_seconds: int = RECENT_CONTROL_ACTION_WINDOW_SECONDS,
+) -> dict[str, Any] | None:
+    current = now or datetime.now(UTC)
+    cutoff = current - timedelta(seconds=max(0, int(window_seconds)))
+    requests = _read_jsonl(state_dir / CONTROL_REQUESTS_FILE)
+    acks = _read_jsonl(state_dir / CONTROL_ACKS_FILE)
+    acks_by_id: dict[str, list[dict[str, Any]]] = {}
+    for ack in acks:
+        request_id = str(ack.get("request_id", "") or "").strip()
+        if request_id:
+            acks_by_id.setdefault(request_id, []).append(ack)
+
+    for item in reversed(requests):
+        if str(item.get("action", "") or "").strip() != action:
+            continue
+        if str(item.get("requested_by", "") or "").strip() != requested_by:
+            continue
+        created_at = _parse_datetime(str(item.get("created_at", "") or ""))
+        if created_at is None or created_at < cutoff:
+            continue
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        if chat_id is not None:
+            try:
+                item_chat_id = int(metadata.get("chat_id"))
+            except Exception:
+                item_chat_id = None
+            if item_chat_id != int(chat_id):
+                continue
+
+        request_id = str(item.get("request_id", "") or "").strip()
+        request_acks = acks_by_id.get(request_id, [])
+        state = _control_action_state(request_acks)
+        if state == "failed":
+            continue
+        return {
+            "request": item,
+            "state": state,
+            "ack_statuses": [
+                str(ack.get("status", "") or "").strip()
+                for ack in request_acks
+                if str(ack.get("status", "") or "").strip()
+            ],
+        }
+    return None
+
+
+def _control_action_state(acks: list[dict[str, Any]]) -> str:
+    statuses = [str(ack.get("status", "") or "").strip() for ack in acks]
+    if any(status in _CONTROL_SUCCESS_STATUSES for status in statuses):
+        return "completed"
+    if any(status in _CONTROL_FAILURE_STATUSES for status in statuses):
+        return "failed"
+    return "pending"
 
 
 def list_unacked_control_requests(state_dir: Path) -> list[dict[str, Any]]:

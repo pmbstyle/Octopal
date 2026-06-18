@@ -11,9 +11,11 @@ from octopal.runtime.self_control import (
     SELF_RESTART_REQUESTED_BY,
     SELF_UPDATE_ACTION,
     SELF_UPDATE_REQUESTED_BY,
+    append_control_ack,
     append_control_request,
     due_self_restart_requests,
     due_self_update_requests,
+    find_recent_control_action,
     read_pending_restart_resume,
     run_update_helper,
 )
@@ -95,6 +97,86 @@ def test_self_restart_persists_handoff_resume_and_request(tmp_path: Path) -> Non
     assert resume["handoff"]["goal_now"] == "Continue connector setup."
 
 
+def test_self_restart_rejects_recent_duplicate_request(tmp_path: Path) -> None:
+    settings = _StoreSettings(tmp_path / "data", tmp_path / "workspace")
+    store = SQLiteStore(settings)
+    octo = Octo(
+        provider=object(),
+        store=store,
+        policy=object(),
+        runtime=_Runtime(settings),
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+
+    async def scenario() -> tuple[dict, dict]:
+        first = await octo.request_self_restart(
+            42,
+            {
+                "reason": "apply git pull",
+                "confirm": True,
+                "delay_seconds": 3,
+            },
+        )
+        second = await octo.request_self_restart(
+            42,
+            {
+                "reason": "apply the same git pull again",
+                "confirm": True,
+                "delay_seconds": 3,
+            },
+        )
+        return first, second
+
+    first, second = asyncio.run(scenario())
+    assert first["status"] == "restart_requested"
+    assert second["status"] == "duplicate_recent_control_action"
+    assert second["duplicate"]["request"]["request_id"] == first["request"]["request_id"]
+    requests = (settings.state_dir / "control_requests.jsonl").read_text(encoding="utf-8")
+    assert len(requests.splitlines()) == 1
+
+
+def test_self_restart_force_allows_recent_duplicate_request(tmp_path: Path) -> None:
+    settings = _StoreSettings(tmp_path / "data", tmp_path / "workspace")
+    store = SQLiteStore(settings)
+    octo = Octo(
+        provider=object(),
+        store=store,
+        policy=object(),
+        runtime=_Runtime(settings),
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+
+    async def scenario() -> tuple[dict, dict]:
+        first = await octo.request_self_restart(
+            42,
+            {
+                "reason": "apply git pull",
+                "confirm": True,
+                "delay_seconds": 3,
+            },
+        )
+        second = await octo.request_self_restart(
+            42,
+            {
+                "reason": "explicit second restart",
+                "confirm": True,
+                "force": True,
+                "delay_seconds": 3,
+            },
+        )
+        return first, second
+
+    first, second = asyncio.run(scenario())
+    assert first["status"] == "restart_requested"
+    assert second["status"] == "restart_requested"
+    requests = (settings.state_dir / "control_requests.jsonl").read_text(encoding="utf-8")
+    assert len(requests.splitlines()) == 2
+
+
 def test_self_update_persists_handoff_resume_and_request(tmp_path: Path, monkeypatch) -> None:
     settings = _StoreSettings(tmp_path / "data", tmp_path / "workspace")
     store = SQLiteStore(settings)
@@ -142,6 +224,55 @@ def test_self_update_persists_handoff_resume_and_request(tmp_path: Path, monkeyp
     assert resume["update"]["latest_version"] == "2026.04.27"
 
 
+def test_self_update_rejects_recent_duplicate_request(tmp_path: Path, monkeypatch) -> None:
+    settings = _StoreSettings(tmp_path / "data", tmp_path / "workspace")
+    store = SQLiteStore(settings)
+    octo = Octo(
+        provider=object(),
+        store=store,
+        policy=object(),
+        runtime=_Runtime(settings),
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+    monkeypatch.setattr(
+        "octopal.runtime.octo.core.check_update_status",
+        lambda _root: {
+            "status": "ok",
+            "local_version": "2026.04.26",
+            "latest_version": "2026.04.27",
+            "update_available": True,
+            "can_update": True,
+        },
+    )
+
+    async def scenario() -> tuple[dict, dict]:
+        first = await octo.request_self_update(
+            42,
+            {
+                "reason": "apply latest release",
+                "confirm": True,
+                "delay_seconds": 3,
+            },
+        )
+        second = await octo.request_self_update(
+            42,
+            {
+                "reason": "apply latest release again",
+                "confirm": True,
+                "delay_seconds": 3,
+            },
+        )
+        return first, second
+
+    first, second = asyncio.run(scenario())
+    assert first["status"] == "update_requested"
+    assert second["status"] == "duplicate_recent_control_action"
+    requests = (settings.state_dir / "control_requests.jsonl").read_text(encoding="utf-8")
+    assert len(requests.splitlines()) == 1
+
+
 def test_due_self_restart_requests_are_octo_only(tmp_path: Path) -> None:
     state_dir = tmp_path / "data"
     append_control_request(
@@ -172,6 +303,54 @@ def test_due_self_restart_requests_are_octo_only(tmp_path: Path) -> None:
     )
     assert len(due) == 1
     assert due[0]["reason"] == "ok"
+
+
+def test_recent_control_action_ignores_terminal_nonblocking_requests(tmp_path: Path) -> None:
+    state_dir = tmp_path / "data"
+    failed = append_control_request(
+        state_dir,
+        action=SELF_RESTART_ACTION,
+        reason="failed",
+        requested_by=SELF_RESTART_REQUESTED_BY,
+        delay_seconds=0,
+        metadata={"chat_id": 42},
+    )
+    append_control_ack(
+        state_dir,
+        failed["request_id"],
+        status="error",
+        source="self_restart_helper",
+    )
+    cleared = append_control_request(
+        state_dir,
+        action=SELF_RESTART_ACTION,
+        reason="cleared",
+        requested_by=SELF_RESTART_REQUESTED_BY,
+        delay_seconds=0,
+        metadata={"chat_id": 42},
+    )
+    append_control_ack(
+        state_dir,
+        cleared["request_id"],
+        status="cleared",
+        source="dashboard_action",
+    )
+    append_control_request(
+        state_dir,
+        action=SELF_RESTART_ACTION,
+        reason="other chat",
+        requested_by=SELF_RESTART_REQUESTED_BY,
+        delay_seconds=0,
+        metadata={"chat_id": 7},
+    )
+
+    duplicate = find_recent_control_action(
+        state_dir,
+        action=SELF_RESTART_ACTION,
+        requested_by=SELF_RESTART_REQUESTED_BY,
+        chat_id=42,
+    )
+    assert duplicate is None
 
 
 def test_due_self_update_requests_are_octo_only(tmp_path: Path) -> None:
