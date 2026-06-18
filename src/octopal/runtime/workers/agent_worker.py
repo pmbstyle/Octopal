@@ -98,12 +98,22 @@ _RESULT_SCHEMA = {
     "type": "object",
     "properties": {
         "type": {"type": "string", "const": "result"},
-        "status": {"type": "string", "enum": ["completed", "failed"]},
+        "status": {"type": "string", "enum": ["completed", "failed", "awaiting_instruction"]},
         "summary": {"type": "string"},
         "output": {"type": ["object", "array", "string", "number", "boolean", "null"]},
         "questions": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["type", "summary", "output"],
+    "required": ["type", "summary"],
+    "allOf": [
+        {
+            "if": {
+                "properties": {"status": {"const": "awaiting_instruction"}},
+                "required": ["status"],
+            },
+            "then": {"required": ["questions"]},
+            "else": {"required": ["output"]},
+        }
+    ],
     "additionalProperties": True,
 }
 logger = structlog.get_logger(__name__)

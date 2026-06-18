@@ -484,6 +484,17 @@ def test_extract_result_block_wraps_fenced_domain_json_as_output() -> None:
     }
 
 
+def test_extract_result_block_accepts_awaiting_instruction_without_output() -> None:
+    result = _extract_result_block(
+        '{"type":"result","status":"awaiting_instruction","summary":"Need approval","questions":["Proceed?"]}'
+    )
+
+    assert result is not None
+    assert result["status"] == "awaiting_instruction"
+    assert result["questions"] == ["Proceed?"]
+    assert "output" not in result
+
+
 def test_detect_orchestration_stall_warns_and_breaks_on_repeated_no_progress() -> None:
     history = [
         {
