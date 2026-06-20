@@ -5,6 +5,10 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from octopal.runtime.octo.core import Octo
+from octopal.runtime.octo.worker_dispatch import (
+    _build_worker_cross_scope_signature,
+    _build_worker_task_signature,
+)
 from octopal.runtime.workers.contracts import WorkerInstructionRequest, WorkerResult, WorkerSpec
 
 
@@ -462,7 +466,7 @@ def test_octo_handle_message_preserves_reaction_when_output_is_only_react_tag(mo
     asyncio.run(scenario())
 
 
-def test_recent_task_reservations_are_scoped_by_chat_and_correlation() -> None:
+def test_recent_task_reservations_block_control_handoff_by_resource_scope() -> None:
     class _Memory:
         async def add_message(self, role: str, content: str, metadata: dict):
             return None
@@ -477,10 +481,175 @@ def test_recent_task_reservations_are_scoped_by_chat_and_correlation() -> None:
         canon=object(),
     )
 
-    assert octo._reserve_recent_task(chat_id=1, correlation_id="corr-1", task_signature="sig")
-    assert not octo._reserve_recent_task(chat_id=1, correlation_id="corr-1", task_signature="sig")
-    assert octo._reserve_recent_task(chat_id=1, correlation_id="corr-2", task_signature="sig")
-    assert octo._reserve_recent_task(chat_id=2, correlation_id="corr-1", task_signature="sig")
+    assert octo._reserve_recent_task(
+        chat_id=1,
+        correlation_id="msg-1",
+        task_signature="strict-read-url",
+        cross_scope_signature="moltbook_client:-:-:post-1",
+    )
+    assert not octo._reserve_recent_task(
+        chat_id=1,
+        correlation_id="msg-1",
+        task_signature="strict-read-url",
+        cross_scope_signature="moltbook_client:-:-:post-1",
+    )
+    assert octo._reserve_recent_task(
+        chat_id=1,
+        correlation_id="msg-2",
+        task_signature="strict-different-action",
+        cross_scope_signature="moltbook_client:-:-:post-1",
+    )
+    assert not octo._reserve_recent_task(
+        chat_id=1,
+        correlation_id="control-handoff-1",
+        task_signature="strict-read-id",
+        cross_scope_signature="moltbook_client:-:-:post-1",
+    )
+    assert octo._reserve_recent_task(
+        chat_id=2,
+        correlation_id="control-handoff-1",
+        task_signature="strict-read-id",
+        cross_scope_signature="moltbook_client:-:-:post-1",
+    )
+
+
+def test_recent_task_release_clears_chat_level_reservation() -> None:
+    class _Memory:
+        async def add_message(self, role: str, content: str, metadata: dict):
+            return None
+
+    octo = Octo(
+        provider=object(),
+        store=object(),
+        policy=object(),
+        runtime=object(),
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+
+    assert octo._reserve_recent_task(
+        chat_id=1,
+        correlation_id="msg-1",
+        task_signature="strict-read-url",
+        cross_scope_signature="moltbook_client:-:-:post-1",
+    )
+    octo._release_recent_task(
+        chat_id=1,
+        correlation_id="msg-1",
+        task_signature="strict-read-url",
+        cross_scope_signature="moltbook_client:-:-:post-1",
+    )
+    assert octo._reserve_recent_task(
+        chat_id=1,
+        correlation_id="control-handoff-1",
+        task_signature="strict-read-id",
+        cross_scope_signature="moltbook_client:-:-:post-1",
+    )
+
+
+def test_recent_task_release_preserves_other_resource_reservations() -> None:
+    class _Memory:
+        async def add_message(self, role: str, content: str, metadata: dict):
+            return None
+
+    octo = Octo(
+        provider=object(),
+        store=object(),
+        policy=object(),
+        runtime=object(),
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+
+    cross_scope_signature = "moltbook_client:-:-:post-1"
+    assert octo._reserve_recent_task(
+        chat_id=1,
+        correlation_id="msg-1",
+        task_signature="strict-read",
+        cross_scope_signature=cross_scope_signature,
+    )
+    assert octo._reserve_recent_task(
+        chat_id=1,
+        correlation_id="msg-2",
+        task_signature="strict-write",
+        cross_scope_signature=cross_scope_signature,
+    )
+    octo._release_recent_task(
+        chat_id=1,
+        correlation_id="msg-1",
+        task_signature="strict-read",
+        cross_scope_signature=cross_scope_signature,
+    )
+
+    assert not octo._reserve_recent_task(
+        chat_id=1,
+        correlation_id="control-handoff-1",
+        task_signature="strict-continuation",
+        cross_scope_signature=cross_scope_signature,
+    )
+
+
+def test_worker_cross_scope_signature_uses_stable_resource_ids() -> None:
+    first = _build_worker_cross_scope_signature(
+        worker_id="moltbook_client",
+        scheduled_task_id=None,
+        parent_worker_id=None,
+        task=(
+            "READ-ONLY task. Use moltbook skill. Fetch comments from "
+            "https://moltbook.com/post/5cd82ffa-db46-4a1c-93ea-d74adea788e7"
+        ),
+    )
+    second = _build_worker_cross_scope_signature(
+        worker_id="moltbook_client",
+        scheduled_task_id=None,
+        parent_worker_id=None,
+        task="[READ-ONLY] Fetch ALL comments on post ID 5cd82ffa-db46-4a1c-93ea-d74adea788e7.",
+    )
+    russian_wording = _build_worker_cross_scope_signature(
+        worker_id="moltbook_client",
+        scheduled_task_id=None,
+        parent_worker_id=None,
+        task="проверь комментарии к посту 5cd82ffa-db46-4a1c-93ea-d74adea788e7",
+    )
+
+    assert first == second
+    assert first == russian_wording
+
+
+def test_worker_strict_signature_keeps_distinct_resource_actions_apart() -> None:
+    read_comments = _build_worker_task_signature(
+        worker_id="moltbook_client",
+        scheduled_task_id=None,
+        parent_worker_id=None,
+        task="[READ-ONLY] Fetch all comments on post ID 5cd82ffa-db46-4a1c-93ea-d74adea788e7.",
+    )
+    post_reply = _build_worker_task_signature(
+        worker_id="moltbook_client",
+        scheduled_task_id=None,
+        parent_worker_id=None,
+        task="Post a reply to comments on post ID 5cd82ffa-db46-4a1c-93ea-d74adea788e7.",
+    )
+    numbered_comment_replies = _build_worker_task_signature(
+        worker_id="moltbook_client",
+        scheduled_task_id=None,
+        parent_worker_id=None,
+        task=(
+            "Post 2 Moltbook comment replies for AliceGhost on post ID "
+            "5cd82ffa-db46-4a1c-93ea-d74adea788e7."
+        ),
+    )
+    read_profile = _build_worker_task_signature(
+        worker_id="moltbook_client",
+        scheduled_task_id=None,
+        parent_worker_id=None,
+        task="Fetch AliceGhost profile for post ID 5cd82ffa-db46-4a1c-93ea-d74adea788e7.",
+    )
+
+    assert read_comments != post_reply
+    assert read_comments != numbered_comment_replies
+    assert read_comments != read_profile
 
 
 def test_start_worker_async_releases_duplicate_reservation_after_run(monkeypatch) -> None:
