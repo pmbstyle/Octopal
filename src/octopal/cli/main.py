@@ -2452,6 +2452,7 @@ def _octo_tool_permissions() -> dict[str, bool]:
         "security_audit": True,
         "self_control": True,
         "mcp_exec": True,
+        "desktop_control": True,
         "skill_use": True,
         "skill_exec": True,
         "skill_manage": True,
