@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from collections.abc import Callable
 from typing import Any
@@ -29,6 +30,11 @@ from octopal.runtime.workers.contracts import TaskRequest, WorkerResult
 logger = structlog.get_logger(__name__)
 
 _default_enqueue_internal_result = _followup_pipeline._enqueue_internal_result
+_UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+_URL_RE = re.compile(r"https?://[^\s<>()\"']+")
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _core_callable(name: str, default: Callable[..., Any]) -> Callable[..., Any]:
@@ -53,6 +59,45 @@ def _merge_allowed_paths(*values: object) -> list[str] | None:
             seen.add(path)
             merged.append(path)
     return merged or None
+
+
+def _build_worker_task_signature(
+    *,
+    worker_id: str,
+    scheduled_task_id: str | None,
+    parent_worker_id: str | None,
+    task: str,
+) -> str:
+    schedule_sig = scheduled_task_id or "-"
+    parent_sig = parent_worker_id or "-"
+    normalized_task = _WHITESPACE_RE.sub(" ", str(task or "").strip().lower())
+    return f"{worker_id}:{schedule_sig}:{parent_sig}:{normalized_task[:240]}"
+
+
+def _build_worker_cross_scope_signature(
+    *,
+    worker_id: str,
+    scheduled_task_id: str | None,
+    parent_worker_id: str | None,
+    task: str,
+) -> str | None:
+    schedule_sig = scheduled_task_id or "-"
+    parent_sig = parent_worker_id or "-"
+    normalized_task = _WHITESPACE_RE.sub(" ", str(task or "").strip().lower())
+    resource_tokens = _extract_worker_resource_tokens(normalized_task)
+    if not resource_tokens:
+        return None
+    resource_sig = "|".join(sorted(dict.fromkeys(resource_tokens)))
+    return f"{worker_id}:{schedule_sig}:{parent_sig}:{resource_sig}"
+
+
+def _extract_worker_resource_tokens(normalized_task: str) -> list[str]:
+    resource_tokens: list[str] = [match.lower() for match in _UUID_RE.findall(normalized_task)]
+    if not resource_tokens:
+        resource_tokens.extend(
+            match.rstrip(".,;:)]}") for match in _URL_RE.findall(normalized_task)
+        )
+    return resource_tokens
 
 
 class OctoWorkerDispatchMixin:
@@ -121,14 +166,24 @@ class OctoWorkerDispatchMixin:
                     "run_id": None,
                 }
 
-        schedule_sig = scheduled_task_id or "-"
-        parent_sig = parent_worker_id or "-"
-        task_signature = f"{worker_id}:{schedule_sig}:{parent_sig}:{task[:100]}"
+        task_signature = _build_worker_task_signature(
+            worker_id=worker_id,
+            scheduled_task_id=scheduled_task_id,
+            parent_worker_id=parent_worker_id,
+            task=task,
+        )
+        cross_scope_signature = _build_worker_cross_scope_signature(
+            worker_id=worker_id,
+            scheduled_task_id=scheduled_task_id,
+            parent_worker_id=parent_worker_id,
+            task=task,
+        )
         correlation_id = correlation_id_var.get()
         if not self._reserve_recent_task(
             chat_id=chat_id,
             correlation_id=correlation_id,
             task_signature=task_signature,
+            cross_scope_signature=cross_scope_signature,
         ):
             logger.warning(
                 "Duplicate worker task detected, skipping",
@@ -402,6 +457,7 @@ class OctoWorkerDispatchMixin:
                         chat_id=chat_id,
                         correlation_id=correlation_id,
                         task_signature=task_signature,
+                        cross_scope_signature=cross_scope_signature,
                     )
                     if dispatch_trace_ctx is not None and trace_sink is not None:
                         finish_meta = dict(dispatch_trace_metadata)
@@ -481,6 +537,7 @@ class OctoWorkerDispatchMixin:
                 chat_id=chat_id,
                 correlation_id=correlation_id,
                 task_signature=task_signature,
+                cross_scope_signature=cross_scope_signature,
             )
             dispatch_trace_status = "error"
             dispatch_trace_output = dispatch_trace_output or {"status": "failed"}
