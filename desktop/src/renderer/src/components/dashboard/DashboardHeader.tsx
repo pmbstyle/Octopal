@@ -41,12 +41,12 @@ function OctoStatusWidget({
 }) {
   return (
     <div className="dashboard-header-octo">
-      {avatar}
+      <span className="dashboard-header-octo-avatar">{avatar}</span>
       <div className="dashboard-header-octo-copy">
         <strong title={title}>{title}</strong>
         <span title={detail}>{detail}</span>
       </div>
-      <span className={statusClassName}>{state}</span>
+      <span className={`${statusClassName} dashboard-header-status`}>{state}</span>
     </div>
   );
 }
