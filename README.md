@@ -55,16 +55,18 @@ Download the latest desktop build from the [Octopal releases page](https://githu
 
 ### Server Install
 
+The installer scripts live in this repository under [`scripts/`](scripts/) so you can review them before running.
+
 macOS / Linux:
 
 ```bash
-curl -fsSL https://octopal.ca/octopal.sh | bash
+curl -fsSL https://raw.githubusercontent.com/pmbstyle/Octopal/main/scripts/octopal.sh | bash
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://octopal.ca/octopal.ps1 | iex
+irm https://raw.githubusercontent.com/pmbstyle/Octopal/main/scripts/octopal.ps1 | iex
 ```
 
 Then configure and start:
