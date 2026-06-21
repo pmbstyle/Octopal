@@ -82,8 +82,11 @@ async def _send_worker_followup(
                 )
             octo.note_user_visible_delivery(chat_id, decision.text)
             advance_epoch = getattr(octo, "advance_chat_turn_epoch", None)
+            bind_epoch = getattr(octo, "bind_correlation_to_chat_epoch", None)
             if callable(advance_epoch):
-                advance_epoch(chat_id)
+                next_epoch = advance_epoch(chat_id)
+                if callable(bind_epoch):
+                    bind_epoch(correlation_id, chat_id, next_epoch)
             octo.clear_pending_conversational_closure(correlation_id)
             trace_output = {
                 "status": "sent",
