@@ -1026,11 +1026,10 @@ export function App() {
     runtimeView.state === "stopping" ||
     (startStatus === "failed" && runtimeStatus?.state === "running");
   const doneBusy = runtimeView.state === "starting" || runtimeView.state === "stopping";
-  const showingDashboard = screen === "done" && runtimeView.state === "running";
 
   return (
     <AppShell
-      title={showingDashboard ? "" : copy("appTitle")}
+      title={copy("appTitle")}
       onClose={() => controlWindow("close")}
       onMinimize={() => controlWindow("minimize")}
       onMaximize={() => controlWindow("maximize")}

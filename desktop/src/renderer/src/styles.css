@@ -497,14 +497,13 @@ button.ui-table-row:hover {
 .speech-bubble {
   position: relative;
   width: fit-content;
-  min-width: min(270px, calc(100vw - 48px));
   max-width: min(320px, calc(100vw - 48px));
   padding: 22px 28px;
   border: 1px solid var(--border);
   border-radius: 24px;
   background: var(--surface-strong);
   box-shadow: var(--shadow-soft);
-  font-size: 28px;
+  font-size: 24px;
   line-height: 1.18;
   font-weight: 650;
   letter-spacing: 0;
@@ -514,7 +513,8 @@ button.ui-table-row:hover {
 .speech-bubble::after {
   content: "";
   position: absolute;
-  right: 54px;
+  left: 54px;
+  right: auto;
   bottom: -18px;
   width: 34px;
   height: 34px;
@@ -2429,55 +2429,6 @@ p {
   box-shadow: var(--shadow-soft);
 }
 
-.dashboard-sidebar-brand {
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  min-height: 42px;
-}
-
-.dashboard-sidebar-mark {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-muted);
-  color: var(--primary);
-}
-
-.dashboard-sidebar-mark svg {
-  width: 19px;
-  height: 19px;
-}
-
-.dashboard-sidebar-brand-copy {
-  min-width: 0;
-  transition: opacity 0.16s ease;
-}
-
-.dashboard-sidebar-brand-copy strong,
-.dashboard-sidebar-brand-copy span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dashboard-sidebar-brand-copy strong {
-  font-size: 14px;
-  font-weight: 650;
-}
-
-.dashboard-sidebar-brand-copy span {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
-}
-
 .dashboard-sidebar-nav {
   display: grid;
   gap: 4px;
@@ -2554,11 +2505,6 @@ p {
   padding-inline: 8px;
 }
 
-.dashboard-layout-collapsed .dashboard-sidebar-brand {
-  grid-template-columns: 36px;
-}
-
-.dashboard-layout-collapsed .dashboard-sidebar-brand-copy,
 .dashboard-layout-collapsed .dashboard-sidebar-label,
 .dashboard-layout-collapsed .dashboard-sidebar-count {
   display: none;
@@ -2631,26 +2577,42 @@ p {
 
 .dashboard-header-octo {
   display: grid;
-  grid-template-columns: 38px minmax(140px, 260px) auto;
-  align-items: center;
-  gap: 10px;
-  max-width: min(520px, 48vw);
-  min-height: 44px;
-  border: 1px solid var(--border-subtle);
+  grid-template-columns: 58px minmax(0, 1fr) 74px;
+  align-items: stretch;
+  gap: 12px;
+  width: min(372px, 48vw);
+  max-width: 100%;
+  min-height: 46px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border: 0;
   border-radius: 8px;
   background: var(--surface-muted);
-  padding: 4px 6px 4px 4px;
+  padding: 0 8px 0 0;
+}
+
+.dashboard-header-octo-avatar {
+  display: grid;
+  width: 58px;
+  height: 100%;
+  min-height: 46px;
+  place-items: center;
+  padding: 6px 8px 6px 6px;
+  border-radius: 7px 0 0 7px;
+  background-color: color-mix(in srgb, #3b82f6 18%, var(--surface-muted));
 }
 
 .dashboard-header-octo-image {
   display: block;
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
+  min-height: 0;
   object-fit: contain;
   filter: none;
 }
 
 .dashboard-header-octo-copy {
+  align-self: center;
   min-width: 0;
 }
 
@@ -2691,6 +2653,10 @@ p {
   box-shadow: var(--shadow-soft);
 }
 
+.dashboard-workspace > .dashboard-content-connectors {
+  padding: 8px;
+}
+
 @media (max-width: 860px) {
   .dashboard-layout {
     grid-template-columns: 64px minmax(0, 1fr);
@@ -2701,11 +2667,6 @@ p {
     padding-inline: 8px;
   }
 
-  .dashboard-sidebar-brand {
-    grid-template-columns: 36px;
-  }
-
-  .dashboard-sidebar-brand-copy,
   .dashboard-sidebar-label,
   .dashboard-sidebar-count {
     display: none;
@@ -2732,6 +2693,15 @@ p {
   display: grid;
   gap: 14px;
   min-height: 100%;
+}
+
+.dashboard-connectors-view {
+  align-content: start;
+  gap: 10px;
+}
+
+.dashboard-skills-view {
+  align-content: start;
 }
 
 .dashboard-control-strip {
@@ -2778,7 +2748,7 @@ p {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
-  padding: 10px 12px;
+  padding: 8px 10px;
 }
 
 .dashboard-page-toolbar > div:first-child {
@@ -3431,6 +3401,11 @@ p {
   white-space: nowrap;
 }
 
+.dashboard-header-status {
+  align-self: center;
+  width: 70px;
+}
+
 .dashboard-chart-pills {
   display: inline-flex;
   flex-wrap: wrap;
@@ -3606,8 +3581,8 @@ p {
   align-items: center;
   gap: 16px;
   width: 100%;
-  min-height: 72px;
-  padding: 14px 16px;
+  min-height: 60px;
+  padding: 10px 14px;
   border: 0;
   background: transparent;
   color: var(--foreground);
@@ -3703,9 +3678,9 @@ p {
 
 .connector-management-body {
   display: grid;
-  gap: 14px;
+  gap: 10px;
   border-top: 1px solid var(--border-subtle);
-  padding: 14px;
+  padding: 12px 14px;
 }
 
 .connector-enable-row {
@@ -4571,6 +4546,7 @@ p {
 
 .system-card {
   display: grid;
+  align-content: start;
   gap: 12px;
 }
 
@@ -4943,10 +4919,9 @@ p {
   }
 
   .speech-bubble {
-    min-width: min(230px, calc(100vw - 48px));
     max-width: min(280px, calc(100vw - 48px));
     padding: 18px 22px;
-    font-size: 24px;
+    font-size: 22px;
   }
 
   .wizard-screen {

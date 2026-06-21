@@ -15,7 +15,6 @@ import {
   Globe2,
   Info,
   KeyRound,
-  LayoutDashboard,
   ListChecks,
   Mail,
   MessageCircle,
@@ -834,6 +833,10 @@ export function DashboardScreen({
   }, [refreshTemplates]);
 
   useEffect(() => {
+    void refreshSkills();
+  }, [refreshSkills]);
+
+  useEffect(() => {
     if (view === "skills") {
       void refreshSkills();
     }
@@ -1004,7 +1007,7 @@ export function DashboardScreen({
       label: copy("skills"),
       description: copy("skills"),
       icon: Puzzle,
-      count: enabledSkillCount,
+      count: skillsPayload ? enabledSkillCount : undefined,
     },
     {
       view: "connectors",
@@ -2739,16 +2742,6 @@ export function DashboardScreen({
         )}
       >
         <aside className="dashboard-sidebar" aria-label="Dashboard navigation">
-          <div className="dashboard-sidebar-brand">
-            <div className="dashboard-sidebar-mark">
-              <LayoutDashboard />
-            </div>
-            <div className="dashboard-sidebar-brand-copy">
-              <strong>Octopal</strong>
-              <span>Desktop</span>
-            </div>
-          </div>
-
           <nav className="dashboard-sidebar-nav">
             {dashboardNavItems.map((item) => {
               const Icon = item.icon;
@@ -2807,7 +2800,12 @@ export function DashboardScreen({
             }}
           />
 
-          <div className="dashboard-content">
+          <div
+            className={cn(
+              "dashboard-content",
+              view === "connectors" && "dashboard-content-connectors",
+            )}
+          >
             <ChatView active={view === "chat"} installDir={installDir} />
             {view === "control" ? renderControl() : null}
             {view === "workers" ? renderWorkers() : null}
