@@ -586,6 +586,38 @@ async def test_batched_worker_followups_send_single_combined_message(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_worker_followup_rebinds_correlation_after_visible_delivery():
+    sent_messages = []
+
+    class DummyMemory:
+        async def add_message(self, role, text, metadata):
+            return None
+
+    async def _send(chat_id, text):
+        sent_messages.append((chat_id, text))
+
+    octo = Octo(
+        approvals=None,
+        memory=DummyMemory(),
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+        internal_send=_send,
+    )
+    octo._chat_turn_epoch_by_chat[123] = 1
+    octo.bind_correlation_to_chat_epoch("corr-1", 123, 1)
+
+    await octo_core._send_worker_followup(octo, 123, "corr-1", "Первый итог.")
+    await octo_core._send_worker_followup(octo, 123, "corr-1", "Второй итог.")
+
+    assert sent_messages == [(123, "Первый итог."), (123, "Второй итог.")]
+    assert octo.current_chat_turn_epoch(123) == 3
+    assert octo.chat_turn_epoch_for_correlation("corr-1", 123) == 3
+
+
+@pytest.mark.asyncio
 async def test_suppressed_worker_followup_is_deferred_until_internal_turn_finishes(monkeypatch):
     monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
     monkeypatch.setattr(octo_core, "_QUEUE_IDLE_TIMEOUT_SECONDS", 0.01)

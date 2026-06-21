@@ -2701,8 +2701,11 @@ async def _tool_octo_continue_from_control_route(args, ctx) -> str:
         if delivery.user_visible and callable(sender):
             await sender(chat_id, delivery.text)
             advance_epoch = getattr(octo, "advance_chat_turn_epoch", None)
+            bind_epoch = getattr(octo, "bind_correlation_to_chat_epoch", None)
             if callable(advance_epoch):
-                advance_epoch(chat_id)
+                next_epoch = advance_epoch(chat_id)
+                if callable(bind_epoch):
+                    bind_epoch(continuation_correlation_id, chat_id, next_epoch)
             sent = True
 
     return json.dumps(
