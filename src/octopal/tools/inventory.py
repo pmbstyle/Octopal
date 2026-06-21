@@ -120,6 +120,11 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
         profile_tags=("research", "ops"),
         capabilities=("browser_navigate", "browser_interact", "browser_read"),
     ),
+    "computer_use": ToolMetadata(
+        category="desktop",
+        risk="dangerous",
+        capabilities=("desktop_read", "desktop_interact", "host_control"),
+    ),
     "run_llm_subtask": ToolMetadata(
         category="llm",
         profile_tags=("coding", "research"),

@@ -360,6 +360,28 @@ def test_suppressed_turn_followups_can_be_marked_and_cleared():
     assert octo.should_suppress_turn_followups(correlation_id) is False
 
 
+def test_chat_turn_epoch_correlation_bindings_expire():
+    octo = Octo(
+        approvals=None,
+        memory=None,
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+    )
+    octo.bind_correlation_to_chat_epoch("fresh-turn", 123, 2)
+    octo._chat_turn_epoch_by_correlation["old-turn"] = (
+        123,
+        1,
+        utc_now() - timedelta(seconds=4000),
+    )
+
+    assert octo.chat_turn_epoch_for_correlation("fresh-turn", 123) == 2
+    assert octo.chat_turn_epoch_for_correlation("old-turn", 123) is None
+    assert "old-turn" not in octo._chat_turn_epoch_by_correlation
+
+
 def test_channel_followups_can_be_suppressed_for_a_correlation():
     octo = Octo(
         approvals=None,

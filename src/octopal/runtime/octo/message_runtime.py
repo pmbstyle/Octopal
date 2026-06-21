@@ -201,6 +201,14 @@ class OctoMessageRuntimeMixin:
         if not correlation_id:
             correlation_id = f"turn-{uuid4()}"
             correlation_token = correlation_id_var.set(correlation_id)
+        if track_progress and not background_delivery:
+            turn_epoch = self.advance_chat_turn_epoch(chat_id)
+        else:
+            turn_epoch = self.chat_turn_epoch_for_correlation(correlation_id, chat_id)
+            if turn_epoch is None:
+                turn_epoch = self.current_chat_turn_epoch(chat_id)
+        self.bind_correlation_to_chat_epoch(correlation_id, chat_id, turn_epoch)
+        trace_metadata["chat_turn_epoch"] = turn_epoch
 
         try:
             session_id = f"{'ws' if is_ws else 'chat'}:{chat_id}"
@@ -438,6 +446,10 @@ class OctoMessageRuntimeMixin:
                 if not delivery.followup_required:
                     finalized_visible_reply = True
                     self.suppress_turn_followups(correlation_id)
+                    if not background_delivery:
+                        trace_metadata["finalized_chat_turn_epoch"] = self.advance_chat_turn_epoch(
+                            chat_id
+                        )
                     logger.info(
                         "Suppressing worker follow-ups after final in-turn reply",
                         chat_id=chat_id,

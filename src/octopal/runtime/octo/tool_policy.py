@@ -19,6 +19,7 @@ from octopal.tools.diagnostics import ToolResolutionReport
 from octopal.tools.registry import ToolSpec
 
 logger = structlog.get_logger(__name__)
+_COMPUTER_USE_MUTATING_ACTIONS = {"click", "type", "key", "scroll"}
 
 
 async def _maybe_request_octo_tool_approval(
@@ -27,7 +28,10 @@ async def _maybe_request_octo_tool_approval(
     args: dict[str, Any],
     ctx: dict[str, object],
 ) -> dict[str, Any] | None:
-    if str(getattr(spec, "name", "") or "") != "exec_run":
+    tool_name = str(getattr(spec, "name", "") or "")
+    if tool_name == "computer_use":
+        return await _maybe_request_computer_use_approval(spec=spec, args=args, ctx=ctx)
+    if tool_name != "exec_run":
         return None
     reason = _exec_run_approval_reason(args)
     if reason is None:
@@ -104,6 +108,94 @@ async def _maybe_request_octo_tool_approval(
             reason="user_denied_approval",
             next_action=(
                 "Stop this action and choose a safer alternative, or report the concrete approval denial."
+            ),
+            tool=spec.name,
+            policy_reason="user_denied_approval",
+        ),
+    }
+
+
+async def _maybe_request_computer_use_approval(
+    *,
+    spec: ToolSpec,
+    args: dict[str, Any],
+    ctx: dict[str, object],
+) -> dict[str, Any] | None:
+    action = str(args.get("action", "") or "").strip().lower()
+    if action not in _COMPUTER_USE_MUTATING_ACTIONS:
+        return None
+
+    payload = {
+        "action": action,
+        "pid": args.get("pid"),
+        "window_id": args.get("window_id"),
+        "element_index": args.get("element_index"),
+        "x": args.get("x"),
+        "y": args.get("y"),
+        "key": args.get("key"),
+        "modifiers": args.get("modifiers"),
+        "direction": args.get("direction"),
+        "text_preview": str(args.get("text", "") or "")[:120],
+        "reason": f"desktop action `{action}` can modify the host UI",
+    }
+    payload = {key: value for key, value in payload.items() if value not in (None, "", [])}
+    intent = ActionIntent(
+        id=str(uuid.uuid4()),
+        type="desktop.control",
+        payload=payload,
+        payload_hash=hash_payload(payload),
+        risk="high",
+        requires_approval=True,
+        worker_id="octo",
+    )
+
+    requester = _resolve_octo_approval_requester(ctx)
+    if requester is None:
+        return {
+            "type": "approval_required",
+            "tool": spec.name,
+            "reason": str(payload["reason"]),
+            "message": "Mutating computer_use action requires direct user approval, but no approval channel is available.",
+            CAPABILITY_OUTCOME_KEY: capability_outcome(
+                "needs_approval",
+                reason=str(payload["reason"]),
+                next_action=(
+                    "Ask the user for direct approval, or choose a read-only desktop inspection path."
+                ),
+                tool=spec.name,
+            ),
+        }
+
+    try:
+        approved = await requester(intent)
+    except Exception as exc:
+        logger.exception("Octo computer_use approval requester failed")
+        return {
+            "type": "approval_required",
+            "tool": spec.name,
+            "reason": str(payload["reason"]),
+            "message": f"Mutating computer_use action approval failed: {exc}",
+            CAPABILITY_OUTCOME_KEY: capability_outcome(
+                "needs_approval",
+                reason=str(payload["reason"]),
+                next_action=(
+                    "Retry the approval request if appropriate, or choose a read-only desktop inspection path."
+                ),
+                tool=spec.name,
+            ),
+        }
+    if approved:
+        return None
+    return {
+        "type": "approval_denied",
+        "tool": spec.name,
+        "reason": str(payload["reason"]),
+        "message": "Mutating computer_use action was not approved by the user.",
+        CAPABILITY_OUTCOME_KEY: capability_outcome(
+            "policy_denied",
+            reason="user_denied_approval",
+            next_action=(
+                "Stop this desktop action and choose a safer alternative, or report the approval denial."
             ),
             tool=spec.name,
             policy_reason="user_denied_approval",

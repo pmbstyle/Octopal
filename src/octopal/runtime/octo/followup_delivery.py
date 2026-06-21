@@ -56,6 +56,15 @@ async def _send_worker_followup(
                 "Internal worker follow-up skipped", chat_id=chat_id, reason=decision.reason
             )
             return
+        is_current = getattr(octo, "is_correlation_current_for_chat", None)
+        if callable(is_current) and not is_current(chat_id, correlation_id):
+            trace_output = {"status": "suppressed", "reason": "stale_chat_turn_epoch"}
+            logger.info(
+                "Internal worker follow-up skipped",
+                chat_id=chat_id,
+                reason="stale_chat_turn_epoch",
+            )
+            return
         if octo.internal_send:
             await octo.internal_send(chat_id, decision.text)
             emit_ws_chat_event = getattr(octo, "emit_ws_chat_event", None)
@@ -72,6 +81,9 @@ async def _send_worker_followup(
                     },
                 )
             octo.note_user_visible_delivery(chat_id, decision.text)
+            advance_epoch = getattr(octo, "advance_chat_turn_epoch", None)
+            if callable(advance_epoch):
+                advance_epoch(chat_id)
             octo.clear_pending_conversational_closure(correlation_id)
             trace_output = {
                 "status": "sent",
