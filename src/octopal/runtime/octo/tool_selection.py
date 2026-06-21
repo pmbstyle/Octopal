@@ -233,6 +233,24 @@ def _resolve_get_tools(get_tools_fn: GetToolsFn | None) -> GetToolsFn:
     return get_tools if get_tools_fn is None else get_tools_fn
 
 
+def _chat_turn_epoch_for_context(octo: Any, chat_id: int, correlation_id: str | None) -> int | None:
+    resolver = getattr(octo, "chat_turn_epoch_for_correlation", None)
+    if callable(resolver):
+        try:
+            bound_epoch = resolver(correlation_id, chat_id)
+        except Exception:
+            bound_epoch = None
+        if bound_epoch is not None:
+            return int(bound_epoch)
+    current = getattr(octo, "current_chat_turn_epoch", None)
+    if callable(current):
+        try:
+            return int(current(chat_id))
+        except Exception:
+            return None
+    return None
+
+
 def _env_flag(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -248,11 +266,13 @@ def _env_flag(name: str, default: bool) -> bool:
 def _get_octo_tools(
     octo: Any, chat_id: int, *, get_tools_fn: GetToolsFn | None = None
 ) -> tuple[list[ToolSpec], dict[str, object]]:
+    correlation_id = correlation_id_var.get()
     ctx = {
         "base_dir": _workspace_root(),
         "octo": octo,
         "chat_id": chat_id,
-        "correlation_id": correlation_id_var.get(),
+        "correlation_id": correlation_id,
+        "chat_turn_epoch": _chat_turn_epoch_for_context(octo, chat_id, correlation_id),
         "mcp_manager": getattr(octo, "mcp_manager", None),
     }
     mcp_manager = ctx["mcp_manager"]
@@ -298,6 +318,7 @@ def _get_worker_followup_tools(
     octo: Any, chat_id: int, *, get_tools_fn: GetToolsFn | None = None
 ) -> tuple[list[ToolSpec], dict[str, object]]:
     workspace_root = _workspace_root()
+    correlation_id = correlation_id_var.get()
     ctx = {
         "base_dir": workspace_root,
         "workspace_root": workspace_root,
@@ -305,6 +326,8 @@ def _get_worker_followup_tools(
         "restrict_to_allowed_paths": True,
         "octo": octo,
         "chat_id": chat_id,
+        "correlation_id": correlation_id,
+        "chat_turn_epoch": _chat_turn_epoch_for_context(octo, chat_id, correlation_id),
     }
     policy_steps = [
         ToolPolicyPipelineStep(

@@ -45,6 +45,29 @@ async def test_handle_octo_tool_call_reports_unknown_tool() -> None:
     assert meta["had_error"] is True
 
 
+@pytest.mark.asyncio
+async def test_handle_octo_tool_call_skips_stale_chat_turn_before_handler() -> None:
+    calls: list[dict] = []
+
+    class DummyOcto:
+        def is_chat_turn_epoch_current(self, chat_id: int, epoch: int | None) -> bool:
+            return False
+
+    tool = _tool("delete_comment", handler=lambda args, _ctx: calls.append(args))
+
+    result, meta = await _handle_octo_tool_call(
+        {"function": {"name": "delete_comment", "arguments": '{"id":"c1"}'}},
+        [tool],
+        {"octo": DummyOcto(), "chat_id": 123, "chat_turn_epoch": 1},
+    )
+
+    assert calls == []
+    assert result["status"] == "stale"
+    assert result["tool"] == "delete_comment"
+    assert meta["had_error"] is True
+    assert meta["error_type"] == "stale_chat_turn_epoch"
+
+
 def test_octo_tool_policy_requires_approval_for_dangerous_exec_run() -> None:
     class DummyOcto:
         mcp_manager = None
@@ -117,6 +140,101 @@ def test_octo_exec_run_uses_direct_approval_for_dangerous_commands() -> None:
     assert calls[0].type == "exec.run"
     assert calls[0].requires_approval is True
     assert calls[0].risk == "high"
+
+
+def test_octo_computer_use_requires_approval_for_mutating_actions() -> None:
+    tool = ToolSpec(
+        name="computer_use",
+        description="desktop",
+        parameters={"type": "object"},
+        permission="desktop_control",
+        handler=lambda _args, _ctx: {"ok": True},
+    )
+
+    async def scenario() -> None:
+        result, meta = await _handle_octo_tool_call(
+            {
+                "function": {
+                    "name": "computer_use",
+                    "arguments": '{"action":"click","pid":123,"element_index":4}',
+                }
+            },
+            [tool],
+            {},
+        )
+
+        assert result["type"] == "approval_required"
+        assert result["tool"] == "computer_use"
+        assert result[CAPABILITY_OUTCOME_KEY]["kind"] == "needs_approval"
+        assert meta["error_type"] == "approval_required"
+
+    asyncio.run(scenario())
+
+
+def test_octo_computer_use_uses_direct_approval_for_mutating_actions() -> None:
+    calls: list[object] = []
+    tool = ToolSpec(
+        name="computer_use",
+        description="desktop",
+        parameters={"type": "object"},
+        permission="desktop_control",
+        handler=lambda _args, _ctx: {"ok": True},
+    )
+
+    async def requester(intent):
+        calls.append(intent)
+        return True
+
+    async def scenario() -> None:
+        result, meta = await _handle_octo_tool_call(
+            {
+                "function": {
+                    "name": "computer_use",
+                    "arguments": '{"action":"type","pid":123,"text":"hello"}',
+                }
+            },
+            [tool],
+            {"approval_requester": requester},
+        )
+
+        assert result == {"ok": True}
+        assert meta["had_error"] is False
+
+    asyncio.run(scenario())
+
+    assert len(calls) == 1
+    assert calls[0].type == "desktop.control"
+    assert calls[0].payload["action"] == "type"
+    assert calls[0].requires_approval is True
+    assert calls[0].risk == "high"
+
+
+def test_octo_computer_use_readonly_actions_do_not_require_approval() -> None:
+    calls: list[object] = []
+    tool = ToolSpec(
+        name="computer_use",
+        description="desktop",
+        parameters={"type": "object"},
+        permission="desktop_control",
+        handler=lambda _args, _ctx: {"ok": True},
+    )
+
+    async def requester(intent):
+        calls.append(intent)
+        return False
+
+    async def scenario() -> None:
+        result, meta = await _handle_octo_tool_call(
+            {"function": {"name": "computer_use", "arguments": '{"action":"status"}'}},
+            [tool],
+            {"approval_requester": requester},
+        )
+
+        assert result == {"ok": True}
+        assert meta["had_error"] is False
+
+    asyncio.run(scenario())
+    assert calls == []
 
 
 def test_default_octo_tool_policy_blocks_test_run() -> None:

@@ -2603,6 +2603,29 @@ async def _tool_octo_continue_from_control_route(args, ctx) -> str:
         chat_id = int(ctx.get("chat_id", 0) or 0)
     except Exception:
         chat_id = 0
+    parent_correlation_id = (
+        str(ctx.get("correlation_id") or correlation_id_var.get() or "").strip() or None
+    )
+    parent_epoch = ctx.get("chat_turn_epoch")
+    if parent_epoch is None:
+        epoch_resolver = getattr(octo, "chat_turn_epoch_for_correlation", None)
+        if callable(epoch_resolver):
+            parent_epoch = epoch_resolver(parent_correlation_id, chat_id)
+    if parent_epoch is None:
+        current_epoch = getattr(octo, "current_chat_turn_epoch", None)
+        if callable(current_epoch):
+            parent_epoch = current_epoch(chat_id)
+    is_current = getattr(octo, "is_chat_turn_epoch_current", None)
+    if callable(is_current) and not is_current(chat_id, parent_epoch):
+        return json.dumps(
+            {
+                "status": "stale",
+                "delivered": False,
+                "notify_user": False,
+                "message": "continuation skipped because a newer chat turn already advanced",
+            },
+            ensure_ascii=False,
+        )
     context_summary = str(
         args.get("context_summary") or args.get("worker_result_summary") or ""
     ).strip()
@@ -2637,7 +2660,11 @@ async def _tool_octo_continue_from_control_route(args, ctx) -> str:
             "files, reactions, or user-facing updates. Return a non-user-visible completion signal."
         )
 
-    token = correlation_id_var.set(f"control-handoff-{uuid4()}")
+    continuation_correlation_id = f"control-handoff-{uuid4()}"
+    binder = getattr(octo, "bind_correlation_to_chat_epoch", None)
+    if callable(binder):
+        binder(continuation_correlation_id, chat_id, parent_epoch)
+    token = correlation_id_var.set(continuation_correlation_id)
     delivery_token = suppress_user_delivery() if not notify_user else None
     try:
         reply = await octo.handle_message(
@@ -2658,10 +2685,24 @@ async def _tool_octo_continue_from_control_route(args, ctx) -> str:
 
     sent = False
     if notify_user and reply_text:
+        if callable(is_current) and not is_current(chat_id, parent_epoch):
+            return json.dumps(
+                {
+                    "status": "stale",
+                    "delivered": False,
+                    "notify_user": False,
+                    "reply_preview": reply_text[:240],
+                    "message": "continuation result skipped because a newer chat turn already advanced",
+                },
+                ensure_ascii=False,
+            )
         delivery = resolve_user_delivery(reply_text)
         sender = getattr(octo, "internal_send", None)
         if delivery.user_visible and callable(sender):
             await sender(chat_id, delivery.text)
+            advance_epoch = getattr(octo, "advance_chat_turn_epoch", None)
+            if callable(advance_epoch):
+                advance_epoch(chat_id)
             sent = True
 
     return json.dumps(

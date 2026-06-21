@@ -219,6 +219,17 @@ async def _flush_worker_followup_batch(octo: Any, chat_id: int, correlation_id: 
         if batch is None:
             trace_output = {"status": "empty_batch"}
             return
+        is_current = getattr(octo, "is_correlation_current_for_chat", None)
+        if callable(is_current) and not is_current(chat_id, correlation_id):
+            octo.clear_pending_conversational_closure(correlation_id)
+            trace_output = {"status": "suppressed", "reason": "stale_chat_turn_epoch"}
+            logger.info(
+                "Internal worker follow-up skipped",
+                chat_id=chat_id,
+                correlation_id=correlation_id,
+                reason="stale_chat_turn_epoch",
+            )
+            return
         batched_count = len(batch.texts) + len(batch.items)
         trace_metadata.update(
             {
@@ -344,6 +355,10 @@ async def _flush_worker_followup_batch(octo: Any, chat_id: int, correlation_id: 
 def _schedule_worker_followup_flush(octo: Any, chat_id: int, correlation_id: str | None) -> None:
     if not correlation_id:
         return
+    is_current = getattr(octo, "is_correlation_current_for_chat", None)
+    if callable(is_current) and not is_current(chat_id, correlation_id):
+        _discard_worker_followup_batch(chat_id, correlation_id)
+        return
     if octo.should_suppress_channel_followups(correlation_id):
         _discard_worker_followup_batch(chat_id, correlation_id)
         return
@@ -401,6 +416,16 @@ async def _enqueue_batched_worker_followup(
     result: WorkerResult | None = None,
     notify_user: str | None = None,
 ) -> None:
+    is_current = getattr(octo, "is_correlation_current_for_chat", None)
+    if callable(is_current) and not is_current(chat_id, correlation_id):
+        octo.clear_pending_conversational_closure(correlation_id)
+        logger.info(
+            "Internal worker follow-up skipped",
+            chat_id=chat_id,
+            correlation_id=correlation_id,
+            reason="stale_chat_turn_epoch",
+        )
+        return
     if octo.should_suppress_channel_followups(correlation_id):
         octo.clear_pending_conversational_closure(correlation_id)
         logger.info(

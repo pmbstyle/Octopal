@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
@@ -45,7 +45,96 @@ def _heartbeat_user_visible_cooldown_seconds() -> int:
     )
 
 
+def _unpack_chat_turn_epoch_binding(value: Any) -> tuple[int, int, datetime | None]:
+    if isinstance(value, (list, tuple)):
+        if len(value) >= 3:
+            created_at = value[2] if isinstance(value[2], datetime) else None
+            return int(value[0] or 0), int(value[1] or 0), created_at
+        if len(value) >= 2:
+            return int(value[0] or 0), int(value[1] or 0), None
+    return 0, 0, None
+
+
 class OctoTurnStateMixin:
+    def current_chat_turn_epoch(self, chat_id: int) -> int:
+        epochs = self._chat_turn_epoch_by_chat
+        if epochs is None:
+            epochs = {}
+            self._chat_turn_epoch_by_chat = epochs
+        return int(epochs.get(int(chat_id or 0), 0) or 0)
+
+    def advance_chat_turn_epoch(self, chat_id: int) -> int:
+        normalized_chat_id = int(chat_id or 0)
+        if normalized_chat_id == 0:
+            return 0
+        epochs = self._chat_turn_epoch_by_chat
+        if epochs is None:
+            epochs = {}
+            self._chat_turn_epoch_by_chat = epochs
+        next_epoch = int(epochs.get(normalized_chat_id, 0) or 0) + 1
+        epochs[normalized_chat_id] = next_epoch
+        return next_epoch
+
+    def bind_correlation_to_chat_epoch(
+        self,
+        correlation_id: str | None,
+        chat_id: int,
+        epoch: int | None = None,
+    ) -> int:
+        normalized_correlation_id = str(correlation_id or "").strip()
+        normalized_chat_id = int(chat_id or 0)
+        resolved_epoch = (
+            self.current_chat_turn_epoch(normalized_chat_id) if epoch is None else int(epoch)
+        )
+        if not normalized_correlation_id or normalized_chat_id == 0:
+            return resolved_epoch
+        bindings = self._chat_turn_epoch_by_correlation
+        if bindings is None:
+            bindings = {}
+            self._chat_turn_epoch_by_correlation = bindings
+        self._prune_chat_turn_epoch_bindings()
+        bindings[normalized_correlation_id] = (normalized_chat_id, resolved_epoch, utc_now())
+        return resolved_epoch
+
+    def chat_turn_epoch_for_correlation(
+        self,
+        correlation_id: str | None,
+        chat_id: int | None = None,
+    ) -> int | None:
+        normalized_correlation_id = str(correlation_id or "").strip()
+        if not normalized_correlation_id:
+            return None
+        bindings = self._chat_turn_epoch_by_correlation or {}
+        self._prune_chat_turn_epoch_bindings()
+        bound = bindings.get(normalized_correlation_id)
+        if bound is None:
+            return None
+        bound_chat_id, epoch, _created_at = _unpack_chat_turn_epoch_binding(bound)
+        if chat_id is not None and int(chat_id or 0) != int(bound_chat_id or 0):
+            return None
+        return int(epoch)
+
+    def is_chat_turn_epoch_current(
+        self,
+        chat_id: int,
+        epoch: int | None,
+    ) -> bool:
+        if int(chat_id or 0) == 0 or epoch is None:
+            return True
+        return int(epoch) == self.current_chat_turn_epoch(chat_id)
+
+    def is_correlation_current_for_chat(
+        self,
+        chat_id: int,
+        correlation_id: str | None,
+        *,
+        epoch: int | None = None,
+    ) -> bool:
+        resolved_epoch = epoch
+        if resolved_epoch is None:
+            resolved_epoch = self.chat_turn_epoch_for_correlation(correlation_id, chat_id)
+        return self.is_chat_turn_epoch_current(chat_id, resolved_epoch)
+
     def peek_context_wakeup(self, chat_id: int) -> str:
         pending = self._pending_wakeup_by_chat or {}
         return str(pending.get(chat_id, "") or "")
@@ -135,6 +224,19 @@ class OctoTurnStateMixin:
         ]
         for correlation_id in expired:
             pending.pop(correlation_id, None)
+
+    def _prune_chat_turn_epoch_bindings(self) -> None:
+        bindings = self._chat_turn_epoch_by_correlation
+        if not bindings:
+            return
+        cutoff = utc_now() - timedelta(seconds=_pending_conversational_closure_ttl_seconds())
+        expired = []
+        for correlation_id, value in bindings.items():
+            _chat_id, _epoch, created_at = _unpack_chat_turn_epoch_binding(value)
+            if created_at is None or created_at < cutoff:
+                expired.append(correlation_id)
+        for correlation_id in expired:
+            bindings.pop(correlation_id, None)
 
     def suppress_turn_followups(self, correlation_id: str | None) -> None:
         if not correlation_id:

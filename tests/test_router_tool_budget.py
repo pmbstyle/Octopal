@@ -631,6 +631,172 @@ def test_control_route_continue_tool_runs_normal_route_and_sends(
     assert kwargs["background_delivery"] is True
 
 
+def test_control_route_continue_tool_skips_stale_parent_turn() -> None:
+    class DummyOcto:
+        mcp_manager = None
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.sent: list[tuple[int, str]] = []
+            self.epoch = 2
+
+        def current_chat_turn_epoch(self, chat_id: int) -> int:
+            return self.epoch
+
+        def chat_turn_epoch_for_correlation(self, correlation_id: str | None, chat_id: int):
+            return 1 if correlation_id == "old-turn" else None
+
+        def is_chat_turn_epoch_current(self, chat_id: int, epoch: int | None) -> bool:
+            return epoch == self.epoch
+
+        def bind_correlation_to_chat_epoch(self, correlation_id, chat_id, epoch=None):
+            return int(epoch or self.epoch)
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
+            return "should not run"
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            self.sent.append((chat_id, text))
+
+    octo = DummyOcto()
+    tools, ctx = _get_worker_followup_tools(octo, 123)
+    ctx["correlation_id"] = "old-turn"
+    ctx["chat_turn_epoch"] = 1
+    continue_tool = next(tool for tool in tools if tool.name == "octo_continue_from_control_route")
+
+    result = asyncio.run(
+        continue_tool.handler(
+            {
+                "task": "Continue an old branch.",
+                "context_summary": "This branch belongs to a stale turn.",
+            },
+            ctx,
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "stale"
+    assert payload["delivered"] is False
+    assert octo.calls == []
+    assert octo.sent == []
+
+
+def test_control_route_continue_tool_drops_result_if_turn_becomes_stale() -> None:
+    class DummyOcto:
+        mcp_manager = None
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.sent: list[tuple[int, str]] = []
+            self.epoch = 1
+            self.bound: dict[str, int] = {"parent-turn": 1}
+
+        def current_chat_turn_epoch(self, chat_id: int) -> int:
+            return self.epoch
+
+        def chat_turn_epoch_for_correlation(self, correlation_id: str | None, chat_id: int):
+            return self.bound.get(str(correlation_id or ""))
+
+        def is_chat_turn_epoch_current(self, chat_id: int, epoch: int | None) -> bool:
+            return epoch == self.epoch
+
+        def bind_correlation_to_chat_epoch(self, correlation_id, chat_id, epoch=None):
+            self.bound[str(correlation_id or "")] = int(epoch or self.epoch)
+            return self.bound[str(correlation_id or "")]
+
+        def advance_chat_turn_epoch(self, chat_id: int) -> int:
+            self.epoch += 1
+            return self.epoch
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
+            self.advance_chat_turn_epoch(chat_id)
+            return "Late stale result"
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            self.sent.append((chat_id, text))
+
+    octo = DummyOcto()
+    tools, ctx = _get_worker_followup_tools(octo, 123)
+    ctx["correlation_id"] = "parent-turn"
+    ctx["chat_turn_epoch"] = 1
+    continue_tool = next(tool for tool in tools if tool.name == "octo_continue_from_control_route")
+
+    result = asyncio.run(
+        continue_tool.handler(
+            {
+                "task": "Continue a branch that will become stale.",
+                "context_summary": "Another branch answers while this runs.",
+            },
+            ctx,
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "stale"
+    assert payload["delivered"] is False
+    assert len(octo.calls) == 1
+    assert octo.sent == []
+
+
+def test_control_route_continue_tool_advances_epoch_after_delivery() -> None:
+    class DummyOcto:
+        mcp_manager = None
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.sent: list[tuple[int, str]] = []
+            self.epoch = 1
+            self.bound: dict[str, int] = {"parent-turn": 1}
+
+        def current_chat_turn_epoch(self, chat_id: int) -> int:
+            return self.epoch
+
+        def chat_turn_epoch_for_correlation(self, correlation_id: str | None, chat_id: int):
+            return self.bound.get(str(correlation_id or ""))
+
+        def is_chat_turn_epoch_current(self, chat_id: int, epoch: int | None) -> bool:
+            return epoch == self.epoch
+
+        def bind_correlation_to_chat_epoch(self, correlation_id, chat_id, epoch=None):
+            self.bound[str(correlation_id or "")] = int(epoch or self.epoch)
+            return self.bound[str(correlation_id or "")]
+
+        def advance_chat_turn_epoch(self, chat_id: int) -> int:
+            self.epoch += 1
+            return self.epoch
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            self.calls.append({"text": text, "chat_id": chat_id, "kwargs": kwargs})
+            return "Visible normal-route result"
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            self.sent.append((chat_id, text))
+
+    octo = DummyOcto()
+    tools, ctx = _get_worker_followup_tools(octo, 123)
+    ctx["correlation_id"] = "parent-turn"
+    ctx["chat_turn_epoch"] = 1
+    continue_tool = next(tool for tool in tools if tool.name == "octo_continue_from_control_route")
+
+    result = asyncio.run(
+        continue_tool.handler(
+            {
+                "task": "Continue the current branch.",
+                "context_summary": "No newer turn exists.",
+            },
+            ctx,
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "continued"
+    assert payload["delivered"] is True
+    assert octo.sent == [(123, "Visible normal-route result")]
+    assert octo.epoch == 2
+
+
 def test_control_route_continue_tool_honors_scheduled_notify_never() -> None:
     class DummyOcto:
         mcp_manager = None

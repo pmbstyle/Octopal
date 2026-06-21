@@ -51,3 +51,24 @@ def test_approval_display_payload_includes_message_and_summary() -> None:
     assert display["summary"] == "send an email"
     assert "To: slava@example.com" in display["message"]
     assert display["risk_label"] == "High"
+
+
+def test_desktop_control_approval_message_is_human_readable() -> None:
+    display = approval_display_payload(
+        _intent(
+            "desktop.control",
+            {
+                "action": "click",
+                "pid": 123,
+                "window_id": 456,
+                "element_index": 7,
+                "reason": "desktop action `click` can modify the host UI",
+            },
+        )
+    )
+
+    assert display["summary"] == "control the desktop with click"
+    assert "Action: click" in display["message"]
+    assert "PID: 123" in display["message"]
+    assert "Window: 456" in display["message"]
+    assert "Element: 7" in display["message"]

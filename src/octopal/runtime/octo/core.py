@@ -226,6 +226,8 @@ class Octo(
     _last_opportunities_by_chat: dict[int, list[dict[str, Any]]] | None = None
     _last_proactive_tick_at_by_chat: dict[int, datetime] | None = None
     _active_user_turns_by_correlation: dict[str, Any] | None = None
+    _chat_turn_epoch_by_chat: dict[int, int] | None = None
+    _chat_turn_epoch_by_correlation: dict[str, tuple[int, int, datetime]] | None = None
 
     def __post_init__(self):
         if self.trace_sink is None:
@@ -278,6 +280,10 @@ class Octo(
             self._channel_followups_suppressed_by_correlation = {}
         if self._active_user_turns_by_correlation is None:
             self._active_user_turns_by_correlation = {}
+        if self._chat_turn_epoch_by_chat is None:
+            self._chat_turn_epoch_by_chat = {}
+        if self._chat_turn_epoch_by_correlation is None:
+            self._chat_turn_epoch_by_correlation = {}
         if self._no_progress_turns_by_chat is None:
             self._no_progress_turns_by_chat = {}
         if self._progress_revision_by_chat is None:

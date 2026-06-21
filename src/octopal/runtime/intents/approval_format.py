@@ -62,6 +62,9 @@ def _approval_summary(intent: ActionIntent) -> str:
     if intent_type == "mcp_call":
         tool_name = str(payload.get("tool_name", "") or "").strip()
         return f"call the connector tool {tool_name}" if tool_name else "call a connector tool"
+    if intent_type == "desktop.control":
+        action = str(payload.get("action", "") or "").strip()
+        return f"control the desktop with {action}" if action else "control the desktop"
     return _humanize_token(intent_type)
 
 
@@ -97,6 +100,24 @@ def _approval_details(intent: ActionIntent) -> list[str]:
             details.append(f"Amount: {_clip(amount_label, 300)}")
         if recipient:
             details.append(f"Recipient: {_clip(recipient, 300)}")
+        return details
+    if intent.type == "desktop.control":
+        details = []
+        action = str(payload.get("action", "") or "").strip()
+        pid = str(payload.get("pid", "") or "").strip()
+        window_id = str(payload.get("window_id", "") or "").strip()
+        element_index = str(payload.get("element_index", "") or "").strip()
+        text_preview = str(payload.get("text_preview", "") or "").strip()
+        if action:
+            details.append(f"Action: {_clip(action, 120)}")
+        if pid:
+            details.append(f"PID: {_clip(pid, 80)}")
+        if window_id:
+            details.append(f"Window: {_clip(window_id, 80)}")
+        if element_index:
+            details.append(f"Element: {_clip(element_index, 80)}")
+        if text_preview:
+            details.append(f"Text preview: {_clip(text_preview, 300)}")
         return details
     return []
 

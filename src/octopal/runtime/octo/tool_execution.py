@@ -37,6 +37,40 @@ logger = structlog.get_logger(__name__)
 EmitToolUseEvent = Callable[..., Awaitable[None]]
 
 
+def _stale_chat_turn_tool_payload(
+    *, tool_name: str | None, ctx: dict[str, object]
+) -> dict[str, Any] | None:
+    octo = ctx.get("octo")
+    if octo is None:
+        return None
+    try:
+        chat_id = int(ctx.get("chat_id", 0) or 0)
+    except Exception:
+        chat_id = 0
+    if chat_id == 0:
+        return None
+    epoch = ctx.get("chat_turn_epoch")
+    is_current = getattr(octo, "is_chat_turn_epoch_current", None)
+    if epoch is not None and callable(is_current) and is_current(chat_id, epoch):
+        return None
+    if epoch is None:
+        correlation_id = str(ctx.get("correlation_id") or correlation_id_var.get() or "").strip()
+        is_correlation_current = getattr(octo, "is_correlation_current_for_chat", None)
+        if not correlation_id or not callable(is_correlation_current):
+            return None
+        if is_correlation_current(chat_id, correlation_id):
+            return None
+    elif not callable(is_current):
+        return None
+
+    return {
+        "type": "stale_chat_turn",
+        "status": "stale",
+        "tool": str(tool_name or ""),
+        "message": "tool call skipped because a newer chat turn already advanced",
+    }
+
+
 async def _handle_octo_tool_call(
     call: dict,
     tools: list[ToolSpec],
@@ -74,6 +108,24 @@ async def _handle_octo_tool_call(
 
     try:
         logger.debug("Octo tool call", tool_name=name, args=args)
+        stale_payload = _stale_chat_turn_tool_payload(tool_name=str(name or ""), ctx=ctx)
+        if stale_payload is not None:
+            tool_trace_status = "error"
+            tool_trace_metadata["error_type"] = "stale_chat_turn_epoch"
+            tool_trace_output = {
+                "result_preview": safe_preview(stale_payload, limit=240),
+                "result_size": len(str(stale_payload)),
+            }
+            logger.info(
+                "Octo tool call skipped for stale chat turn",
+                tool_name=name,
+                chat_id=int(ctx.get("chat_id", 0) or 0),
+            )
+            return stale_payload, {
+                "timed_out": False,
+                "had_error": True,
+                "error_type": "stale_chat_turn_epoch",
+            }
         if emit_tool_use_event is not None:
             await emit_tool_use_event(
                 octo=ctx.get("octo"),
