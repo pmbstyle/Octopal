@@ -12,15 +12,6 @@
    <a href="https://deepwiki.com/pmbstyle/Octopal"><img src="https://deepwiki.com/badge.svg"></a>
 </p>
 
-➡️ <em>AI agents are cool</em>
-
-➡️ <em>AI agents are productive</em>
-
-➡️ <em>AI agents makes your life easier</em>
-
-➡️ <em>AI agents are not safe and trustworthy ... here is where Octopal comes in</em>
-
-
 ## 🐙 Why Octopal
 
 Octopal is your local autonomous AI agent - Octo, who can live on your computer or on a server. You can communicate with Octo through Telegram, WhatsApp, or a dedicated desktop app.
@@ -41,14 +32,15 @@ This architecture prevents context poisoning, prompt injections, and hostile env
 
 Download the latest desktop build from the [Octopal releases page](https://github.com/pmbstyle/Octopal/releases/latest).
 
-<img alt="Octopal Desktop" src="https://github.com/user-attachments/assets/a995f7ab-28a6-45ee-b63a-2a7c45dedd3b" />
+<img alt="Octopal Desktop" src="https://github.com/user-attachments/assets/41e4387f-d24e-430b-8b4a-b3b0f5562254" />
+
 
 <!-- STABLE_DOWNLOADS -->
 | Platform | Download |
 |----------|----------|
 | **Windows** | [Octopal-Desktop-2026.6.21-win-x64.exe](https://github.com/pmbstyle/Octopal/releases/download/v2026.06.21/Octopal-Desktop-2026.6.21-win-x64.exe) |
-| **macOS Intel** | [Octopal-Desktop-2026.6.21-mac-x64.dmg](https://github.com/pmbstyle/Octopal/releases/download/v2026.06.21/Octopal-Desktop-2026.6.21-mac-x64.dmg) |
 | **macOS Apple Silicon** | [Octopal-Desktop-2026.6.21-mac-arm64.dmg](https://github.com/pmbstyle/Octopal/releases/download/v2026.06.21/Octopal-Desktop-2026.6.21-mac-arm64.dmg) |
+| **macOS Intel** | [Octopal-Desktop-2026.6.21-mac-x64.dmg](https://github.com/pmbstyle/Octopal/releases/download/v2026.06.21/Octopal-Desktop-2026.6.21-mac-x64.dmg) |
 | **Linux** | [Octopal-Desktop-2026.6.21-linux-x86_64.AppImage](https://github.com/pmbstyle/Octopal/releases/download/v2026.06.21/Octopal-Desktop-2026.6.21-linux-x86_64.AppImage) |
 <!-- STABLE_DOWNLOADS_END -->
 
@@ -110,7 +102,8 @@ octopal configure
 octopal start
 ```
 
-<img alt="Octopal dashboard" src="https://github.com/user-attachments/assets/55360901-a319-4c8c-932b-df3c519da375" />
+<img alt="Octopal Desktop Control" src="https://github.com/user-attachments/assets/1e0302e0-48f0-4e33-96a9-e3f752fb5250" />
+
 
 
 ## 🤖 Model Providers
@@ -122,6 +115,10 @@ Supported provider catalog:
 - **Frontier APIs:** OpenAI, Anthropic, Google Gemini, Mistral, OpenRouter, Together AI, Groq
 - **Subscription and plan-based routes:** Codex, Z.ai, Minimax.
 - **Local and custom routes:** Ollama, Custom OpenAI-compatible.
+
+
+<img alt="Octopal Desktop Providers" src="https://github.com/user-attachments/assets/45ddf6c7-22d2-4f7b-9a39-01bb89954212" />
+
 
 ## What You Can Use Octopal For
 
@@ -289,6 +286,10 @@ Octopal can talk through:
 - WhatsApp
 - Desktop app
 
+<img alt="Octopal Desktop channels" src="https://github.com/user-attachments/assets/d947d6d1-94f8-4acb-899e-5004b5556488" />
+
+
+
 Channels support text, image/file attachments, reactions where supported, and a short grace window so follow-up messages can be folded into the same turn before Octo starts executing.
 
 The dashboard gives you a live operational surface:
@@ -343,6 +344,11 @@ Skills can include:
 - readiness checks
 - isolated Python or JS/TS runtime environments
 
+Easy to install with the desktop app
+
+<img alt="Octopal Desktop Skills" src="https://github.com/user-attachments/assets/16add171-910a-4fd6-adb6-e22e00fec8e1" />
+
+
 Common commands:
 
 ```bash
@@ -361,6 +367,13 @@ See [docs/skills.md](docs/skills.md).
 Connectors are the integration layer for external services. The current connector surface includes Google services and GitHub-oriented workflows, with more integration work happening around the runtime.
 
 See [docs/connectors.md](docs/connectors.md).
+
+## 🔤 Multilingual and Light/Dark theme UI support
+
+Octopal desktop UI supports English, French, Spanish, and Mandarin languages, UI supports Light and Dark themes.
+
+<img alt="Octopal Desktop language and theme support" src="https://github.com/user-attachments/assets/977b3cf0-7c9f-4b36-b74a-cad9d27689a1" />
+
 
 ## 📋 Core Commands
 
