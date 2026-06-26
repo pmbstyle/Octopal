@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from octopal.runtime.workers.agent_worker import _tool_schema_chars
 from octopal.tools.catalog import _tool_catalog_search, get_tools
@@ -62,6 +63,29 @@ def test_catalog_returns_annotated_tools() -> None:
     assert "skill_use" in tools["use_skill"].metadata.capabilities
     assert tools["run_skill_script"].metadata.category == "skills"
     assert "skill_exec" in tools["run_skill_script"].metadata.capabilities
+
+
+def test_octo_system_prompt_describes_workers_as_execution_fabric() -> None:
+    prompt_path = Path("src/octopal/runtime/octo/prompts/octo_system.md")
+    prompt = prompt_path.read_text(encoding="utf-8")
+
+    assert "## Worker Fabric Strategy" in prompt
+    assert "workers as Octo's execution fabric" in prompt
+    assert "a worker run is not outside your work" in prompt
+    assert "use `start_workers_parallel` for independent subtasks" in prompt
+    assert 'Do not treat "worker still running" as a completed answer' in prompt
+
+
+def test_worker_tool_descriptions_preserve_execution_fabric_guidance() -> None:
+    tools = {tool.name: tool for tool in get_tools(mcp_manager=None)}
+
+    assert "active execution state" in tools["start_worker"].description
+    assert "active execution state" in tools["start_workers_parallel"].description
+    assert "worker_yield/get_worker_result/synthesize_worker_results" in (
+        tools["start_workers_parallel"].description
+    )
+    assert "next_best_action as continuation guidance" in tools["worker_yield"].description
+    assert "pretending the task is complete" in tools["synthesize_worker_results"].description
 
 
 def test_tool_catalog_filters_find_generic_skill_tools() -> None:

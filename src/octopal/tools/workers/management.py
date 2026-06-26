@@ -398,8 +398,10 @@ def get_worker_tools() -> list[ToolSpec]:
         ToolSpec(
             name="start_worker",
             description=(
-                "Start a worker task with an explicit worker template ID. Use list_workers first if you need "
-                f"to choose an executor. {_ALLOWED_PATHS_GUIDANCE}"
+                "Start one bounded worker task with an explicit worker template ID. Treat the returned "
+                "worker run as active execution state for the current task: later collect, verify, or "
+                "synthesize its result instead of considering launch itself complete. Use list_workers first "
+                f"if you need to choose an executor. {_ALLOWED_PATHS_GUIDANCE}"
             ),
             parameters={
                 "type": "object",
@@ -478,6 +480,8 @@ def get_worker_tools() -> list[ToolSpec]:
             name="start_child_worker",
             description=(
                 "Start a child worker from inside a worker context with lineage tracking and spawn-policy checks. "
+                "The parent worker remains responsible for supervising, answering child instructions, and "
+                "synthesizing child results before it completes. "
                 f"{_ALLOWED_PATHS_GUIDANCE}"
             ),
             parameters={
@@ -541,8 +545,10 @@ def get_worker_tools() -> list[ToolSpec]:
         ToolSpec(
             name="start_workers_parallel",
             description=(
-                "Launch multiple explicitly selected worker tasks in parallel and return run IDs. "
-                "Each worker still gets its own scratch workspace. "
+                "Launch multiple explicitly selected independent worker tasks in parallel and return run IDs. "
+                "Use this when fan-out is faster or safer than serial execution, then keep the returned runs "
+                "as active execution state until worker_yield/get_worker_result/synthesize_worker_results "
+                "shows the batch is ready, blocked, or needs follow-up. Each worker still gets its own scratch workspace. "
                 "For any shared project files, set allowed_paths per task with the smallest explicit path set. "
                 "When a task executes a durable runtime plan step, pass plan_run_id and plan_step_id on that task."
             ),
@@ -612,7 +618,12 @@ def get_worker_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="synthesize_worker_results",
-            description="Synthesize results from multiple workers into one combined summary, including failures and pending runs.",
+            description=(
+                "Synthesize worker outputs into the next execution decision and combined summary, including "
+                "completed, failed, missing, and pending runs. Use this after parallel or related worker runs "
+                "are ready; if workers are still pending, follow the returned next_best_action instead of "
+                "pretending the task is complete."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -676,7 +687,10 @@ def get_worker_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="worker_session_status",
-            description="Summarize the current worker fabric: active runs, recent completions/failures, and lineage health hints.",
+            description=(
+                "Summarize the current worker fabric as Octo's active execution state: active runs, recent "
+                "completions/failures, and lineage health hints."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -696,7 +710,11 @@ def get_worker_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="worker_yield",
-            description="Assess whether to yield while worker runs are still in flight, or switch to synthesis/result collection when they are ready.",
+            description=(
+                "Assess whether active worker runs should be waited on, collected, or synthesized. Use this "
+                "after worker launch or when resuming a task with in-flight workers; follow its mode and "
+                "next_best_action as continuation guidance for the same task."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
