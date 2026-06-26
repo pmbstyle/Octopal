@@ -14,6 +14,12 @@ from octopal.tools.skills.bundles import SkillBundle, discover_skill_bundle_dirs
 
 _PYTHON_SCRIPT_SUFFIXES = {".py"}
 _NODE_SCRIPT_SUFFIXES = {".js", ".mjs", ".cjs", ".ts"}
+_VENDORED_SCRIPT_DIR_NAMES = {
+    ".cache",
+    ".venv",
+    "node_modules",
+    "vendor",
+}
 
 
 def detect_skill_runtime(bundle: SkillBundle) -> dict[str, Any]:
@@ -320,7 +326,15 @@ def _write_env_manifest_at(path: Path, payload: dict[str, Any]) -> None:
 def _collect_script_suffixes(scripts_dir: Path | None) -> set[str]:
     if scripts_dir is None or not scripts_dir.exists():
         return set()
-    return {path.suffix.lower() for path in scripts_dir.rglob("*") if path.is_file() and path.suffix}
+    suffixes: set[str] = set()
+    for path in scripts_dir.rglob("*"):
+        if not path.is_file() or not path.suffix:
+            continue
+        relative_parts = path.relative_to(scripts_dir).parts[:-1]
+        if any(part in _VENDORED_SCRIPT_DIR_NAMES for part in relative_parts):
+            continue
+        suffixes.add(path.suffix.lower())
+    return suffixes
 
 
 def _read_python_requirements(bundle_dir: Path) -> list[str]:
