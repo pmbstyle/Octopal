@@ -267,29 +267,40 @@ def _auto_prepare_skill_env(skill_id: str, *, workspace_dir: Path) -> dict[str, 
     status = get_skill_env_status(skill_id, workspace_dir=workspace_dir)
     kind = str(status.get("kind", "")).strip()
     if not kind:
-        return {"prepared": False, "kind": "", "error": ""}
+        return {"prepared": False, "kind": "", "status": str(status.get("status", "")), "error": ""}
     if str(status.get("status", "")) == "unsupported":
-        return {"prepared": False, "kind": kind, "error": str(status.get("reason", ""))}
+        return {
+            "prepared": False,
+            "kind": kind,
+            "status": "unsupported",
+            "error": str(status.get("reason", "")),
+        }
     if bool(status.get("prepared", False)):
-        return {"prepared": True, "kind": kind, "error": ""}
+        return {"prepared": True, "kind": kind, "status": "prepared", "error": ""}
     try:
         payload = prepare_skill_env(skill_id, workspace_dir=workspace_dir)
         return {
             "prepared": bool(payload.get("status") == "prepared"),
             "kind": str(payload.get("kind", kind)),
+            "status": str(payload.get("status", "")),
             "error": "",
         }
     except Exception as exc:
         return {
             "prepared": False,
             "kind": kind,
+            "status": "error",
             "error": str(exc),
         }
 
 
 def _install_next_steps(record: dict[str, Any], env_result: dict[str, Any]) -> list[str]:
     next_steps: list[str] = []
-    if str(env_result.get("kind", "")).strip() and not bool(env_result.get("prepared", False)):
+    if (
+        str(env_result.get("kind", "")).strip()
+        and not bool(env_result.get("prepared", False))
+        and str(env_result.get("status", "")).strip() != "unsupported"
+    ):
         next_steps.append(f"uv run octopal skill prepare-env {record['skill_id']}")
     if bool(record.get("has_scripts", False)) and not bool(record.get("trusted", True)):
         next_steps.append(f"uv run octopal skill trust {record['skill_id']}")

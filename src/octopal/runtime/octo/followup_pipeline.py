@@ -782,9 +782,7 @@ def _build_runtime_plan_continuation(
         f"Continue durable runtime plan `{run_id}` from current step `{step_id}`.\n"
         f"Step kind: {step_kind}.\n"
         f"Step title: {title}.\n"
-        f"Step task: {task_text}.\n"
-        + (f"Executor hint: {executor}.\n" if executor else "")
-        + "\n"
+        f"Step task: {task_text}.\n" + (f"Executor hint: {executor}.\n" if executor else "") + "\n"
         "First inspect the stored plan with `plan_status` if needed. Execute this exact current "
         "step and keep the runtime plan state current with `plan_update_step` before returning. "
         "For a worker step, start the worker with the matching `plan_run_id` and `plan_step_id`. "
@@ -855,6 +853,15 @@ async def _enqueue_runtime_plan_continuation_fallback(
             "Runtime plan continuation fallback skipped",
             chat_id=chat_id,
             reason="internal_chat",
+        )
+        return
+    is_current = getattr(octo, "is_correlation_current_for_chat", None)
+    if callable(is_current) and not is_current(chat_id, correlation_id):
+        octo.clear_pending_conversational_closure(correlation_id)
+        logger.info(
+            "Runtime plan continuation fallback skipped",
+            chat_id=chat_id,
+            reason="stale_chat_turn_epoch",
         )
         return
     if octo.should_suppress_channel_followups(correlation_id):

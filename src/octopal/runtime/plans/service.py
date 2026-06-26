@@ -140,18 +140,37 @@ class PlanRunService:
 
     def mark_step_running(self, run_id: str, step_id: str) -> None:
         now = utc_now()
-        self.store.update_plan_run(run_id, status="running", current_step_id=step_id)
-        self.store.update_plan_step(run_id, step_id, status="running", started_at=now)
+        self.store.update_plan_run(
+            run_id,
+            status="running",
+            current_step_id=step_id,
+            completed_at=None,
+        )
+        self.store.update_plan_step(
+            run_id,
+            step_id,
+            status="running",
+            error=None,
+            started_at=now,
+            completed_at=None,
+        )
         self.append_event(run_id, "step.started", step_id=step_id)
 
     def bind_worker_step(self, run_id: str, step_id: str, worker_run_id: str) -> None:
-        self.store.update_plan_run(run_id, status="awaiting_worker", current_step_id=step_id)
+        self.store.update_plan_run(
+            run_id,
+            status="awaiting_worker",
+            current_step_id=step_id,
+            completed_at=None,
+        )
         self.store.update_plan_step(
             run_id,
             step_id,
             status="awaiting_worker",
             worker_run_id=worker_run_id,
+            error=None,
             started_at=utc_now(),
+            completed_at=None,
         )
         self.append_event(
             run_id,
@@ -173,6 +192,7 @@ class PlanRunService:
             step_id,
             status="completed",
             output=dict(output or {}),
+            error=None,
             completed_at=now,
         )
         steps = self.store.get_plan_steps(run_id)
@@ -191,6 +211,7 @@ class PlanRunService:
             run_id,
             status="needs_next_step",
             current_step_id=next_step.step_id,
+            completed_at=None,
         )
         self.append_event(
             run_id,
@@ -244,6 +265,7 @@ class PlanRunService:
                 step.run_id,
                 step.step_id,
                 output=plan_output,
+                error=None,
             )
             self.append_event(
                 step.run_id,
