@@ -36,9 +36,14 @@ def test_workspace_bootstrap_creates_required_markdown(tmp_path: Path) -> None:
     assert "Safety Rules" in agents_content
     assert "HEARTBEAT_OK" in agents_content
     assert "Controlled Self-Improvement" in agents_content
+    assert "Treats workers as active execution fabric" in agents_content
     assert "Workers are the default path for external work." in agents_content
     assert "do not reduce `timeout_seconds` below the worker template default" in agents_content
-    assert "prefer a worker that can spawn child workers or launch a bounded parallel batch" in agents_content
+    assert (
+        "prefer a worker that can spawn child workers or launch a bounded parallel batch"
+        in agents_content
+    )
+    assert "keep their run IDs as active execution state" in agents_content
     assert "resume it with `answer_worker_instruction` instead of restarting" in agents_content
 
 
@@ -84,13 +89,9 @@ def test_workspace_bootstrap_syncs_all_default_worker_templates(tmp_path: Path) 
     _ensure_workspace_bootstrap(workspace)
 
     source_ids = {
-        path.parent.name
-        for path in (Path("workspace_templates") / "workers").glob("*/worker.json")
+        path.parent.name for path in (Path("workspace_templates") / "workers").glob("*/worker.json")
     }
-    target_ids = {
-        path.parent.name
-        for path in (workspace / "workers").glob("*/worker.json")
-    }
+    target_ids = {path.parent.name for path in (workspace / "workers").glob("*/worker.json")}
 
     assert target_ids == source_ids
 

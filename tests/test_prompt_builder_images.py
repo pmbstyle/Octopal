@@ -93,13 +93,12 @@ def test_build_octo_prompt_includes_worker_first_guardrails() -> None:
         )
         system_message = messages[0]
         assert isinstance(system_message.content, str)
-        assert (
-            "Workers are the normal boundary for web/network access, remote APIs"
-            in system_message.content
-        )
+        assert "## Worker Fabric Strategy" in system_message.content
+        assert "workers as Octo's execution fabric" in system_message.content
         assert "For external work, use a worker first." in system_message.content
         assert "Prefer template defaults. Set `timeout_seconds` only" in system_message.content
-        assert "Use multiple workers only for independent subtasks" in system_message.content
+        assert "use `start_workers_parallel` for independent subtasks" in system_message.content
+        assert 'Do not treat "worker still running" as a completed answer' in system_message.content
         assert (
             "Scheduler dispatch of due worker tasks is handled by the runtime"
             in system_message.content
