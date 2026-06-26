@@ -131,6 +131,43 @@ metadata:
     assert payload["next_steps"] == []
 
 
+def test_install_skill_auto_prepares_python_runtime_with_vendored_node_helper(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace_dir = tmp_path / "workspace"
+    source_dir = tmp_path / "researcher"
+    scripts_dir = source_dir / "scripts"
+    vendor_dir = scripts_dir / "lib" / "vendor" / "bird-search"
+    vendor_dir.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        """---
+name: researcher
+description: Research helper
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "research.py").write_text("print('ok')\n", encoding="utf-8")
+    (vendor_dir / "bird-search.mjs").write_text("console.log('ok')\n", encoding="utf-8")
+    (vendor_dir / "package.json").write_text('{"name":"bird-search"}\n', encoding="utf-8")
+    monkeypatch.setattr(
+        "octopal.tools.skills.installer.prepare_skill_env",
+        lambda skill_id, workspace_dir: {
+            "status": "prepared",
+            "skill_id": skill_id,
+            "kind": "python",
+        },
+    )
+
+    payload = install_skill_from_source(str(source_dir), workspace_dir=workspace_dir)
+
+    assert payload["env_prepared"] is True
+    assert payload["env_kind"] == "python"
+    assert payload["env_error"] == ""
+    assert payload["next_steps"] == []
+
+
 def test_install_skill_does_not_suggest_prepare_env_for_unsupported_mixed_runtime(
     tmp_path: Path,
 ) -> None:

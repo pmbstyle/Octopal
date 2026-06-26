@@ -44,6 +44,56 @@ metadata:
     assert "prepare-env job-search" in status["next_step"]
 
 
+def test_get_skill_env_status_ignores_vendored_node_helpers_for_primary_runtime(
+    tmp_path: Path,
+) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "researcher"
+    scripts_dir = skill_dir / "scripts"
+    vendor_dir = scripts_dir / "lib" / "vendor" / "bird-search"
+    vendor_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: researcher
+description: Research helper
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "research.py").write_text("print('ok')\n", encoding="utf-8")
+    (vendor_dir / "bird-search.mjs").write_text("console.log('ok')\n", encoding="utf-8")
+    (vendor_dir / "package.json").write_text('{"name":"bird-search"}\n', encoding="utf-8")
+
+    status = get_skill_env_status("researcher", workspace_dir=workspace_dir)
+
+    assert status["kind"] == "python"
+    assert status["status"] == "missing"
+    assert status["required"] is True
+    assert "prepare-env researcher" in status["next_step"]
+
+
+def test_get_skill_env_status_detects_dist_node_entrypoints(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "ui-helper"
+    scripts_dist_dir = skill_dir / "scripts" / "dist"
+    scripts_dist_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: ui-helper
+description: Run a bundled JS helper
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dist_dir / "cli.js").write_text("console.log('ok')\n", encoding="utf-8")
+
+    status = get_skill_env_status("ui-helper", workspace_dir=workspace_dir)
+
+    assert status["kind"] == "node"
+    assert status["status"] == "missing"
+    assert "prepare-env ui-helper" in status["next_step"]
+
+
 def test_prepare_skill_env_creates_python_env_manifest(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "job-search"
