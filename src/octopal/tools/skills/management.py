@@ -281,6 +281,8 @@ def list_skill_inventory(workspace_dir: Path, *, include_disabled: bool = True) 
                 "runtime_required": bool(raw.get("runtime_required", False)),
                 "runtime_recommended": bool(raw.get("runtime_recommended", False)),
                 "runtime_prepared": bool(raw.get("runtime_prepared", False)),
+                "runtime_status": str(raw.get("runtime_status", "")),
+                "runtime_reason": str(raw.get("runtime_reason", "")),
                 "runtime_next_step": str(raw.get("runtime_next_step", "")),
                 **_evaluate_skill_status(raw),
             }
@@ -537,6 +539,8 @@ def _run_skill(skill_data: dict[str, Any], args: dict[str, Any], ctx: dict[str, 
         "runtime_required": bool(current_skill.get("runtime_required", False)),
         "runtime_recommended": bool(current_skill.get("runtime_recommended", False)),
         "runtime_prepared": bool(current_skill.get("runtime_prepared", False)),
+        "runtime_status": str(current_skill.get("runtime_status", "")),
+        "runtime_reason": str(current_skill.get("runtime_reason", "")),
         "runtime_next_step": str(current_skill.get("runtime_next_step", "")),
         "scripts_available": bool(current_skill.get("has_scripts", False)),
         "usage_hint": (
@@ -759,6 +763,8 @@ def _skill_record_from_bundle(
         "runtime_required": False,
         "runtime_recommended": False,
         "runtime_prepared": False,
+        "runtime_status": "",
+        "runtime_reason": "",
         "runtime_next_step": "",
     }
 
@@ -791,6 +797,8 @@ def _skill_record_from_registry(workspace_dir: Path, raw: dict[str, Any]) -> dic
         "runtime_required": False,
         "runtime_recommended": False,
         "runtime_prepared": False,
+        "runtime_status": "",
+        "runtime_reason": "",
         "runtime_next_step": "",
     }
 
@@ -820,8 +828,12 @@ def _evaluate_skill_status(skill_data: dict[str, Any]) -> dict[str, Any]:
     if has_runtime_scripts and not bool(skill_data.get("trusted", True)):
         reasons.append("skill scripts are not trusted yet")
     if bool(skill_data.get("runtime_required", False)) and not bool(skill_data.get("runtime_prepared", False)):
+        runtime_status = str(skill_data.get("runtime_status", "")).strip()
+        runtime_reason = str(skill_data.get("runtime_reason", "")).strip()
         next_step = str(skill_data.get("runtime_next_step", "")).strip()
-        if next_step:
+        if runtime_status == "unsupported":
+            reasons.append(runtime_reason or "runtime env is unsupported")
+        elif next_step:
             reasons.append(f"runtime env is not prepared; run `{next_step}`")
         else:
             reasons.append("runtime env is not prepared")
@@ -1129,6 +1141,8 @@ def _merge_runtime_metadata(workspace_dir: Path, skill_data: dict[str, Any]) -> 
     skill_data["runtime_required"] = bool(status.get("required", False))
     skill_data["runtime_recommended"] = bool(status.get("recommended", False))
     skill_data["runtime_prepared"] = bool(status.get("prepared", False))
+    skill_data["runtime_status"] = str(status.get("status", ""))
+    skill_data["runtime_reason"] = str(status.get("reason", ""))
     skill_data["runtime_next_step"] = str(status.get("next_step", ""))
 
 

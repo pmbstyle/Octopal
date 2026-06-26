@@ -160,6 +160,32 @@ description: Helps write copy
     assert payload["skills"][0]["runtime_required"] is True
 
 
+def test_list_skill_inventory_reports_unsupported_mixed_runtime(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    skill_dir = workspace_dir / "skills" / "researcher"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: researcher
+description: Research helper
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "tool.py").write_text("print('ok')\n", encoding="utf-8")
+    (skill_dir / "package.json").write_text('{"dependencies":{"left-pad":"1.3.0"}}\n', encoding="utf-8")
+
+    payload = list_skill_inventory(workspace_dir)
+
+    skill = payload["skills"][0]
+    assert skill["runtime_kind"] == "mixed"
+    assert skill["runtime_status"] == "unsupported"
+    assert "mixed python and node runtimes" in skill["runtime_reason"]
+    assert skill["status"] == "not_ready"
+    assert "mixed python and node runtimes" in skill["reasons"][0]
+
+
 def test_load_skill_inventory_keeps_legacy_registry_skill(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
     legacy_dir = workspace_dir / "legacy"

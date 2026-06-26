@@ -19,6 +19,8 @@ from octopal.infrastructure.store.models import (
     WorkerTemplateRecord,
 )
 
+UNSET = object()
+
 
 class Store(Protocol):
     def create_worker(self, record: WorkerRecord) -> None: ...
@@ -166,7 +168,7 @@ class Store(Protocol):
         current_step_id: str | None = None,
         plan: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
-        completed_at: datetime | None = None,
+        completed_at: datetime | None | object = UNSET,
     ) -> None: ...
 
     def get_plan_run(self, run_id: str) -> PlanRunRecord | None: ...
@@ -196,9 +198,9 @@ class Store(Protocol):
         status: str | None = None,
         worker_run_id: str | None = None,
         output: dict[str, Any] | None = None,
-        error: str | None = None,
+        error: str | None | object = UNSET,
         started_at: datetime | None = None,
-        completed_at: datetime | None = None,
+        completed_at: datetime | None | object = UNSET,
     ) -> None: ...
 
     def append_plan_event(self, event: PlanEventRecord) -> None: ...

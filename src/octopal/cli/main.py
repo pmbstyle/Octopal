@@ -2114,7 +2114,9 @@ def skill_list(
         if not bool(item.get("runtime_required", False)):
             env_status = "-"
         else:
-            env_status = "prepared" if bool(item.get("runtime_prepared", False)) else "missing"
+            env_status = str(item.get("runtime_status", "")).strip()
+            if not env_status:
+                env_status = "prepared" if bool(item.get("runtime_prepared", False)) else "missing"
         trust_state = "trusted" if bool(item.get("trusted", True)) else "untrusted"
         table.add_row(
             str(item.get("id", "")),

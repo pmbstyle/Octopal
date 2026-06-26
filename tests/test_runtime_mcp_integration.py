@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from octopal.infrastructure.config.models import LLMConfig, OctopalConfig
 from octopal.infrastructure.config.settings import Settings
@@ -12,6 +13,7 @@ from octopal.runtime.workers.runtime import (
     WorkerRuntime,
     _validate_worker_local_tool_call,
     _validate_worker_mcp_tool_call,
+    _validate_worker_tool_permissions,
 )
 from octopal.tools.registry import ToolSpec
 
@@ -877,6 +879,24 @@ def test_runtime_rejects_template_tools_with_missing_permissions(tmp_path: Path)
 
     assert result.status == "failed"
     assert "requires permission 'filesystem_read'" in result.summary
+
+
+def test_runtime_worker_tool_permission_validation_reports_all_missing_permissions() -> None:
+    error = _validate_worker_tool_permissions(
+        tool_names=["exec_run", "use_skill", "fs_write"],
+        allowed_permissions=["network"],
+        all_tools_by_name={
+            "exec_run": SimpleNamespace(permission="exec"),
+            "use_skill": SimpleNamespace(permission="skill_use"),
+            "fs_write": SimpleNamespace(permission="filesystem_write"),
+        },
+    )
+
+    assert error is not None
+    assert "tool 'exec_run' requires permission 'exec'" in error
+    assert "tool 'use_skill' requires permission 'skill_use'" in error
+    assert "tool 'fs_write' requires permission 'filesystem_write'" in error
+    assert "missing permission(s): exec, filesystem_write, skill_use" in error
 
 
 def test_runtime_local_bridge_guard_rejects_tool_outside_spec_permissions() -> None:

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from octopal.infrastructure.config.settings import Settings
-from octopal.infrastructure.store.base import Store
+from octopal.infrastructure.store.base import UNSET, Store
 from octopal.infrastructure.store.models import (
     AuditEvent,
     IntentRecord,
@@ -1377,7 +1377,7 @@ class SQLiteStore(Store):
         current_step_id: str | None = None,
         plan: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
-        completed_at: datetime | None = None,
+        completed_at: datetime | None | object = UNSET,
     ) -> None:
         updates = ["updated_at = ?"]
         params: list[Any] = [utc_now().isoformat()]
@@ -1393,9 +1393,9 @@ class SQLiteStore(Store):
         if metadata is not None:
             updates.append("metadata_json = ?")
             params.append(_safe_json_dumps(metadata))
-        if completed_at is not None:
+        if completed_at is not UNSET:
             updates.append("completed_at = ?")
-            params.append(completed_at.isoformat())
+            params.append(completed_at.isoformat() if isinstance(completed_at, datetime) else None)
         params.append(run_id)
         self._conn.execute(
             f"UPDATE plan_runs SET {', '.join(updates)} WHERE id = ?",
@@ -1472,9 +1472,9 @@ class SQLiteStore(Store):
         status: str | None = None,
         worker_run_id: str | None = None,
         output: dict[str, Any] | None = None,
-        error: str | None = None,
+        error: str | None | object = UNSET,
         started_at: datetime | None = None,
-        completed_at: datetime | None = None,
+        completed_at: datetime | None | object = UNSET,
     ) -> None:
         updates = ["updated_at = ?"]
         params: list[Any] = [utc_now().isoformat()]
@@ -1487,15 +1487,15 @@ class SQLiteStore(Store):
         if output is not None:
             updates.append("output_json = ?")
             params.append(_safe_json_dumps(output))
-        if error is not None:
+        if error is not UNSET:
             updates.append("error = ?")
             params.append(error)
         if started_at is not None:
             updates.append("started_at = ?")
             params.append(started_at.isoformat())
-        if completed_at is not None:
+        if completed_at is not UNSET:
             updates.append("completed_at = ?")
-            params.append(completed_at.isoformat())
+            params.append(completed_at.isoformat() if isinstance(completed_at, datetime) else None)
         params.extend([run_id, step_id])
         self._conn.execute(
             f"UPDATE plan_steps SET {', '.join(updates)} WHERE run_id = ? AND step_id = ?",

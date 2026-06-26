@@ -2146,16 +2146,28 @@ def _validate_worker_tool_permissions(
     all_tools_by_name: dict[str, Any],
 ) -> str | None:
     allowed = set(_normalize_permission_names(allowed_permissions))
+    unknown_tools: list[str] = []
+    missing_permissions: list[tuple[str, str]] = []
     for tool_name in tool_names:
         spec_tool = all_tools_by_name.get(str(tool_name).strip().lower())
         if spec_tool is None:
-            return f"unknown worker tool '{tool_name}'"
+            unknown_tools.append(str(tool_name))
+            continue
         permission = str(getattr(spec_tool, "permission", "") or "").strip().lower()
         if permission and permission not in allowed:
-            return (
-                f"tool '{tool_name}' requires permission '{permission}' "
-                f"but worker only has {sorted(allowed)}"
-            )
+            missing_permissions.append((str(tool_name), permission))
+    if unknown_tools:
+        return f"unknown worker tool(s): {', '.join(unknown_tools)}"
+    if missing_permissions:
+        requirements = "; ".join(
+            f"tool '{tool_name}' requires permission '{permission}'"
+            for tool_name, permission in missing_permissions
+        )
+        unique_permissions = sorted({permission for _, permission in missing_permissions})
+        return (
+            f"{requirements}; missing permission(s): {', '.join(unique_permissions)}; "
+            f"worker only has {sorted(allowed)}"
+        )
     return None
 
 

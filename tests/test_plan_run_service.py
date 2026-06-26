@@ -173,6 +173,57 @@ def test_plan_service_fails_worker_step_from_result(tmp_path: Path) -> None:
     assert step.output["output"] == {"error": "pytest failed"}
 
 
+def test_plan_service_clears_stale_error_when_worker_step_is_retried(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    service = PlanRunService(store)
+    run = service.create_run(
+        goal="Install a skill",
+        chat_id=123,
+        steps=[{"id": "test", "kind": "worker", "title": "Test worker"}],
+    )
+    service.bind_worker_step(run.id, "test", "worker-1")
+    service.update_worker_step_result(
+        worker_run_id="worker-1",
+        chat_id=123,
+        result_status="failed",
+        summary="Missing permissions.",
+        output={"error": "invalid_worker_tool_permissions"},
+    )
+
+    failed = store.get_plan_run(run.id)
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.completed_at is not None
+    failed_step = store.get_plan_steps(run.id)[0]
+    assert failed_step.status == "failed"
+    assert failed_step.completed_at is not None
+    assert failed_step.error == "invalid_worker_tool_permissions"
+
+    service.bind_worker_step(run.id, "test", "worker-2")
+    retrying = store.get_plan_run(run.id)
+    assert retrying is not None
+    assert retrying.status == "awaiting_worker"
+    assert retrying.completed_at is None
+    retrying_step = store.get_plan_steps(run.id)[0]
+    assert retrying_step.completed_at is None
+
+    service.update_worker_step_result(
+        worker_run_id="worker-2",
+        chat_id=123,
+        result_status="completed",
+        summary="Worker succeeded.",
+        output={"findings": 8},
+    )
+
+    step = store.get_plan_steps(run.id)[0]
+    assert step.status == "completed"
+    assert step.error is None
+    assert step.output["worker_status"] == "completed"
+    assert step.output["summary"] == "Worker succeeded."
+
+
 def test_plan_service_keeps_instruction_request_step_active(tmp_path: Path) -> None:
     store = _store(tmp_path)
     service = PlanRunService(store)
@@ -291,7 +342,9 @@ def test_followup_pipeline_builds_continuation_for_next_plan_step(tmp_path: Path
     assert "Worker hit its step limit" in continuation["args"]["context_summary"]
 
 
-def test_followup_pipeline_preserves_if_significant_continuation_notify_policy(tmp_path: Path) -> None:
+def test_followup_pipeline_preserves_if_significant_continuation_notify_policy(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     service = PlanRunService(store)
     run = service.create_run(
@@ -449,7 +502,9 @@ def test_followup_pipeline_falls_back_to_worker_followup_when_continuation_fails
     async def scenario() -> None:
         fallback_ready = asyncio.Event()
 
-        async def fake_enqueue(octo, chat_id, correlation_id, *, worker_id, task_text, result, notify_user):
+        async def fake_enqueue(
+            octo, chat_id, correlation_id, *, worker_id, task_text, result, notify_user
+        ):
             fallbacks.append(
                 {
                     "octo": octo,
@@ -491,3 +546,37 @@ def test_followup_pipeline_falls_back_to_worker_followup_when_continuation_fails
     assert fallbacks[0]["worker_id"] == "worker-123"
     assert fallbacks[0]["task_text"] == "Collect"
     assert fallbacks[0]["notify_user"] is None
+
+
+def test_followup_pipeline_skips_stale_runtime_plan_continuation_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+    cleared: list[str | None] = []
+
+    async def fake_enqueue(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(followup_pipeline, "_enqueue_batched_worker_followup", fake_enqueue)
+    octo = SimpleNamespace(
+        should_suppress_channel_followups=lambda correlation_id: False,
+        channel_followup_suppression_reason=lambda correlation_id: None,
+        is_correlation_current_for_chat=lambda chat_id, correlation_id: False,
+        clear_pending_conversational_closure=lambda correlation_id: cleared.append(correlation_id),
+    )
+
+    asyncio.run(
+        followup_pipeline._enqueue_runtime_plan_continuation_fallback(
+            octo,
+            42,
+            "old-turn",
+            worker_id="worker-123",
+            task_text="Collect",
+            result=WorkerResult(status="completed", summary="Data collected."),
+            notify_user=None,
+            reason="status=stale",
+        )
+    )
+
+    assert calls == []
+    assert cleared == ["old-turn"]

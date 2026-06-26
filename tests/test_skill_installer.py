@@ -131,6 +131,32 @@ metadata:
     assert payload["next_steps"] == []
 
 
+def test_install_skill_does_not_suggest_prepare_env_for_unsupported_mixed_runtime(
+    tmp_path: Path,
+) -> None:
+    workspace_dir = tmp_path / "workspace"
+    source_dir = tmp_path / "researcher"
+    scripts_dir = source_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        """---
+name: researcher
+description: Research helper
+---
+""",
+        encoding="utf-8",
+    )
+    (scripts_dir / "tool.py").write_text("print('ok')\n", encoding="utf-8")
+    (source_dir / "package.json").write_text('{"dependencies":{"left-pad":"1.3.0"}}\n', encoding="utf-8")
+
+    payload = install_skill_from_source(str(source_dir), workspace_dir=workspace_dir)
+
+    assert payload["env_prepared"] is False
+    assert payload["env_kind"] == "mixed"
+    assert "mixed python and node runtimes" in payload["env_error"]
+    assert "uv run octopal skill prepare-env researcher" not in payload["next_steps"]
+
+
 def test_install_skill_from_clawhub_slug_uses_download_adapter(tmp_path: Path, monkeypatch) -> None:
     workspace_dir = tmp_path / "workspace"
     archive_source_dir = tmp_path / "source"
