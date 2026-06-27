@@ -221,6 +221,7 @@ async def route_or_reply(
     route_mode: str | RouteMode = RouteMode.CONVERSATION,
     conversation_scope: str | None = None,
     channel_context: dict[str, object] | None = None,
+    background_delivery: bool = False,
 ) -> str:
     """Core routing logic: decide whether to use tools or reply to user."""
     # Internal chat_id (<= 0) should not trigger typing indicators.
@@ -240,6 +241,7 @@ async def route_or_reply(
         "internal_followup": internal_followup,
         "show_typing": show_typing,
         "include_wakeup": include_wakeup,
+        "background_delivery": background_delivery,
         "has_images": bool(images),
         "saved_file_paths_count": len(saved_file_paths or []),
         "route_mode": route_mode_value,
@@ -268,6 +270,14 @@ async def route_or_reply(
         await _ensure_mcp_connected_for_routing(octo)
 
         octo_tools, ctx = _get_octo_tools(octo, chat_id)
+        ctx.update(
+            {
+                "route_mode": route_mode_value,
+                "internal_followup": internal_followup,
+                "background_delivery": background_delivery,
+                "conversation_scope": conversation_scope,
+            }
+        )
         resolution_report = ctx.get("tool_resolution_report")
         available_count = len(getattr(resolution_report, "available_tools", ()) or ())
         deferred_count = max(0, available_count - len(octo_tools))
