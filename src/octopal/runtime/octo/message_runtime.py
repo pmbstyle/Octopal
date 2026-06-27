@@ -308,6 +308,7 @@ class OctoMessageRuntimeMixin:
                     "route_mode": route_request.mode,
                     "conversation_scope": conversation_scope,
                     "channel_context": source_context,
+                    "background_delivery": background_delivery,
                 }
                 route_or_reply = _core_callable("route_or_reply", _default_route_or_reply)
                 while True:

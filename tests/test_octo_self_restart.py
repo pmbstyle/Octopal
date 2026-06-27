@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from octopal.runtime.self_control import (
     run_update_helper,
 )
 from octopal.runtime.workers import runtime as worker_runtime
+from octopal.tools.catalog import _tool_octo_restart_self, _tool_octo_update_self
 from octopal.tools.workers import management as worker_management
 
 
@@ -177,6 +179,97 @@ def test_self_restart_force_allows_recent_duplicate_request(tmp_path: Path) -> N
     assert len(requests.splitlines()) == 2
 
 
+def test_self_restart_tool_rejects_force_from_background_turn(tmp_path: Path) -> None:
+    settings = _StoreSettings(tmp_path / "data", tmp_path / "workspace")
+    store = SQLiteStore(settings)
+    octo = Octo(
+        provider=object(),
+        store=store,
+        policy=object(),
+        runtime=_Runtime(settings),
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+
+    async def scenario() -> dict:
+        first = await octo.request_self_restart(
+            42,
+            {
+                "reason": "apply git pull",
+                "confirm": True,
+                "delay_seconds": 3,
+            },
+        )
+        assert first["status"] == "restart_requested"
+        raw = await _tool_octo_restart_self(
+            {
+                "reason": "force stale restart from continuation",
+                "confirm": True,
+                "force": True,
+                "delay_seconds": 3,
+            },
+            {
+                "octo": octo,
+                "chat_id": 42,
+                "route_mode": "conversation",
+                "background_delivery": True,
+                "chat_turn_epoch": octo.current_chat_turn_epoch(42),
+            },
+        )
+        return json.loads(raw)
+
+    result = asyncio.run(scenario())
+    assert result["status"] == "force_requires_fresh_user_turn"
+    requests = (settings.state_dir / "control_requests.jsonl").read_text(encoding="utf-8")
+    assert len(requests.splitlines()) == 1
+
+
+def test_self_restart_tool_allows_force_from_fresh_foreground_turn(tmp_path: Path) -> None:
+    settings = _StoreSettings(tmp_path / "data", tmp_path / "workspace")
+    store = SQLiteStore(settings)
+    octo = Octo(
+        provider=object(),
+        store=store,
+        policy=object(),
+        runtime=_Runtime(settings),
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+
+    async def scenario() -> dict:
+        first = await octo.request_self_restart(
+            42,
+            {
+                "reason": "apply git pull",
+                "confirm": True,
+                "delay_seconds": 3,
+            },
+        )
+        assert first["status"] == "restart_requested"
+        raw = await _tool_octo_restart_self(
+            {
+                "reason": "user explicitly confirmed a second restart",
+                "confirm": True,
+                "force": True,
+                "delay_seconds": 3,
+            },
+            {
+                "octo": octo,
+                "chat_id": 42,
+                "route_mode": "conversation",
+                "chat_turn_epoch": octo.advance_chat_turn_epoch(42),
+            },
+        )
+        return json.loads(raw)
+
+    result = asyncio.run(scenario())
+    assert result["status"] == "restart_requested"
+    requests = (settings.state_dir / "control_requests.jsonl").read_text(encoding="utf-8")
+    assert len(requests.splitlines()) == 2
+
+
 def test_self_update_persists_handoff_resume_and_request(tmp_path: Path, monkeypatch) -> None:
     settings = _StoreSettings(tmp_path / "data", tmp_path / "workspace")
     store = SQLiteStore(settings)
@@ -269,6 +362,62 @@ def test_self_update_rejects_recent_duplicate_request(tmp_path: Path, monkeypatc
     first, second = asyncio.run(scenario())
     assert first["status"] == "update_requested"
     assert second["status"] == "duplicate_recent_control_action"
+    requests = (settings.state_dir / "control_requests.jsonl").read_text(encoding="utf-8")
+    assert len(requests.splitlines()) == 1
+
+
+def test_self_update_tool_rejects_force_from_background_turn(tmp_path: Path, monkeypatch) -> None:
+    settings = _StoreSettings(tmp_path / "data", tmp_path / "workspace")
+    store = SQLiteStore(settings)
+    octo = Octo(
+        provider=object(),
+        store=store,
+        policy=object(),
+        runtime=_Runtime(settings),
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+    )
+    monkeypatch.setattr(
+        "octopal.runtime.octo.core.check_update_status",
+        lambda _root: {
+            "status": "ok",
+            "local_version": "2026.04.26",
+            "latest_version": "2026.04.27",
+            "update_available": True,
+            "can_update": True,
+        },
+    )
+
+    async def scenario() -> dict:
+        first = await octo.request_self_update(
+            42,
+            {
+                "reason": "apply latest release",
+                "confirm": True,
+                "delay_seconds": 3,
+            },
+        )
+        assert first["status"] == "update_requested"
+        raw = await _tool_octo_update_self(
+            {
+                "reason": "force stale update from continuation",
+                "confirm": True,
+                "force": True,
+                "delay_seconds": 3,
+            },
+            {
+                "octo": octo,
+                "chat_id": 42,
+                "route_mode": "conversation",
+                "background_delivery": True,
+                "chat_turn_epoch": octo.current_chat_turn_epoch(42),
+            },
+        )
+        return json.loads(raw)
+
+    result = asyncio.run(scenario())
+    assert result["status"] == "force_requires_fresh_user_turn"
     requests = (settings.state_dir / "control_requests.jsonl").read_text(encoding="utf-8")
     assert len(requests.splitlines()) == 1
 

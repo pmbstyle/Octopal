@@ -2343,6 +2343,46 @@ async def _tool_octo_context_reset(args, ctx) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+def _self_control_force_guard(args, ctx, *, action: str) -> dict[str, object] | None:
+    if not isinstance(args, dict) or not bool(args.get("force", False)):
+        return None
+
+    try:
+        chat_id = int(ctx.get("chat_id", 0) or 0)
+    except Exception:
+        chat_id = 0
+    octo = ctx.get("octo")
+    epoch = ctx.get("chat_turn_epoch")
+    is_current = getattr(octo, "is_chat_turn_epoch_current", None)
+    route_mode = str(ctx.get("route_mode") or "").strip()
+    route_policy_label = str(ctx.get("route_policy_label") or "").strip()
+    internal_followup = bool(ctx.get("internal_followup", False))
+    background_delivery = bool(ctx.get("background_delivery", False))
+
+    fresh_foreground_turn = (
+        chat_id > 0
+        and not internal_followup
+        and not background_delivery
+        and not route_policy_label
+        and route_mode in {"", "conversation"}
+        and epoch is not None
+        and callable(is_current)
+        and bool(is_current(chat_id, epoch))
+    )
+    if fresh_foreground_turn:
+        return None
+
+    return {
+        "status": "force_requires_fresh_user_turn",
+        "action": action,
+        "message": (
+            "force=true is only allowed from a fresh foreground user turn. "
+            "Ask the user for explicit confirmation before forcing another "
+            "self-control action."
+        ),
+    }
+
+
 async def _tool_octo_restart_self(args, ctx) -> str:
     if bool(ctx.get("worker_id") or ctx.get("worker")):
         return json.dumps(
@@ -2353,6 +2393,9 @@ async def _tool_octo_restart_self(args, ctx) -> str:
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "request_self_restart"):
         return json.dumps({"status": "error", "message": "octo self restart is unavailable"}, ensure_ascii=False)
+    force_block = _self_control_force_guard(args or {}, ctx, action="octo_restart_self")
+    if force_block is not None:
+        return json.dumps(force_block, ensure_ascii=False)
     result = await octo.request_self_restart(chat_id, args or {})
     return json.dumps(result, ensure_ascii=False)
 
@@ -2381,6 +2424,9 @@ async def _tool_octo_update_self(args, ctx) -> str:
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "request_self_update"):
         return json.dumps({"status": "error", "message": "octo self update is unavailable"}, ensure_ascii=False)
+    force_block = _self_control_force_guard(args or {}, ctx, action="octo_update_self")
+    if force_block is not None:
+        return json.dumps(force_block, ensure_ascii=False)
     result = await octo.request_self_update(chat_id, args or {})
     return json.dumps(result, ensure_ascii=False)
 
