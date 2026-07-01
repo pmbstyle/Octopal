@@ -1400,6 +1400,39 @@ def test_normalize_worker_followup_reply_uses_structured_user_response() -> None
     assert _normalize_worker_followup_reply(raw) == "Briefing is ready."
 
 
+def test_normalize_worker_followup_reply_recovers_jsonish_user_response() -> None:
+    raw = '''```json
+{
+  "user_response": "Moltbook чек:
+
+**Новый пост** — 12↑, 31 комм.
+n• comment one",
+  "no_user_response": false,
+  "actions_taken": [],
+  "reason": "scheduled follow-up"
+}
+```'''
+    normalized = _normalize_worker_followup_reply(raw)
+
+    assert normalized.startswith("Moltbook чек:")
+    assert "Новый пост" in normalized
+    assert "no_user_response" not in normalized
+    assert "actions_taken" not in normalized
+
+
+def test_normalize_worker_followup_reply_recovers_jsonish_response_with_quotes() -> None:
+    raw = '''```json
+{
+  "user_response": "He said "hello" today.
+Then shipped it.",
+  "no_user_response": false,
+  "actions_taken": [],
+  "reason": "scheduled follow-up"
+}
+```'''
+    assert _normalize_worker_followup_reply(raw) == 'He said "hello" today.\nThen shipped it.'
+
+
 def test_normalize_worker_followup_reply_strips_noisy_user_visible_wrapper() -> None:
     raw = (
         "I checked internal worker state and should only show the marked part.\n\n"

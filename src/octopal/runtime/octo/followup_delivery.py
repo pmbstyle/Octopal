@@ -11,6 +11,7 @@ from octopal.runtime.octo.background_tracing import (
     _start_background_trace_context,
 )
 from octopal.runtime.octo.delivery import resolve_user_delivery
+from octopal.runtime.octo.route_replies import _normalize_worker_followup_reply
 
 logger = structlog.get_logger(__name__)
 
@@ -42,7 +43,11 @@ async def _send_worker_followup(
     trace_status = "ok"
     trace_output: dict[str, Any] | None = None
     try:
-        decision = resolve_user_delivery(text)
+        normalized_text = _normalize_worker_followup_reply(text)
+        if normalized_text != text:
+            trace_metadata["normalized_text_preview"] = safe_preview(normalized_text, limit=240)
+            trace_metadata["normalized_text_len"] = len(normalized_text or "")
+        decision = resolve_user_delivery(normalized_text)
         trace_metadata.update(
             {
                 "delivery_mode": decision.mode,
