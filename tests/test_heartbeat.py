@@ -586,6 +586,50 @@ async def test_batched_worker_followups_send_single_combined_message(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_worker_followup_delivery_unwraps_structured_user_response():
+    sent_messages = []
+    memory_messages = []
+
+    class DummyMemory:
+        async def add_message(self, role, text, metadata):
+            memory_messages.append((role, text, metadata))
+
+    async def _send(chat_id, text):
+        sent_messages.append((chat_id, text))
+
+    octo = Octo(
+        approvals=None,
+        memory=DummyMemory(),
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+        internal_send=_send,
+    )
+    raw = """```json
+{
+  "user_response": "👻 Moltbook чек (12:37 UTC):\\n\\n**Новый пост** — 12↑, 31 комм.\\n\\nХочешь — отвечу?",
+  "no_user_response": false,
+  "actions_taken": [],
+  "reason": "scheduled follow-up"
+}
+```"""
+
+    await octo_core._send_worker_followup(octo, 123, "corr-json", raw)
+
+    expected = "👻 Moltbook чек (12:37 UTC):\n\n**Новый пост** — 12↑, 31 комм.\n\nХочешь — отвечу?"
+    assert sent_messages == [(123, expected)]
+    assert memory_messages == [
+        (
+            "assistant",
+            expected,
+            {"chat_id": 123, "worker_followup": True, "batched_count": 1},
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_worker_followup_rebinds_correlation_after_visible_delivery():
     sent_messages = []
 
