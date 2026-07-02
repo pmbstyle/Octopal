@@ -46,13 +46,14 @@ def _normalize_worker_followup_reply(raw: str) -> str:
 
     payload = _extract_json_object(value)
     if isinstance(payload, dict):
-        if bool(payload.get("no_user_response")):
+        normalized_payload = {str(key).lower(): entry for key, entry in payload.items()}
+        if bool(normalized_payload.get("no_user_response")):
             return "NO_USER_RESPONSE"
-        response = payload.get("user_response")
+        response = normalized_payload.get("user_response")
         if response is None:
-            response = payload.get("response")
+            response = normalized_payload.get("response")
         if response is None:
-            response = payload.get("message")
+            response = normalized_payload.get("message")
         response_text = sanitize_user_facing_text_preserving_reaction(str(response or ""))
         if response_text and not should_suppress_user_delivery(response_text):
             return response_text
@@ -69,7 +70,7 @@ def _normalize_worker_followup_reply(raw: str) -> str:
 
 
 def _extract_jsonish_worker_user_response(value: str) -> str | None:
-    if not re.search(r'"(?:user_response|no_user_response)"\s*:', value):
+    if not re.search(r'"(?:user_response|no_user_response)"\s*:', value, flags=re.IGNORECASE):
         return None
 
     response_match = re.search(r'"user_response"\s*:\s*', value, flags=re.IGNORECASE)
