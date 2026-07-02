@@ -1433,6 +1433,17 @@ Then shipped it.",
     assert _normalize_worker_followup_reply(raw) == 'He said "hello" today.\nThen shipped it.'
 
 
+def test_normalize_worker_followup_reply_recovers_uppercase_jsonish_user_response() -> None:
+    raw = '''```json
+{
+  "USER_RESPONSE": "Uppercase keys still carry the visible update.",
+  "NO_USER_RESPONSE": false,
+  "ACTIONS_TAKEN": []
+}
+```'''
+    assert _normalize_worker_followup_reply(raw) == "Uppercase keys still carry the visible update."
+
+
 def test_normalize_worker_followup_reply_strips_noisy_user_visible_wrapper() -> None:
     raw = (
         "I checked internal worker state and should only show the marked part.\n\n"
