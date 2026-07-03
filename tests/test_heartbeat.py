@@ -1460,6 +1460,47 @@ async def test_final_user_reply_drops_active_turn_worker_followup_even_with_pend
 
 
 @pytest.mark.asyncio
+async def test_stale_chat_turn_reply_is_suppressed_before_delivery(monkeypatch):
+    memory_messages = []
+
+    class DummyMemory:
+        async def add_message(self, role, text, metadata):
+            memory_messages.append((role, text, metadata))
+
+    async def _route_or_reply(octo, *_args, **_kwargs):
+        octo.advance_chat_turn_epoch(123)
+        return "Late stale status update."
+
+    async def _bootstrap_context(*args, **kwargs):
+        return SimpleNamespace(content="", hash="", files=[])
+
+    monkeypatch.setattr(octo_core, "route_or_reply", _route_or_reply)
+    monkeypatch.setattr(octo_core, "build_bootstrap_context_prompt", _bootstrap_context)
+
+    octo = Octo(
+        approvals=None,
+        memory=DummyMemory(),
+        canon=None,
+        provider=None,
+        store=None,
+        policy=None,
+        runtime=None,
+    )
+    correlation_id = "turn-test"
+
+    token = octo_core.correlation_id_var.set(correlation_id)
+    try:
+        reply = await octo.handle_message("publish", 123)
+    finally:
+        octo_core.correlation_id_var.reset(token)
+
+    assert reply.delivery_mode == DeliveryMode.SILENT
+    assert reply.immediate == ""
+    assert not any(role == "assistant" for role, _text, _metadata in memory_messages)
+    assert octo.should_suppress_turn_followups(correlation_id) is True
+
+
+@pytest.mark.asyncio
 async def test_internal_worker_followup_binds_item_correlation(monkeypatch):
     monkeypatch.setattr(octo_core, "_WORKER_FOLLOWUP_BATCH_WINDOW_SECONDS", 0.01)
     octo_core._WORKER_FOLLOWUP_BATCHES.clear()

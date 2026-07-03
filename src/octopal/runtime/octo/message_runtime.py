@@ -31,7 +31,7 @@ from octopal.runtime.octo.control_replies import (
     _coerce_control_plane_reply,
     _normalize_heartbeat_delivery_reply,
 )
-from octopal.runtime.octo.delivery import resolve_user_delivery
+from octopal.runtime.octo.delivery import DeliveryMode, resolve_user_delivery
 from octopal.runtime.octo.prompt_builder import (
     build_bootstrap_context_prompt as _default_build_bootstrap_context_prompt,
 )
@@ -185,6 +185,7 @@ class OctoMessageRuntimeMixin:
         }
         wants_followup = False
         finalized_visible_reply = False
+        suppressed_stale_reply = False
         route_request = RouteRequest(
             mode=resolve_turn_route_mode(
                 track_progress=track_progress,
@@ -354,6 +355,31 @@ class OctoMessageRuntimeMixin:
                             runtime_settings,
                         )
             logger.info("Octo response ready")
+            if track_progress and not self.is_chat_turn_epoch_current(chat_id, turn_epoch):
+                suppressed_stale_reply = True
+                wants_followup = False
+                self.suppress_turn_followups(correlation_id)
+                _discard_worker_followup_batch(chat_id, correlation_id)
+                trace_metadata["stale_chat_turn_epoch"] = True
+                trace_output = {
+                    "delivery_mode": DeliveryMode.SILENT,
+                    "followup_required": False,
+                    "user_visible": False,
+                    "reason": "stale_chat_turn_epoch",
+                }
+                logger.info(
+                    "Suppressing stale chat turn reply",
+                    chat_id=chat_id,
+                    route_mode=route_request.mode.value,
+                    background_delivery=background_delivery,
+                )
+                return OctoReply(
+                    immediate="",
+                    followup=None,
+                    followup_required=False,
+                    reaction=None,
+                    delivery_mode=DeliveryMode.SILENT,
+                )
             if track_progress:
                 reply_norm = _normalize_compact(reply_text)
                 prior_reply = self._last_reply_norm_by_chat.get(chat_id, "")
@@ -474,7 +500,7 @@ class OctoMessageRuntimeMixin:
             raise
         finally:
             self.mark_user_turn_inactive(correlation_id)
-            if track_progress and not finalized_visible_reply:
+            if track_progress and not finalized_visible_reply and not suppressed_stale_reply:
                 self.clear_suppressed_turn_followups(correlation_id)
             if finalized_visible_reply:
                 dropped = _discard_worker_followup_batch(
@@ -487,7 +513,7 @@ class OctoMessageRuntimeMixin:
                         "Dropped worker follow-up after final in-turn reply",
                         chat_id=chat_id,
                     )
-            if wants_followup and not finalized_visible_reply:
+            if wants_followup and not finalized_visible_reply and not suppressed_stale_reply:
                 _schedule_worker_followup_flush(self, chat_id, correlation_id)
             else:
                 _discard_worker_followup_batch(
