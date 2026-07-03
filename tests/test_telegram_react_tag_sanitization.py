@@ -10,6 +10,7 @@ from aiogram.filters import CommandObject
 
 from octopal.infrastructure.config.settings import Settings
 from octopal.runtime.octo.core import OctoReply
+from octopal.runtime.octo.delivery import DeliveryMode
 from octopal.utils import (
     extract_edge_reaction_fallback,
     extract_reaction_and_strip,
@@ -115,6 +116,63 @@ def test_telegram_uses_reply_reaction_fallback_when_immediate_loses_tag(tmp_path
     assert queued_messages == [
         (211619002, "Set it! Let us see if it appears 👻", 4740),
     ]
+
+
+def test_telegram_does_not_send_silent_octo_reply(tmp_path) -> None:
+    class DummyOcto:
+        async def handle_message(
+            self, text: str, chat_id: int, images=None, saved_file_paths=None, **kwargs
+        ):
+            return OctoReply(
+                immediate="NO_USER_RESPONSE",
+                followup=None,
+                followup_required=False,
+                reaction="👻",
+                delivery_mode=DeliveryMode.SILENT,
+            )
+
+    class DummyBot:
+        def __init__(self) -> None:
+            self.reactions: list[tuple[int, int, str]] = []
+
+        async def set_message_reaction(self, chat_id: int, message_id: int, reaction):
+            self.reactions.append((chat_id, message_id, reaction[0].emoji))
+
+    queued_messages: list[tuple[int, str, int | None]] = []
+
+    async def fake_enqueue_send(
+        bot, chat_id: int, text: str, reply_to_message_id: int | None = None
+    ) -> None:
+        queued_messages.append((chat_id, text, reply_to_message_id))
+
+    original_enqueue = telegram_handlers._enqueue_send
+    telegram_handlers._enqueue_send = fake_enqueue_send
+
+    settings = Settings(
+        OCTOPAL_STATE_DIR=tmp_path / "state",
+        OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
+        OCTOPAL_TELEGRAM_PARSE_MODE="MarkdownV2",
+    )
+    bot = DummyBot()
+    flush = _flush_pending_turn_factory(DummyOcto(), settings, bot)
+
+    try:
+
+        async def scenario() -> None:
+            await flush(
+                211619002,
+                "hello",
+                [],
+                [],
+                {"reply_to_message_id": 4740},
+            )
+
+        asyncio.run(scenario())
+    finally:
+        telegram_handlers._enqueue_send = original_enqueue
+
+    assert bot.reactions == [(211619002, 4740, "🤔")]
+    assert queued_messages == []
 
 
 def test_telegram_infers_reaction_from_short_text_edge_emoji(tmp_path) -> None:

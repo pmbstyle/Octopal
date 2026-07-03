@@ -28,7 +28,7 @@ from octopal.infrastructure.observability.base import TraceSink
 from octopal.infrastructure.observability.helpers import safe_preview, summarize_exception
 from octopal.runtime.metrics import read_metrics_snapshot, update_component_gauges
 from octopal.runtime.octo.core import Octo, OctoReply
-from octopal.runtime.octo.delivery import resolve_user_delivery
+from octopal.runtime.octo.delivery import DeliveryMode, resolve_user_delivery
 from octopal.runtime.octo_status import build_octo_status
 from octopal.runtime.pending_turns import PendingTurnAggregator
 from octopal.runtime.state import update_last_message
@@ -959,6 +959,8 @@ def _flush_pending_turn_factory(
             if isinstance(reply, OctoReply):
                 update_last_message(settings)
                 final_text = reply.immediate or ""
+                if reply.delivery_mode != DeliveryMode.IMMEDIATE:
+                    return
 
                 tagged_emoji, final_text = extract_reaction_and_strip(final_text)
                 inferred_emoji = None
