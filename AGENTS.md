@@ -5,7 +5,7 @@
 - `src/octopal/` contains the main Python package: CLI, channels, gateway, memory, policy, providers, Octo runtime, scheduler, WhatsApp/Telegram integrations, workers, and shared utilities.
 - `webapp/` holds the Vite-based dashboard frontend. `src/` contains app code and `dist/` contains built assets.
 - `tests/` contains the pytest suite for CLI, dashboard, runtime, worker orchestration, memory, and channel behavior.
-- `scripts/` contains setup and maintenance helpers such as bootstrap and worker-template sync utilities.
+- `scripts/` contains setup and maintenance helpers such as bootstrap, repository-hosted install scripts (`octopal.sh`, `octopal.ps1`), and worker-template sync utilities.
 - `docker/` contains container assets, including the worker image Dockerfile.
 - `data/` is runtime state storage for SQLite, metrics, auth state, and logs; avoid committing generated contents.
 - `workspace/` is the default Octo/worker workspace and scratch area.
@@ -26,6 +26,7 @@
 - `uv run octopal gateway` starts the FastAPI gateway directly.
 - `uv run octopal dashboard --once` prints one dashboard snapshot; `uv run octopal dashboard --watch` runs the live terminal dashboard; `uv run octopal dashboard --json` emits a machine-readable snapshot; `--compact` and `--last <N>` tune terminal output.
 - `uv run octopal workers list` shows registered workers, their current status, and the current task when available.
+- `uv run octopal audit list [--limit <N>]` lists recent audit events, and `uv run octopal audit show <event-id>` prints one audit event in detail.
 - `uv run octopal connector status [--json]` checks connector authorization/readiness after connector setup flows; `uv run octopal connector auth <name>` and `uv run octopal connector disconnect <name> [--forget-credentials]` handle CLI-based connector auth maintenance.
 - `uv run octopal sync-worker-templates --overwrite` refreshes default worker templates into `workspace/workers`.
 - `uv run octopal memory stats` and `uv run octopal memory cleanup [--keep-days <days>] [--keep-count <count>] [--dry-run]` cover common memory maintenance flows.
