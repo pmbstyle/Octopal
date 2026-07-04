@@ -331,7 +331,7 @@ class WorkerRuntime:
             llm_config=llm_config,
             granted_capabilities=[c.model_dump() for c in granted],
             timeout_seconds=task_request.timeout_seconds or template.default_timeout_seconds,
-            max_thinking_steps=template.max_thinking_steps,
+            max_thinking_steps=task_request.max_thinking_steps or template.max_thinking_steps,
             run_id=task_request.run_id or worker_id,
             lifecycle="ephemeral",
             correlation_id=task_request.correlation_id,

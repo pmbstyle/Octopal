@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 _WORKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _MAX_PARALLEL_BATCH = 10
+_MAX_THINKING_STEPS_OVERRIDE = 30
 _WORKER_BLOCKED_TOOL_NAMES = {
     "send_file_to_user",
     "self_control",
@@ -61,6 +62,12 @@ _ALLOWED_PATHS_GUIDANCE = (
     "Use allowed_paths only when the worker needs files from Octo's main workspace, "
     "and pass the smallest explicit set that will do the job. "
     "If the task only needs the worker's own scratch space, omit allowed_paths."
+)
+_MAX_THINKING_STEPS_GUIDANCE = (
+    "Optional per-run reasoning/action budget override. This is a hard worker-loop budget, "
+    "not a cosmetic hint: if Octo expands the task scope, expects staged investigation, tool retries, "
+    "verification, child supervision, or synthesis, raise this along with timeout_seconds. "
+    f"Default comes from the template; maximum override is {_MAX_THINKING_STEPS_OVERRIDE}."
 )
 
 
@@ -426,7 +433,13 @@ def get_worker_tools() -> list[ToolSpec]:
                     },
                     "timeout_seconds": {
                         "type": "number",
-                        "description": "Override default timeout (optional).",
+                        "description": (
+                            "Override default timeout (optional). Use with max_thinking_steps for heavier tasks."
+                        ),
+                    },
+                    "max_thinking_steps": {
+                        "type": "number",
+                        "description": _MAX_THINKING_STEPS_GUIDANCE,
                     },
                     "scheduled_task_id": {
                         "type": "string",
@@ -507,7 +520,13 @@ def get_worker_tools() -> list[ToolSpec]:
                     },
                     "timeout_seconds": {
                         "type": "number",
-                        "description": "Override default timeout (optional).",
+                        "description": (
+                            "Override default timeout (optional). Use with max_thinking_steps for heavier tasks."
+                        ),
+                    },
+                    "max_thinking_steps": {
+                        "type": "number",
+                        "description": _MAX_THINKING_STEPS_GUIDANCE,
                     },
                     "required_tools": {
                         "type": "array",
@@ -557,7 +576,7 @@ def get_worker_tools() -> list[ToolSpec]:
                 "properties": {
                     "tasks": {
                         "type": "array",
-                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, a subset-only tools override, timeout_seconds, required_tools, required_permissions, required_tool_calls, plan_run_id, plan_step_id, orchestration_item_id, and allowed_paths.",
+                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, a subset-only tools override, timeout_seconds, max_thinking_steps, required_tools, required_permissions, required_tool_calls, plan_run_id, plan_step_id, orchestration_item_id, and allowed_paths.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -569,7 +588,16 @@ def get_worker_tools() -> list[ToolSpec]:
                                     "items": {"type": "string"},
                                     "description": "Optional subset of the selected template's tools; cannot add tools outside the template contract.",
                                 },
-                                "timeout_seconds": {"type": "number"},
+                                "timeout_seconds": {
+                                    "type": "number",
+                                    "description": (
+                                        "Override default timeout (optional). Use with max_thinking_steps for heavier tasks."
+                                    ),
+                                },
+                                "max_thinking_steps": {
+                                    "type": "number",
+                                    "description": _MAX_THINKING_STEPS_GUIDANCE,
+                                },
                                 "required_tools": {"type": "array", "items": {"type": "string"}},
                                 "required_permissions": {
                                     "type": "array",
@@ -842,7 +870,11 @@ def get_worker_tools() -> list[ToolSpec]:
                     },
                     "max_thinking_steps": {
                         "type": "number",
-                        "description": "Max reasoning iterations (default: 10).",
+                        "description": (
+                            "Template default reasoning/action budget for worker runs. This is a hard worker-loop "
+                            "budget; raise it for templates expected to investigate, use tools repeatedly, verify, "
+                            "supervise children, or synthesize multi-step work."
+                        ),
                     },
                     "default_timeout_seconds": {
                         "type": "number",
@@ -893,7 +925,10 @@ def get_worker_tools() -> list[ToolSpec]:
                     "model": {"type": "string", "description": "New model override (optional)."},
                     "max_thinking_steps": {
                         "type": "number",
-                        "description": "New max steps (optional).",
+                        "description": (
+                            "New template default reasoning/action budget (optional). This is a hard worker-loop "
+                            "budget, so increase it for templates expected to handle multi-step or verification-heavy work."
+                        ),
                     },
                     "default_timeout_seconds": {
                         "type": "number",
@@ -949,6 +984,7 @@ def _tool_list_workers(args: dict[str, object], ctx: dict[str, object]) -> str:
             "tools": t.available_tools,
             "permissions": t.required_permissions,
             "timeout_seconds": t.default_timeout_seconds,
+            "max_thinking_steps": t.max_thinking_steps,
         }
         can_spawn_children = bool(getattr(t, "can_spawn_children", False))
         allowed_child_templates = list(getattr(t, "allowed_child_templates", []))
@@ -1218,10 +1254,16 @@ async def _start_worker_common(
     required_permissions = _normalize_str_list(args.get("required_permissions"))
     required_tool_calls = _normalize_tool_name_list(args.get("required_tool_calls"))
     timeout_seconds = int(args.get("timeout_seconds")) if args.get("timeout_seconds") else None
+    max_thinking_steps, max_steps_error = _parse_max_thinking_steps_override(
+        args.get("max_thinking_steps"),
+        error_prefix="start_child_worker error" if require_worker_context else "start_worker error",
+    )
     scheduled_task_id = str(args.get("scheduled_task_id", "")).strip() or None
 
     if not task:
         return "start_worker error: task is required."
+    if max_steps_error:
+        return max_steps_error
 
     resolution = _resolve_worker_for_start(
         octo=octo,
@@ -1308,6 +1350,7 @@ async def _start_worker_common(
         tools=tools,
         model=None,
         timeout_seconds=timeout_seconds,
+        max_thinking_steps=max_thinking_steps,
         scheduled_task_id=scheduled_task_id,
         required_tool_calls=required_tool_calls,
         parent_worker_id=child_ctx["run_id"] if child_ctx else None,
@@ -1631,6 +1674,12 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
         inputs = item.get("inputs") if isinstance(item.get("inputs"), dict) else {}
         tools = item.get("tools") if isinstance(item.get("tools"), list) else None
         timeout_seconds = int(item.get("timeout_seconds")) if item.get("timeout_seconds") else None
+        max_thinking_steps, max_steps_error = _parse_max_thinking_steps_override(
+            item.get("max_thinking_steps"),
+            error_prefix="start_workers_parallel error",
+        )
+        if max_steps_error:
+            return {"index": index, "status": "error", "error": max_steps_error}
         required_tools = _normalize_str_list(item.get("required_tools"))
         required_permissions = _normalize_str_list(item.get("required_permissions"))
         required_tool_calls = _normalize_tool_name_list(item.get("required_tool_calls"))
@@ -1700,6 +1749,7 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
                 tools=tools,
                 model=None,
                 timeout_seconds=timeout_seconds,
+                max_thinking_steps=max_thinking_steps,
                 scheduled_task_id=None,
                 required_tool_calls=required_tool_calls,
                 parent_worker_id=child_ctx["run_id"] if child_ctx else None,
@@ -2718,6 +2768,25 @@ def _normalize_tool_name_list(value: object) -> list[str]:
         seen.add(tool_name)
         normalized.append(tool_name)
     return normalized
+
+
+def _parse_max_thinking_steps_override(
+    value: object, *, error_prefix: str
+) -> tuple[int | None, str | None]:
+    if value in (None, ""):
+        return None, None
+    try:
+        steps = int(value)
+    except (TypeError, ValueError):
+        return None, f"{error_prefix}: max_thinking_steps must be an integer."
+    if steps <= 0:
+        return None, f"{error_prefix}: max_thinking_steps must be greater than 0."
+    if steps > _MAX_THINKING_STEPS_OVERRIDE:
+        return (
+            None,
+            f"{error_prefix}: max_thinking_steps must be <= {_MAX_THINKING_STEPS_OVERRIDE}.",
+        )
+    return steps, None
 
 
 def _merge_tool_requirements(*values: list[str] | None) -> list[str]:

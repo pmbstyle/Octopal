@@ -1546,8 +1546,20 @@ Available tools:
 
     # Max iterations reached without completion
     return WorkerResult(
-        summary=f"Task incomplete after {thinking_steps} thinking steps",
-        output=_attach_telemetry(None, telemetry),
+        status="failed",
+        summary=(
+            "Task incomplete: not enough thinking steps "
+            f"({thinking_steps}/{effective_max_steps})."
+        ),
+        output=_attach_telemetry(
+            {
+                "degraded": True,
+                "reason": "thinking_steps_exhausted",
+                "thinking_steps": thinking_steps,
+                "max_thinking_steps": effective_max_steps,
+            },
+            telemetry,
+        ),
         knowledge_proposals=worker.knowledge_proposals,
         thinking_steps=thinking_steps,
         tools_used=tools_used,

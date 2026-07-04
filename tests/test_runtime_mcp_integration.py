@@ -77,6 +77,53 @@ def test_runtime_blocks_user_communication_tools_for_workers(tmp_path: Path) -> 
     assert "octo_update_self" not in spec.available_tools
 
 
+def test_runtime_uses_task_max_thinking_steps_override(tmp_path: Path) -> None:
+    template = WorkerTemplateRecord(
+        id="worker",
+        name="Worker",
+        description="Test worker",
+        system_prompt="Do work",
+        available_tools=["fs_read"],
+        required_permissions=["filesystem_read"],
+        model=None,
+        max_thinking_steps=3,
+        default_timeout_seconds=30,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    class _Store:
+        def get_worker_template(self, worker_id: str):
+            return template
+
+    class _Policy:
+        def grant_capabilities(self, capabilities):
+            return capabilities
+
+    runtime = WorkerRuntime(
+        store=_Store(),
+        policy=_Policy(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        mcp_manager=None,
+        settings=Settings(),
+    )
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run(spec, approval_requester=None):
+        captured["spec"] = spec
+        return WorkerResult(summary="ok")
+
+    runtime.run = _fake_run  # type: ignore[method-assign]
+
+    request = TaskRequest(worker_id="worker", task="hello", max_thinking_steps=19)
+    asyncio.run(runtime.run_task(request))
+
+    spec = captured["spec"]
+    assert spec.max_thinking_steps == 19
+
+
 def test_runtime_allows_worker_manage_templates(tmp_path: Path) -> None:
     template = WorkerTemplateRecord(
         id="research_coordinator",
