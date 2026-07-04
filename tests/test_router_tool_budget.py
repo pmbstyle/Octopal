@@ -2036,6 +2036,95 @@ def test_image_fallback_without_saved_paths_uses_channel_neutral_directory(
     assert "telegram_images" not in saved_path.replace("\\", "/")
 
 
+def test_route_retries_image_message_when_provider_rejects_content_type(
+    monkeypatch, tmp_path
+) -> None:
+    class DummyProvider:
+        def __init__(self) -> None:
+            self.tool_calls = 0
+            self.last_retry_messages = None
+
+        async def complete(self, messages, **kwargs):
+            return "I could not use tools, but I preserved the image locally and explained the limitation."
+
+        async def complete_stream(self, messages, *, on_partial, **kwargs):
+            raise AssertionError("streaming should not be used in this test")
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            self.tool_calls += 1
+            if self.tool_calls == 1:
+                raise RuntimeError(
+                    "LiteLLM completion with tools failed: "
+                    "OpenAIException - messages.content.type is invalid, "
+                    "allowed values: ['text']"
+                )
+            self.last_retry_messages = messages
+            return {"content": "I inspected the saved image path via tools.", "tool_calls": []}
+
+    class DummyMemory:
+        async def add_message(self, role, content, metadata=None):
+            return None
+
+    class DummyOcto:
+        store = object()
+        canon = object()
+        internal_progress_send = None
+        is_ws_active = False
+
+        async def set_typing(self, chat_id: int, active: bool) -> None:
+            return None
+
+        async def set_thinking(self, active: bool) -> None:
+            return None
+
+        def peek_context_wakeup(self, chat_id: int) -> str:
+            return ""
+
+    async def fake_build_octo_prompt(**kwargs):
+        return [
+            Message(
+                role="user",
+                content=[
+                    {"type": "text", "text": str(kwargs["user_text"])},
+                    {"type": "image_url", "image_url": {"url": kwargs["images"][0]}},
+                ],
+            )
+        ]
+
+    async def fake_build_plan(provider, messages, has_tools):
+        return None
+
+    import octopal.runtime.octo.router as router
+
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(router, "_build_plan", fake_build_plan)
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(tmp_path))
+
+    saved_path = tmp_path / "telegram_images" / "screen.jpg"
+
+    async def scenario() -> None:
+        provider = DummyProvider()
+        response = await router.route_or_reply(
+            DummyOcto(),
+            provider,
+            DummyMemory(),
+            "what is in this image?",
+            123,
+            "",
+            images=["data:image/jpeg;base64,SGVsbG8="],
+            saved_file_paths=[str(saved_path)],
+        )
+        assert response == "I inspected the saved image path via tools."
+        assert provider.tool_calls == 2
+        assert provider.last_retry_messages is not None
+        last_message = provider.last_retry_messages[-1]
+        assert last_message["role"] == "user"
+        assert "saved locally for tool-based inspection" in last_message["content"]
+        assert str(saved_path) in last_message["content"]
+
+    asyncio.run(scenario())
+
+
 def test_route_retries_unbacked_action_commitment_with_tools(monkeypatch) -> None:
     class DummyProvider:
         def __init__(self) -> None:
