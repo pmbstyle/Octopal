@@ -773,6 +773,70 @@ def test_execute_agent_task_stops_after_repeated_empty_turns(monkeypatch, tmp_pa
     assert result.output["_telemetry"]["empty_turns"] == 3
 
 
+def test_execute_agent_task_marks_exhausted_thinking_steps_failed(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    worker = _dummy_worker()
+    tool = ToolSpec(
+        name="echo",
+        description="echo",
+        parameters={"type": "object"},
+        permission="filesystem_read",
+        handler=lambda args, ctx: {"ok": True},
+    )
+
+    async def _noop_log(level: str, message: str) -> None:
+        return None
+
+    monkeypatch.setattr(worker, "log", _noop_log)
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
+    monkeypatch.setattr(
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
+        lambda settings, model=None, config=None: object(),
+    )
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.get_tools", lambda: [tool])
+
+    async def _fake_call_llm(provider, messages, tools, **_kwargs):
+        return {
+            "tool_calls": [
+                {
+                    "id": f"call-{len(messages)}",
+                    "function": {"name": "echo", "arguments": "{}"},
+                }
+            ]
+        }
+
+    async def _fake_execute_tool(
+        tool_name,
+        tool_input,
+        workspace_root,
+        worker_dir,
+        worker_obj,
+        tool_map,
+        *,
+        timeout_seconds=None,
+    ):
+        return {"ok": True}, {
+            "retries": 0,
+            "timed_out": False,
+            "had_error": False,
+            "error_type": "none",
+        }
+
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker._call_llm", _fake_call_llm)
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker._execute_tool", _fake_execute_tool)
+
+    result = asyncio.run(execute_agent_task(worker, tmp_path, tmp_path))
+
+    assert result.status == "failed"
+    assert result.summary == "Task incomplete: not enough thinking steps (5/5)."
+    assert result.thinking_steps == 5
+    assert result.output["reason"] == "thinking_steps_exhausted"
+    assert result.output["thinking_steps"] == 5
+    assert result.output["max_thinking_steps"] == 5
+
+
 def test_execute_agent_task_repairs_plain_text_completion_without_tools(
     monkeypatch,
     tmp_path: Path,

@@ -110,6 +110,7 @@ class OctoWorkerDispatchMixin:
         tools: list[str] | None,
         model: str | None,
         timeout_seconds: int | None,
+        max_thinking_steps: int | None = None,
         scheduled_task_id: str | None = None,
         parent_worker_id: str | None = None,
         lineage_id: str | None = None,
@@ -135,6 +136,7 @@ class OctoWorkerDispatchMixin:
             "spawn_depth": spawn_depth,
             "allowed_paths_count": len(allowed_paths or []),
             "required_tool_calls_count": len(required_tool_calls or []),
+            "max_thinking_steps": max_thinking_steps,
         }
         if trace_sink is not None and parent_trace_ctx is not None:
             dispatch_trace_ctx = await trace_sink.start_span(
@@ -256,6 +258,7 @@ class OctoWorkerDispatchMixin:
                     "timeout_seconds": resolved_timeout_seconds,
                     "timeout_source": timeout_meta.get("source"),
                     "allowed_paths_count": len(effective_allowed_paths or []),
+                    "max_thinking_steps": max_thinking_steps,
                 }
             )
             if scheduled_task_id and self.scheduler:
@@ -301,6 +304,7 @@ class OctoWorkerDispatchMixin:
                     "parent_worker_id": parent_worker_id,
                     "spawn_depth": effective_spawn_depth,
                     "timeout_seconds": resolved_timeout_seconds,
+                    "max_thinking_steps": max_thinking_steps,
                 },
             )
             task_request = TaskRequest(
@@ -310,6 +314,7 @@ class OctoWorkerDispatchMixin:
                 tools=tools,
                 required_tool_calls=required_tool_calls or [],
                 timeout_seconds=resolved_timeout_seconds,
+                max_thinking_steps=max_thinking_steps,
                 run_id=run_id,
                 correlation_id=correlation_id,
                 parent_worker_id=parent_worker_id,
@@ -515,6 +520,7 @@ class OctoWorkerDispatchMixin:
                     "parent_worker_id": parent_worker_id,
                     "spawn_depth": effective_spawn_depth,
                     "timeout_seconds": resolved_timeout_seconds,
+                    "max_thinking_steps": max_thinking_steps,
                 },
             )
             dispatch_trace_output = {
@@ -522,6 +528,7 @@ class OctoWorkerDispatchMixin:
                 "run_id": run_id,
                 "lineage_id": effective_lineage_id,
                 "timeout_seconds": resolved_timeout_seconds,
+                "max_thinking_steps": max_thinking_steps,
             }
             return {
                 "status": "started",

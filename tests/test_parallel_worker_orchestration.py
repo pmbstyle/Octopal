@@ -95,6 +95,7 @@ def test_list_workers_returns_compact_capability_payload() -> None:
         "tools": ["web_search"],
         "permissions": ["network"],
         "timeout_seconds": 120,
+        "max_thinking_steps": 8,
     }
     assert parent["tools"] == ["list_workers", "start_workers_parallel"]
     assert parent["permissions"] == ["worker_manage"]
@@ -148,6 +149,60 @@ def test_start_workers_parallel_launches_multiple() -> None:
     assert result["next_best_action"] == "wait_for_worker_progress"
     assert len(result["launches"]) == 2
     assert all(item["worker_id"] for item in result["launches"])
+
+
+def test_start_workers_parallel_forwards_max_thinking_steps_per_task() -> None:
+    templates = [
+        _template("web_researcher", "research web topics", ["web_search"], ["network"]),
+        _template("coder", "fix code and bugs", ["fs_read"], ["filesystem_read"]),
+    ]
+
+    class _Store:
+        def list_worker_templates(self):
+            return templates
+
+        def get_worker_template(self, worker_id: str):
+            for item in templates:
+                if item.id == worker_id:
+                    return item
+            return None
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+            self.launches = []
+
+        async def _start_worker_async(self, **kwargs):
+            self.launches.append(kwargs)
+            run_id = f"run-{len(self.launches)}"
+            return {"status": "started", "worker_id": run_id, "run_id": run_id, **kwargs}
+
+    octo = _Octo()
+
+    async def _scenario() -> dict:
+        payload = await _tool_start_workers_parallel(
+            {
+                "tasks": [
+                    {
+                        "task": "search docs about apis and compare sources",
+                        "worker_id": "web_researcher",
+                        "max_thinking_steps": 20,
+                    },
+                    {
+                        "task": "fix python bug in parser",
+                        "worker_id": "coder",
+                        "max_thinking_steps": 14,
+                    },
+                ],
+                "max_parallel": 2,
+            },
+            {"octo": octo, "chat_id": 123},
+        )
+        return json.loads(payload)
+
+    result = asyncio.run(_scenario())
+    assert result["started_count"] == 2
+    assert [launch["max_thinking_steps"] for launch in octo.launches] == [20, 14]
 
 
 def test_start_workers_parallel_rejects_tools_outside_template_allowlist() -> None:

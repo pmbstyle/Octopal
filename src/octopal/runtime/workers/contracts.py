@@ -40,6 +40,7 @@ class TaskRequest(BaseModel):
     tools: list[str] | None = None  # Override default tools if needed
     required_tool_calls: list[str] = Field(default_factory=list)
     timeout_seconds: int | None = None  # Override default timeout
+    max_thinking_steps: int | None = None  # Override template reasoning-step budget
     run_id: str | None = None  # Optional caller-provided execution id
     correlation_id: str | None = None
     parent_worker_id: str | None = None
