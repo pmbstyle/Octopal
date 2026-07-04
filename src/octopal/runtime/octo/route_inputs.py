@@ -8,8 +8,13 @@ from octopal.runtime.octo.workspace_paths import _workspace_dir
 
 
 def _is_vision_tool_compatibility_error(exc: Exception) -> bool:
-    err = str(exc).lower()
-    return "invalid api parameter" in err or "'code': '1210'" in err or '"code": "1210"' in err
+    err = _exception_chain_text(exc).lower()
+    return (
+        "invalid api parameter" in err
+        or "'code': '1210'" in err
+        or '"code": "1210"' in err
+        or "messages.content.type is invalid" in err
+    )
 
 
 def _is_invalid_tool_payload_error(exc: Exception) -> bool:
