@@ -484,15 +484,12 @@ def test_extract_result_block_wraps_fenced_domain_json_as_output() -> None:
     }
 
 
-def test_extract_result_block_accepts_awaiting_instruction_without_output() -> None:
+def test_extract_result_block_rejects_final_awaiting_instruction_status() -> None:
     result = _extract_result_block(
         '{"type":"result","status":"awaiting_instruction","summary":"Need approval","questions":["Proceed?"]}'
     )
 
-    assert result is not None
-    assert result["status"] == "awaiting_instruction"
-    assert result["questions"] == ["Proceed?"]
-    assert "output" not in result
+    assert result is None
 
 
 def test_detect_orchestration_stall_warns_and_breaks_on_repeated_no_progress() -> None:
@@ -743,6 +740,10 @@ def test_execute_agent_task_counts_completed_cycles_not_raw_llm_calls(
     assert result.summary == "done"
     assert result.thinking_steps == 2
     assert result.tools_used == ["echo"]
+    telemetry = result.output["_telemetry"]
+    assert telemetry["status"] == "completed"
+    assert telemetry["thinking_steps"] == result.thinking_steps
+    assert telemetry["tools_used"] == result.tools_used
 
 
 def test_execute_agent_task_stops_after_repeated_empty_turns(monkeypatch, tmp_path: Path) -> None:
@@ -766,11 +767,14 @@ def test_execute_agent_task_stops_after_repeated_empty_turns(monkeypatch, tmp_pa
 
     result = asyncio.run(execute_agent_task(worker, tmp_path, tmp_path))
 
+    assert result.status == "failed"
     assert result.summary == "Task stopped after 3 empty turns without progress"
     assert result.thinking_steps == 0
     assert isinstance(result.output, dict)
     assert result.output["reason"] == "empty_turn_limit"
     assert result.output["_telemetry"]["empty_turns"] == 3
+    assert result.output["_telemetry"]["status"] == "failed"
+    assert result.output["_telemetry"]["thinking_steps"] == 0
 
 
 def test_execute_agent_task_marks_exhausted_thinking_steps_failed(
@@ -995,6 +999,8 @@ def test_execute_agent_task_repairs_structured_completion_without_output(
     assert result.output is not None
     assert result.output["records"] == [1]
     assert result.output["_telemetry"]["malformed_result_turns"] == 1
+    assert result.output["_telemetry"]["context"]["llm_calls"][-1]["tool_count"] == 0
+    assert result.output["_telemetry"]["context"]["llm_calls"][-1]["tool_schema_chars"] == 0
     assert tool_names_by_call == [
         ["fetch", "request_instruction"],
         ["fetch", "request_instruction"],

@@ -126,12 +126,14 @@ def test_worker_task_prompt_omits_empty_inputs_and_keeps_unicode_compact() -> No
 def test_worker_completion_protocol_keeps_required_contract_concise() -> None:
     prompt = _build_worker_completion_protocol_prompt()
 
-    assert len(prompt) < 420
+    assert len(prompt) < 520
     assert 'type="result"' in prompt
+    assert 'status="completed" or "failed"' in prompt
     assert "summary" in prompt
-    assert "output/questions" in prompt
+    assert "output" in prompt
+    assert "questions" in prompt
     assert "request_instruction" in prompt
-    assert "completed or failed" in prompt
+    assert "awaiting_instruction is runtime state" in prompt
     assert "transport/debug/auth" in prompt
 
 
