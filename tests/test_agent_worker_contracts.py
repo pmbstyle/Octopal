@@ -29,11 +29,32 @@ def test_force_tool_choice_uses_openai_function_shape() -> None:
     }
 
 
-def test_worker_tool_inventory_omits_duplicate_descriptions_by_default(monkeypatch) -> None:
+def test_worker_tool_inventory_includes_compact_descriptions_by_default(monkeypatch) -> None:
     monkeypatch.delenv("OCTOPAL_WORKER_PROMPT_TOOL_DESCRIPTIONS", raising=False)
     tool = ToolSpec(
         name="web_search",
-        description="Search the web with a deliberately long duplicate schema description.",
+        description=(
+            "Search the web with a deliberately long duplicate schema description "
+            + "that should be shortened for worker prompt compactness. " * 5
+        ),
+        parameters={"type": "object"},
+        permission="network",
+        handler=lambda args, ctx: {"ok": True},
+    )
+
+    inventory = _build_worker_tool_inventory_prompt([tool])
+
+    assert inventory.startswith("- web_search: Search the web")
+    assert "duplicate schema description" in inventory
+    assert len(inventory) < 160
+    assert inventory.endswith("...")
+
+
+def test_worker_tool_inventory_can_omit_descriptions(monkeypatch) -> None:
+    monkeypatch.setenv("OCTOPAL_WORKER_PROMPT_TOOL_DESCRIPTIONS", "false")
+    tool = ToolSpec(
+        name="web_search",
+        description="Search the web with a schema description.",
         parameters={"type": "object"},
         permission="network",
         handler=lambda args, ctx: {"ok": True},
@@ -42,7 +63,7 @@ def test_worker_tool_inventory_omits_duplicate_descriptions_by_default(monkeypat
     inventory = _build_worker_tool_inventory_prompt([tool])
 
     assert inventory == "- web_search"
-    assert "duplicate schema description" not in inventory
+    assert "schema description" not in inventory
 
 
 def test_worker_file_write_prompt_requires_fs_write_tool() -> None:
@@ -110,6 +131,7 @@ def test_worker_completion_protocol_keeps_required_contract_concise() -> None:
     assert "summary" in prompt
     assert "output/questions" in prompt
     assert "request_instruction" in prompt
+    assert "completed or failed" in prompt
     assert "transport/debug/auth" in prompt
 
 
