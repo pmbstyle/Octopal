@@ -209,9 +209,26 @@ def _force_tool_choice(tool_name: str) -> dict[str, dict[str, str] | str]:
 def _build_worker_tool_inventory_prompt(tools: list[Any]) -> str:
     if not tools:
         return "- (none)"
-    if _parse_bool_env("OCTOPAL_WORKER_PROMPT_TOOL_DESCRIPTIONS", False):
-        return "\n".join(f"- {tool.name}: {tool.description}" for tool in tools)
-    return "\n".join(f"- {tool.name}" for tool in tools)
+    include_descriptions = _parse_bool_env("OCTOPAL_WORKER_PROMPT_TOOL_DESCRIPTIONS", True)
+    lines: list[str] = []
+    for tool in tools:
+        name = str(getattr(tool, "name", "") or "").strip() or "unknown_tool"
+        if include_descriptions:
+            description = _compact_tool_description(getattr(tool, "description", ""))
+            if description:
+                lines.append(f"- {name}: {description}")
+                continue
+        lines.append(f"- {name}")
+    return "\n".join(lines)
+
+
+def _compact_tool_description(value: Any, *, limit: int = 140) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 3)].rstrip() + "..."
 
 
 def _load_worker_base_prompt() -> str:
@@ -301,11 +318,11 @@ def _build_worker_task_prompt(task: str, inputs: Any) -> str:
 def _build_worker_completion_protocol_prompt() -> str:
     return (
         "Completion protocol:\n"
-        '- When done, return JSON with type="result", summary, and output/questions.\n'
-        "- Put findings, records, paths, and domain results in output.\n"
-        "- Use questions only when blocked after request_instruction times out or the task must stop.\n"
-        "- summary is internal; do not treat it as user-facing copy.\n"
-        "- Never present transport/debug/auth details, retries, truncation counts, or orchestration as user-facing."
+        '- Done: return JSON with type="result", summary, and output/questions.\n'
+        "- Put findings, records, paths, and results in output.\n"
+        "- Use request_instruction to pause; final JSON should be completed or failed.\n"
+        "- Use questions only after request_instruction times out or the task must stop.\n"
+        "- summary is internal; never present transport/debug/auth/retry/truncation/orchestration as user-facing."
     )
 
 
