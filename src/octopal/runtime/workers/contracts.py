@@ -90,7 +90,12 @@ class KnowledgeProposal(BaseModel):
 
 
 class WorkerResult(BaseModel):
-    """Worker result with optional questions for Octo."""
+    """Worker result.
+
+    `completed` and `failed` are final result states. `awaiting_instruction`
+    is a runtime pause state produced by the instruction-request channel, not
+    a valid final JSON status from an agent worker.
+    """
 
     model_config = ConfigDict(frozen=True)
 

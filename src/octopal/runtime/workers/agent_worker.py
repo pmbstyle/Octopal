@@ -98,22 +98,12 @@ _RESULT_SCHEMA = {
     "type": "object",
     "properties": {
         "type": {"type": "string", "const": "result"},
-        "status": {"type": "string", "enum": ["completed", "failed", "awaiting_instruction"]},
+        "status": {"type": "string", "enum": ["completed", "failed"]},
         "summary": {"type": "string"},
         "output": {"type": ["object", "array", "string", "number", "boolean", "null"]},
         "questions": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["type", "summary"],
-    "allOf": [
-        {
-            "if": {
-                "properties": {"status": {"const": "awaiting_instruction"}},
-                "required": ["status"],
-            },
-            "then": {"required": ["questions"]},
-            "else": {"required": ["output"]},
-        }
-    ],
+    "required": ["type", "summary", "output"],
     "additionalProperties": True,
 }
 logger = structlog.get_logger(__name__)
@@ -318,9 +308,10 @@ def _build_worker_task_prompt(task: str, inputs: Any) -> str:
 def _build_worker_completion_protocol_prompt() -> str:
     return (
         "Completion protocol:\n"
-        '- Done: return JSON with type="result", summary, and output/questions.\n'
-        "- Put findings, records, paths, and results in output.\n"
-        "- Use request_instruction to pause; final JSON should be completed or failed.\n"
+        '- Final: return JSON with type="result", status="completed" or "failed", '
+        "summary, output, and optional questions.\n"
+        "- Put findings, records, paths, blockers, and produced data in output.\n"
+        "- Pause only by calling request_instruction; awaiting_instruction is runtime state, not a final JSON status.\n"
         "- Use questions only after request_instruction times out or the task must stop.\n"
         "- summary is internal; never present transport/debug/auth/retry/truncation/orchestration as user-facing."
     )
@@ -334,8 +325,9 @@ def _build_structured_result_retry_prompt() -> str:
         '{"type":"result","status":"completed","summary":"short internal summary",'
         '"output":{...},"questions":[]}. '
         "Put all task findings and produced data in output. If the previous response was "
-        'itself the task result, wrap it in output. Use status="failed" only if the task '
-        "could not be completed."
+        'itself the task result, wrap it in output. Use status="failed" with a concrete '
+        "blocker in output only if the task could not be completed. Do not use "
+        'status="awaiting_instruction"; call request_instruction to pause.'
     )
 
 
@@ -400,7 +392,13 @@ def _record_worker_llm_context_snapshot(
     if not isinstance(context, dict):
         return
     message_chars = _message_chars(messages)
-    tool_schema_chars = int(context.get("tool_schema_chars") or _tool_schema_chars(tools))
+    tool_schema_chars = _tool_schema_chars(tools) if tools else 0
+    if int(context.get("tool_schema_chars") or 0) <= 0:
+        context["tool_schema_chars"] = tool_schema_chars
+    context["tool_schema_chars_peak"] = max(
+        int(context.get("tool_schema_chars_peak") or 0),
+        tool_schema_chars,
+    )
     input_chars = message_chars + tool_schema_chars
     context["llm_input_chars_total"] = int(context.get("llm_input_chars_total") or 0) + input_chars
     context["llm_input_chars_peak"] = max(
@@ -415,10 +413,20 @@ def _record_worker_llm_context_snapshot(
                 "step": step,
                 "message_count": len(messages),
                 "message_chars": message_chars,
+                "tool_count": len(tools),
                 "tool_schema_chars": tool_schema_chars,
                 "input_chars": input_chars,
             }
         )
+
+
+def _normalize_final_result_status(result_block: dict[str, Any]) -> str:
+    status = str(result_block.get("status") or "completed").strip().lower()
+    if status in {"completed", "failed"}:
+        return status
+    if status in {"error", "failure"}:
+        return "failed"
+    return "completed"
 
 
 def _record_worker_tool_result_context(
@@ -1075,6 +1083,7 @@ Available tools:
             "task_prompt_chars": len(task_prompt),
             "tool_count": len(filtered_tools),
             "tool_schema_chars": _tool_schema_chars(filtered_tools),
+            "tool_schema_chars_peak": 0,
             "llm_input_chars_total": 0,
             "llm_input_chars_peak": 0,
             "message_count_peak": len(messages),
@@ -1289,7 +1298,9 @@ Available tools:
                                 f"{loop_state['message']} count={loop_state['count']}"
                             ),
                         )
+                        result_steps = thinking_steps + (1 if round_consumes_step else 0)
                         return WorkerResult(
+                            status="failed",
                             summary=(
                                 "Task stopped to prevent an infinite tool loop. "
                                 "Please refine the task or provide additional constraints."
@@ -1301,15 +1312,19 @@ Available tools:
                                     "loop": loop_state,
                                 },
                                 telemetry,
+                                status="failed",
+                                thinking_steps=result_steps,
+                                tools_used=tools_used,
                             ),
                             knowledge_proposals=worker.knowledge_proposals,
-                            thinking_steps=thinking_steps + (1 if round_consumes_step else 0),
+                            thinking_steps=result_steps,
                             tools_used=tools_used,
                         )
 
                 if tool_meta.get("had_error"):
                     error_text = _extract_error_text(tool_result)
                     if _is_systemic_tool_bridge_failure(tool_meta):
+                        result_steps = thinking_steps + (1 if round_consumes_step else 0)
                         return WorkerResult(
                             status="failed",
                             summary="Task failed: remote MCP tool response schema is incompatible.",
@@ -1323,18 +1338,23 @@ Available tools:
                                     "error": _truncate_text(error_text, 500),
                                 },
                                 telemetry,
+                                status="failed",
+                                thinking_steps=result_steps,
+                                tools_used=tools_used,
                             ),
                             knowledge_proposals=worker.knowledge_proposals,
-                            thinking_steps=thinking_steps + (1 if round_consumes_step else 0),
+                            thinking_steps=result_steps,
                             tools_used=tools_used,
                         )
                     if _is_upstream_unavailable_error(error_text):
                         signature = f"{tool_name}:{_upstream_error_bucket(error_text)}"
                         upstream_failures[signature] = upstream_failures.get(signature, 0) + 1
                         if upstream_failures[signature] >= 2 and successful_tool_calls == 0:
+                            result_steps = thinking_steps + (1 if round_consumes_step else 0)
                             return WorkerResult(
+                                status="failed",
                                 summary=(
-                                    "Task partially completed with degraded state: "
+                                    "Task failed with degraded state: "
                                     "upstream service is currently unavailable."
                                 ),
                                 output=_attach_telemetry(
@@ -1345,9 +1365,12 @@ Available tools:
                                         "error": _truncate_text(error_text, 500),
                                     },
                                     telemetry,
+                                    status="failed",
+                                    thinking_steps=result_steps,
+                                    tools_used=tools_used,
                                 ),
                                 knowledge_proposals=worker.knowledge_proposals,
-                                thinking_steps=thinking_steps + (1 if round_consumes_step else 0),
+                                thinking_steps=result_steps,
                                 tools_used=tools_used,
                             )
 
@@ -1468,21 +1491,27 @@ Available tools:
                                 "malformed_result_turns": malformed_result_turns,
                             },
                             telemetry,
+                            status="failed",
+                            thinking_steps=thinking_steps + 1,
+                            tools_used=tools_used,
                         ),
                         knowledge_proposals=worker.knowledge_proposals,
                         thinking_steps=thinking_steps + 1,
                         tools_used=tools_used,
                     )
                 cycle_steps = thinking_steps + 1
+                final_status = _normalize_final_result_status(result_block)
                 return WorkerResult(
-                    status=(
-                        str(result_block.get("status", "completed"))
-                        if result_block.get("status") in {"completed", "failed"}
-                        else "completed"
-                    ),
+                    status=final_status,
                     summary=str(result_block.get("summary", "Task completed")).strip()
                     or "Task completed",
-                    output=_attach_telemetry(result_block.get("output"), telemetry),
+                    output=_attach_telemetry(
+                        result_block.get("output"),
+                        telemetry,
+                        status=final_status,
+                        thinking_steps=cycle_steps,
+                        tools_used=tools_used,
+                    ),
                     questions=result_block.get("questions", []),
                     knowledge_proposals=worker.knowledge_proposals,
                     thinking_steps=cycle_steps,
@@ -1538,6 +1567,9 @@ Available tools:
                             "malformed_result_turns": malformed_result_turns,
                         },
                         telemetry,
+                        status="failed",
+                        thinking_steps=thinking_steps + 1,
+                        tools_used=tools_used,
                     ),
                     knowledge_proposals=worker.knowledge_proposals,
                     thinking_steps=thinking_steps + 1,
@@ -1550,10 +1582,14 @@ Available tools:
             telemetry["empty_turns"] = empty_turns
             if empty_turns >= _MAX_EMPTY_TURNS:
                 return WorkerResult(
+                    status="failed",
                     summary=f"Task stopped after {empty_turns} empty turns without progress",
                     output=_attach_telemetry(
                         {"degraded": True, "reason": "empty_turn_limit"},
                         telemetry,
+                        status="failed",
+                        thinking_steps=thinking_steps,
+                        tools_used=tools_used,
                     ),
                     knowledge_proposals=worker.knowledge_proposals,
                     thinking_steps=thinking_steps,
@@ -1576,6 +1612,9 @@ Available tools:
                 "max_thinking_steps": effective_max_steps,
             },
             telemetry,
+            status="failed",
+            thinking_steps=thinking_steps,
+            tools_used=tools_used,
         ),
         knowledge_proposals=worker.knowledge_proposals,
         thinking_steps=thinking_steps,
@@ -2205,14 +2244,30 @@ def _auto_tune_max_steps(base_steps: int, available_tools: list[str], system_pro
     return max(3, min(_DEFAULT_MAX_STEP_CAP, tuned))
 
 
-def _attach_telemetry(output: Any, telemetry: dict[str, Any]) -> dict[str, Any]:
+def _attach_telemetry(
+    output: Any,
+    telemetry: dict[str, Any],
+    *,
+    status: str | None = None,
+    thinking_steps: int | None = None,
+    tools_used: list[str] | None = None,
+) -> dict[str, Any]:
     if isinstance(output, dict):
         payload = dict(output)
     elif output is None:
         payload = {}
     else:
         payload = {"result": output}
-    payload["_telemetry"] = telemetry
+    telemetry_payload = dict(telemetry)
+    if status is not None:
+        telemetry_payload["status"] = status
+    if thinking_steps is not None:
+        telemetry_payload["thinking_steps"] = max(0, int(thinking_steps))
+    if tools_used is not None:
+        telemetry_payload["tools_used"] = [
+            str(tool_name).strip() for tool_name in tools_used if str(tool_name or "").strip()
+        ]
+    payload["_telemetry"] = telemetry_payload
     return payload
 
 
@@ -2241,6 +2296,9 @@ def _build_inference_unavailable_result(
                 "error": _truncate_text(error_text, 500),
             },
             telemetry,
+            status="failed",
+            thinking_steps=thinking_steps,
+            tools_used=tools_used,
         ),
         knowledge_proposals=worker.knowledge_proposals,
         thinking_steps=thinking_steps,

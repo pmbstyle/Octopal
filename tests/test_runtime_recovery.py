@@ -134,6 +134,22 @@ def test_repair_worker_result_payload_infers_failed_status_from_output_error() -
     assert repaired["summary"] == "Failed to connect to Cobalt API server"
 
 
+def test_repair_worker_result_payload_rejects_final_awaiting_instruction_status() -> None:
+    repaired = _repair_worker_result_payload(
+        {
+            "status": "awaiting_instruction",
+            "summary": "Need approval",
+            "questions": ["Proceed?"],
+        }
+    )
+
+    assert repaired["status"] == "failed"
+    assert repaired["summary"] == "Need approval"
+    assert repaired["output"]["error"] == "invalid_final_worker_status"
+    assert repaired["output"]["invalid_status"] == "awaiting_instruction"
+    assert repaired["questions"] == ["Proceed?"]
+
+
 def test_runtime_recovers_after_transient_failure(tmp_path: Path) -> None:
     store = _StoreStub()
     launcher = _LauncherStub()

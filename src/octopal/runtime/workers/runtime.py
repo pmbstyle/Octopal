@@ -852,8 +852,7 @@ class WorkerRuntime:
         try:
             read_loop_params = inspect.signature(self._read_loop).parameters
             accepts_pause_tracker = "pause_tracker" in read_loop_params or any(
-                param.kind is inspect.Parameter.VAR_KEYWORD
-                for param in read_loop_params.values()
+                param.kind is inspect.Parameter.VAR_KEYWORD for param in read_loop_params.values()
             )
         except (TypeError, ValueError):
             accepts_pause_tracker = True
@@ -1823,6 +1822,18 @@ def _repair_worker_result_payload(raw_result: Any) -> dict[str, Any]:
     status = _normalize_worker_result_status(raw_result, output)
     if status is not None:
         repaired["status"] = status
+    if status == "failed" and _is_invalid_final_pause_status(raw_result):
+        output = _merge_worker_result_error(
+            output,
+            {
+                "error": "invalid_final_worker_status",
+                "invalid_status": str(raw_result.get("status") or "").strip().lower(),
+                "detail": (
+                    "Workers must use instruction_request to pause; final result payloads "
+                    "may only be completed or failed."
+                ),
+            },
+        )
     if output is not None:
         repaired["output"] = output
 
@@ -1851,6 +1862,8 @@ def _normalize_worker_result_status(raw_result: dict[str, Any], output: Any) -> 
     status = str(raw_result.get("status") or "").strip().lower()
     if status in {"completed", "failed"}:
         return status
+    if _is_invalid_final_pause_status(raw_result):
+        return "failed"
     if status in {"error", "failure"}:
         return "failed"
     if str(raw_result.get("error") or "").strip():
@@ -1862,6 +1875,22 @@ def _normalize_worker_result_status(raw_result: dict[str, Any], output: Any) -> 
         if str(output.get("error") or "").strip():
             return "failed"
     return None
+
+
+def _is_invalid_final_pause_status(raw_result: dict[str, Any]) -> bool:
+    return str(raw_result.get("status") or "").strip().lower() == "awaiting_instruction"
+
+
+def _merge_worker_result_error(output: Any, error_payload: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(output, dict):
+        merged = dict(output)
+    elif output is None:
+        merged = {}
+    else:
+        merged = {"result": output}
+    for key, value in error_payload.items():
+        merged.setdefault(key, value)
+    return merged
 
 
 def _is_json_serializable(value: Any) -> bool:
@@ -2204,7 +2233,11 @@ def _allows_injected_worker_tool(
     """Mirror agent-worker injected tools at the runtime bridge boundary."""
     if normalized_tool_name not in _INJECTED_ORCHESTRATION_TOOL_NAMES:
         return False
-    tools = allowed_tools if allowed_tools is not None else set(_normalize_name_list(spec.available_tools))
+    tools = (
+        allowed_tools
+        if allowed_tools is not None
+        else set(_normalize_name_list(spec.available_tools))
+    )
     return bool(tools & _CHILD_SPAWN_TOOL_NAMES)
 
 
