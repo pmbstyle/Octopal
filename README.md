@@ -239,7 +239,7 @@ Octopal is designed around a coordinator/worker split:
 
 Docker is not just packaging here. It is the default execution boundary for work that may touch untrusted inputs: websites, generated code, third-party scripts, documents, shell commands, and tool outputs.
 
-If Docker CLI or the Docker daemon is unavailable, or the worker image cannot be built, Octopal can temporarily fall back to `same_env` and surface the reason in `octopal status` and the dashboard. That fallback exists so the system remains usable; it is not the recommended security posture.
+Docker mode fails closed if the CLI or daemon is unavailable or the worker image cannot be built. To run trusted local-development tasks without Docker, select `same_env` explicitly; Octopal never downgrades isolation automatically.
 
 Build the worker image manually when needed:
 

@@ -91,7 +91,7 @@ def _compute_worker_launcher_status(
     if not docker_ok:
         return WorkerLauncherStatus(
             configured_launcher="docker",
-            effective_launcher="same_env",
+            effective_launcher="unavailable",
             available=False,
             reason=docker_detail,
         )
@@ -104,7 +104,7 @@ def _compute_worker_launcher_status(
     if daemon_error is not None:
         return WorkerLauncherStatus(
             configured_launcher="docker",
-            effective_launcher="same_env",
+            effective_launcher="unavailable",
             available=False,
             reason=f"Docker daemon is unavailable: {daemon_error}",
             docker_cli_path=docker_cli_path,
@@ -114,7 +114,7 @@ def _compute_worker_launcher_status(
         detail = (daemon_result.stderr or daemon_result.stdout or "").strip() or "Docker daemon is unavailable."
         return WorkerLauncherStatus(
             configured_launcher="docker",
-            effective_launcher="same_env",
+            effective_launcher="unavailable",
             available=False,
             reason=f"Docker daemon is unavailable: {detail}",
             docker_cli_path=docker_cli_path,
@@ -129,7 +129,7 @@ def _compute_worker_launcher_status(
     if image_error is not None:
         return WorkerLauncherStatus(
             configured_launcher="docker",
-            effective_launcher="same_env",
+            effective_launcher="unavailable",
             available=False,
             reason=f"Docker image check failed: {image_error}",
             docker_cli_path=docker_cli_path,
@@ -162,7 +162,7 @@ def _compute_worker_launcher_status(
                 detail = (build_result.stderr or build_result.stdout or "").strip() or "docker build failed."
             return WorkerLauncherStatus(
                 configured_launcher="docker",
-                effective_launcher="same_env",
+                effective_launcher="unavailable",
                 available=False,
                 reason=(
                     f"Docker image '{image_name}' is not available and automatic build failed: {detail} "
@@ -174,7 +174,7 @@ def _compute_worker_launcher_status(
             )
         return WorkerLauncherStatus(
             configured_launcher="docker",
-            effective_launcher="same_env",
+            effective_launcher="unavailable",
             available=False,
             reason=(
                 f"Docker image '{image_name}' is not available. "
@@ -193,7 +193,7 @@ def _compute_worker_launcher_status(
     if label_error is not None:
         return WorkerLauncherStatus(
             configured_launcher="docker",
-            effective_launcher="same_env",
+            effective_launcher="unavailable",
             available=False,
             reason=f"Docker image metadata check failed: {label_error}",
             docker_cli_path=docker_cli_path,
@@ -233,7 +233,7 @@ def _compute_worker_launcher_status(
                 detail = (build_result.stderr or build_result.stdout or "").strip() or "docker build failed."
             return WorkerLauncherStatus(
                 configured_launcher="docker",
-                effective_launcher="same_env",
+                effective_launcher="unavailable",
                 available=False,
                 reason=(
                     f"Docker image '{image_name}' is stale and automatic rebuild failed: {detail} "
@@ -246,7 +246,7 @@ def _compute_worker_launcher_status(
 
         return WorkerLauncherStatus(
             configured_launcher="docker",
-            effective_launcher="same_env",
+            effective_launcher="unavailable",
             available=False,
             reason=(
                 f"Docker image '{image_name}' is stale because worker build inputs changed. "
@@ -382,8 +382,9 @@ def build_launcher(settings: Settings) -> WorkerLauncher:
         )
 
     if settings.worker_launcher == "docker":
-        logger.warning(
-            "Docker launcher requested but unavailable; falling back to same_env",
-            reason=launcher_status.reason,
+        raise RuntimeError(
+            "Docker worker isolation is configured but unavailable: "
+            f"{launcher_status.reason} "
+            "Restore Docker or explicitly set workers.launcher to 'same_env' for trusted local development."
         )
     return SameEnvLauncher()
