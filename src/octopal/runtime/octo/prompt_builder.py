@@ -112,7 +112,8 @@ async def build_persona_prompt() -> list[str]:
     content = await asyncio.to_thread(_read_persona)
 
     if content:
-        return ["<persona>", content, "</persona>", ""]
+        max_chars = _env_int("OCTOPAL_PERSONA_MAX_CHARS", 32_000, minimum=2_000)
+        return ["<persona>", _trim_middle(content, max_chars), "</persona>", ""]
 
     return []
 
@@ -204,10 +205,15 @@ async def build_bootstrap_context_prompt(store: Store, chat_id: int) -> Bootstra
         hash_value = bundle_hash.hexdigest()
 
         files_with_sizes = [(name, len(content)) for name, content in file_entries]
+        prompt_entries = _bound_context_entries(
+            file_entries,
+            max_file_chars=_env_int("OCTOPAL_BOOTSTRAP_MAX_FILE_CHARS", 64_000, minimum=2_000),
+            max_total_chars=_env_int("OCTOPAL_BOOTSTRAP_MAX_TOTAL_CHARS", 160_000, minimum=4_000),
+        )
 
         parts = ["<workspace>"]
 
-        for name, content in file_entries:
+        for name, content in prompt_entries:
             parts.append(f'<file name="{name}">')
 
             parts.append(content)
@@ -243,9 +249,34 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
 def _trim_middle(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
-    head = max_chars // 2
-    tail = max_chars - head
-    return text[:head] + "\n...[pruned for context window]...\n" + text[-tail:]
+    marker = "\n...[pruned for context window]...\n"
+    if max_chars <= len(marker):
+        return text[:max_chars]
+    content_budget = max_chars - len(marker)
+    head = content_budget // 2
+    tail = content_budget - head
+    return text[:head] + marker + text[-tail:]
+
+
+def _bound_context_entries(
+    entries: list[tuple[str, str]],
+    *,
+    max_file_chars: int,
+    max_total_chars: int,
+) -> list[tuple[str, str]]:
+    bounded = [(name, _trim_middle(content, max_file_chars)) for name, content in entries]
+    minimum_entry_chars = min(500, max(1, max_total_chars // max(1, len(bounded))))
+
+    while sum(len(content) for _, content in bounded) > max_total_chars:
+        largest_index = max(range(len(bounded)), key=lambda index: len(bounded[index][1]))
+        name, content = bounded[largest_index]
+        excess = sum(len(value) for _, value in bounded) - max_total_chars
+        target = max(minimum_entry_chars, len(content) - excess)
+        if target >= len(content):
+            break
+        bounded[largest_index] = (name, _trim_middle(content, target))
+
+    return bounded
 
 
 def _normalize_recent_history_item(item: Any) -> tuple[str, str, str | None]:

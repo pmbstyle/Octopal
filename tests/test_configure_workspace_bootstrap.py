@@ -73,6 +73,27 @@ def test_bootstrap_context_keeps_full_daily_memory_file(tmp_path: Path, monkeypa
     assert "bootstrap excerpt from memory/" not in context.content
 
 
+def test_bootstrap_context_bounds_large_workspace_files(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    _ensure_workspace_bootstrap(workspace)
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(workspace))
+    monkeypatch.setenv("OCTOPAL_BOOTSTRAP_MAX_FILE_CHARS", "3000")
+    monkeypatch.setenv("OCTOPAL_BOOTSTRAP_MAX_TOTAL_CHARS", "5000")
+
+    memory_payload = "memory-start\n" + ("x" * 20_000) + "\nmemory-end"
+    today_path = workspace / "memory" / f"{date.today().isoformat()}.md"
+    today_path.write_text(memory_payload, encoding="utf-8")
+
+    context = asyncio.run(build_bootstrap_context_prompt(store=None, chat_id=123))
+
+    assert memory_payload not in context.content
+    assert "...[pruned for context window]..." in context.content
+    assert "memory-start" in context.content
+    assert "memory-end" in context.content
+    assert len(context.content) < 7000
+    assert (f"memory/{date.today().isoformat()}.md", len(memory_payload)) in context.files
+
+
 def test_workspace_bootstrap_is_non_destructive(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
