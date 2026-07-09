@@ -3,6 +3,7 @@ Simplified Worker Entrypoint
 
 All workers use the same agent_worker with different system prompts.
 """
+
 from __future__ import annotations
 
 import asyncio

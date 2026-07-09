@@ -40,7 +40,7 @@ def test_capture_aria_snapshot_injects_refs_and_tracks_duplicates() -> None:
                 '- heading "Main settings"',
                 '- button "Save" [disabled]',
                 '- button "Save"',
-                '- paragraph',
+                "- paragraph",
                 '- img "Logo"',
             ]
         )

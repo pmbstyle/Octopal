@@ -27,9 +27,11 @@ async def run_llm_subtask(args: dict[str, Any], provider: InferenceProvider) -> 
     schema = args.get("schema")
 
     if schema and not jsonschema:
-        return json.dumps({
-            "error": "run_llm_subtask error: 'jsonschema' package is required for schema validation. Please install it."
-        })
+        return json.dumps(
+            {
+                "error": "run_llm_subtask error: 'jsonschema' package is required for schema validation. Please install it."
+            }
+        )
 
     # Construct the prompt for the sub-task LLM
     system_prompt = (
@@ -44,7 +46,9 @@ async def run_llm_subtask(args: dict[str, Any], provider: InferenceProvider) -> 
             input_json = json.dumps(input_data, indent=2)
             full_prompt += f"\n\nInput Data:\n{input_json}"
         except TypeError:
-            return json.dumps({"error": "run_llm_subtask error: 'input' data must be JSON serializable."})
+            return json.dumps(
+                {"error": "run_llm_subtask error: 'input' data must be JSON serializable."}
+            )
 
     messages = [
         Message(role="system", content=system_prompt),
@@ -63,9 +67,11 @@ async def run_llm_subtask(args: dict[str, Any], provider: InferenceProvider) -> 
             try:
                 jsonschema.validate(instance=parsed_json, schema=schema)
             except jsonschema.ValidationError as e:
-                return json.dumps({
-                    "error": f"run_llm_subtask error: LLM output failed schema validation: {e.message}"
-                })
+                return json.dumps(
+                    {
+                        "error": f"run_llm_subtask error: LLM output failed schema validation: {e.message}"
+                    }
+                )
 
         return json.dumps(parsed_json)
 

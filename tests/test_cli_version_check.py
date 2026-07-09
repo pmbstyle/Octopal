@@ -73,7 +73,9 @@ def test_get_latest_release_info_refreshes_stale_cache(tmp_path, monkeypatch) ->
                 "repo": "owner/repo",
                 "version": "2026.04.14",
                 "url": "https://example.test/releases/tag/v2026.04.14",
-                "checked_at": (datetime.now(UTC) - timedelta(seconds=_VERSION_CHECK_TTL_SECONDS + 1)).isoformat(),
+                "checked_at": (
+                    datetime.now(UTC) - timedelta(seconds=_VERSION_CHECK_TTL_SECONDS + 1)
+                ).isoformat(),
             }
         ),
         encoding="utf-8",
@@ -101,7 +103,10 @@ def test_warns_when_new_release_is_available(tmp_path, monkeypatch) -> None:
         "octopal.cli.main._get_latest_release_info",
         lambda _settings: (remote_version, remote_url),
     )
-    monkeypatch.setattr("octopal.cli.main.console.print", lambda message="", *args, **kwargs: printed.append(str(message)))
+    monkeypatch.setattr(
+        "octopal.cli.main.console.print",
+        lambda message="", *args, **kwargs: printed.append(str(message)),
+    )
 
     _maybe_warn_about_newer_release(settings)
 

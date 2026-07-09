@@ -35,7 +35,7 @@
 - `uv run octopal skill list`, `uv run octopal skill install <source>`, `uv run octopal skill update <skill-id>`, `uv run octopal skill verify <skill-id>`, `uv run octopal skill enable <skill-id>`, `uv run octopal skill disable <skill-id>`, `uv run octopal skill trust <skill-id>`, `uv run octopal skill untrust <skill-id>`, `uv run octopal skill prepare-env <skill-id>`, `uv run octopal skill remove-env <skill-id>`, and `uv run octopal skill remove <skill-id>` cover the installed skill workflow.
 - `uv run octopal build-worker-image --tag octopal-worker:latest` builds the Docker worker image.
 - `uv run pytest` runs the test suite.
-- `uv run ruff check .`, `uv run black --check .`, and `uv run mypy src` are the configured lint/format/type-check commands.
+- `uv run ruff check .`, `uv run black --check .`, and `uv run mypy` are the configured lint/format/type-check commands.
 - `npm install` and `npm run build` from `webapp/` build the dashboard bundle manually when needed.
 
 ## Coding Style & Naming Conventions

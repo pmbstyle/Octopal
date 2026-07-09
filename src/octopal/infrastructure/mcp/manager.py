@@ -35,6 +35,7 @@ class MCPServerConfig:
     transport: Literal["auto", "sse", "streamable-http", "stdio"] | None = None
     last_error: str | None = None
 
+
 logger = structlog.get_logger(__name__)
 _MCP_PERMANENT_ERROR_THRESHOLD = 2
 _MCP_PERMANENT_ERROR_OPEN_SECONDS = 300.0
@@ -122,7 +123,9 @@ class MCPManager:
             try:
                 config_data = json.loads(config_text)
             except json.JSONDecodeError:
-                logger.warning("Skipping invalid MCP config file", path=str(config_path), exc_info=True)
+                logger.warning(
+                    "Skipping invalid MCP config file", path=str(config_path), exc_info=True
+                )
                 continue
             server_configs = _extract_mcp_server_configs(config_data)
             if not isinstance(server_configs, dict):
@@ -155,7 +158,9 @@ class MCPManager:
                 try:
                     await self.connect_server(mcp_cfg)
                 except Exception:
-                    logger.exception("Failed to connect to MCP server on startup", server_id=server_id)
+                    logger.exception(
+                        "Failed to connect to MCP server on startup", server_id=server_id
+                    )
         except Exception:
             logger.exception("Failed to load MCP config")
 
@@ -243,7 +248,7 @@ class MCPManager:
             done, pending = await asyncio.wait(
                 [asyncio.create_task(ready_event.wait()), task],
                 return_when=asyncio.FIRST_COMPLETED,
-                timeout=45.0
+                timeout=45.0,
             )
 
             # Check if we timed out
@@ -280,9 +285,12 @@ class MCPManager:
                 raise
             raise RuntimeError(f"MCP Connection Error ({config.id}): {e}") from e
 
-    async def _run_server_lifecycle(self, config: MCPServerConfig, ready_event: asyncio.Event, stop_event: asyncio.Event):
+    async def _run_server_lifecycle(
+        self, config: MCPServerConfig, ready_event: asyncio.Event, stop_event: asyncio.Event
+    ):
         """Manages the lifetime of a single MCP server connection."""
         from contextlib import AsyncExitStack
+
         exit_stack = AsyncExitStack()
 
         try:
@@ -293,7 +301,11 @@ class MCPManager:
                     sse_client(url=config.url or "", headers=config.headers)
                 )
             elif selected_transport == "streamable-http":
-                logger.info("Establishing MCP streamable-http transport", server_id=config.id, url=config.url)
+                logger.info(
+                    "Establishing MCP streamable-http transport",
+                    server_id=config.id,
+                    url=config.url,
+                )
                 read_stream, write_stream, _get_session_id = await exit_stack.enter_async_context(
                     streamablehttp_client(
                         url=config.url or "",
@@ -303,15 +315,21 @@ class MCPManager:
                     )
                 )
             elif selected_transport == "stdio":
-                logger.info("Establishing MCP stdio transport", server_id=config.id, command=config.command)
+                logger.info(
+                    "Establishing MCP stdio transport", server_id=config.id, command=config.command
+                )
                 params = StdioServerParameters(
                     command=config.command,
                     args=config.args,
-                    env={**config.env, "PATH": os.environ.get("PATH", "")} if config.env else None
+                    env={**config.env, "PATH": os.environ.get("PATH", "")} if config.env else None,
                 )
-                read_stream, write_stream = await exit_stack.enter_async_context(stdio_client(params))
+                read_stream, write_stream = await exit_stack.enter_async_context(
+                    stdio_client(params)
+                )
             else:
-                raise ValueError(f"Unsupported MCP transport '{selected_transport}' for server {config.id}.")
+                raise ValueError(
+                    f"Unsupported MCP transport '{selected_transport}' for server {config.id}."
+                )
 
             logger.info("Initializing MCP session", server_id=config.id)
             session = await exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
@@ -348,7 +366,9 @@ class MCPManager:
                 specs.append(spec)
 
             self._tools[config.id] = specs
-            logger.info("MCP server connected and tools ready", server_id=config.id, tool_count=len(specs))
+            logger.info(
+                "MCP server connected and tools ready", server_id=config.id, tool_count=len(specs)
+            )
 
             # Signal that we are ready
             ready_event.set()
@@ -359,7 +379,12 @@ class MCPManager:
 
         except Exception as e:
             hint = _connection_hint(e)
-            logger.exception("MCP server lifecycle error", server_id=config.id, transport=config.transport or "auto", hint=hint)
+            logger.exception(
+                "MCP server lifecycle error",
+                server_id=config.id,
+                transport=config.transport or "auto",
+                hint=hint,
+            )
             if not ready_event.is_set():
                 # Task failed before becoming ready - signal the waiter with an error if possible
                 # But here we just let the waiter catch the fact that ready_event was never set.
@@ -446,11 +471,7 @@ class MCPManager:
             except Exception as exc:
                 last_exc = exc
                 exc_to_classify = exc
-                if (
-                    index == 0
-                    and len(tool_candidates) > 1
-                    and _is_tool_not_found_error(exc)
-                ):
+                if index == 0 and len(tool_candidates) > 1 and _is_tool_not_found_error(exc):
                     logger.warning(
                         "Retrying MCP call with alternate tool name",
                         server_id=server_id,
@@ -517,7 +538,9 @@ class MCPManager:
             logger.info("Calling MCP tool", server_id=server_id, tool=tool_name)
             try:
                 result = await self.call_tool(server_id, tool_name, args)
-                return [c.model_dump() if hasattr(c, "model_dump") else str(c) for c in result.content]
+                return [
+                    c.model_dump() if hasattr(c, "model_dump") else str(c) for c in result.content
+                ]
             except Exception as e:
                 logger.exception("MCP tool call failed", server_id=server_id, tool=tool_name)
                 return {
@@ -551,7 +574,11 @@ class MCPManager:
                     delay_seconds=delay,
                 )
                 await asyncio.sleep(delay)
-                if self._shutdown_requested or server_id in self._manual_disconnects or server_id in self.sessions:
+                if (
+                    self._shutdown_requested
+                    or server_id in self._manual_disconnects
+                    or server_id in self.sessions
+                ):
                     return
                 await self.connect_server(config)
             except asyncio.CancelledError:
@@ -691,7 +718,9 @@ def _connection_hint(error: Exception) -> str:
     if "404" in text or "not found" in text:
         return "Endpoint not found: verify MCP URL/path and provider docs."
     if "timed out" in text:
-        return "Connection timed out: check network egress, DNS, firewall, or provider availability."
+        return (
+            "Connection timed out: check network egress, DNS, firewall, or provider availability."
+        )
     if "connection closed" in text:
         return "Remote side closed connection early: verify auth and protocol compatibility."
     return "Unknown MCP connection issue. Verify URL/transport/auth."
@@ -708,8 +737,7 @@ def _classify_mcp_call_error(error: Exception) -> dict[str, Any]:
             "classification": "invalid_arguments",
             "retryable": False,
             "hint": (
-                "Remote MCP server rejected the tool arguments before execution."
-                f"{field_suffix}"
+                "Remote MCP server rejected the tool arguments before execution." f"{field_suffix}"
             ),
         }
     if "invalid tools/call result" in text or "structuredcontent" in text:

@@ -253,7 +253,9 @@ def _configure_user_channel(config: OctopalConfig, prompter) -> None:
                 initial_value=config.whatsapp.bridge_host,
             )
         )
-        config.whatsapp.bridge_port = IntPrompt.ask("Bridge port", default=config.whatsapp.bridge_port)
+        config.whatsapp.bridge_port = IntPrompt.ask(
+            "Bridge port", default=config.whatsapp.bridge_port
+        )
     else:
         prompter.note(
             "Telegram",
@@ -368,15 +370,21 @@ def _configure_llm(
 
     # Runtime settings (global for now, but could be per-provider)
     if label == "Octo":
-        master_config.litellm.timeout = IntPrompt.ask("Request timeout (sec)", default=int(master_config.litellm.timeout))
-        master_config.litellm.num_retries = IntPrompt.ask("Max retries", default=master_config.litellm.num_retries)
+        master_config.litellm.timeout = IntPrompt.ask(
+            "Request timeout (sec)", default=int(master_config.litellm.timeout)
+        )
+        master_config.litellm.num_retries = IntPrompt.ask(
+            "Max retries", default=master_config.litellm.num_retries
+        )
 
 
 def _configure_worker_settings(config: OctopalConfig, prompter) -> None:
     wants_separate = prompter.confirm(
         WizardConfirmParams(
             message="Configure separate LLM settings for Workers?",
-            initial_value=bool(config.worker_llm_default.provider_id or config.worker_llm_overrides),
+            initial_value=bool(
+                config.worker_llm_default.provider_id or config.worker_llm_overrides
+            ),
         )
     )
     if not wants_separate:
@@ -548,7 +556,9 @@ def _configure_runtime_advanced(config: OctopalConfig, prompter) -> None:
             options=[
                 WizardSelectOption(value="DEBUG", label="DEBUG", hint="Most verbose."),
                 WizardSelectOption(value="INFO", label="INFO", hint="Balanced default."),
-                WizardSelectOption(value="WARNING", label="WARNING", hint="Only potential problems."),
+                WizardSelectOption(
+                    value="WARNING", label="WARNING", hint="Only potential problems."
+                ),
                 WizardSelectOption(value="ERROR", label="ERROR", hint="Only failures."),
             ],
         )
@@ -558,8 +568,14 @@ def _configure_runtime_advanced(config: OctopalConfig, prompter) -> None:
             message="Worker launcher",
             initial_value=config.workers.launcher,
             options=[
-                WizardSelectOption(value="docker", label="docker", hint="Launch workers in Docker containers."),
-                WizardSelectOption(value="same_env", label="same_env", hint="Run workers in the current Python environment."),
+                WizardSelectOption(
+                    value="docker", label="docker", hint="Launch workers in Docker containers."
+                ),
+                WizardSelectOption(
+                    value="same_env",
+                    label="same_env",
+                    hint="Run workers in the current Python environment.",
+                ),
             ],
         )
     )
@@ -600,8 +616,7 @@ def _configure_connectors(config: OctopalConfig, prompter) -> None:
     ]
 
     initial_values = [
-        name for name, instance in config.connectors.instances.items()
-        if instance.enabled
+        name for name, instance in config.connectors.instances.items() if instance.enabled
     ]
 
     selected = prompter.multiselect(
@@ -633,9 +648,13 @@ def _configure_connectors(config: OctopalConfig, prompter) -> None:
                 WizardSelectOption(value="drive", label="Drive"),
             ]
 
-            current_google_services = config.connectors.instances[name].enabled_services or ["gmail"]
+            current_google_services = config.connectors.instances[name].enabled_services or [
+                "gmail"
+            ]
             current_google_services = [
-                service for service in current_google_services if service in {"gmail", "calendar", "drive"}
+                service
+                for service in current_google_services
+                if service in {"gmail", "calendar", "drive"}
             ] or ["gmail"]
 
             selected_google = prompter.multiselect(
@@ -653,9 +672,13 @@ def _configure_connectors(config: OctopalConfig, prompter) -> None:
                 WizardSelectOption(value="pull_requests", label="Pull Requests"),
             ]
 
-            current_github_services = config.connectors.instances[name].enabled_services or ["repos"]
+            current_github_services = config.connectors.instances[name].enabled_services or [
+                "repos"
+            ]
             current_github_services = [
-                service for service in current_github_services if service in {"repos", "issues", "pull_requests"}
+                service
+                for service in current_github_services
+                if service in {"repos", "issues", "pull_requests"}
             ] or ["repos"]
 
             selected_github = prompter.multiselect(
@@ -809,7 +832,10 @@ def _print_review(config: OctopalConfig) -> None:
     table.add_row("Octo LLM", llm_info)
 
     if config.worker_llm_default.provider_id:
-        table.add_row("Worker LLM", f"{config.worker_llm_default.provider_id} / {config.worker_llm_default.model}")
+        table.add_row(
+            "Worker LLM",
+            f"{config.worker_llm_default.provider_id} / {config.worker_llm_default.model}",
+        )
     else:
         table.add_row("Worker LLM", "[dim]Using Octo defaults[/dim]")
 
@@ -826,7 +852,11 @@ def _enabled_services(config: OctopalConfig, connector_name: str) -> list[str]:
     instance = config.connectors.instances.get(connector_name)
     if not instance or not instance.enabled:
         return []
-    return [str(service).strip().lower() for service in instance.enabled_services if str(service).strip()]
+    return [
+        str(service).strip().lower()
+        for service in instance.enabled_services
+        if str(service).strip()
+    ]
 
 
 def _authorized_services(config: OctopalConfig, connector_name: str) -> list[str]:
@@ -840,7 +870,9 @@ def _authorized_services(config: OctopalConfig, connector_name: str) -> list[str
     ]
 
 
-def _collect_connector_next_steps(config: OctopalConfig, previous_config: OctopalConfig | None = None) -> list[str]:
+def _collect_connector_next_steps(
+    config: OctopalConfig, previous_config: OctopalConfig | None = None
+) -> list[str]:
     lines: list[str] = []
     previous_config = previous_config or OctopalConfig()
 

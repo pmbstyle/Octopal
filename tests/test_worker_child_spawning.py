@@ -69,7 +69,9 @@ def _caller_worker(
 
 def test_start_child_worker_enforces_opt_in() -> None:
     templates = {
-        "parent": _template("parent", perms=["network"], can_spawn=False, allowed_children=["child"]),
+        "parent": _template(
+            "parent", perms=["network"], can_spawn=False, allowed_children=["child"]
+        ),
         "child": _template("child", perms=["network"]),
     }
 
@@ -83,7 +85,11 @@ def test_start_child_worker_enforces_opt_in() -> None:
     async def _scenario() -> str:
         return await _tool_start_child_worker(
             {"worker_id": "child", "task": "fetch rss"},
-            {"octo": _Octo(), "chat_id": 1, "worker": _caller_worker(effective_permissions=["network"])},
+            {
+                "octo": _Octo(),
+                "chat_id": 1,
+                "worker": _caller_worker(effective_permissions=["network"]),
+            },
         )
 
     result = asyncio.run(_scenario())
@@ -92,7 +98,9 @@ def test_start_child_worker_enforces_opt_in() -> None:
 
 def test_start_child_worker_allows_whitelisted_child_with_broader_permissions() -> None:
     templates = {
-        "parent": _template("parent", perms=["network"], can_spawn=True, allowed_children=["child"]),
+        "parent": _template(
+            "parent", perms=["network"], can_spawn=True, allowed_children=["child"]
+        ),
         "child": _template("child", perms=["exec"]),
     }
 
@@ -114,7 +122,11 @@ def test_start_child_worker_allows_whitelisted_child_with_broader_permissions() 
     async def _scenario() -> dict[str, object]:
         payload = await _tool_start_child_worker(
             {"worker_id": "child", "task": "fetch rss"},
-            {"octo": octo, "chat_id": 1, "worker": _caller_worker(effective_permissions=["network"])},
+            {
+                "octo": octo,
+                "chat_id": 1,
+                "worker": _caller_worker(effective_permissions=["network"]),
+            },
         )
         return json.loads(payload)
 
@@ -158,7 +170,9 @@ def test_start_worker_forwards_max_thinking_steps_override() -> None:
 
 def test_start_child_worker_still_enforces_whitelist() -> None:
     templates = {
-        "parent": _template("parent", perms=["network"], can_spawn=True, allowed_children=["other-child"]),
+        "parent": _template(
+            "parent", perms=["network"], can_spawn=True, allowed_children=["other-child"]
+        ),
         "child": _template("child", perms=["exec"]),
     }
 
@@ -172,7 +186,11 @@ def test_start_child_worker_still_enforces_whitelist() -> None:
     async def _scenario() -> str:
         return await _tool_start_child_worker(
             {"worker_id": "child", "task": "fetch rss"},
-            {"octo": _Octo(), "chat_id": 1, "worker": _caller_worker(effective_permissions=["network"])},
+            {
+                "octo": _Octo(),
+                "chat_id": 1,
+                "worker": _caller_worker(effective_permissions=["network"]),
+            },
         )
 
     result = asyncio.run(_scenario())
@@ -181,7 +199,12 @@ def test_start_child_worker_still_enforces_whitelist() -> None:
 
 def test_start_child_worker_propagates_lineage_fields() -> None:
     templates = {
-        "parent": _template("parent", perms=["network", "filesystem_read"], can_spawn=True, allowed_children=["child"]),
+        "parent": _template(
+            "parent",
+            perms=["network", "filesystem_read"],
+            can_spawn=True,
+            allowed_children=["child"],
+        ),
         "child": _template("child", perms=["network"]),
     }
 
@@ -233,7 +256,12 @@ def test_start_child_worker_propagates_lineage_fields() -> None:
 
 def test_start_child_worker_preserves_missing_allowed_paths_and_forwards_explicit_ones() -> None:
     templates = {
-        "parent": _template("parent", perms=["network", "filesystem_read"], can_spawn=True, allowed_children=["child"]),
+        "parent": _template(
+            "parent",
+            perms=["network", "filesystem_read"],
+            can_spawn=True,
+            allowed_children=["child"],
+        ),
         "child": _template("child", perms=["network"]),
     }
 

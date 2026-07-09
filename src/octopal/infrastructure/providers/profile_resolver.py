@@ -134,7 +134,9 @@ def _first_non_empty(*values: str | None) -> str | None:
     return None
 
 
-def _qualify_model_name(raw_model: str | None, model_prefix: str | None, *, always_prefix: bool = False) -> str:
+def _qualify_model_name(
+    raw_model: str | None, model_prefix: str | None, *, always_prefix: bool = False
+) -> str:
     model_name = (raw_model or "").strip()
     prefix = (model_prefix or "").strip()
     if not model_name:

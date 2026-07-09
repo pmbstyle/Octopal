@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+
 @dataclass
 class CanonService:
     workspace_dir: Path
@@ -66,7 +67,9 @@ class CanonService:
             return ""
         return path.read_text(encoding="utf-8")
 
-    async def write_canon(self, filename: str, content: str, mode: Literal["append", "overwrite"] = "append") -> str:
+    async def write_canon(
+        self, filename: str, content: str, mode: Literal["append", "overwrite"] = "append"
+    ) -> str:
         """Writes to a canonical memory file and triggers re-indexing."""
         filename = self._normalize_filename(filename)
         await asyncio.to_thread(self._append_event, filename, content, mode)
@@ -75,7 +78,9 @@ class CanonService:
 
         if self.facts is not None:
             try:
-                await asyncio.to_thread(self.facts.sync_verified_facts_from_canon, filename, new_content)
+                await asyncio.to_thread(
+                    self.facts.sync_verified_facts_from_canon, filename, new_content
+                )
             except Exception:
                 logger.exception("Failed to sync canon facts", filename=filename)
 
@@ -112,7 +117,7 @@ class CanonService:
                     chunk_index=i,
                     content=chunk,
                     model="openai-text-embedding-3-small",
-                    vector=vector
+                    vector=vector,
                 )
             logger.info("Canon file indexed", filename=filename, chunks=len(chunks))
         except Exception:
@@ -134,7 +139,7 @@ class CanonService:
 
             for entry in all_entries:
                 score = _cosine_similarity(query_vector, entry["vector"])
-                if score > 0.3: # Minimum threshold
+                if score > 0.3:  # Minimum threshold
                     scored.append((score, entry["content"]))
 
             scored.sort(key=lambda x: x[0], reverse=True)
@@ -152,24 +157,24 @@ class CanonService:
         if decisions and len(decisions) > len("# Decisions"):
             # Simple truncation for now - keep last N chars but try to align with lines
             if len(decisions) > 2000:
-                 # Find a newline to cut safely
-                 cut_idx = len(decisions) - 2000
-                 safe_cut = decisions.find("\n", cut_idx)
-                 if safe_cut != -1:
-                     decisions = "...(older decisions omitted)\n" + decisions[safe_cut+1:]
-                 else:
-                     decisions = "...(older decisions omitted)\n" + decisions[-2000:]
+                # Find a newline to cut safely
+                cut_idx = len(decisions) - 2000
+                safe_cut = decisions.find("\n", cut_idx)
+                if safe_cut != -1:
+                    decisions = "...(older decisions omitted)\n" + decisions[safe_cut + 1 :]
+                else:
+                    decisions = "...(older decisions omitted)\n" + decisions[-2000:]
             context_parts.append(f"<canon_decisions>\n{decisions}\n</canon_decisions>")
 
         if failures and len(failures) > len("# Failures"):
-             if len(failures) > 2000:
-                 cut_idx = len(failures) - 2000
-                 safe_cut = failures.find("\n", cut_idx)
-                 if safe_cut != -1:
-                     failures = "...(older failures omitted)\n" + failures[safe_cut+1:]
-                 else:
-                     failures = "...(older failures omitted)\n" + failures[-2000:]
-             context_parts.append(f"<canon_failures>\n{failures}\n</canon_failures>")
+            if len(failures) > 2000:
+                cut_idx = len(failures) - 2000
+                safe_cut = failures.find("\n", cut_idx)
+                if safe_cut != -1:
+                    failures = "...(older failures omitted)\n" + failures[safe_cut + 1 :]
+                else:
+                    failures = "...(older failures omitted)\n" + failures[-2000:]
+            context_parts.append(f"<canon_failures>\n{failures}\n</canon_failures>")
 
         return "\n\n".join(context_parts)
 
@@ -203,7 +208,9 @@ class CanonService:
                 f.write(json.dumps(entry, ensure_ascii=True))
                 f.write("\n")
 
-    def _append_event(self, filename: str, content: str, mode: Literal["append", "overwrite"]) -> None:
+    def _append_event(
+        self, filename: str, content: str, mode: Literal["append", "overwrite"]
+    ) -> None:
         event = {
             "ts": utc_now().isoformat(),
             "filename": filename,
@@ -253,6 +260,7 @@ class CanonService:
             path = self.canon_dir / filename
             path.write_text(content, encoding="utf-8")
         return state
+
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if len(a) != len(b) or not a:

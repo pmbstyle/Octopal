@@ -93,6 +93,7 @@ _VERSION_CHECK_TIMEOUT_SECONDS = 1.5
 def configure() -> None:
     """Run the interactive configuration wizard."""
     from octopal.cli.configure import configure_wizard
+
     configure_wizard()
 
 
@@ -240,7 +241,9 @@ def _fetch_latest_release_info_from_github(repo_slug: str) -> tuple[str, str] | 
     except ValueError:
         return None
 
-    latest_version = _normalize_release_version(str(payload.get("tag_name") or payload.get("name") or ""))
+    latest_version = _normalize_release_version(
+        str(payload.get("tag_name") or payload.get("name") or "")
+    )
     if latest_version is None:
         return None
 
@@ -288,7 +291,9 @@ def _maybe_warn_about_newer_release(settings: Settings) -> None:
     console.print(f"   [dim]Suggested update:[/dim] [magenta]{_guess_update_command()}[/magenta]")
 
 
-def _run_capture(command: list[str], *, cwd: Path, timeout: float = 10.0) -> subprocess.CompletedProcess[str]:
+def _run_capture(
+    command: list[str], *, cwd: Path, timeout: float = 10.0
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         cwd=cwd,
@@ -385,12 +390,18 @@ def _git_checkout_ready_for_update(project_root: Path) -> tuple[bool, str | None
     if status.stdout.strip():
         meaningful_changes = _list_meaningful_worktree_changes(project_root)
         if meaningful_changes is None:
-            return False, "Could not determine whether local changes are content changes or mode-only changes."
+            return (
+                False,
+                "Could not determine whether local changes are content changes or mode-only changes.",
+            )
         if meaningful_changes:
             names = ", ".join(meaningful_changes[:3])
             if len(meaningful_changes) > 3:
                 names += ", ..."
-            return False, f"Working tree has local content changes: {names}. Commit or stash them first."
+            return (
+                False,
+                f"Working tree has local content changes: {names}. Commit or stash them first.",
+            )
 
     return True, None
 
@@ -408,7 +419,9 @@ def _perform_git_update(project_root: Path) -> tuple[bool, str]:
             return False, f"`git pull --ff-only` failed: {detail}"
         update_summary = pull.stdout.strip() or "Already up to date."
     else:
-        fetch = _run_capture(["git", "fetch", "--tags", "--force", "origin"], cwd=project_root, timeout=60.0)
+        fetch = _run_capture(
+            ["git", "fetch", "--tags", "--force", "origin"], cwd=project_root, timeout=60.0
+        )
         if fetch.returncode != 0:
             detail = fetch.stderr.strip() or fetch.stdout.strip() or "git fetch tags failed"
             return False, f"`git fetch --tags --force origin` failed: {detail}"
@@ -417,7 +430,9 @@ def _perform_git_update(project_root: Path) -> tuple[bool, str]:
         if latest_tag is None:
             return False, "Could not find a release tag like vYYYY.MM.DD."
 
-        checkout = _run_capture(["git", "checkout", "--detach", latest_tag], cwd=project_root, timeout=60.0)
+        checkout = _run_capture(
+            ["git", "checkout", "--detach", latest_tag], cwd=project_root, timeout=60.0
+        )
         if checkout.returncode != 0:
             detail = checkout.stderr.strip() or checkout.stdout.strip() or "git checkout failed"
             return False, f"`git checkout --detach {latest_tag}` failed: {detail}"
@@ -472,9 +487,7 @@ def _init_logging(settings: Settings) -> None:
     log_dir = settings.state_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     configure_logging(
-        log_level=settings.log_level,
-        log_dir=log_dir,
-        debug_prompts=settings.debug_prompts
+        log_level=settings.log_level, log_dir=log_dir, debug_prompts=settings.debug_prompts
     )
 
 
@@ -530,7 +543,11 @@ def _maybe_enable_tailscale_serve(settings: Settings) -> None:
                     last_err = (repair_proc.stderr or repair_proc.stdout or "").strip() or last_err
 
         verify_proc = _run(["tailscale", "serve", "status"])
-        verified_status = (verify_proc.stdout or "").strip() if (verify_proc and verify_proc.returncode == 0) else ""
+        verified_status = (
+            (verify_proc.stdout or "").strip()
+            if (verify_proc and verify_proc.returncode == 0)
+            else ""
+        )
         if expected_proxy not in verified_status:
             ok = False
             if verify_proc is not None:
@@ -639,7 +656,9 @@ def _has_webapp_build_toolchain(webapp_dir: Path) -> bool:
         "postcss",
         "autoprefixer",
     )
-    return all((node_modules_dir / package / "package.json").is_file() for package in required_packages)
+    return all(
+        (node_modules_dir / package / "package.json").is_file() for package in required_packages
+    )
 
 
 def _build_webapp_assets(settings: Settings, *, fail_hard: bool = True) -> bool:
@@ -728,7 +747,9 @@ def _schedule_webapp_build(settings: Settings) -> None:
 
     webapp_dir, dist_dir = _resolve_webapp_paths(settings)
     if not webapp_dir.exists():
-        console.print(f"[yellow]Skipping dashboard build:[/yellow] webapp directory not found at {webapp_dir}")
+        console.print(
+            f"[yellow]Skipping dashboard build:[/yellow] webapp directory not found at {webapp_dir}"
+        )
         return
 
     if not shutil.which("npm"):
@@ -739,7 +760,9 @@ def _schedule_webapp_build(settings: Settings) -> None:
         console.print("[dim]Web dashboard assets are up to date.[/dim]")
         return
 
-    console.print("[bold cyan]Web dashboard assets are stale. Building in background...[/bold cyan]")
+    console.print(
+        "[bold cyan]Web dashboard assets are stale. Building in background...[/bold cyan]"
+    )
     build_thread = threading.Thread(
         target=_build_webapp_assets,
         kwargs={"settings": settings, "fail_hard": False},
@@ -751,7 +774,9 @@ def _schedule_webapp_build(settings: Settings) -> None:
 
 @app.command()
 def start(
-    foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground mode (showing logs)"),
+    foreground: bool = typer.Option(
+        False, "--foreground", "-f", help="Run in foreground mode (showing logs)"
+    ),
 ) -> None:
     """Start the Octopal Octo."""
     from octopal.channels.telegram.bot import build_dispatcher, run_bot
@@ -762,6 +787,7 @@ def start(
         console.print(f"[bold red]Configuration error:[/bold red] {e}")
         if Confirm.ask("Would you like to run the configuration wizard now?", default=True):
             from octopal.cli.configure import configure_wizard
+
             configure_wizard()
             settings = load_settings()
         else:
@@ -793,13 +819,17 @@ def start(
         _schedule_webapp_build(settings)
         _maybe_enable_tailscale_serve(settings)
         write_start_status(settings)
-        with console.status("[bold green]Initializing Octopal Octo...[/bold green]", spinner="dots"):
+        with console.status(
+            "[bold green]Initializing Octopal Octo...[/bold green]", spinner="dots"
+        ):
             time.sleep(0.5)
 
         # Use ASCII checkmark [V] instead of unicode checkmark to avoid encoding issues in background processes
         console.print("[bold green][V] Octopal Octo started.[/bold green]")
         console.print(f"   [dim]Logs directory:[/dim] [cyan]{settings.state_dir / 'logs'}[/cyan]")
-        console.print(f"   [dim]Gateway:[/dim] [cyan]http://{settings.gateway_host}:{settings.gateway_port}[/cyan]")
+        console.print(
+            f"   [dim]Gateway:[/dim] [cyan]http://{settings.gateway_host}:{settings.gateway_port}[/cyan]"
+        )
         console.print("[dim]Press Ctrl+C to stop (if in foreground).[/dim]\n")
 
     if not foreground:
@@ -827,7 +857,10 @@ def start(
             gateway_app = _build_gateway_app(settings, octo)
         mark_runtime_running(settings)
         import uvicorn
-        config = uvicorn.Config(gateway_app, host=settings.gateway_host, port=settings.gateway_port, log_level="info")
+
+        config = uvicorn.Config(
+            gateway_app, host=settings.gateway_host, port=settings.gateway_port, log_level="info"
+        )
         server = uvicorn.Server(config)
         gateway_task = asyncio.create_task(server.serve())
         try:
@@ -888,7 +921,7 @@ def _start_background() -> None:
                     stdout=out_file,
                     stderr=err_file,
                     stdin=subprocess.DEVNULL,
-                    close_fds=False, # close_fds=True can cause issues with handles on Windows sometimes
+                    close_fds=False,  # close_fds=True can cause issues with handles on Windows sometimes
                     env=env,
                     cwd=str(project_root),
                 )
@@ -942,6 +975,7 @@ def stop() -> None:
     try:
         if platform.system() == "Windows":
             import subprocess
+
             for target in targets:
                 try:
                     subprocess.run(
@@ -953,6 +987,7 @@ def stop() -> None:
                     failures.append((target, str(exc)))
         else:
             import signal
+
             deadline = time.time() + 8.0
             for target in targets:
                 try:
@@ -1000,7 +1035,9 @@ def stop() -> None:
 
 @app.command()
 def restart(
-    foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground after restart"),
+    foreground: bool = typer.Option(
+        False, "--foreground", "-f", help="Run in foreground after restart"
+    ),
 ) -> None:
     """Stop and then start the Octopal Octo."""
     stop()
@@ -1044,7 +1081,9 @@ def update() -> None:
     running_pids = list_octopal_runtime_pids()
     if running_pids:
         console.print("[yellow]Octopal is running right now.[/yellow]")
-        console.print("Update will continue, but restart after it finishes to pick up the new code.")
+        console.print(
+            "Update will continue, but restart after it finishes to pick up the new code."
+        )
 
     with console.status("[bold cyan]Updating Octopal...[/bold cyan]", spinner="dots"):
         ok, detail = _perform_git_update(project_root)
@@ -1083,24 +1122,41 @@ def status() -> None:
     pid = status_data.get("pid")
     running = is_pid_running(pid)
     last_heartbeat = status_data.get("last_internal_heartbeat_at")
-    last_user_message = status_data.get("last_user_message_at") or status_data.get("last_message_at")
+    last_user_message = status_data.get("last_user_message_at") or status_data.get(
+        "last_message_at"
+    )
     last_scheduler_tick = status_data.get("last_scheduler_tick_at")
     status_updated_at = status_data.get("status_updated_at")
 
-    status_text, status_color = resolve_runtime_status_display(status_data=status_data, pid_running=running)
+    status_text, status_color = resolve_runtime_status_display(
+        status_data=status_data, pid_running=running
+    )
 
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="bold cyan", justify="right")
     grid.add_column(style="white")
 
     grid.add_row("System Status", f"[{status_color}]{status_text}[/{status_color}]")
-    grid.add_row("Active Channel", f"[bold]{status_data.get('active_channel', user_channel_label(settings.user_channel))}[/bold]")
+    grid.add_row(
+        "Active Channel",
+        f"[bold]{status_data.get('active_channel', user_channel_label(settings.user_channel))}[/bold]",
+    )
     grid.add_row("Process ID", f"[bold]{pid}[/bold]" if pid else "[dim]N/A[/dim]")
     grid.add_row("Last Heartbeat", str(last_heartbeat) if last_heartbeat else "[dim]Never[/dim]")
-    grid.add_row("Last User Message", str(last_user_message) if last_user_message else "[dim]Never[/dim]")
-    grid.add_row("Last Scheduler Tick", str(last_scheduler_tick) if last_scheduler_tick else "[dim]Never[/dim]")
-    grid.add_row("Status Updated", str(status_updated_at) if status_updated_at else "[dim]Never[/dim]")
-    grid.add_row("Configuration", "[bright_green]Valid[/bright_green]" if config_ok else "[bright_red]Invalid[/bright_red]")
+    grid.add_row(
+        "Last User Message", str(last_user_message) if last_user_message else "[dim]Never[/dim]"
+    )
+    grid.add_row(
+        "Last Scheduler Tick",
+        str(last_scheduler_tick) if last_scheduler_tick else "[dim]Never[/dim]",
+    )
+    grid.add_row(
+        "Status Updated", str(status_updated_at) if status_updated_at else "[dim]Never[/dim]"
+    )
+    grid.add_row(
+        "Configuration",
+        "[bright_green]Valid[/bright_green]" if config_ok else "[bright_red]Invalid[/bright_red]",
+    )
     launcher_status = get_worker_launcher_status(settings)
     launcher_value = f"[bold]{launcher_status.effective_launcher}[/bold]"
     if launcher_status.configured_launcher != launcher_status.effective_launcher:
@@ -1135,21 +1191,33 @@ def status() -> None:
                 f"[dim]mapped chats=[/dim]{whatsapp_metrics.get('chat_mappings', 0)} [dim]connected=[/dim]{whatsapp_metrics.get('connected', 0)}",
             )
         elif selected_channel == "desktop":
-            grid.add_row("Desktop Chat", "[dim]gateway=[/dim]websocket [dim]external bot=[/dim]disabled")
+            grid.add_row(
+                "Desktop Chat", "[dim]gateway=[/dim]websocket [dim]external bot=[/dim]disabled"
+            )
         else:
-            grid.add_row("Telegram Chat", f"[dim]queues=[/dim]{telegram_metrics.get('chat_queues', 0)} [dim]tasks=[/dim]{telegram_metrics.get('send_tasks', 0)}")
-        grid.add_row("Exec Sessions", f"[dim]running=[/dim]{exec_metrics.get('background_sessions_running', 0)} [dim]total=[/dim]{exec_metrics.get('background_sessions_total', 0)}")
+            grid.add_row(
+                "Telegram Chat",
+                f"[dim]queues=[/dim]{telegram_metrics.get('chat_queues', 0)} [dim]tasks=[/dim]{telegram_metrics.get('send_tasks', 0)}",
+            )
+        grid.add_row(
+            "Exec Sessions",
+            f"[dim]running=[/dim]{exec_metrics.get('background_sessions_running', 0)} [dim]total=[/dim]{exec_metrics.get('background_sessions_total', 0)}",
+        )
     else:
         grid.add_row("Metrics", "[dim]Not available[/dim]")
 
     console.print("\n")
-    console.print(Align.center(Panel(
-        grid,
-        title="[bold white]Octopal System Status[/bold white]",
-        border_style="bright_blue",
-        expand=False,
-        padding=(1, 3)
-    )))
+    console.print(
+        Align.center(
+            Panel(
+                grid,
+                title="[bold white]Octopal System Status[/bold white]",
+                border_style="bright_blue",
+                expand=False,
+                padding=(1, 3),
+            )
+        )
+    )
     console.print("\n")
 
 
@@ -1162,7 +1230,13 @@ def workers_list() -> None:
         console.print("[yellow]No workers found.[/yellow]")
         return
 
-    table = Table(title="Registered Workers", border_style="bright_blue", show_header=True, header_style="bold cyan", expand=False)
+    table = Table(
+        title="Registered Workers",
+        border_style="bright_blue",
+        show_header=True,
+        header_style="bold cyan",
+        expand=False,
+    )
     table.add_column("Worker ID", style="dim", width=20)
     table.add_column("Status", width=12)
     table.add_column("Current Task", width=50)
@@ -1171,16 +1245,21 @@ def workers_list() -> None:
         status_style = (
             "bright_green"
             if worker.status == "completed"
-            else "yellow"
-            if worker.status in ("running", "working", "waiting_for_children", "awaiting_instruction")
-            else "bright_red"
-            if worker.status == "failed"
-            else "dim white"
+            else (
+                "yellow"
+                if worker.status
+                in ("running", "working", "waiting_for_children", "awaiting_instruction")
+                else "bright_red" if worker.status == "failed" else "dim white"
+            )
         )
         table.add_row(
             worker.id,
             f"[{status_style}]{worker.status}[/{status_style}]",
-            (worker.task[:47] + "...") if worker.task and len(worker.task) > 50 else (worker.task or "[dim]-[/dim]")
+            (
+                (worker.task[:47] + "...")
+                if worker.task and len(worker.task) > 50
+                else (worker.task or "[dim]-[/dim]")
+            ),
         )
 
     console.print("\n")
@@ -1197,7 +1276,12 @@ def audit_list(limit: int = 50) -> None:
         console.print("[yellow]No audit events found.[/yellow]")
         return
 
-    table = Table(title=f"Audit Log (Last {limit})", border_style="bright_blue", header_style="bold cyan", expand=False)
+    table = Table(
+        title=f"Audit Log (Last {limit})",
+        border_style="bright_blue",
+        header_style="bold cyan",
+        expand=False,
+    )
     table.add_column("ID", style="dim", width=10)
     table.add_column("Timestamp", style="white", width=20)
     table.add_column("Level", width=10)
@@ -1205,13 +1289,17 @@ def audit_list(limit: int = 50) -> None:
     table.add_column("Correlation ID", style="dim", width=12)
 
     for event in events:
-        level_style = "bright_red" if event.level in ("ERROR", "CRITICAL") else "yellow" if event.level == "WARNING" else "bright_blue"
+        level_style = (
+            "bright_red"
+            if event.level in ("ERROR", "CRITICAL")
+            else "yellow" if event.level == "WARNING" else "bright_blue"
+        )
         table.add_row(
             event.id[:10],
-            event.ts.isoformat(timespec='seconds').replace("T", " "),
+            event.ts.isoformat(timespec="seconds").replace("T", " "),
             f"[{level_style}]{event.level}[/{level_style}]",
             event.event_type,
-            (event.correlation_id[:12] if event.correlation_id else "")
+            (event.correlation_id[:12] if event.correlation_id else ""),
         )
 
     console.print("\n")
@@ -1239,7 +1327,17 @@ def audit_show(event_id: str) -> None:
     grid.add_row("Correlation ID:", event.correlation_id or "-")
 
     console.print("\n")
-    console.print(Align.center(Panel(grid, title="[bold white]Audit Event Details[/bold white]", border_style="bright_blue", expand=False, padding=(1, 4))))
+    console.print(
+        Align.center(
+            Panel(
+                grid,
+                title="[bold white]Audit Event Details[/bold white]",
+                border_style="bright_blue",
+                expand=False,
+                padding=(1, 4),
+            )
+        )
+    )
 
     import json
 
@@ -1251,11 +1349,41 @@ def audit_show(event_id: str) -> None:
         if isinstance(event.data, dict | list):
             data_str = json.dumps(event.data, indent=2)
             syntax = Syntax(data_str, "json", theme="monokai", background_color="default")
-            console.print(Align.center(Panel(syntax, title="[bold white]Data Payload[/bold white]", border_style="white", expand=False, padding=(1, 2))))
+            console.print(
+                Align.center(
+                    Panel(
+                        syntax,
+                        title="[bold white]Data Payload[/bold white]",
+                        border_style="white",
+                        expand=False,
+                        padding=(1, 2),
+                    )
+                )
+            )
         else:
-             console.print(Align.center(Panel(data_str, title="[bold white]Data Payload[/bold white]", border_style="white", expand=False, padding=(1, 2))))
+            console.print(
+                Align.center(
+                    Panel(
+                        data_str,
+                        title="[bold white]Data Payload[/bold white]",
+                        border_style="white",
+                        expand=False,
+                        padding=(1, 2),
+                    )
+                )
+            )
     except Exception:
-        console.print(Align.center(Panel(str(event.data), title="[bold white]Data Payload[/bold white]", border_style="white", expand=False, padding=(1, 2))))
+        console.print(
+            Align.center(
+                Panel(
+                    str(event.data),
+                    title="[bold white]Data Payload[/bold white]",
+                    border_style="white",
+                    expand=False,
+                    padding=(1, 2),
+                )
+            )
+        )
     console.print("\n")
 
 
@@ -1298,7 +1426,11 @@ def memory_stats() -> None:
         facts_by_status[fact.status] = facts_by_status.get(fact.status, 0) + 1
 
     console.print("\n")
-    console.print(Align.center(f"[bold white]Total Memory Entries:[/bold white] [bright_cyan]{total}[/bright_cyan] [dim]|[/dim] [bold white]Unique Chats:[/bold white] [bright_cyan]{len(by_chat)}[/bright_cyan]"))
+    console.print(
+        Align.center(
+            f"[bold white]Total Memory Entries:[/bold white] [bright_cyan]{total}[/bright_cyan] [dim]|[/dim] [bold white]Unique Chats:[/bold white] [bright_cyan]{len(by_chat)}[/bright_cyan]"
+        )
+    )
     console.print(
         Align.center(
             f"[bold white]Memory Facts:[/bold white] [bright_cyan]{len(facts)}[/bright_cyan] [dim]|[/dim] "
@@ -1306,7 +1438,9 @@ def memory_stats() -> None:
         )
     )
 
-    role_table = Table(title="Entries by Role", border_style="bright_blue", show_header=True, expand=False)
+    role_table = Table(
+        title="Entries by Role", border_style="bright_blue", show_header=True, expand=False
+    )
     role_table.add_column("Role", style="magenta", width=20)
     role_table.add_column("Count", style="bright_green", justify="right", width=10)
 
@@ -1317,7 +1451,9 @@ def memory_stats() -> None:
     console.print(Align.center(role_table))
 
     if facts_by_status:
-        facts_table = Table(title="Facts by Status", border_style="bright_blue", show_header=True, expand=False)
+        facts_table = Table(
+            title="Facts by Status", border_style="bright_blue", show_header=True, expand=False
+        )
         facts_table.add_column("Status", style="magenta", width=20)
         facts_table.add_column("Count", style="bright_green", justify="right", width=10)
         for status, count in sorted(facts_by_status.items()):
@@ -1329,9 +1465,15 @@ def memory_stats() -> None:
 
 @memory_app.command("cleanup")
 def memory_cleanup(
-    keep_days: int = typer.Option(30, "--keep-days", "-d", help="Keep entries newer than this (default: 30)"),
-    keep_count: int = typer.Option(1000, "--keep-count", "-c", help="Keep this many most recent entries (default: 1000)"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted without deleting"),
+    keep_days: int = typer.Option(
+        30, "--keep-days", "-d", help="Keep entries newer than this (default: 30)"
+    ),
+    keep_count: int = typer.Option(
+        1000, "--keep-count", "-c", help="Keep this many most recent entries (default: 1000)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be deleted without deleting"
+    ),
 ) -> None:
     """Clean up old memory entries."""
     settings = load_settings()
@@ -1344,7 +1486,9 @@ def memory_cleanup(
         cutoff_date = _calculate_cutoff_date(keep_days)
 
         # Get most recent N entries
-        recent_ids = {e.id for e in sorted(all_entries, key=lambda e: e.created_at, reverse=True)[:keep_count]}
+        recent_ids = {
+            e.id for e in sorted(all_entries, key=lambda e: e.created_at, reverse=True)[:keep_count]
+        }
 
         for entry in all_entries:
             if entry.id in recent_ids:
@@ -1366,6 +1510,7 @@ def _calculate_cutoff_date(days: int):
     from datetime import timedelta
 
     from octopal.utils import utc_now
+
     return utc_now() - timedelta(days=days)
 
 
@@ -1386,11 +1531,15 @@ def config_migrate() -> None:
 
     config_path = save_config(settings.config_obj)
     console.print(f"[green]Successfully migrated settings to {config_path}[/green]")
-    console.print("[dim]You can now use structured config for advanced settings like worker overrides.[/dim]")
+    console.print(
+        "[dim]You can now use structured config for advanced settings like worker overrides.[/dim]"
+    )
 
 
 @config_app.command("show")
-def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", help="Show API keys and tokens")) -> None:
+def config_show(
+    reveal_secrets: bool = typer.Option(False, "--reveal-secrets", help="Show API keys and tokens")
+) -> None:
     """Show current configuration settings."""
     print_banner()
     settings = load_settings()
@@ -1436,7 +1585,16 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
                 "LITELLM_MAX_CONCURRENCY",
             },
         ),
-        ("Tools", {"BRAVE_API_KEY", "FIRECRAWL_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_EMBED_MODEL"}),
+        (
+            "Tools",
+            {
+                "BRAVE_API_KEY",
+                "FIRECRAWL_API_KEY",
+                "OPENAI_API_KEY",
+                "OPENAI_BASE_URL",
+                "OPENAI_EMBED_MODEL",
+            },
+        ),
         (
             "Runtime",
             {
@@ -1468,7 +1626,10 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
     for field_name, field in settings.model_fields.items():
         alias = field.alias or field_name
         value = getattr(settings, field_name)
-        is_secret = any(k in field_name.lower() or (field.alias and k in field.alias.lower()) for k in secret_keywords)
+        is_secret = any(
+            k in field_name.lower() or (field.alias and k in field.alias.lower())
+            for k in secret_keywords
+        )
         alias_to_row[alias] = (field_name, value, is_secret)
 
     def _fmt_value(value: object, is_secret: bool) -> str:
@@ -1494,15 +1655,30 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
     elif selected_channel == "desktop":
         profile_status = "[bright_green]READY[/bright_green]"
     else:
-        profile_status = "[bright_green]READY[/bright_green]" if settings.telegram_bot_token.strip() else "[bright_red]SETUP NEEDED[/bright_red]"
+        profile_status = (
+            "[bright_green]READY[/bright_green]"
+            if settings.telegram_bot_token.strip()
+            else "[bright_red]SETUP NEEDED[/bright_red]"
+        )
     header.add_row("Profile", profile_status)
-    header.add_row("Provider", f"[bright_cyan]{resolved_profile.label}[/bright_cyan] [dim]({resolved_profile.provider_id})[/dim]")
+    header.add_row(
+        "Provider",
+        f"[bright_cyan]{resolved_profile.label}[/bright_cyan] [dim]({resolved_profile.provider_id})[/dim]",
+    )
     header.add_row("Model", f"[bright_cyan]{resolved_profile.model or '(unset)'}[/bright_cyan]")
-    header.add_row("Config Source", f"[dim]{resolved_profile.source}[/dim] via [bright_cyan]{provider}[/bright_cyan]")
+    header.add_row(
+        "Config Source",
+        f"[dim]{resolved_profile.source}[/dim] via [bright_cyan]{provider}[/bright_cyan]",
+    )
     header.add_row("Secrets", "Visible" if reveal_secrets else "Masked")
 
     panels: list[Panel] = [
-        Panel(header, title="[bold white]Configuration Overview[/bold white]", border_style=surface, padding=(1, 2))
+        Panel(
+            header,
+            title="[bold white]Configuration Overview[/bold white]",
+            border_style=surface,
+            padding=(1, 2),
+        )
     ]
 
     covered: set[str] = set()
@@ -1520,7 +1696,14 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
             covered.add(alias)
             rows += 1
         if rows:
-            panels.append(Panel(table, title=f"[bold white]{group_name}[/bold white]", border_style=surface, padding=(0, 1)))
+            panels.append(
+                Panel(
+                    table,
+                    title=f"[bold white]{group_name}[/bold white]",
+                    border_style=surface,
+                    padding=(0, 1),
+                )
+            )
 
     extras = sorted(a for a in alias_to_row if a not in covered)
     if extras:
@@ -1530,12 +1713,21 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
         for alias in extras:
             _, value, is_secret = alias_to_row[alias]
             table.add_row(alias, _fmt_value(value, is_secret))
-        panels.append(Panel(table, title="[bold white]Additional[/bold white]", border_style=surface, padding=(0, 1)))
+        panels.append(
+            Panel(
+                table,
+                title="[bold white]Additional[/bold white]",
+                border_style=surface,
+                padding=(0, 1),
+            )
+        )
 
     checks: list[str] = []
     if selected_channel == "whatsapp":
         if not _has_allowed_whatsapp_numbers(settings.allowed_whatsapp_numbers):
-            checks.append("[bright_red]Set ALLOWED_WHATSAPP_NUMBERS for WhatsApp access[/bright_red]")
+            checks.append(
+                "[bright_red]Set ALLOWED_WHATSAPP_NUMBERS for WhatsApp access[/bright_red]"
+            )
     elif selected_channel == "desktop":
         pass
     else:
@@ -1555,7 +1747,14 @@ def config_show(reveal_secrets: bool = typer.Option(False, "--reveal-secrets", h
     checks_table.add_column()
     for line in checks:
         checks_table.add_row(f"- {line}")
-    panels.append(Panel(checks_table, title="[bold white]Readiness Checks[/bold white]", border_style=surface, padding=(0, 1)))
+    panels.append(
+        Panel(
+            checks_table,
+            title="[bold white]Readiness Checks[/bold white]",
+            border_style=surface,
+            padding=(0, 1),
+        )
+    )
 
     console.print()
     for panel in panels:
@@ -1591,8 +1790,7 @@ def _connector_next_action(name: str, status: dict[str, object]) -> str:
 def _connector_disconnect_message(name: str, *, forget_credentials: bool) -> str:
     if forget_credentials:
         return (
-            f"[bold yellow]{name} disconnected.[/bold yellow] "
-            "Stored credentials were removed."
+            f"[bold yellow]{name} disconnected.[/bold yellow] " "Stored credentials were removed."
         )
     return (
         f"[bold yellow]{name} disconnected.[/bold yellow] "
@@ -1618,7 +1816,9 @@ def _print_google_auth_setup_help() -> None:
 def _print_google_headless_auth_help(auth_url: str) -> None:
     console.print()
     console.print("[bold]Headless Google authorization[/bold]")
-    console.print("No runnable browser was found on this machine, so Octopal switched to a manual flow.")
+    console.print(
+        "No runnable browser was found on this machine, so Octopal switched to a manual flow."
+    )
     console.print("Open this URL in a browser on your own computer:")
     console.print(f"  [cyan]{auth_url}[/cyan]")
     console.print("After approval, Google will redirect to a localhost URL in your browser.")
@@ -1634,13 +1834,17 @@ def _print_github_auth_setup_help() -> None:
     console.print("Fine-grained tokens are preferred when they cover the repositories you want.")
     console.print("  1. Open [cyan]https://github.com/settings/personal-access-tokens[/cyan]")
     console.print("  2. Create a fine-grained token or a classic token if your setup needs it")
-    console.print("  3. Grant read access to repository metadata, issues, and pull requests as needed")
+    console.print(
+        "  3. Grant read access to repository metadata, issues, and pull requests as needed"
+    )
     console.print("  4. Paste the token here when prompted")
     console.print()
 
 
 @connector_app.command("status")
-def connector_status(json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON.")) -> None:
+def connector_status(
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON.")
+) -> None:
     """Show connector status and any required next action."""
     settings = load_settings()
     manager = _build_connector_manager(settings)
@@ -1676,8 +1880,12 @@ def connector_status(json_output: bool = typer.Option(False, "--json", help="Pri
 def connector_auth(
     name: str = typer.Argument(..., help="Connector name to authorize."),
     client_id: str | None = typer.Option(None, "--client-id", help="OAuth client ID to use."),
-    client_secret: str | None = typer.Option(None, "--client-secret", help="OAuth client secret to use."),
-    token: str | None = typer.Option(None, "--token", help="Access token to use for token-based connectors."),
+    client_secret: str | None = typer.Option(
+        None, "--client-secret", help="OAuth client secret to use."
+    ),
+    token: str | None = typer.Option(
+        None, "--token", help="Access token to use for token-based connectors."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
     manual_fallback: bool = typer.Option(
         True,
@@ -1689,7 +1897,11 @@ def connector_auth(
 
     def fail(message: str, *, payload: dict[str, object] | None = None) -> None:
         if json_output:
-            console.print(json.dumps(payload or {"status": "error", "error": message}, ensure_ascii=False, indent=2))
+            console.print(
+                json.dumps(
+                    payload or {"status": "error", "error": message}, ensure_ascii=False, indent=2
+                )
+            )
         else:
             console.print(f"[bold red]Authorization failed:[/bold red] {message}")
         raise typer.Exit(code=1)
@@ -1704,7 +1916,9 @@ def connector_auth(
     if instance is None or not instance.enabled:
         if json_output:
             fail(f"{name} is not enabled. Run octopal configure first.")
-        console.print(f"[bold yellow]{name} is not enabled.[/bold yellow] Run [magenta]octopal configure[/magenta] first.")
+        console.print(
+            f"[bold yellow]{name} is not enabled.[/bold yellow] Run [magenta]octopal configure[/magenta] first."
+        )
         raise typer.Exit(code=1)
 
     if name == "google":
@@ -1719,8 +1933,12 @@ def connector_auth(
             fail("Missing Google OAuth client ID.")
         if resolved_client_secret is None and json_output:
             fail("Missing Google OAuth client secret.")
-        resolved_client_id = resolved_client_id or typer.prompt("Your Google OAuth Desktop App client ID")
-        resolved_client_secret = resolved_client_secret or typer.prompt("Your Google OAuth Desktop App client secret", hide_input=True)
+        resolved_client_id = resolved_client_id or typer.prompt(
+            "Your Google OAuth Desktop App client ID"
+        )
+        resolved_client_secret = resolved_client_secret or typer.prompt(
+            "Your Google OAuth Desktop App client secret", hide_input=True
+        )
         asyncio.run(
             connector.configure(
                 {
@@ -1737,13 +1955,22 @@ def connector_auth(
             resolved_token = resolved_token or instance.auth.access_token
         if resolved_token is None and json_output:
             fail("Missing GitHub personal access token.")
-        resolved_token = resolved_token or typer.prompt("Your GitHub personal access token", hide_input=True)
+        resolved_token = resolved_token or typer.prompt(
+            "Your GitHub personal access token", hide_input=True
+        )
         asyncio.run(connector.configure({"token": resolved_token}))
 
     result = asyncio.run(connector.authorize())
     if result.get("status") == "manual_required" and name == "google":
         if json_output or not manual_fallback:
-            fail(str(result.get("error") or result.get("message") or "Manual Google authorization is required."), payload=result)
+            fail(
+                str(
+                    result.get("error")
+                    or result.get("message")
+                    or "Manual Google authorization is required."
+                ),
+                payload=result,
+            )
         start = asyncio.run(connector.begin_manual_authorize())
         _print_google_headless_auth_help(start["auth_url"])
         authorization_response = typer.prompt("Authorization response URL")
@@ -1781,7 +2008,9 @@ def connector_disconnect(
         raise typer.Exit(code=1) from None
 
     if result.get("status") != "success":
-        console.print(f"[bold red]Disconnect failed:[/bold red] {result.get('message', 'unknown error')}")
+        console.print(
+            f"[bold red]Disconnect failed:[/bold red] {result.get('message', 'unknown error')}"
+        )
         raise typer.Exit(code=1)
 
     console.print(_connector_disconnect_message(name, forget_credentials=forget_credentials))
@@ -1866,7 +2095,9 @@ def whatsapp_install_bridge() -> None:
 
 
 @whatsapp_app.command("link")
-def whatsapp_link(timeout_seconds: int = typer.Option(180, "--timeout", help="How long to wait for linking")) -> None:
+def whatsapp_link(
+    timeout_seconds: int = typer.Option(180, "--timeout", help="How long to wait for linking")
+) -> None:
     settings = load_settings()
     WhatsAppBridgeController = _get_whatsapp_bridge_controller()
     WhatsAppBridgeError = _get_whatsapp_bridge_error()
@@ -1925,7 +2156,9 @@ def whatsapp_status() -> None:
     grid.add_row("Linked", str(bool(status.get("linked"))))
     grid.add_row("Auth Dir", str(status.get("authDir", "")))
     grid.add_row("Self", str(status.get("self", "") or "[dim]unknown[/dim]"))
-    console.print(Panel(grid, title="[bold white]WhatsApp Status[/bold white]", border_style="bright_blue"))
+    console.print(
+        Panel(grid, title="[bold white]WhatsApp Status[/bold white]", border_style="bright_blue")
+    )
 
 
 @whatsapp_app.command("logout")
@@ -1946,11 +2179,22 @@ def whatsapp_logout() -> None:
 
 @app.command("dashboard")
 def dashboard(
-    watch: bool = typer.Option(True, "--watch/--once", "-w/-o", help="Continuously refresh dashboard (default) or show once"),
-    interval: float = typer.Option(2.0, "--interval", "-i", help="Refresh interval in seconds for live mode"),
+    watch: bool = typer.Option(
+        True,
+        "--watch/--once",
+        "-w/-o",
+        help="Continuously refresh dashboard (default) or show once",
+    ),
+    interval: float = typer.Option(
+        2.0, "--interval", "-i", help="Refresh interval in seconds for live mode"
+    ),
     last: int = typer.Option(8, "--last", help="Number of recent workers to show"),
-    compact: bool = typer.Option(False, "--compact", help="Use compact view optimized for narrow terminals"),
-    json_output: bool = typer.Option(False, "--json", help="Print JSON snapshot instead of dashboard view"),
+    compact: bool = typer.Option(
+        False, "--compact", help="Use compact view optimized for narrow terminals"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print JSON snapshot instead of dashboard view"
+    ),
 ) -> None:
     """Show a live runtime dashboard (system, octo, workers, control channel)."""
     settings = load_settings()
@@ -1978,10 +2222,12 @@ def dashboard(
     # Live watch mode
     try:
         with Live(
-            _build_dashboard_renderable(_build_dashboard_snapshot(settings, last, store=store), compact=compact),
+            _build_dashboard_renderable(
+                _build_dashboard_snapshot(settings, last, store=store), compact=compact
+            ),
             console=console,
-            refresh_per_second=1/refresh_interval,
-            screen=True
+            refresh_per_second=1 / refresh_interval,
+            screen=True,
         ) as live:
             while True:
                 time.sleep(refresh_interval)
@@ -1997,7 +2243,9 @@ def dashboard(
 
 @app.command("sync-worker-templates")
 def sync_worker_templates(
-    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite existing workspace worker templates"),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Overwrite existing workspace worker templates"
+    ),
 ) -> None:
     """Copy default worker templates into the configured workspace workers directory."""
     settings = load_settings()
@@ -2011,9 +2259,15 @@ def sync_worker_templates(
 
 @tools_app.command("resolve")
 def tools_resolve(
-    profile: str | None = typer.Option(None, "--profile", help="Apply a named tool profile such as research or coding."),
-    preset: str = typer.Option("all", "--preset", help="Permission preset to simulate: all or octo."),
-    blocked: bool = typer.Option(True, "--blocked/--available-only", help="Show blocked tools or only available ones."),
+    profile: str | None = typer.Option(
+        None, "--profile", help="Apply a named tool profile such as research or coding."
+    ),
+    preset: str = typer.Option(
+        "all", "--preset", help="Permission preset to simulate: all or octo."
+    ),
+    blocked: bool = typer.Option(
+        True, "--blocked/--available-only", help="Show blocked tools or only available ones."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """Explain which tools are available and why others are blocked."""
@@ -2045,14 +2299,22 @@ def tools_resolve(
     console.print(_build_tool_resolution_table(snapshot["available"], title="Available Tools"))
     if blocked and snapshot["blocked"]:
         console.print()
-        console.print(_build_tool_resolution_table(snapshot["blocked"], title="Blocked Tools", include_reason=True))
+        console.print(
+            _build_tool_resolution_table(
+                snapshot["blocked"], title="Blocked Tools", include_reason=True
+            )
+        )
     console.print()
 
 
 @skill_app.command("install")
 def skill_install(
-    source: str = typer.Argument(..., help="ClawHub slug, SKILL.md URL, zip URL, or local bundle path."),
-    clawhub_site: str = typer.Option("https://clawhub.ai", "--clawhub-site", help="Base ClawHub site URL."),
+    source: str = typer.Argument(
+        ..., help="ClawHub slug, SKILL.md URL, zip URL, or local bundle path."
+    ),
+    clawhub_site: str = typer.Option(
+        "https://clawhub.ai", "--clawhub-site", help="Base ClawHub site URL."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """Install a skill bundle from ClawHub, URL, or local path."""
@@ -2066,7 +2328,11 @@ def skill_install(
         )
     except Exception as exc:
         if json_output:
-            typer.echo(json.dumps({"status": "error", "message": str(exc), "source": source}, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "message": str(exc), "source": source}, ensure_ascii=False
+                )
+            )
         else:
             console.print(f"[bold red]Skill install failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
@@ -2085,7 +2351,9 @@ def skill_install(
     if env_error:
         console.print(f"[yellow]Env prepare warning:[/yellow] {env_error}")
     if not bool(payload.get("trusted", True)):
-        console.print("[yellow]Scripts from this imported skill are untrusted until you run `octopal skill trust <id>`.[/yellow]")
+        console.print(
+            "[yellow]Scripts from this imported skill are untrusted until you run `octopal skill trust <id>`.[/yellow]"
+        )
     next_steps = [str(item).strip() for item in payload.get("next_steps", []) if str(item).strip()]
     for next_step in next_steps:
         console.print(f"[yellow]Next step:[/yellow] {next_step}")
@@ -2121,7 +2389,11 @@ def skill_list(
         if not isinstance(item, dict):
             continue
         origin = "installed" if bool(item.get("installer_managed", False)) else "local"
-        source = str(item.get("installed_source", "")).strip() if bool(item.get("installer_managed", False)) else "local"
+        source = (
+            str(item.get("installed_source", "")).strip()
+            if bool(item.get("installer_managed", False))
+            else "local"
+        )
         runtime_kind = str(item.get("runtime_kind", "")).strip() or "-"
         if not bool(item.get("runtime_required", False)):
             env_status = "-"
@@ -2146,7 +2418,9 @@ def skill_list(
 @skill_app.command("update")
 def skill_update(
     skill_id: str = typer.Argument(..., help="Installer-managed skill id."),
-    clawhub_site: str | None = typer.Option(None, "--clawhub-site", help="Override ClawHub site URL."),
+    clawhub_site: str | None = typer.Option(
+        None, "--clawhub-site", help="Override ClawHub site URL."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """Update an installer-managed skill from its stored source."""
@@ -2159,7 +2433,12 @@ def skill_update(
         )
     except Exception as exc:
         if json_output:
-            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "message": str(exc), "skill_id": skill_id},
+                    ensure_ascii=False,
+                )
+            )
         else:
             console.print(f"[bold red]Skill update failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
@@ -2175,7 +2454,11 @@ def skill_update(
 @skill_app.command("trust")
 def skill_trust(
     skill_id: str = typer.Argument(..., help="Skill id."),
-    force: bool = typer.Option(False, "--force", help="Allow trusting a skill even when scan findings require manual review."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Allow trusting a skill even when scan findings require manual review.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """Mark a skill as trusted for script execution."""
@@ -2189,7 +2472,12 @@ def skill_trust(
         )
     except Exception as exc:
         if json_output:
-            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "message": str(exc), "skill_id": skill_id},
+                    ensure_ascii=False,
+                )
+            )
         else:
             console.print(f"[bold red]Skill trust failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
@@ -2216,7 +2504,12 @@ def skill_enable(
         )
     except Exception as exc:
         if json_output:
-            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "message": str(exc), "skill_id": skill_id},
+                    ensure_ascii=False,
+                )
+            )
         else:
             console.print(f"[bold red]Skill enable failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
@@ -2243,7 +2536,12 @@ def skill_disable(
         )
     except Exception as exc:
         if json_output:
-            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "message": str(exc), "skill_id": skill_id},
+                    ensure_ascii=False,
+                )
+            )
         else:
             console.print(f"[bold red]Skill disable failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
@@ -2269,7 +2567,12 @@ def skill_verify(
         )
     except Exception as exc:
         if json_output:
-            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "message": str(exc), "skill_id": skill_id},
+                    ensure_ascii=False,
+                )
+            )
         else:
             console.print(f"[bold red]Skill verify failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
@@ -2302,7 +2605,12 @@ def skill_untrust(
         )
     except Exception as exc:
         if json_output:
-            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "message": str(exc), "skill_id": skill_id},
+                    ensure_ascii=False,
+                )
+            )
         else:
             console.print(f"[bold red]Skill untrust failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
@@ -2328,7 +2636,12 @@ def skill_prepare_env(
         )
     except Exception as exc:
         if json_output:
-            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "message": str(exc), "skill_id": skill_id},
+                    ensure_ascii=False,
+                )
+            )
         else:
             console.print(f"[bold red]Skill env prepare failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
@@ -2358,7 +2671,12 @@ def skill_remove_env(
         )
     except Exception as exc:
         if json_output:
-            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "message": str(exc), "skill_id": skill_id},
+                    ensure_ascii=False,
+                )
+            )
         else:
             console.print(f"[bold red]Skill env remove failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
@@ -2384,7 +2702,12 @@ def skill_remove(
         )
     except Exception as exc:
         if json_output:
-            typer.echo(json.dumps({"status": "error", "message": str(exc), "skill_id": skill_id}, ensure_ascii=False))
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "message": str(exc), "skill_id": skill_id},
+                    ensure_ascii=False,
+                )
+            )
         else:
             console.print(f"[bold red]Skill remove failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
@@ -2430,10 +2753,11 @@ def _build_tool_resolution_snapshot(
         policy_pipeline_steps=policy_steps,
     )
     available_rows = [_tool_row(entry.tool) for entry in report.entries if entry.available]
-    blocked_rows = [
-        _tool_row(entry.tool, reason=", ".join(entry.reasons))
-        for entry in report.blocked_tools
-    ] if include_blocked else []
+    blocked_rows = (
+        [_tool_row(entry.tool, reason=", ".join(entry.reasons)) for entry in report.blocked_tools]
+        if include_blocked
+        else []
+    )
     return {
         "preset": normalized_preset,
         "profile": profile_name or "",
@@ -2544,7 +2868,9 @@ def _build_tool_resolution_table(
     return table
 
 
-def _build_dashboard_snapshot(settings: Settings, last: int, store: SQLiteStore | None = None) -> dict:
+def _build_dashboard_snapshot(
+    settings: Settings, last: int, store: SQLiteStore | None = None
+) -> dict:
     status_data = read_status(settings) or {}
     pid = status_data.get("pid")
     pid_running = is_octopal_runtime_pid(pid)
@@ -2630,7 +2956,9 @@ def _build_dashboard_snapshot(settings: Settings, last: int, store: SQLiteStore 
         "system": {
             "running": running,
             "pid": pid,
-            "active_channel": status_data.get("active_channel", user_channel_label(settings.user_channel)),
+            "active_channel": status_data.get(
+                "active_channel", user_channel_label(settings.user_channel)
+            ),
             "started_at": status_data.get("started_at"),
             "last_heartbeat": status_data.get("last_internal_heartbeat_at"),
             "last_user_message_at": status_data.get("last_user_message_at")
@@ -2653,9 +2981,7 @@ def _build_dashboard_snapshot(settings: Settings, last: int, store: SQLiteStore 
             "followup_tasks": int(octo_metrics.get("followup_tasks", 0) or 0),
             "internal_tasks": int(octo_metrics.get("internal_tasks", 0) or 0),
         },
-        "connectivity": {
-            "mcp_servers": connectivity_metrics.get("mcp_servers", {})
-        },
+        "connectivity": {"mcp_servers": connectivity_metrics.get("mcp_servers", {})},
         "logs": recent_logs,
         "queues": {
             "telegram_send_tasks": int(telegram_metrics.get("send_tasks", 0) or 0),
@@ -2741,7 +3067,9 @@ def _build_dashboard_renderable(snapshot: dict, compact: bool = False) -> Align:
             f"failed={workers['failed']} stopped={workers['stopped']} spawned_24h={workers['spawned_24h']}"
         ),
     )
-    health_panel = Panel(health, title="[bold white]Runtime Health[/bold white]", border_style="blue")
+    health_panel = Panel(
+        health, title="[bold white]Runtime Health[/bold white]", border_style="blue"
+    )
 
     # MCP Connectivity Panel
     mcp_grid = Table.grid(padding=(0, 1))
@@ -2756,11 +3084,11 @@ def _build_dashboard_renderable(snapshot: dict, compact: bool = False) -> Align:
             color = (
                 "bright_green"
                 if status == "connected"
-                else "bright_red"
-                if status == "error"
-                else "bright_yellow"
-                if status == "reconnecting"
-                else "yellow"
+                else (
+                    "bright_red"
+                    if status == "error"
+                    else "bright_yellow" if status == "reconnecting" else "yellow"
+                )
             )
             details = str(s_data.get("reason", "") or "").strip()
             transport = str(s_data.get("transport", "auto"))
@@ -2770,8 +3098,12 @@ def _build_dashboard_renderable(snapshot: dict, compact: bool = False) -> Align:
                 suffix += f" [dim]retry {attempts}[/dim]"
             if details:
                 suffix += f" [dim]- {details}[/dim]"
-            mcp_grid.add_row(f"{s_data.get('name', s_id)}:", f"[{color}]{str(status).upper()}[/{color}] {suffix}")
-    connectivity_panel = Panel(mcp_grid, title="[bold white]MCP Connectivity[/bold white]", border_style="cyan")
+            mcp_grid.add_row(
+                f"{s_data.get('name', s_id)}:", f"[{color}]{str(status).upper()}[/{color}] {suffix}"
+            )
+    connectivity_panel = Panel(
+        mcp_grid, title="[bold white]MCP Connectivity[/bold white]", border_style="cyan"
+    )
 
     # Recent Logs Panel
     log_grid = Table.grid(padding=(0, 1))
@@ -2781,9 +3113,13 @@ def _build_dashboard_renderable(snapshot: dict, compact: bool = False) -> Align:
     else:
         for entry in logs:
             lvl = entry.get("level", "info").lower()
-            color = "red" if lvl in ("error", "critical") else "yellow" if lvl == "warning" else "white"
+            color = (
+                "red" if lvl in ("error", "critical") else "yellow" if lvl == "warning" else "white"
+            )
             log_grid.add_row(f"[{color}]•[/{color}] {entry.get('event', '')[:80]}")
-    logs_panel = Panel(log_grid, title="[bold white]Recent Events[/bold white]", border_style="bright_black")
+    logs_panel = Panel(
+        log_grid, title="[bold white]Recent Events[/bold white]", border_style="bright_black"
+    )
 
     recent = Table(show_header=True, header_style="bold cyan", expand=True)
     recent.add_column("ID", style="dim", width=8, no_wrap=True)
@@ -2819,14 +3155,20 @@ def _build_dashboard_renderable(snapshot: dict, compact: bool = False) -> Align:
             str(last_tool),
             *([ts_display] if not compact else []),
         )
-    workers_panel = Panel(recent, title=f"[bold white]Recent Workers ({len(workers['recent'])})[/bold white]", border_style="blue")
+    workers_panel = Panel(
+        recent,
+        title=f"[bold white]Recent Workers ({len(workers['recent'])})[/bold white]",
+        border_style="blue",
+    )
 
     alerts = _build_alert_lines(snapshot)
     alerts_table = Table.grid(padding=(0, 1))
     alerts_table.add_column()
     for line in alerts:
         alerts_table.add_row(line)
-    alerts_panel = Panel(alerts_table, title="[bold white]Attention[/bold white]", border_style="yellow")
+    alerts_panel = Panel(
+        alerts_table, title="[bold white]Attention[/bold white]", border_style="yellow"
+    )
 
     footer = Panel(
         "[bold cyan]Hints:[/bold cyan] octopal dashboard -w | octopal logs -f | octopal workers list",
@@ -2930,7 +3272,9 @@ def _uptime_human(started_at: str | None) -> str:
         return "N/A"
 
 
-def _cli_worker_plan_binding_payload(worker_id: str, store: SQLiteStore | None) -> dict[str, Any] | None:
+def _cli_worker_plan_binding_payload(
+    worker_id: str, store: SQLiteStore | None
+) -> dict[str, Any] | None:
     if store is None or not worker_id:
         return None
     try:

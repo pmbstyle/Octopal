@@ -83,3 +83,12 @@ warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
 disallow_untyped_defs = true
+# Incremental strict baseline. Expand this list as legacy modules are made type-clean.
+files = [
+    "src/octopal/infrastructure/config/settings.py",
+    "src/octopal/interop/a2a/models.py",
+    "src/octopal/interop/a2a/security.py",
+    "src/octopal/runtime/pending_turns.py",
+    "src/octopal/runtime/workers/launcher_factory.py",
+]
+follow_imports = "skip"

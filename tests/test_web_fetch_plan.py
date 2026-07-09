@@ -43,7 +43,11 @@ def test_fetch_plan_tool_uses_browser_extract_fallback(monkeypatch) -> None:
     async def scenario() -> None:
         result = json.loads(
             await plan_mod.fetch_plan_tool(
-                {"url": "https://example.com", "goal": "structured_extract", "min_content_chars": 100},
+                {
+                    "url": "https://example.com",
+                    "goal": "structured_extract",
+                    "min_content_chars": 100,
+                },
                 {"chat_id": 1},
             )
         )
@@ -70,12 +74,18 @@ def test_fetch_plan_tool_failure_hint_depends_on_goal(monkeypatch) -> None:
     async def scenario() -> None:
         result = json.loads(
             await plan_mod.fetch_plan_tool(
-                {"url": "https://example.com", "goal": "structured_extract", "allow_browser": False},
+                {
+                    "url": "https://example.com",
+                    "goal": "structured_extract",
+                    "allow_browser": False,
+                },
                 {"chat_id": 1},
             )
         )
         assert result["ok"] is False
-        assert result["next_best_action"] == "retry with allow_browser=true or lower min_content_chars"
+        assert (
+            result["next_best_action"] == "retry with allow_browser=true or lower min_content_chars"
+        )
 
     asyncio.run(scenario())
 

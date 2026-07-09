@@ -184,7 +184,10 @@ class DashboardProviderOption(BaseModel):
 
 
 def _dashboard_provider_options_payload() -> list[dict[str, Any]]:
-    return [DashboardProviderOption(**asdict(entry)).model_dump(mode="json") for entry in list_provider_catalog()]
+    return [
+        DashboardProviderOption(**asdict(entry)).model_dump(mode="json")
+        for entry in list_provider_catalog()
+    ]
 
 
 def register_dashboard_routes(app: FastAPI) -> None:
@@ -220,7 +223,9 @@ def register_dashboard_routes(app: FastAPI) -> None:
         settings = _get_settings(app)
         _verify_dashboard_token(request, settings)
         store = _get_store(app, settings)
-        filters = _build_filters(settings, window_minutes=window_minutes, service=service, environment=environment)
+        filters = _build_filters(
+            settings, window_minutes=window_minutes, service=service, environment=environment
+        )
         return _build_snapshot(settings, store, last, filters)
 
     @app.get("/api/dashboard/logs")
@@ -233,7 +238,9 @@ def register_dashboard_routes(app: FastAPI) -> None:
     ) -> dict[str, Any]:
         settings = _get_settings(app)
         _verify_dashboard_token(request, settings)
-        filters = _build_filters(settings, window_minutes=window_minutes, service=service, environment=environment)
+        filters = _build_filters(
+            settings, window_minutes=window_minutes, service=service, environment=environment
+        )
         log_path = settings.state_dir / "logs" / "octopal.log"
         entries: list[dict[str, str]] = []
         for entry in _collect_logs(log_path, max_lines=1000, filters=filters):
@@ -248,7 +255,11 @@ def register_dashboard_routes(app: FastAPI) -> None:
             )
             if len(entries) >= lines:
                 break
-        return {"count": len(entries), "entries": entries, "filters": _filters_payload(filters, settings)}
+        return {
+            "count": len(entries),
+            "entries": entries,
+            "filters": _filters_payload(filters, settings),
+        }
 
     @app.get("/api/dashboard/settings")
     async def dashboard_settings(request: Request) -> dict[str, Any]:
@@ -326,7 +337,9 @@ def register_dashboard_routes(app: FastAPI) -> None:
         launcher_status = get_worker_launcher_status(settings)
         return {
             "status": "saved",
-            "config": _sanitize_dashboard_config_payload(_dashboard_editable_config_payload(settings)).model_dump(mode="json"),
+            "config": _sanitize_dashboard_config_payload(
+                _dashboard_editable_config_payload(settings)
+            ).model_dump(mode="json"),
             "providers": _dashboard_provider_options_payload(),
             "worker_launcher": {
                 "configured": launcher_status.configured_launcher,
@@ -344,7 +357,9 @@ def register_dashboard_routes(app: FastAPI) -> None:
         store = _get_store(app, settings)
         templates = [
             _serialize_worker_template(template)
-            for template in sorted(store.list_worker_templates(), key=lambda item: (item.name.lower(), item.id.lower()))
+            for template in sorted(
+                store.list_worker_templates(), key=lambda item: (item.name.lower(), item.id.lower())
+            )
         ]
         return {"count": len(templates), "templates": templates}
 
@@ -435,9 +450,17 @@ def register_dashboard_routes(app: FastAPI) -> None:
         requested_by = str(payload.get("requested_by", "dashboard")).strip() or "dashboard"
         worker_id = str(payload.get("worker_id", "")).strip() or None
 
-        if action not in {"restart_worker", "retry_failed", "clear_control_queue", "request_self_update"}:
+        if action not in {
+            "restart_worker",
+            "retry_failed",
+            "clear_control_queue",
+            "request_self_update",
+        }:
             raise HTTPException(status_code=400, detail="Unsupported action")
-        if action in {"restart_worker", "clear_control_queue", "request_self_update"} and not confirm:
+        if (
+            action in {"restart_worker", "clear_control_queue", "request_self_update"}
+            and not confirm
+        ):
             raise HTTPException(status_code=400, detail="Confirmation required")
 
         result = await _execute_dashboard_action(
@@ -459,7 +482,10 @@ def register_dashboard_routes(app: FastAPI) -> None:
         settings = _get_settings(app)
         _verify_dashboard_token(request, settings)
         store = _get_store(app, settings)
-        return {"count": min(limit, 100), "entries": _list_dashboard_action_history(store, limit=limit)}
+        return {
+            "count": min(limit, 100),
+            "entries": _list_dashboard_action_history(store, limit=limit),
+        }
 
     @app.get("/api/dashboard/v2/overview", response_model=DashboardOverviewV2)
     async def dashboard_v2_overview(
@@ -632,7 +658,9 @@ def register_dashboard_routes(app: FastAPI) -> None:
         settings = _get_settings(app)
         _verify_dashboard_token(request, settings)
         store = _get_store(app, settings)
-        filters = _build_filters(settings, window_minutes=window_minutes, service=service, environment=environment)
+        filters = _build_filters(
+            settings, window_minutes=window_minutes, service=service, environment=environment
+        )
 
         async def _event_generator():
             while True:
@@ -650,7 +678,9 @@ def register_dashboard_routes(app: FastAPI) -> None:
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         }
-        return StreamingResponse(_event_generator(), media_type="text/event-stream", headers=headers)
+        return StreamingResponse(
+            _event_generator(), media_type="text/event-stream", headers=headers
+        )
 
 
 def _build_dashboard_v2_snapshot(
@@ -665,7 +695,9 @@ def _build_dashboard_v2_snapshot(
     settings = _get_settings(app)
     _verify_dashboard_token(request, settings)
     store = _get_store(app, settings)
-    filters = _build_filters(settings, window_minutes=window_minutes, service=service, environment=environment)
+    filters = _build_filters(
+        settings, window_minutes=window_minutes, service=service, environment=environment
+    )
     return _build_snapshot(settings, store, last, filters)
 
 
@@ -805,7 +837,9 @@ def _dashboard_skills_payload(settings: Settings) -> dict[str, Any]:
     }
 
 
-def _dashboard_install_skill(settings: Settings, payload: DashboardSkillInstallPayload) -> dict[str, Any]:
+def _dashboard_install_skill(
+    settings: Settings, payload: DashboardSkillInstallPayload
+) -> dict[str, Any]:
     source = str(payload.source or "").strip()
     if not source:
         raise HTTPException(status_code=400, detail="Skill source is required")
@@ -828,7 +862,9 @@ def _dashboard_install_skill(settings: Settings, payload: DashboardSkillInstallP
     }
 
 
-def _dashboard_set_skill_enabled(settings: Settings, skill_id: str, enabled: bool) -> dict[str, Any]:
+def _dashboard_set_skill_enabled(
+    settings: Settings, skill_id: str, enabled: bool
+) -> dict[str, Any]:
     normalized_id = str(skill_id or "").strip()
     try:
         action_payload = set_skill_enabled(
@@ -977,7 +1013,11 @@ def _skill_dashboard_http_error(exc: Exception) -> HTTPException:
     lowered = detail.lower()
     if "not found" in lowered or ("missing" in lowered and "installed bundle" in lowered):
         return HTTPException(status_code=404, detail=detail)
-    if "already exists" in lowered or "different source" in lowered or "refusing to overwrite" in lowered:
+    if (
+        "already exists" in lowered
+        or "different source" in lowered
+        or "refusing to overwrite" in lowered
+    ):
         return HTTPException(status_code=409, detail=detail)
     return HTTPException(status_code=400, detail=detail)
 
@@ -1015,7 +1055,9 @@ def _create_worker_template(
     worker_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     created = store.get_worker_template(worker_id)
     if created is None:
-        raise HTTPException(status_code=500, detail="Worker template was written but could not be reloaded")
+        raise HTTPException(
+            status_code=500, detail="Worker template was written but could not be reloaded"
+        )
     return {"status": "created", "template": _serialize_worker_template(created)}
 
 
@@ -1032,11 +1074,15 @@ def _update_worker_template(
     data = _normalize_worker_template_payload(payload, expected_id=template_id)
     worker_file = _resolve_worker_template_file(settings.workspace_dir, template_id)
     if not worker_file.exists():
-        raise HTTPException(status_code=404, detail=f"Worker template file for '{template_id}' not found")
+        raise HTTPException(
+            status_code=404, detail=f"Worker template file for '{template_id}' not found"
+        )
     worker_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     updated = store.get_worker_template(template_id)
     if updated is None:
-        raise HTTPException(status_code=500, detail="Worker template was updated but could not be reloaded")
+        raise HTTPException(
+            status_code=500, detail="Worker template was updated but could not be reloaded"
+        )
     return {"status": "updated", "template": _serialize_worker_template(updated)}
 
 
@@ -1074,7 +1120,9 @@ def _normalize_worker_template_payload(
     if max_steps <= 0:
         raise HTTPException(status_code=400, detail="max_thinking_steps must be greater than 0")
     if timeout_seconds <= 0:
-        raise HTTPException(status_code=400, detail="default_timeout_seconds must be greater than 0")
+        raise HTTPException(
+            status_code=400, detail="default_timeout_seconds must be greater than 0"
+        )
 
     return {
         "id": worker_id,
@@ -1106,9 +1154,14 @@ def _normalize_string_list(items: list[str]) -> list[str]:
 def _validate_worker_template_id(template_id: str) -> None:
     text = template_id.strip()
     if not text or not all(ch.islower() or ch.isdigit() or ch in {"_", "-"} for ch in text):
-        raise HTTPException(status_code=400, detail="Worker template id must use lowercase letters, numbers, '_' or '-'")
+        raise HTTPException(
+            status_code=400,
+            detail="Worker template id must use lowercase letters, numbers, '_' or '-'",
+        )
     if not text[0].isalnum():
-        raise HTTPException(status_code=400, detail="Worker template id must start with a letter or digit")
+        raise HTTPException(
+            status_code=400, detail="Worker template id must start with a letter or digit"
+        )
 
 
 def _resolve_worker_template_file(workspace_dir: Path, template_id: str) -> Path:
@@ -1145,7 +1198,9 @@ def _resolve_webapp_index(settings: Settings) -> Path | None:
     return None
 
 
-def _build_filters(settings: Settings, *, window_minutes: int, service: str, environment: str) -> DashboardFilters:
+def _build_filters(
+    settings: Settings, *, window_minutes: int, service: str, environment: str
+) -> DashboardFilters:
     normalized_window = window_minutes if window_minutes in _WINDOW_CHOICES else 60
     normalized_service = service.strip().lower()
     if normalized_service not in _SERVICE_CHOICES:
@@ -1156,15 +1211,14 @@ def _build_filters(settings: Settings, *, window_minutes: int, service: str, env
         env = "all"
     if env == "current":
         env = current_env
-    return DashboardFilters(window_minutes=normalized_window, service=normalized_service, environment=env)
+    return DashboardFilters(
+        window_minutes=normalized_window, service=normalized_service, environment=env
+    )
 
 
 def _resolve_environment(settings: Settings) -> str:
     candidate = (
-        os.getenv("OCTOPAL_ENV")
-        or os.getenv("APP_ENV")
-        or os.getenv("ENVIRONMENT")
-        or "local"
+        os.getenv("OCTOPAL_ENV") or os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or "local"
     )
     raw = str(candidate or "local").strip().lower()
     return "".join(ch for ch in raw if ch.isalnum() or ch in {"-", "_"}) or "local"
@@ -1248,7 +1302,9 @@ async def _execute_dashboard_action(
                     "message": f"Failed worker '{worker_id}' not found.",
                 }
             else:
-                launch = await _launch_worker_from_record(app, target, reason=reason, requested_by=requested_by)
+                launch = await _launch_worker_from_record(
+                    app, target, reason=reason, requested_by=requested_by
+                )
                 if launch.get("status") == "ok":
                     result = {
                         "status": "ok",
@@ -1285,7 +1341,9 @@ async def _execute_dashboard_action(
                 }
             else:
                 stop_info = await _stop_worker_if_running(app, worker.id)
-                launch = await _launch_worker_from_record(app, worker, reason=reason, requested_by=requested_by)
+                launch = await _launch_worker_from_record(
+                    app, worker, reason=reason, requested_by=requested_by
+                )
                 if launch.get("status") == "ok":
                     result = {
                         "status": "ok",
@@ -1439,7 +1497,9 @@ async def _launch_worker_from_record(
     return {"status": "error", "message": f"Launch failed with status={launch_status or 'unknown'}"}
 
 
-def _select_retry_target(workers: list[WorkerRecord], requested_worker_id: str | None) -> WorkerRecord | None:
+def _select_retry_target(
+    workers: list[WorkerRecord], requested_worker_id: str | None
+) -> WorkerRecord | None:
     if not requested_worker_id:
         return None
     for worker in workers:
@@ -1497,7 +1557,9 @@ def _list_dashboard_action_history(store: SQLiteStore, limit: int = 15) -> list[
     return out
 
 
-def _build_snapshot(settings: Settings, store: SQLiteStore, last: int, filters: DashboardFilters) -> dict[str, Any]:
+def _build_snapshot(
+    settings: Settings, store: SQLiteStore, last: int, filters: DashboardFilters
+) -> dict[str, Any]:
     status_data = read_status(settings) or {}
     pid = status_data.get("pid")
     running = is_pid_running(pid)
@@ -1549,9 +1611,16 @@ def _build_snapshot(settings: Settings, store: SQLiteStore, last: int, filters: 
     log_path = settings.state_dir / "logs" / "octopal.log"
     incident_logs = _collect_logs(log_path, max_lines=600, filters=filters)
     recent_logs = _tail_logs(log_path, 12, filters=filters)
-    log_health = _compute_log_health(log_path, now, window_minutes=filters.window_minutes, filters=filters)
+    log_health = _compute_log_health(
+        log_path, now, window_minutes=filters.window_minutes, filters=filters
+    )
     latency_p95_ms = _estimate_control_latency_p95_ms(requests, acks)
-    queue_depth = followup_q + internal_q + int(channel_metrics.get("queue_depth", 0) or 0) + len(pending_requests)
+    queue_depth = (
+        followup_q
+        + internal_q
+        + int(channel_metrics.get("queue_depth", 0) or 0)
+        + len(pending_requests)
+    )
     active_workers_kpi = (
         by_status.get("running", 0)
         + by_status.get("started", 0)
@@ -1575,7 +1644,9 @@ def _build_snapshot(settings: Settings, store: SQLiteStore, last: int, filters: 
         scheduler_metrics=scheduler_metrics,
         mcp_servers=mcp_servers if isinstance(mcp_servers, dict) else {},
     )
-    services = [s for s in services_all if _service_matches_filter(str(s.get("id", "all")), filters.service)]
+    services = [
+        s for s in services_all if _service_matches_filter(str(s.get("id", "all")), filters.service)
+    ]
     if not services:
         services = services_all
     overall_status, overall_reasons = _derive_overall_health(
@@ -1839,12 +1910,17 @@ def _build_service_health(
             "status": telegram_status,
             "reason": telegram_reason,
             "updated_at": telegram_metrics.get("updated_at"),
-            "metrics": {"chat_queues": telegram_q, "send_tasks": int(telegram_metrics.get("send_tasks", 0) or 0)},
+            "metrics": {
+                "chat_queues": telegram_q,
+                "send_tasks": int(telegram_metrics.get("send_tasks", 0) or 0),
+            },
         }
     )
 
     whatsapp_connected_raw = whatsapp_metrics.get("connected")
-    whatsapp_connected = None if whatsapp_connected_raw is None else int(bool(whatsapp_connected_raw))
+    whatsapp_connected = (
+        None if whatsapp_connected_raw is None else int(bool(whatsapp_connected_raw))
+    )
     whatsapp_mappings = int(whatsapp_metrics.get("chat_mappings", 0) or 0)
     whatsapp_status = "ok"
     whatsapp_reason = "inactive channel"
@@ -1908,9 +1984,7 @@ def _build_service_health(
     scheduler_tick_status = str(scheduler_metrics.get("last_tick_status", "") or "").lower()
     scheduler_age = _age_seconds(str(scheduler_updated_at or ""), now)
     scheduler_dispatch_errors = int(scheduler_metrics.get("last_dispatch_errors", 0) or 0)
-    scheduler_rejected = int(
-        scheduler_metrics.get("last_dispatch_rejected_by_policy", 0) or 0
-    )
+    scheduler_rejected = int(scheduler_metrics.get("last_dispatch_rejected_by_policy", 0) or 0)
     scheduler_completed = int(scheduler_metrics.get("last_dispatch_completed", 0) or 0)
     scheduler_started = int(scheduler_metrics.get("last_dispatch_started", 0) or 0)
     if not scheduler_metrics:
@@ -1929,9 +2003,7 @@ def _build_service_health(
         scheduler_reason = f"{scheduler_dispatch_errors} scheduler dispatch error(s) on last tick"
     elif scheduler_rejected > 0:
         scheduler_status = "warning"
-        scheduler_reason = (
-            f"{scheduler_rejected} scheduled task(s) rejected by policy on last tick"
-        )
+        scheduler_reason = f"{scheduler_rejected} scheduled task(s) rejected by policy on last tick"
     elif scheduler_completed > 0:
         scheduler_reason = f"completed {scheduler_completed} scheduled Octo task(s) on last tick"
     elif scheduler_started > 0:
@@ -1975,7 +2047,9 @@ def _build_service_health(
             mcp_warn += 1
     mcp_total = len(mcp_servers)
     mcp_status = "ok"
-    mcp_reason = "no MCP servers configured" if mcp_total == 0 else f"{mcp_total} server(s) connected"
+    mcp_reason = (
+        "no MCP servers configured" if mcp_total == 0 else f"{mcp_total} server(s) connected"
+    )
     if mcp_error > 0:
         mcp_status = "critical"
         mcp_reason = f"{mcp_error} MCP server(s) in error"
@@ -1992,7 +2066,12 @@ def _build_service_health(
             "status": mcp_status,
             "reason": mcp_reason,
             "updated_at": None,
-            "metrics": {"total": mcp_total, "error": mcp_error, "warning": mcp_warn, "reconnecting": mcp_reconnecting},
+            "metrics": {
+                "total": mcp_total,
+                "error": mcp_error,
+                "warning": mcp_warn,
+                "reconnecting": mcp_reconnecting,
+            },
         }
     )
     return out
@@ -2019,7 +2098,9 @@ def _derive_overall_health(
         status = str(service.get("status", "ok"))
         if status in {"warning", "critical"}:
             _raise(status)
-            reasons.append(f"{service.get('name', service.get('id', 'service'))}: {service.get('reason', status)}")
+            reasons.append(
+                f"{service.get('name', service.get('id', 'service'))}: {service.get('reason', status)}"
+            )
 
     if not system_running:
         _raise("critical")
@@ -2197,7 +2278,11 @@ def _build_slo_metrics(
     error_budget_target = 1.0
     error_budget_fraction = error_budget_target / 100.0
 
-    core_services = [s for s in services if str(s.get("id", "")) in {"gateway", "octo", active_channel, "exec_run"}]
+    core_services = [
+        s
+        for s in services
+        if str(s.get("id", "")) in {"gateway", "octo", active_channel, "exec_run"}
+    ]
     if not core_services:
         uptime_pct = 100.0
     else:
@@ -2217,7 +2302,11 @@ def _build_slo_metrics(
     error_budget_remaining_pct = round(max(0.0, 100.0 - (burn_rate * 10.0)), 1)
 
     mttr_minutes = _estimate_mttr_minutes(recent_workers)
-    uptime_status = "ok" if uptime_pct >= availability_target else ("warning" if uptime_pct >= 95.0 else "critical")
+    uptime_status = (
+        "ok"
+        if uptime_pct >= availability_target
+        else ("warning" if uptime_pct >= 95.0 else "critical")
+    )
     burn_status = "ok" if burn_rate <= 1.0 else ("warning" if burn_rate <= 2.0 else "critical")
     if mttr_minutes is None:
         mttr_status = "warning"
@@ -2229,7 +2318,10 @@ def _build_slo_metrics(
         mttr_status = "critical"
 
     return {
-        "objectives": {"availability_target_pct": availability_target, "error_budget_pct": error_budget_target},
+        "objectives": {
+            "availability_target_pct": availability_target,
+            "error_budget_pct": error_budget_target,
+        },
         "uptime_pct": {"value": uptime_pct, "status": uptime_status},
         "burn_rate": {"value": burn_rate, "status": burn_status},
         "error_budget_remaining_pct": {"value": error_budget_remaining_pct, "status": burn_status},
@@ -2310,7 +2402,9 @@ def _serialize_recent_worker(
     }
 
 
-def _worker_plan_binding_payload(worker_id: str, store: SQLiteStore | None) -> dict[str, Any] | None:
+def _worker_plan_binding_payload(
+    worker_id: str, store: SQLiteStore | None
+) -> dict[str, Any] | None:
     if store is None or not worker_id:
         return None
     try:
@@ -2339,7 +2433,9 @@ def _worker_audit_timeline(worker_id: str, store: SQLiteStore | None) -> list[di
     try:
         events = store.list_audit_for_correlation(worker_id, limit=40)
     except Exception:
-        logger.debug("Failed to load worker audit timeline", exc_info=True, extra={"worker_id": worker_id})
+        logger.debug(
+            "Failed to load worker audit timeline", exc_info=True, extra={"worker_id": worker_id}
+        )
         return []
     return [_serialize_worker_audit_event(event) for event in events]
 
@@ -2394,7 +2490,9 @@ def _build_noise_control(*, logs: list[dict[str, Any]]) -> dict[str, Any]:
     groups: dict[tuple[str, str, str], int] = {}
     for log in noisy:
         service = str(log.get("service", "gateway"))
-        severity = "critical" if str(log.get("level", "")).lower() in {"error", "critical"} else "warning"
+        severity = (
+            "critical" if str(log.get("level", "")).lower() in {"error", "critical"} else "warning"
+        )
         category = _categorize_incident_event(str(log.get("event", "")))
         key = (service, category, severity)
         groups[key] = groups.get(key, 0) + 1
@@ -2451,7 +2549,9 @@ def _compute_log_health(
     cutoff = now.timestamp() - window_minutes * 60
     total = 0
     errors = 0
-    effective_filters = filters or DashboardFilters(window_minutes=window_minutes, service="all", environment="all")
+    effective_filters = filters or DashboardFilters(
+        window_minutes=window_minutes, service="all", environment="all"
+    )
     for data in _collect_logs(log_path, max_lines=1000, filters=effective_filters):
         ts = _parse_timestamp(str(data.get("timestamp", "")))
         if ts is not None and ts.timestamp() < cutoff:
@@ -2468,7 +2568,9 @@ def _compute_log_health(
     }
 
 
-def _estimate_control_latency_p95_ms(requests: list[dict[str, Any]], acks: list[dict[str, Any]]) -> int | None:
+def _estimate_control_latency_p95_ms(
+    requests: list[dict[str, Any]], acks: list[dict[str, Any]]
+) -> int | None:
     if not requests or not acks:
         return None
     by_request_id: dict[str, datetime] = {}
@@ -2654,7 +2756,13 @@ def _normalize_log_entry(line: str, *, filters: DashboardFilters) -> dict[str, A
         environment = "local"
         if filters.environment != "all" and filters.environment != environment:
             return None
-        return {"event": raw[:200], "level": "info", "timestamp": "", "service": service, "environment": environment}
+        return {
+            "event": raw[:200],
+            "level": "info",
+            "timestamp": "",
+            "service": service,
+            "environment": environment,
+        }
     if not isinstance(parsed, dict):
         return None
     event = str(parsed.get("event", ""))[:200]
@@ -2752,7 +2860,9 @@ def _settings_to_octopal_config(settings: Settings) -> OctopalConfig:
     config.telegram = TelegramConfig(
         bot_token=settings.telegram_bot_token,
         allowed_chat_ids=[
-            item.strip() for item in str(settings.allowed_telegram_chat_ids or "").split(",") if item.strip()
+            item.strip()
+            for item in str(settings.allowed_telegram_chat_ids or "").split(",")
+            if item.strip()
         ],
         parse_mode=settings.telegram_parse_mode,
     )
@@ -2813,7 +2923,9 @@ def _settings_to_octopal_config(settings: Settings) -> OctopalConfig:
     config.whatsapp = WhatsAppConfig(
         mode=settings.whatsapp_mode,
         allowed_numbers=[
-            item.strip() for item in str(settings.allowed_whatsapp_numbers or "").split(",") if item.strip()
+            item.strip()
+            for item in str(settings.allowed_whatsapp_numbers or "").split(",")
+            if item.strip()
         ],
         auth_dir=settings.whatsapp_auth_dir,
         bridge_host=settings.whatsapp_bridge_host,
@@ -2872,7 +2984,10 @@ def _merge_dashboard_secret_fields(
     merged = payload.model_copy(deep=True)
     if not merged.telegram.bot_token.strip():
         merged.telegram.bot_token = existing.telegram.bot_token
-    if merged.llm.provider_id == existing.llm.provider_id and not (merged.llm.api_key or "").strip():
+    if (
+        merged.llm.provider_id == existing.llm.provider_id
+        and not (merged.llm.api_key or "").strip()
+    ):
         merged.llm.api_key = existing.llm.api_key
     if (
         merged.worker_llm_default.provider_id == existing.worker_llm_default.provider_id
@@ -2890,16 +3005,19 @@ def _merge_dashboard_secret_fields(
     return merged
 
 
-
 def _dashboard_unavailable_html(settings: Settings) -> str:
     webapp_dist = _resolve_webapp_dist_dir(settings)
     project_root = Path(__file__).resolve().parents[3]
-    dist_hint_path = Path(settings.webapp_dist_dir) if settings.webapp_dist_dir is not None else (project_root / "webapp" / "dist")
+    dist_hint_path = (
+        Path(settings.webapp_dist_dir)
+        if settings.webapp_dist_dir is not None
+        else (project_root / "webapp" / "dist")
+    )
     if not dist_hint_path.is_absolute():
         dist_hint_path = project_root / dist_hint_path
     dist_hint = str(dist_hint_path)
-    dist_status = 'found' if webapp_dist is not None else 'not found'
-    enabled = 'enabled' if settings.webapp_enabled else 'disabled'
+    dist_status = "found" if webapp_dist is not None else "not found"
+    enabled = "enabled" if settings.webapp_enabled else "disabled"
     return f"""<!doctype html>
 <html lang=\"en\">
 <head>

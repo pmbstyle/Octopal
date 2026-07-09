@@ -198,9 +198,7 @@ def _message_dedupe_key(peer_id: str, message: A2AMessage) -> tuple[str, str] | 
 
 
 @asynccontextmanager
-async def _a2a_message_lock(
-    app: FastAPI, key: tuple[str, str]
-) -> AsyncIterator[None]:
+async def _a2a_message_lock(app: FastAPI, key: tuple[str, str]) -> AsyncIterator[None]:
     _prune_a2a_message_dedupe(app)
     locks = getattr(app.state, "a2a_message_locks", None)
     if not isinstance(locks, dict):

@@ -10,13 +10,26 @@ from octopal.tools.registry import ToolSpec
 
 logger = structlog.get_logger(__name__)
 
+
 async def mcp_connect(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     """Connect to a new MCP server."""
     safe_args = dict(args)
     if isinstance(safe_args.get("headers"), dict):
-        safe_args["headers"] = {k: ("***" if "authorization" in str(k).lower() else v) for k, v in safe_args["headers"].items()}
+        safe_args["headers"] = {
+            k: ("***" if "authorization" in str(k).lower() else v)
+            for k, v in safe_args["headers"].items()
+        }
     if isinstance(safe_args.get("env"), dict):
-        safe_args["env"] = {k: ("***" if "key" in str(k).lower() or "token" in str(k).lower() or "secret" in str(k).lower() else v) for k, v in safe_args["env"].items()}
+        safe_args["env"] = {
+            k: (
+                "***"
+                if "key" in str(k).lower()
+                or "token" in str(k).lower()
+                or "secret" in str(k).lower()
+                else v
+            )
+            for k, v in safe_args["env"].items()
+        }
     logger.info("mcp_connect tool called", arguments=safe_args)
     octo = ctx.get("octo")
     if not octo or not octo.mcp_manager:
@@ -40,7 +53,9 @@ async def mcp_connect(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
     # Helpful hint for local development confusion
     if url and "localhost" in url.lower() and "http://localhost:3000" in url.lower():
-        logger.warning("Octo is attempting to connect to what looks like a default localhost URL. This might be a mistake if the server is external.")
+        logger.warning(
+            "Octo is attempting to connect to what looks like a default localhost URL. This might be a mistake if the server is external."
+        )
 
     config = MCPServerConfig(
         id=server_id,
@@ -57,16 +72,22 @@ async def mcp_connect(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         tools = await octo.mcp_manager.connect_server(config)
         # Use the actual names from the ToolSpec objects
         tool_names = [t.name for t in tools]
-        return json.dumps({
-            "status": "connected",
-            "server_id": server_id,
-            "message": f"Successfully connected to MCP server '{server_id}'. {len(tools)} tools have been added to your toolset and are ready to be used. You can call them directly just like any other tool (e.g. by using their name in a tool call block).",
-            "transport": config.transport or "auto",
-            "tools_added": tool_names
-        }, indent=2)
+        return json.dumps(
+            {
+                "status": "connected",
+                "server_id": server_id,
+                "message": f"Successfully connected to MCP server '{server_id}'. {len(tools)} tools have been added to your toolset and are ready to be used. You can call them directly just like any other tool (e.g. by using their name in a tool call block).",
+                "transport": config.transport or "auto",
+                "tools_added": tool_names,
+            },
+            indent=2,
+        )
     except Exception as e:
-        logger.error("Dynamic MCP connection failed", server_id=server_id, error=str(e), exc_info=True)
+        logger.error(
+            "Dynamic MCP connection failed", server_id=server_id, error=str(e), exc_info=True
+        )
         return f"Failed to connect to MCP server '{server_id}': {e}. Please check the URL/command and ensure the server is reachable."
+
 
 async def mcp_disconnect(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     """Disconnect from an MCP server."""
@@ -84,6 +105,7 @@ async def mcp_disconnect(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     except Exception as e:
         return f"Error disconnecting from MCP server {server_id}: {e}"
 
+
 def mcp_list(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     """List connected MCP servers and their tools."""
     octo = ctx.get("octo")
@@ -93,11 +115,13 @@ def mcp_list(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     servers = []
     for server_id, _session in octo.mcp_manager.sessions.items():
         tools = octo.mcp_manager._tools.get(server_id, [])
-        servers.append({
-            "id": server_id,
-            "tool_count": len(tools),
-            "tools": [t.name for t in tools] # Full names like mcp_server_tool
-        })
+        servers.append(
+            {
+                "id": server_id,
+                "tool_count": len(tools),
+                "tools": [t.name for t in tools],  # Full names like mcp_server_tool
+            }
+        )
 
     return json.dumps({"connected_servers": servers}, indent=2)
 
@@ -116,14 +140,19 @@ def mcp_status(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             "known_count": len(statuses),
             "configured_count": len(statuses),
             "reconnecting_count": sum(
-                1 for payload in statuses.values() if str(payload.get("status", "")).lower() == "reconnecting"
+                1
+                for payload in statuses.values()
+                if str(payload.get("status", "")).lower() == "reconnecting"
             ),
             "error_count": sum(
-                1 for payload in statuses.values() if str(payload.get("status", "")).lower() == "error"
+                1
+                for payload in statuses.values()
+                if str(payload.get("status", "")).lower() == "error"
             ),
         },
         indent=2,
     )
+
 
 def mcp_discover(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     """Summarize MCP server usability, exposed tools, and suggested next actions."""
@@ -208,6 +237,7 @@ def mcp_discover(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         indent=2,
     )
 
+
 async def mcp_call(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     """Call an MCP tool on a specific server."""
     octo = ctx.get("octo")
@@ -228,7 +258,10 @@ async def mcp_call(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     logger.info("Octo calling MCP tool via mcp_call", server_id=server_id, tool=tool_name)
     try:
         result = await octo.mcp_manager.call_tool(server_id, tool_name, tool_args)
-        return json.dumps([c.model_dump() if hasattr(c, "model_dump") else str(c) for c in result.content], indent=2)
+        return json.dumps(
+            [c.model_dump() if hasattr(c, "model_dump") else str(c) for c in result.content],
+            indent=2,
+        )
     except Exception as e:
         logger.exception("MCP tool call failed", server_id=server_id, tool=tool_name)
         return json.dumps(
@@ -241,6 +274,7 @@ async def mcp_call(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             indent=2,
         )
 
+
 def get_mcp_mgmt_tools() -> list[ToolSpec]:
     return [
         ToolSpec(
@@ -249,15 +283,38 @@ def get_mcp_mgmt_tools() -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "Unique ID for this server (e.g. 'sqlite')."},
+                    "id": {
+                        "type": "string",
+                        "description": "Unique ID for this server (e.g. 'sqlite').",
+                    },
                     "name": {"type": "string", "description": "Human-readable name."},
-                    "command": {"type": "string", "description": "Command to run for stdio servers (e.g. 'npx', 'python', 'node')."},
-                    "args": {"type": "array", "items": {"type": "string"}, "description": "Arguments for the command (e.g. ['-y', '@modelcontextprotocol/server-everything'])."},
-                    "env": {"type": "object", "description": "Environment variables for stdio (e.g. API keys)."},
+                    "command": {
+                        "type": "string",
+                        "description": "Command to run for stdio servers (e.g. 'npx', 'python', 'node').",
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Arguments for the command (e.g. ['-y', '@modelcontextprotocol/server-everything']).",
+                    },
+                    "env": {
+                        "type": "object",
+                        "description": "Environment variables for stdio (e.g. API keys).",
+                    },
                     "url": {"type": "string", "description": "URL for HTTP MCP servers."},
-                    "headers": {"type": "object", "description": "HTTP headers (e.g. {'Authorization': 'Bearer ...'})."},
-                    "transport": {"type": "string", "enum": ["auto", "sse", "streamable-http", "stdio"], "description": "Connection transport. Default is 'auto'."},
-                    "type": {"type": "string", "description": "Alias for transport (legacy compatibility)."},
+                    "headers": {
+                        "type": "object",
+                        "description": "HTTP headers (e.g. {'Authorization': 'Bearer ...'}).",
+                    },
+                    "transport": {
+                        "type": "string",
+                        "enum": ["auto", "sse", "streamable-http", "stdio"],
+                        "description": "Connection transport. Default is 'auto'.",
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "Alias for transport (legacy compatibility).",
+                    },
                 },
                 "required": ["id"],
             },
@@ -300,7 +357,10 @@ def get_mcp_mgmt_tools() -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "server_id": {"type": "string", "description": "ID of the MCP server."},
-                    "tool_name": {"type": "string", "description": "Name of the tool on that server."},
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Name of the tool on that server.",
+                    },
                     "arguments": {"type": "object", "description": "Arguments for the tool."},
                 },
                 "required": ["server_id", "tool_name"],
@@ -315,8 +375,14 @@ def get_mcp_mgmt_tools() -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "server_id": {"type": "string", "description": "Optional server ID to focus on."},
-                    "limit": {"type": "integer", "description": "Max tools to preview per server (default 20, max 50)."},
+                    "server_id": {
+                        "type": "string",
+                        "description": "Optional server ID to focus on.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max tools to preview per server (default 20, max 50).",
+                    },
                 },
                 "additionalProperties": False,
             },

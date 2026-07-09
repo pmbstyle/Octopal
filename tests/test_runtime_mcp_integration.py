@@ -166,7 +166,9 @@ def test_runtime_allows_worker_manage_templates(tmp_path: Path) -> None:
 
     runtime.run = _fake_run  # type: ignore[method-assign]
 
-    result = asyncio.run(runtime.run_task(TaskRequest(worker_id="research_coordinator", task="hello")))
+    result = asyncio.run(
+        runtime.run_task(TaskRequest(worker_id="research_coordinator", task="hello"))
+    )
 
     assert result.status == "completed"
     spec = captured["spec"]
@@ -215,7 +217,9 @@ def test_runtime_allows_spawn_children_permission_alias(tmp_path: Path) -> None:
 
     runtime.run = _fake_run  # type: ignore[method-assign]
 
-    result = asyncio.run(runtime.run_task(TaskRequest(worker_id="research_coordinator", task="hello")))
+    result = asyncio.run(
+        runtime.run_task(TaskRequest(worker_id="research_coordinator", task="hello"))
+    )
 
     assert result.status == "completed"
     spec = captured["spec"]
@@ -254,7 +258,9 @@ def test_runtime_persists_preflight_failure_for_worker_status(tmp_path: Path) ->
             record = self.records[worker_id]
             self.records[worker_id] = record.model_copy(update={"status": status})
 
-        def update_worker_result(self, worker_id: str, summary=None, output=None, error=None, tools_used=None) -> None:
+        def update_worker_result(
+            self, worker_id: str, summary=None, output=None, error=None, tools_used=None
+        ) -> None:
             record = self.records[worker_id]
             update = {}
             if summary is not None:
@@ -573,7 +579,7 @@ def test_runtime_includes_connector_alias_tools_for_workers(tmp_path: Path) -> N
                     "affiliation": {"type": "string"},
                     "sort": {"type": "string"},
                     "direction": {"type": "string"},
-                        "per_page": {"type": "integer", "minimum": 1, "maximum": 50},
+                    "per_page": {"type": "integer", "minimum": 1, "maximum": 50},
                     "page": {"type": "integer", "minimum": 1},
                 },
                 "additionalProperties": False,
@@ -696,9 +702,7 @@ def test_runtime_launch_env_includes_search_keys_from_config(tmp_path: Path, mon
             raise RuntimeError("stop after env capture")
 
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
-    settings = Settings(
-        config_obj=OctopalConfig(search={"brave_api_key": "brave-from-config"})
-    )
+    settings = Settings(config_obj=OctopalConfig(search={"brave_api_key": "brave-from-config"}))
     runtime = WorkerRuntime(
         store=_Store(),
         policy=_Policy(),
@@ -722,7 +726,9 @@ def test_runtime_launch_env_includes_search_keys_from_config(tmp_path: Path, mon
     assert env["BRAVE_API_KEY"] == "brave-from-config"
 
 
-def test_runtime_launch_env_keeps_provider_secrets_out_of_worker_env(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_launch_env_keeps_provider_secrets_out_of_worker_env(
+    tmp_path: Path, monkeypatch
+) -> None:
     template = WorkerTemplateRecord(
         id="worker",
         name="Worker",

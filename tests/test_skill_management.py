@@ -133,12 +133,14 @@ scope: worker
     assert len(inventory) == 1
     assert inventory[0]["id"] == "job-search"
     assert inventory[0]["has_scripts"] is True
-    assert inventory[0]["scripts_dir"].endswith("skills/job-search/scripts") or inventory[0]["scripts_dir"].endswith(
-        "skills\\job-search\\scripts"
-    )
+    assert inventory[0]["scripts_dir"].endswith("skills/job-search/scripts") or inventory[0][
+        "scripts_dir"
+    ].endswith("skills\\job-search\\scripts")
 
 
-def test_list_skill_inventory_uses_explicit_workspace_for_runtime_status(tmp_path: Path, monkeypatch) -> None:
+def test_list_skill_inventory_uses_explicit_workspace_for_runtime_status(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "writer"
     scripts_dir = skill_dir / "scripts"
@@ -174,7 +176,9 @@ description: Research helper
         encoding="utf-8",
     )
     (scripts_dir / "tool.py").write_text("print('ok')\n", encoding="utf-8")
-    (skill_dir / "package.json").write_text('{"dependencies":{"left-pad":"1.3.0"}}\n', encoding="utf-8")
+    (skill_dir / "package.json").write_text(
+        '{"dependencies":{"left-pad":"1.3.0"}}\n', encoding="utf-8"
+    )
 
     payload = list_skill_inventory(workspace_dir)
 
@@ -220,7 +224,9 @@ def test_load_skill_inventory_keeps_legacy_registry_skill(tmp_path: Path, monkey
     assert inventory[0]["exists"] is True
 
 
-def test_add_skill_can_infer_name_and_description_from_skill_file(tmp_path: Path, monkeypatch) -> None:
+def test_add_skill_can_infer_name_and_description_from_skill_file(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "writer"
     skill_dir.mkdir(parents=True)
@@ -243,7 +249,9 @@ description: Helps write copy
     assert listed["skills"][0]["description"] == "Helps write copy"
 
 
-def test_registered_skill_tools_include_auto_discovered_enabled_bundle(tmp_path: Path, monkeypatch) -> None:
+def test_registered_skill_tools_include_auto_discovered_enabled_bundle(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "writer"
     skill_dir.mkdir(parents=True)
@@ -263,7 +271,9 @@ description: Helps write copy
     assert "Helps write copy" in tools[0].description
 
 
-def test_run_skill_payload_includes_usage_hints_for_script_skill(tmp_path: Path, monkeypatch) -> None:
+def test_run_skill_payload_includes_usage_hints_for_script_skill(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "writer"
     scripts_dir = skill_dir / "scripts"
@@ -350,7 +360,9 @@ description: Helps write copy
     assert [tool.name for tool in get_registered_skill_tools()] == ["skill_writer"]
 
 
-def test_registered_skill_tool_rechecks_enabled_state_after_disable(tmp_path: Path, monkeypatch) -> None:
+def test_registered_skill_tool_rechecks_enabled_state_after_disable(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "writer"
     skill_dir.mkdir(parents=True)
@@ -417,7 +429,9 @@ description: Helps write copy
     assert list_skill_inventory(workspace_dir)["skills"] == []
 
 
-def test_run_skill_script_executes_python_from_bundle_scripts_dir(tmp_path: Path, monkeypatch) -> None:
+def test_run_skill_script_executes_python_from_bundle_scripts_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "writer"
     scripts_dir = skill_dir / "scripts"
@@ -656,7 +670,9 @@ description: Helps write copy
     assert not skill_dir.exists()
 
 
-def test_tool_remove_skill_deletes_auto_discovered_local_bundle(tmp_path: Path, monkeypatch) -> None:
+def test_tool_remove_skill_deletes_auto_discovered_local_bundle(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "writer"
     skill_dir.mkdir(parents=True)
@@ -799,7 +815,9 @@ metadata:
     assert "prepare-env job-search" in result
 
 
-def test_run_skill_script_blocks_python_script_without_prepared_env(tmp_path: Path, monkeypatch) -> None:
+def test_run_skill_script_blocks_python_script_without_prepared_env(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "writer"
     scripts_dir = skill_dir / "scripts"

@@ -20,13 +20,35 @@ def _worker(worker_id: str, status: str) -> WorkerRecord:
 
 def test_build_incidents_prioritizes_critical_entries() -> None:
     services = [
-        {"id": "gateway", "name": "Gateway", "status": "critical", "reason": "process is not running", "updated_at": "2026-03-01T00:00:00+00:00"},
-        {"id": "octo", "name": "Octo", "status": "warning", "reason": "queue pressure rising", "updated_at": "2026-03-01T00:00:05+00:00"},
+        {
+            "id": "gateway",
+            "name": "Gateway",
+            "status": "critical",
+            "reason": "process is not running",
+            "updated_at": "2026-03-01T00:00:00+00:00",
+        },
+        {
+            "id": "octo",
+            "name": "Octo",
+            "status": "warning",
+            "reason": "queue pressure rising",
+            "updated_at": "2026-03-01T00:00:05+00:00",
+        },
     ]
     workers = [_worker("w1", "failed"), _worker("w2", "failed"), _worker("w3", "completed")]
     logs = [
-        {"service": "gateway", "level": "error", "event": "gateway timeout to provider", "timestamp": "2026-03-01T00:00:10+00:00"},
-        {"service": "gateway", "level": "error", "event": "gateway timeout to provider", "timestamp": "2026-03-01T00:00:12+00:00"},
+        {
+            "service": "gateway",
+            "level": "error",
+            "event": "gateway timeout to provider",
+            "timestamp": "2026-03-01T00:00:10+00:00",
+        },
+        {
+            "service": "gateway",
+            "level": "error",
+            "event": "gateway timeout to provider",
+            "timestamp": "2026-03-01T00:00:12+00:00",
+        },
     ]
 
     result = _build_incidents(

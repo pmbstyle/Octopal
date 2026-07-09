@@ -152,9 +152,11 @@ class FactsService:
             return []
 
         requested_facets = set(_clean_facets(memory_facets))
-        filtered = [
-            record for record in active if set(record.facets) & requested_facets
-        ] if requested_facets else []
+        filtered = (
+            [record for record in active if set(record.facets) & requested_facets]
+            if requested_facets
+            else []
+        )
         candidates = filtered or active
 
         scored: list[tuple[tuple[int, float, str], MemoryFactRecord]] = []
@@ -171,7 +173,9 @@ class FactsService:
             overlap = sum(1 for token in tokens if token in haystack)
             if overlap <= 0:
                 continue
-            scored.append(((overlap, float(record.confidence), record.updated_at.isoformat()), record))
+            scored.append(
+                ((overlap, float(record.confidence), record.updated_at.isoformat()), record)
+            )
 
         scored.sort(key=lambda item: item[0], reverse=True)
         return [_format_fact(record) for _, record in scored[:limit]]

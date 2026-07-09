@@ -21,20 +21,35 @@ _ASSERTION_RE = re.compile(
     re.IGNORECASE,
 )
 _DECISION_PATTERNS = (
-    re.compile(r"\b(decide|decided|choose|chose|picked|settled on|went with|switch(?:ed)? to|migrat(?:e|ed) to)\b", re.IGNORECASE),
-    re.compile(r"\b(instead of|rather than|trade-?off|the reason is|the reason was|because)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(decide|decided|choose|chose|picked|settled on|went with|switch(?:ed)? to|migrat(?:e|ed) to)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(instead of|rather than|trade-?off|the reason is|the reason was|because)\b",
+        re.IGNORECASE,
+    ),
 )
 _PREFERENCE_PATTERNS = (
-    re.compile(r"\b(i prefer|we prefer|prefer to|always use|never use|please always|please never)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(i prefer|we prefer|prefer to|always use|never use|please always|please never)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\b(i like|i don't like|i dont like|we always|we never)\b", re.IGNORECASE),
 )
 _MILESTONE_PATTERNS = (
-    re.compile(r"\b(it works|it worked|got it working|fixed|solved|resolved|figured it out)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(it works|it worked|got it working|fixed|solved|resolved|figured it out)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\b(implemented|shipped|deployed|launched|breakthrough|released)\b", re.IGNORECASE),
 )
 _PROBLEM_PATTERNS = (
     re.compile(r"\b(bug|error|crash|broken|issue|problem|failed|failing|stuck)\b", re.IGNORECASE),
-    re.compile(r"\b(doesn't work|doesnt work|not working|won't work|wont work|root cause|workaround)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(doesn't work|doesnt work|not working|won't work|wont work|root cause|workaround)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\b(not healthy|unhealthy|degraded|down|outage)\b", re.IGNORECASE),
 )
 _EMOTIONAL_PATTERNS = (
@@ -82,7 +97,9 @@ class MemoryService:
         owner_id = str(merged_metadata.get("owner_id", self.owner_id))
 
         if chat_id is not None:
-            recent_entries = await asyncio.to_thread(self.store.list_memory_entries_by_chat, chat_id, 50)
+            recent_entries = await asyncio.to_thread(
+                self.store.list_memory_entries_by_chat, chat_id, 50
+            )
             owner_recent = [
                 entry
                 for entry in recent_entries
@@ -304,7 +321,11 @@ def _find_contradictions(entries: list[MemoryEntry], content: str) -> list[str]:
         other = _extract_assertion(entry.content)
         if not other:
             continue
-        if current.subject == other.subject and current.predicate == other.predicate and current.negated != other.negated:
+        if (
+            current.subject == other.subject
+            and current.predicate == other.predicate
+            and current.negated != other.negated
+        ):
             contradictory_ids.append(entry.id)
     return contradictory_ids
 

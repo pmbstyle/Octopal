@@ -109,14 +109,10 @@ _build_saved_image_fallback_text = _route_inputs._build_saved_image_fallback_tex
 _coerce_content_to_text = _route_completion._coerce_content_to_text
 _coerce_tool_message_to_text = _route_completion._coerce_tool_message_to_text
 _complete_text = _route_completion._complete_text
-_auto_continuation_completion_signal = (
-    _route_continuations._auto_continuation_completion_signal
-)
+_auto_continuation_completion_signal = _route_continuations._auto_continuation_completion_signal
 _build_auto_continuation_args = _route_continuations._build_auto_continuation_args
 _build_partial_callback = _route_progress._build_partial_callback
-_continue_after_tool_budget_exhaustion = (
-    _route_continuations._continue_after_tool_budget_exhaustion
-)
+_continue_after_tool_budget_exhaustion = _route_continuations._continue_after_tool_budget_exhaustion
 _decode_and_save_images = _route_inputs._decode_and_save_images
 _is_invalid_tool_payload_error = _route_inputs._is_invalid_tool_payload_error
 _is_vision_tool_compatibility_error = _route_inputs._is_vision_tool_compatibility_error
@@ -147,7 +143,9 @@ _persist_plan = _route_planning._persist_plan
 _build_insufficient_evidence_response = _route_verification._build_insufficient_evidence_response
 _MAX_VERIFY_CONTEXT_CHARS = _route_verification._MAX_VERIFY_CONTEXT_CHARS
 _messages_include_execution_plan = _route_verification._messages_include_execution_plan
-_messages_include_runtime_state_context = _route_verification._messages_include_runtime_state_context
+_messages_include_runtime_state_context = (
+    _route_verification._messages_include_runtime_state_context
+)
 _messages_to_text = _route_verification._messages_to_text
 _message_shape = _route_completion._message_shape
 _messages_include_tool_call = _route_replies._messages_include_tool_call
@@ -184,9 +182,7 @@ def _get_proactive_tools(octo: Any, chat_id: int) -> tuple[list[ToolSpec], dict[
 def _get_scheduled_octo_control_tools(
     octo: Any, chat_id: int
 ) -> tuple[list[ToolSpec], dict[str, object]]:
-    return _tool_selection._get_scheduled_octo_control_tools(
-        octo, chat_id, get_tools_fn=get_tools
-    )
+    return _tool_selection._get_scheduled_octo_control_tools(octo, chat_id, get_tools_fn=get_tools)
 
 
 def _get_internal_maintenance_tools(

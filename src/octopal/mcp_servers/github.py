@@ -47,7 +47,11 @@ def _clamp_per_page(per_page: int) -> int:
 
 def _format_permission_hint(method: str, path: str, response: httpx.Response) -> str | None:
     accepted_permissions = response.headers.get("X-Accepted-GitHub-Permissions", "").strip()
-    accepted_suffix = f" GitHub reports accepted permissions: {accepted_permissions}." if accepted_permissions else ""
+    accepted_suffix = (
+        f" GitHub reports accepted permissions: {accepted_permissions}."
+        if accepted_permissions
+        else ""
+    )
 
     if response.status_code == 403:
         if method == "POST" and "/issues/" in path and path.endswith("/comments"):
@@ -115,7 +119,9 @@ def _parse_github_api_error(response: httpx.Response, *, method: str, path: str)
             path=path,
         )
 
-    message = str(payload.get("message") or response.reason_phrase or "Unknown GitHub API error").strip()
+    message = str(
+        payload.get("message") or response.reason_phrase or "Unknown GitHub API error"
+    ).strip()
     hint = _format_permission_hint(method, path, response)
     details = dict(payload)
     accepted_permissions = response.headers.get("X-Accepted-GitHub-Permissions", "").strip()
@@ -257,13 +263,17 @@ def _normalize_pull_request(pr: dict[str, Any]) -> dict[str, Any]:
             "label": head.get("label"),
             "ref": head.get("ref"),
             "sha": head.get("sha"),
-            "repo": _normalize_repo(head.get("repo")) if isinstance(head.get("repo"), dict) else None,
+            "repo": (
+                _normalize_repo(head.get("repo")) if isinstance(head.get("repo"), dict) else None
+            ),
         },
         "base": {
             "label": base.get("label"),
             "ref": base.get("ref"),
             "sha": base.get("sha"),
-            "repo": _normalize_repo(base.get("repo")) if isinstance(base.get("repo"), dict) else None,
+            "repo": (
+                _normalize_repo(base.get("repo")) if isinstance(base.get("repo"), dict) else None
+            ),
         },
     }
 
@@ -338,7 +348,11 @@ def _normalize_commit(commit_payload: dict[str, Any]) -> dict[str, Any]:
             "date": committer.get("date"),
             "user": _normalize_user(commit_payload.get("committer")),
         },
-        "parents": [{"sha": parent.get("sha"), "url": parent.get("url")} for parent in parents if isinstance(parent, dict)],
+        "parents": [
+            {"sha": parent.get("sha"), "url": parent.get("url")}
+            for parent in parents
+            if isinstance(parent, dict)
+        ],
         "comment_count": commit.get("comment_count"),
         "verification": {
             "verified": verification.get("verified"),
@@ -493,7 +507,9 @@ class GitHubApiClient:
             request_body["labels"] = labels
         if milestone is not None:
             request_body["milestone"] = milestone
-        payload = await self._request("POST", f"/repos/{owner}/{repo}/issues", json_body=request_body)
+        payload = await self._request(
+            "POST", f"/repos/{owner}/{repo}/issues", json_body=request_body
+        )
         return _normalize_issue(payload)
 
     async def update_issue(
@@ -760,7 +776,9 @@ class GitHubApiClient:
         pull_number: int,
     ) -> dict[str, Any]:
         pr = await self.get_pull_request(owner=owner, repo=repo, pull_number=pull_number)
-        reviews_payload = await self.list_pull_reviews(owner=owner, repo=repo, pull_number=pull_number)
+        reviews_payload = await self.list_pull_reviews(
+            owner=owner, repo=repo, pull_number=pull_number
+        )
         reviews = reviews_payload.get("reviews") or []
 
         latest_by_user: dict[str, dict[str, Any]] = {}
@@ -776,10 +794,14 @@ class GitHubApiClient:
             state_counts[state] = state_counts.get(state, 0) + 1
 
         blocking_reviews = [
-            review for review in latest_by_user.values() if str(review.get("state") or "").upper() == "CHANGES_REQUESTED"
+            review
+            for review in latest_by_user.values()
+            if str(review.get("state") or "").upper() == "CHANGES_REQUESTED"
         ]
         approvals = [
-            review for review in latest_by_user.values() if str(review.get("state") or "").upper() == "APPROVED"
+            review
+            for review in latest_by_user.values()
+            if str(review.get("state") or "").upper() == "APPROVED"
         ]
 
         return {
@@ -955,15 +977,21 @@ async def list_issue_comments(
 
 
 @mcp.tool(name="create_issue_comment")
-async def create_issue_comment(owner: str, repo: str, issue_number: int, body: str) -> dict[str, Any]:
+async def create_issue_comment(
+    owner: str, repo: str, issue_number: int, body: str
+) -> dict[str, Any]:
     """Create an issue comment. This also works for pull request conversation comments."""
-    return await _client().create_issue_comment(owner=owner, repo=repo, issue_number=issue_number, body=body)
+    return await _client().create_issue_comment(
+        owner=owner, repo=repo, issue_number=issue_number, body=body
+    )
 
 
 @mcp.tool(name="update_issue_comment")
 async def update_issue_comment(owner: str, repo: str, comment_id: int, body: str) -> dict[str, Any]:
     """Update an existing issue comment."""
-    return await _client().update_issue_comment(owner=owner, repo=repo, comment_id=comment_id, body=body)
+    return await _client().update_issue_comment(
+        owner=owner, repo=repo, comment_id=comment_id, body=body
+    )
 
 
 @mcp.tool(name="list_pull_requests")

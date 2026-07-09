@@ -40,7 +40,9 @@ def run_search(args: dict[str, Any]) -> dict[str, Any]:
         return _run_provider(provider, args)
 
     errors: list[dict[str, Any]] = []
-    configured = [name for name in SEARCH_PROVIDER_ORDER if name == provider or _is_configured(name)]
+    configured = [
+        name for name in SEARCH_PROVIDER_ORDER if name == provider or _is_configured(name)
+    ]
     seen: set[str] = set()
     ordered_candidates = []
     for name in configured:
@@ -55,7 +57,9 @@ def run_search(args: dict[str, Any]) -> dict[str, Any]:
                 result["fallback_used"] = True
                 result["degraded"] = True
                 result["fallback_provider"] = candidate
-                result["attempted_providers"] = [entry["provider"] for entry in errors] + [candidate]
+                result["attempted_providers"] = [entry["provider"] for entry in errors] + [
+                    candidate
+                ]
             return result
         errors.append(
             {

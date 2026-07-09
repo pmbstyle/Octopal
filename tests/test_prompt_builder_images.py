@@ -96,7 +96,10 @@ def test_build_octo_prompt_includes_worker_first_guardrails() -> None:
         assert "## Worker Fabric Strategy" in system_message.content
         assert "workers as Octo's execution fabric" in system_message.content
         assert "For external work, use a worker first." in system_message.content
-        assert "Treat `max_thinking_steps` as a hard worker reasoning/action budget" in system_message.content
+        assert (
+            "Treat `max_thinking_steps` as a hard worker reasoning/action budget"
+            in system_message.content
+        )
         assert "use `start_workers_parallel` for independent subtasks" in system_message.content
         assert 'Do not treat "worker still running" as a completed answer' in system_message.content
         assert (

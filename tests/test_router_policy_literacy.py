@@ -40,8 +40,13 @@ def test_route_includes_policy_block_result_for_blocked_tool_call(monkeypatch) -
                     content = getattr(msg, "content", "")
                 if role == "tool":
                     tool_messages.append(content)
-            self.seen_policy_block = any("policy_block" in str(content) for content in tool_messages)
-            return {"content": "The risky tool is blocked, so I will use a safer path.", "tool_calls": []}
+            self.seen_policy_block = any(
+                "policy_block" in str(content) for content in tool_messages
+            )
+            return {
+                "content": "The risky tool is blocked, so I will use a safer path.",
+                "tool_calls": [],
+            }
 
     class DummyMemory:
         async def add_message(self, role, content, metadata=None):

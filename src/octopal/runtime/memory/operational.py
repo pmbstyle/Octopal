@@ -164,7 +164,9 @@ class OperationalMemoryService:
         try:
             raw = await self._complete_json(prompt)
         except Exception:
-            logger.debug("Operational memory extraction skipped due to provider error", exc_info=True)
+            logger.debug(
+                "Operational memory extraction skipped due to provider error", exc_info=True
+            )
             return []
         parsed = _extract_json_object(raw)
         if not isinstance(parsed, dict):

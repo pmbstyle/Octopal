@@ -85,4 +85,4 @@ def test_cleanup_background_sessions_terminates_and_clears_registry(monkeypatch)
     assert proc.stdin.closed is True
     assert proc.stdout.closed is True
     assert proc.stderr.closed is True
-    assert exec_run_tools._PROCESS_REGISTRY == original_registry
+    assert original_registry == exec_run_tools._PROCESS_REGISTRY

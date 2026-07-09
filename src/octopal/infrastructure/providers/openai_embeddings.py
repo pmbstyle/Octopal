@@ -24,7 +24,9 @@ class OpenAIEmbeddingsProvider:
         }
 
         timeout = httpx.Timeout(30.0, connect=10.0)
-        async with httpx.AsyncClient(base_url=self._settings.openai_base_url, timeout=timeout) as client:
+        async with httpx.AsyncClient(
+            base_url=self._settings.openai_base_url, timeout=timeout
+        ) as client:
             response = await client.post(
                 "/embeddings",
                 headers={"Authorization": f"Bearer {self._settings.openai_api_key}"},

@@ -32,7 +32,9 @@ def test_build_filters_accepts_whatsapp_service(tmp_path) -> None:
 
 def test_normalize_log_entry_respects_service_filter() -> None:
     filters = DashboardFilters(window_minutes=60, service="telegram", environment="all")
-    line = '{"timestamp":"2026-03-01T00:00:00+00:00","level":"info","event":"telegram message queued"}'
+    line = (
+        '{"timestamp":"2026-03-01T00:00:00+00:00","level":"info","event":"telegram message queued"}'
+    )
     entry = _normalize_log_entry(line, filters=filters)
     assert entry is not None
     assert entry["service"] == "telegram"

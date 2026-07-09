@@ -8,7 +8,9 @@ from octopal.runtime.pending_turns import PendingTurnAggregator
 def test_pending_turn_aggregator_merges_messages() -> None:
     flushed: list[dict] = []
 
-    async def _flush(chat_id: int, text: str, images: list[str], saved_file_paths: list[str], metadata: dict) -> None:
+    async def _flush(
+        chat_id: int, text: str, images: list[str], saved_file_paths: list[str], metadata: dict
+    ) -> None:
         flushed.append(
             {
                 "chat_id": chat_id,
@@ -49,7 +51,9 @@ def test_pending_turn_aggregator_merges_messages() -> None:
 def test_pending_turn_aggregator_restarts_timer() -> None:
     flushed: list[str] = []
 
-    async def _flush(chat_id: int, text: str, images: list[str], saved_file_paths: list[str], metadata: dict) -> None:
+    async def _flush(
+        chat_id: int, text: str, images: list[str], saved_file_paths: list[str], metadata: dict
+    ) -> None:
         del chat_id, images, saved_file_paths, metadata
         flushed.append(text)
 
@@ -72,7 +76,9 @@ def test_pending_turn_aggregator_restarts_timer() -> None:
 def test_pending_turn_aggregator_flushes_file_only_payloads() -> None:
     flushed: list[dict] = []
 
-    async def _flush(chat_id: int, text: str, images: list[str], saved_file_paths: list[str], metadata: dict) -> None:
+    async def _flush(
+        chat_id: int, text: str, images: list[str], saved_file_paths: list[str], metadata: dict
+    ) -> None:
         flushed.append(
             {
                 "chat_id": chat_id,

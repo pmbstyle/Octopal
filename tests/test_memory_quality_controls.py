@@ -86,7 +86,9 @@ def test_memory_context_uses_confidence_weighting() -> None:
         metadata={"owner_id": "default", "chat_id": 2, "confidence": 0.2},
     )
     store.entries.extend([low_conf_new, high_conf_old])
-    service = MemoryService(store=store, embeddings=_EmbedStub(), owner_id="default", top_k=1, min_score=0.05)
+    service = MemoryService(
+        store=store, embeddings=_EmbedStub(), owner_id="default", top_k=1, min_score=0.05
+    )
 
     async def scenario() -> list[str]:
         return await service.get_context("fact", exclude_chat_id=None)
@@ -210,7 +212,9 @@ def test_memory_context_prefers_matching_facets_when_available() -> None:
             ),
         ]
     )
-    service = MemoryService(store=store, embeddings=_EmbedStub(), owner_id="default", top_k=1, min_score=0.05)
+    service = MemoryService(
+        store=store, embeddings=_EmbedStub(), owner_id="default", top_k=1, min_score=0.05
+    )
 
     async def scenario() -> list[str]:
         return await service.get_context_by_facets(

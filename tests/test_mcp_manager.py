@@ -102,8 +102,7 @@ def test_mcp_manager_statuses_report_reconnecting_and_reason(tmp_path) -> None:
 
 
 def test_classify_mcp_invalid_arguments_preserves_missing_fields() -> None:
-    error = RuntimeError(
-        """MCP error -32602: Invalid arguments for tool analyze_image: [
+    error = RuntimeError("""MCP error -32602: Invalid arguments for tool analyze_image: [
   {
     "code": "invalid_type",
     "expected": "string",
@@ -122,8 +121,7 @@ def test_classify_mcp_invalid_arguments_preserves_missing_fields() -> None:
     ],
     "message": "Required"
   }
-]"""
-    )
+]""")
 
     info = _classify_mcp_call_error(error)
 

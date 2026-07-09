@@ -77,7 +77,11 @@ async def browser_open(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, A
             "target_id": (current or {}).get("target_id"),
         }
     except Exception as e:
-        return {"ok": False, "url": url, "error": f"Error opening {url}: {_format_browser_error(e)}"}
+        return {
+            "ok": False,
+            "url": url,
+            "error": f"Error opening {url}: {_format_browser_error(e)}",
+        }
 
 
 async def browser_tabs(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
@@ -267,7 +271,9 @@ async def browser_workflow(args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
     results: list[dict[str, Any]] = []
     for index, raw_step in enumerate(raw_steps, start=1):
         if not isinstance(raw_step, dict):
-            results.append({"index": index, "ok": False, "error": "Each workflow step must be an object."})
+            results.append(
+                {"index": index, "ok": False, "error": "Each workflow step must be an object."}
+            )
             if stop_on_error:
                 break
             continue

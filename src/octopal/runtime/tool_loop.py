@@ -12,7 +12,9 @@ _DEFAULT_TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD = 30
 
 def _stable_json(value: Any) -> str:
     try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+        return json.dumps(
+            value, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":")
+        )
     except Exception:
         return repr(value)
 
@@ -65,7 +67,9 @@ def _detect_tool_loop(
     global_breaker_threshold: int = _DEFAULT_TOOL_LOOP_GLOBAL_BREAKER_THRESHOLD,
     global_breaker_count: int | None = None,
 ) -> dict[str, Any] | None:
-    effective_count = int(global_breaker_count) if isinstance(global_breaker_count, int) else len(history)
+    effective_count = (
+        int(global_breaker_count) if isinstance(global_breaker_count, int) else len(history)
+    )
     if effective_count >= global_breaker_threshold:
         return {
             "detector": "global_circuit_breaker",
@@ -74,7 +78,9 @@ def _detect_tool_loop(
             "message": "Too many tool calls in one run without completion.",
         }
 
-    streak, result_hash = _tool_no_progress_streak(history, tool_name=tool_name, args_hash=args_hash)
+    streak, result_hash = _tool_no_progress_streak(
+        history, tool_name=tool_name, args_hash=args_hash
+    )
     if result_hash is None:
         return None
     if streak >= critical_threshold:

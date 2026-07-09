@@ -17,8 +17,12 @@ _USER_VISIBLE_BLOCK_RE = re.compile(
 )
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _THINK_TAG_RE = re.compile(r"</?think>", re.IGNORECASE)
-_TOOL_TAG_RE = re.compile(r"</?(?:tool_call|tool_code|tool_result|step|plan|thought).*?>", re.IGNORECASE)
-_TOOL_CALL_BLOCK_RE = re.compile(r"<(tool_call|tool_code|tool_result).*?>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_TOOL_TAG_RE = re.compile(
+    r"</?(?:tool_call|tool_code|tool_result|step|plan|thought).*?>", re.IGNORECASE
+)
+_TOOL_CALL_BLOCK_RE = re.compile(
+    r"<(tool_call|tool_code|tool_result).*?>.*?</\1>", re.IGNORECASE | re.DOTALL
+)
 _TOOL_RESULT_LINE_RE = re.compile(
     r"(?:^|\n)\s*Tool result \([^)]+\):\s*(?:\{.*?\}|\[.*?\]|.+?)(?=\n|$)",
     re.IGNORECASE | re.DOTALL,
@@ -26,11 +30,81 @@ _TOOL_RESULT_LINE_RE = re.compile(
 _ZERO_WIDTH_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u2060]")
 # Standard Telegram bot reactions (as of Bot API 7.3+)
 _TELEGRAM_SUPPORTED_REACTIONS = {
-    "👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢", "🎉", "🤩", "🤮", "💩",
-    "🙏", "👌", "🕊", "🤡", "🥱", "🥴", "😍", "🐳", "❤‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆",
-    "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈", "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈",
-    "😇", "😨", "🤝", "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿", "🆒", "💘", "💻", "🤲",
-    "💊", "🦄", "⭐", "🎈", "🎆", "🎇", "🥨", "🦌", "🛷", "🧡", "🌿"
+    "👍",
+    "👎",
+    "❤",
+    "🔥",
+    "🥰",
+    "👏",
+    "😁",
+    "🤔",
+    "🤯",
+    "😱",
+    "🤬",
+    "😢",
+    "🎉",
+    "🤩",
+    "🤮",
+    "💩",
+    "🙏",
+    "👌",
+    "🕊",
+    "🤡",
+    "🥱",
+    "🥴",
+    "😍",
+    "🐳",
+    "❤‍🔥",
+    "🌚",
+    "🌭",
+    "💯",
+    "🤣",
+    "⚡",
+    "🍌",
+    "🏆",
+    "💔",
+    "🤨",
+    "😐",
+    "🍓",
+    "🍾",
+    "💋",
+    "🖕",
+    "😈",
+    "😴",
+    "😭",
+    "🤓",
+    "👻",
+    "👨‍💻",
+    "👀",
+    "🎃",
+    "🙈",
+    "😇",
+    "😨",
+    "🤝",
+    "✍",
+    "🤗",
+    "🫡",
+    "🎅",
+    "🎄",
+    "☃",
+    "💅",
+    "🤪",
+    "🗿",
+    "🆒",
+    "💘",
+    "💻",
+    "🤲",
+    "💊",
+    "🦄",
+    "⭐",
+    "🎈",
+    "🎆",
+    "🎇",
+    "🥨",
+    "🦌",
+    "🛷",
+    "🧡",
+    "🌿",
 }
 
 _REACTION_MAPPING = {
@@ -48,11 +122,14 @@ _REACTION_MAPPING = {
     "📝": "✍",
 }
 
+
 def get_tailscale_ips() -> list[str]:
     """Retrieve all available Tailscale IPs in the tailnet using JSON output."""
     try:
         # tailscale status --json provides a detailed list of all nodes and their IPs.
-        out = subprocess.check_output(["tailscale", "status", "--json"], text=True, stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(
+            ["tailscale", "status", "--json"], text=True, stderr=subprocess.DEVNULL
+        )
         data = json.loads(out)
         ips = []
 
@@ -107,7 +184,9 @@ def strip_reaction_tags(text: str) -> str:
     return _REACT_TAG_RE.sub("", normalized_text).strip()
 
 
-def extract_edge_reaction_fallback(text: str, *, max_text_length: int = 48) -> tuple[str | None, str]:
+def extract_edge_reaction_fallback(
+    text: str, *, max_text_length: int = 48
+) -> tuple[str | None, str]:
     """Infer a Telegram reaction from a single short edge emoji when no <react> tag is present."""
     normalized_text = _ZERO_WIDTH_RE.sub("", text or "").strip()
     if not normalized_text or "\n" in normalized_text:
@@ -121,7 +200,7 @@ def extract_edge_reaction_fallback(text: str, *, max_text_length: int = 48) -> t
 
     for emoji in emoji_candidates:
         if normalized_text.startswith(emoji):
-            remainder = normalized_text[len(emoji):].strip()
+            remainder = normalized_text[len(emoji) :].strip()
         elif normalized_text.endswith(emoji):
             remainder = normalized_text[: -len(emoji)].strip()
         else:
@@ -141,11 +220,7 @@ def escape_html(text: str) -> str:
     """Escape HTML special characters for Telegram HTML parse mode."""
     if not text:
         return ""
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _strip_hidden_reasoning_and_tool_blocks(text: str) -> str:
@@ -328,8 +403,7 @@ _HEARTBEAT_USER_VISIBLE_CLOSE = "</user_visible>"
 
 def _extract_user_visible_block_text(text: str) -> str | None:
     matches = [
-        (match.group(1) or "").strip()
-        for match in _USER_VISIBLE_BLOCK_RE.finditer(text or "")
+        (match.group(1) or "").strip() for match in _USER_VISIBLE_BLOCK_RE.finditer(text or "")
     ]
     visible_parts = [part for part in matches if part]
     if not visible_parts:

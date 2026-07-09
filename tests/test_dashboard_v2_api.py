@@ -156,9 +156,9 @@ description: Imported copy helper
     assert listed.json()["skills"][0]["id"] == "imported_writer"
 
 
-
-
-def test_dashboard_connector_apply_reloads_config_and_reconciles_runtime(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dashboard_connector_apply_reloads_config_and_reconciles_runtime(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     settings = Settings(
         TELEGRAM_BOT_TOKEN="123:abc",
         OCTOPAL_STATE_DIR=tmp_path / "state",
@@ -367,7 +367,9 @@ def test_dashboard_v2_workers_returns_16_recent_workers_by_default(tmp_path) -> 
     assert recent[-1]["id"] == "worker-04"
 
 
-def test_dashboard_v2_uses_whatsapp_metrics_for_active_channel(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dashboard_v2_uses_whatsapp_metrics_for_active_channel(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     settings = Settings(
         TELEGRAM_BOT_TOKEN="123:abc",
         OCTOPAL_USER_CHANNEL="whatsapp",
@@ -442,7 +444,9 @@ def test_dashboard_v2_uses_whatsapp_metrics_for_active_channel(tmp_path, monkeyp
     assert octo_payload["queues"]["channel_send_tasks"] is None
 
 
-def test_dashboard_system_and_settings_include_worker_launcher_health(tmp_path, monkeypatch) -> None:
+def test_dashboard_system_and_settings_include_worker_launcher_health(
+    tmp_path, monkeypatch
+) -> None:
     settings = Settings(
         TELEGRAM_BOT_TOKEN="123:abc",
         OCTOPAL_STATE_DIR=tmp_path / "state",
@@ -528,7 +532,9 @@ def test_dashboard_system_uses_canonical_status_timestamps(tmp_path, monkeypatch
     assert gateway_service["updated_at"] == system["status_updated_at"]
 
 
-def test_dashboard_config_can_be_read_and_updated(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dashboard_config_can_be_read_and_updated(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     settings = Settings(
         TELEGRAM_BOT_TOKEN="123:abc",
@@ -580,17 +586,51 @@ def test_dashboard_config_can_be_read_and_updated(tmp_path, monkeypatch: pytest.
     assert persisted["search"]["brave_api_key"] == "brave-test"
 
 
-def test_dashboard_config_redacts_and_preserves_secrets(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dashboard_config_redacts_and_preserves_secrets(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
             {
-                "telegram": {"bot_token": "telegram-secret", "allowed_chat_ids": [], "parse_mode": "MarkdownV2"},
-                "llm": {"provider_id": "openrouter", "model": "x", "api_key": "llm-secret", "api_base": None, "model_prefix": None},
-                "worker_llm_default": {"provider_id": "openrouter", "model": "y", "api_key": "worker-secret", "api_base": None, "model_prefix": None},
-                "gateway": {"host": "0.0.0.0", "port": 8000, "tailscale_ips": "", "dashboard_token": "dash-secret", "tailscale_auto_serve": True, "webapp_enabled": False, "webapp_dist_dir": None},
-                "whatsapp": {"mode": "separate", "allowed_numbers": [], "auth_dir": None, "bridge_host": "127.0.0.1", "bridge_port": 8765, "callback_token": "wa-secret", "node_command": "node"},
+                "telegram": {
+                    "bot_token": "telegram-secret",
+                    "allowed_chat_ids": [],
+                    "parse_mode": "MarkdownV2",
+                },
+                "llm": {
+                    "provider_id": "openrouter",
+                    "model": "x",
+                    "api_key": "llm-secret",
+                    "api_base": None,
+                    "model_prefix": None,
+                },
+                "worker_llm_default": {
+                    "provider_id": "openrouter",
+                    "model": "y",
+                    "api_key": "worker-secret",
+                    "api_base": None,
+                    "model_prefix": None,
+                },
+                "gateway": {
+                    "host": "0.0.0.0",
+                    "port": 8000,
+                    "tailscale_ips": "",
+                    "dashboard_token": "dash-secret",
+                    "tailscale_auto_serve": True,
+                    "webapp_enabled": False,
+                    "webapp_dist_dir": None,
+                },
+                "whatsapp": {
+                    "mode": "separate",
+                    "allowed_numbers": [],
+                    "auth_dir": None,
+                    "bridge_host": "127.0.0.1",
+                    "bridge_port": 8765,
+                    "callback_token": "wa-secret",
+                    "node_command": "node",
+                },
                 "search": {"brave_api_key": "brave-secret", "firecrawl_api_key": "fire-secret"},
             }
         ),
@@ -634,7 +674,9 @@ def test_dashboard_config_redacts_and_preserves_secrets(tmp_path, monkeypatch: p
 
     payload["llm"]["provider_id"] = "openai"
     payload["worker_llm_default"]["provider_id"] = "openai"
-    provider_changed_response = client.put("/api/dashboard/config", json=payload, headers={"x-octopal-token": "dash-secret"})
+    provider_changed_response = client.put(
+        "/api/dashboard/config", json=payload, headers={"x-octopal-token": "dash-secret"}
+    )
     assert provider_changed_response.status_code == 200
 
     changed = json.loads(config_path.read_text(encoding="utf-8"))

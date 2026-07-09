@@ -42,7 +42,13 @@ async def octo_experiment_log(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     )
     source = _clean_enum(
         args.get("source"),
-        allowed={"failures", "deliberation_audit", "manual_observation", "self_queue", "worker_result"},
+        allowed={
+            "failures",
+            "deliberation_audit",
+            "manual_observation",
+            "self_queue",
+            "worker_result",
+        },
         default="manual_observation",
     )
     status = _clean_enum(

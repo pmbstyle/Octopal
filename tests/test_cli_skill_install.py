@@ -203,7 +203,9 @@ description: Helps write copy
     assert not (workspace_dir / "skills" / "writer").exists()
 
 
-def test_skill_trust_and_untrust_commands_toggle_local_skill_state(tmp_path: Path, monkeypatch) -> None:
+def test_skill_trust_and_untrust_commands_toggle_local_skill_state(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace_dir = tmp_path / "workspace"
     source_dir = workspace_dir / "skills" / "writer"
     scripts_dir = source_dir / "scripts"
@@ -292,7 +294,9 @@ description: Helps write copy
     assert allowed_payload["status"] == "trusted"
 
 
-def test_skill_install_command_auto_prepares_env_and_returns_trust_next_step(tmp_path: Path, monkeypatch) -> None:
+def test_skill_install_command_auto_prepares_env_and_returns_trust_next_step(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace_dir = tmp_path / "workspace"
     source_dir = tmp_path / "job-search"
     scripts_dir = source_dir / "scripts"

@@ -30,7 +30,9 @@ def test_update_component_gauges_ignores_empty_component(tmp_path: Path, monkeyp
     assert not (state_dir / "runtime_metrics.json").exists()
 
 
-def test_read_metrics_snapshot_returns_empty_for_missing_invalid_and_non_dict(tmp_path: Path) -> None:
+def test_read_metrics_snapshot_returns_empty_for_missing_invalid_and_non_dict(
+    tmp_path: Path,
+) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = state_dir / "runtime_metrics.json"
@@ -44,7 +46,9 @@ def test_read_metrics_snapshot_returns_empty_for_missing_invalid_and_non_dict(tm
     assert read_metrics_snapshot(state_dir) == {}
 
 
-def test_update_component_gauges_recovers_from_corrupt_existing_file(tmp_path: Path, monkeypatch) -> None:
+def test_update_component_gauges_recovers_from_corrupt_existing_file(
+    tmp_path: Path, monkeypatch
+) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = state_dir / "runtime_metrics.json"
