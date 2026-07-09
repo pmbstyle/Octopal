@@ -2,18 +2,36 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from octopal.channels import DEFAULT_USER_CHANNEL
-from octopal.infrastructure.config.models import A2AConfig, ConnectorsConfig, OctopalConfig
+from octopal.infrastructure.config.models import (
+    A2AConfig,
+    ConnectorsConfig,
+    GatewayConfig,
+    GroupAddressingConfig,
+    LiteLLMRuntimeConfig,
+    LLMConfig,
+    MemoryConfig,
+    ObservabilityConfig,
+    OctopalConfig,
+    SearchConfig,
+    StorageConfig,
+    TelegramConfig,
+    WhatsAppConfig,
+    WorkerRuntimeConfig,
+)
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         extra="ignore",
+        env_file=".env",
+        env_file_encoding="utf-8",
     )
 
     telegram_bot_token: str = Field("", alias="TELEGRAM_BOT_TOKEN")
@@ -158,48 +176,195 @@ def _resolve_config_file() -> Path | None:
     return None
 
 
+def config_write_path() -> Path:
+    """Return the config path used for the next write."""
+    explicit = os.getenv("OCTOPAL_CONFIG_FILE", "").strip()
+    if explicit:
+        candidate = Path(explicit).expanduser()
+        return candidate if candidate.is_absolute() else Path.cwd() / candidate
+    return _resolve_config_file() or (Path.cwd() / "config.json")
+
+
 def load_config() -> OctopalConfig:
     config_file = _resolve_config_file()
-    if config_file and config_file.exists():
-        try:
-            with config_file.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-                return OctopalConfig.model_validate(data)
-        except Exception:
-            # Fallback to default if JSON is malformed
-            pass
-
-    return OctopalConfig()
+    if config_file is None:
+        return OctopalConfig()
+    try:
+        with config_file.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return OctopalConfig.model_validate(data)
+    except Exception as exc:
+        raise ValueError(f"Invalid configuration file {config_file}: {exc}") from exc
 
 
-def save_config(config: OctopalConfig) -> None:
-    config_file = _resolve_config_file()
-    if not config_file:
-        config_file = Path.cwd() / "config.json"
-
-    with config_file.open("w", encoding="utf-8") as f:
-        json.dump(config.model_dump(mode="json"), f, indent=2)
+def save_config(config: OctopalConfig) -> Path:
+    config_file = config_write_path()
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{config_file.name}.", suffix=".tmp", dir=str(config_file.parent)
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(config.model_dump(mode="json"), f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, config_file)
+        if os.name != "nt":
+            os.chmod(config_file, 0o600)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    return config_file
 
 
 def load_settings() -> Settings:
-    config = load_config()
-    settings = Settings()
-
-    # Apply structured config overrides to legacy settings
-    _sync_settings_from_config(settings, config)
+    config_file = _resolve_config_file()
+    config = load_config() if config_file is not None else None
+    init_values = _settings_init_values_from_config(config) if config is not None else {}
+    settings = Settings(**init_values)  # type: ignore[arg-type]
 
     if not settings.zai_api_key:
         legacy = os.getenv("Z_AI_API_KEY")
         if legacy:
             settings = settings.model_copy(update={"zai_api_key": legacy})
 
+    if config is not None:
+        # Structured config is authoritative when it exists.
+        _sync_settings_from_config(settings, config)
+    else:
+        config = config_from_settings(settings)
+
     # Store the config object for new code to use
     settings.config_obj = config
     return settings
 
 
+def config_from_settings(settings: Settings) -> OctopalConfig:
+    """Build structured config from legacy environment-backed settings."""
+    llm = _legacy_llm_config(settings)
+    return OctopalConfig(
+        user_channel=settings.user_channel,
+        telegram=TelegramConfig(
+            bot_token=settings.telegram_bot_token,
+            allowed_chat_ids=_split_csv(settings.allowed_telegram_chat_ids),
+            parse_mode=settings.telegram_parse_mode,
+        ),
+        group_addressing=GroupAddressingConfig(
+            enabled=settings.group_addressing_enabled,
+            agent_name=settings.group_agent_name or None,
+            agent_aliases=_split_csv(settings.group_agent_aliases),
+            collective_aliases=_split_csv(settings.group_collective_aliases),
+        ),
+        llm=llm,
+        worker_llm_default=llm.model_copy(deep=True),
+        litellm=LiteLLMRuntimeConfig(
+            num_retries=settings.litellm_num_retries,
+            timeout=settings.litellm_timeout,
+            fallbacks=settings.litellm_fallbacks,
+            drop_params=settings.litellm_drop_params,
+            caching=settings.litellm_caching,
+            max_concurrency=settings.litellm_max_concurrency,
+            rate_limit_max_retries=settings.litellm_rate_limit_max_retries,
+            rate_limit_base_delay_seconds=settings.litellm_rate_limit_base_delay_seconds,
+            rate_limit_max_delay_seconds=settings.litellm_rate_limit_max_delay_seconds,
+        ),
+        storage=StorageConfig(
+            state_dir=settings.state_dir,
+            workspace_dir=settings.workspace_dir,
+        ),
+        memory=MemoryConfig(
+            top_k=settings.memory_top_k,
+            prefilter_k=settings.memory_prefilter_k,
+            min_score=settings.memory_min_score,
+            max_chars=settings.memory_max_chars,
+            owner_id=settings.memory_owner_id,
+        ),
+        gateway=GatewayConfig(
+            host=settings.gateway_host,
+            port=settings.gateway_port,
+            tailscale_ips=settings.tailscale_ips,
+            dashboard_token=settings.dashboard_token,
+            tailscale_auto_serve=settings.tailscale_auto_serve,
+            webapp_enabled=settings.webapp_enabled,
+            webapp_dist_dir=settings.webapp_dist_dir,
+        ),
+        workers=WorkerRuntimeConfig(
+            launcher=settings.worker_launcher,
+            docker_image=settings.worker_docker_image,
+            docker_workspace=settings.worker_docker_workspace,
+            docker_host_workspace=settings.worker_docker_host_workspace,
+            max_spawn_depth=settings.worker_max_spawn_depth,
+            max_children_total=settings.worker_max_children_total,
+            max_children_concurrent=settings.worker_max_children_concurrent,
+        ),
+        whatsapp=WhatsAppConfig(
+            mode=settings.whatsapp_mode,
+            allowed_numbers=_split_csv(settings.allowed_whatsapp_numbers),
+            allowed_chats=_split_csv(settings.allowed_whatsapp_chats),
+            auth_dir=settings.whatsapp_auth_dir,
+            bridge_host=settings.whatsapp_bridge_host,
+            bridge_port=settings.whatsapp_bridge_port,
+            callback_token=settings.whatsapp_callback_token,
+            node_command=settings.whatsapp_node_command,
+        ),
+        search=SearchConfig(
+            brave_api_key=settings.brave_api_key,
+            firecrawl_api_key=settings.firecrawl_api_key,
+        ),
+        observability=ObservabilityConfig(
+            enabled=settings.observability_enabled,
+            backend=settings.observability_backend,
+            capture_content=settings.observability_capture_content,
+            preview_chars=settings.observability_preview_chars,
+            sample_rate=settings.observability_sample_rate,
+            langfuse_public_key=settings.langfuse_public_key,
+            langfuse_secret_key=settings.langfuse_secret_key,
+            langfuse_host=settings.langfuse_host,
+        ),
+        a2a=settings.a2a.model_copy(deep=True),
+        connectors=settings.connectors.model_copy(deep=True),
+        log_level=settings.log_level,
+        debug_prompts=settings.debug_prompts,
+        heartbeat_interval_seconds=settings.heartbeat_interval_seconds,
+        user_message_grace_seconds=settings.user_message_grace_seconds,
+    )
+
+
+def _legacy_llm_config(settings: Settings) -> LLMConfig:
+    # Import lazily to avoid the resolver's Settings import during module initialization.
+    from octopal.infrastructure.providers.profile_resolver import resolve_litellm_profile
+
+    profile = resolve_litellm_profile(settings)
+    return LLMConfig(
+        provider_id=profile.provider_id,
+        model=profile.raw_model,
+        api_key=profile.api_key,
+        api_base=profile.api_base,
+        model_prefix=profile.model_prefix,
+    )
+
+
+def _split_csv(value: object) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
 def _sync_settings_from_config(settings: Settings, config: OctopalConfig) -> None:
     """Sync values from OctopalConfig to Settings for backward compatibility."""
+    settings.__dict__.update(_settings_updates_from_config(config))
+
+
+def _settings_init_values_from_config(config: OctopalConfig) -> dict[str, object | None]:
+    """Mask legacy environment values for fields owned by structured config."""
+    init_values: dict[str, object | None] = {}
+    for field_name, value in _settings_updates_from_config(config).items():
+        field = Settings.model_fields[field_name]
+        init_values[str(field.alias or field_name)] = value
+    return init_values
+
+
+def _settings_updates_from_config(config: OctopalConfig) -> dict[str, object | None]:
     updates: dict[str, object | None] = {}
 
     updates["user_channel"] = config.user_channel
@@ -299,5 +464,4 @@ def _sync_settings_from_config(settings: Settings, config: OctopalConfig) -> Non
     updates["user_message_grace_seconds"] = config.user_message_grace_seconds
     updates["connectors"] = config.connectors
 
-    # Apply all updates
-    settings.__dict__.update(updates)
+    return updates

@@ -28,7 +28,12 @@ from rich.table import Table
 
 from octopal.channels import normalize_user_channel, user_channel_label
 from octopal.cli.branding import print_banner
-from octopal.infrastructure.config.settings import Settings, load_settings, save_config
+from octopal.infrastructure.config.settings import (
+    Settings,
+    config_write_path,
+    load_settings,
+    save_config,
+)
 from octopal.infrastructure.logging import configure_logging
 from octopal.infrastructure.store.sqlite import SQLiteStore
 from octopal.runtime.metrics import read_metrics_snapshot
@@ -1373,13 +1378,15 @@ def config_migrate() -> None:
         console.print("[red]Error: Could not initialize configuration object.[/red]")
         return
 
-    config_path = Path.cwd() / "config.json"
-    if config_path.exists() and not Confirm.ask("[yellow]config.json already exists. Overwrite?[/yellow]"):
+    config_path = config_write_path()
+    if config_path.exists() and not Confirm.ask(
+        f"[yellow]{config_path} already exists. Overwrite?[/yellow]"
+    ):
         return
 
-    save_config(settings.config_obj)
+    config_path = save_config(settings.config_obj)
     console.print(f"[green]Successfully migrated settings to {config_path}[/green]")
-    console.print("[dim]You can now use config.json for advanced settings like worker overrides.[/dim]")
+    console.print("[dim]You can now use structured config for advanced settings like worker overrides.[/dim]")
 
 
 @config_app.command("show")

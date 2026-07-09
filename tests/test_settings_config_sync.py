@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 
-from octopal.infrastructure.config.settings import load_settings
+import pytest
+
+from octopal.infrastructure.config.models import OctopalConfig
+from octopal.infrastructure.config.settings import load_config, load_settings, save_config
 
 
 def test_load_settings_uses_user_channel_from_config_json(tmp_path, monkeypatch) -> None:
@@ -49,6 +53,90 @@ def test_load_settings_defaults_to_empty_telegram_values_without_config_json(
     assert settings.allowed_telegram_chat_ids == ""
 
 
+def test_load_settings_keeps_environment_values_without_config_json(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "legacy-token")
+    monkeypatch.setenv("ALLOWED_TELEGRAM_CHAT_IDS", "123,456")
+    monkeypatch.setenv("OCTOPAL_GATEWAY_PORT", "9123")
+
+    settings = load_settings()
+
+    assert settings.telegram_bot_token == "legacy-token"
+    assert settings.allowed_telegram_chat_ids == "123,456"
+    assert settings.gateway_port == 9123
+    assert settings.config_obj is not None
+    assert settings.config_obj.telegram.bot_token == "legacy-token"
+    assert settings.config_obj.telegram.allowed_chat_ids == ["123", "456"]
+    assert settings.config_obj.gateway.port == 9123
+
+
+def test_load_settings_preserves_runtime_provider_precedence_during_migration(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+
+    settings = load_settings()
+
+    assert settings.config_obj is not None
+    assert settings.config_obj.llm.provider_id == "zai"
+    assert settings.config_obj.llm.model == settings.zai_model
+    assert settings.config_obj.llm.api_key == "zai-key"
+
+
+def test_load_settings_honors_explicit_legacy_openrouter_selection(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OCTOPAL_LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+
+    settings = load_settings()
+
+    assert settings.config_obj is not None
+    assert settings.config_obj.llm.provider_id == "openrouter"
+    assert settings.config_obj.llm.model == settings.openrouter_model
+    assert settings.config_obj.llm.api_key == "openrouter-key"
+
+
+def test_load_settings_reads_dotenv_before_structured_config_exists(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=dotenv-token\nALLOWED_TELEGRAM_CHAT_IDS=777\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("ALLOWED_TELEGRAM_CHAT_IDS", raising=False)
+
+    settings = load_settings()
+
+    assert settings.telegram_bot_token == "dotenv-token"
+    assert settings.allowed_telegram_chat_ids == "777"
+
+
+def test_load_config_rejects_malformed_json(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{invalid", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="Invalid configuration file") as exc_info:
+        load_config()
+
+    assert str(config_path) in str(exc_info.value)
+
+
+def test_save_config_is_atomic_private_and_honors_explicit_new_path(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "nested" / "custom.json"
+    monkeypatch.setenv("OCTOPAL_CONFIG_FILE", str(config_path))
+
+    save_config(OctopalConfig(telegram={"bot_token": "secret"}))
+
+    assert json.loads(config_path.read_text(encoding="utf-8"))["telegram"]["bot_token"] == "secret"
+    assert list(config_path.parent.glob(".custom.json.*.tmp")) == []
+    if os.name != "nt":
+        assert config_path.stat().st_mode & 0o777 == 0o600
+
+
 def test_load_settings_prefers_config_json_telegram_values(tmp_path, monkeypatch) -> None:
     (tmp_path / "config.json").write_text(
         json.dumps(
@@ -73,6 +161,25 @@ def test_load_settings_prefers_config_json_telegram_values(tmp_path, monkeypatch
 
     assert settings.telegram_bot_token == ""
     assert settings.allowed_telegram_chat_ids == ""
+
+
+@pytest.mark.parametrize("source", ["dotenv", "environment"])
+def test_load_settings_ignores_invalid_legacy_value_owned_by_structured_config(
+    tmp_path, monkeypatch, source
+) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps({"gateway": {"port": 9123}}),
+        encoding="utf-8",
+    )
+    if source == "dotenv":
+        (tmp_path / ".env").write_text("OCTOPAL_GATEWAY_PORT=not-a-number\n", encoding="utf-8")
+    else:
+        monkeypatch.setenv("OCTOPAL_GATEWAY_PORT", "not-a-number")
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.gateway_port == 9123
 
 
 def test_load_settings_migrates_legacy_connector_settings_shape(tmp_path, monkeypatch) -> None:
