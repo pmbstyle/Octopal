@@ -35,6 +35,7 @@ def test_config_migrate_reads_dotenv_and_writes_private_config(tmp_path, monkeyp
     assert payload["llm"]["provider_id"] == "openrouter"
     assert payload["llm"]["model"] == "anthropic/claude-sonnet-4"
     assert payload["llm"]["api_key"] == "legacy-api-key"
-    assert config_path.name in result.output
+    normalized_output = result.output.replace("\n", "")
+    assert str(config_path) in normalized_output
     if os.name != "nt":
         assert config_path.stat().st_mode & 0o777 == 0o600
