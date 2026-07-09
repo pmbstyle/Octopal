@@ -176,6 +176,7 @@ def test_pending_turn_aggregator_retries_failed_flush_without_losing_messages() 
 def test_pending_turn_aggregator_merges_new_arrivals_into_failed_retry() -> None:
     first_flush_started = asyncio.Event()
     release_first_flush = asyncio.Event()
+    retry_flush_finished = asyncio.Event()
     attempts: list[str] = []
 
     async def _flush(
@@ -191,6 +192,7 @@ def test_pending_turn_aggregator_merges_new_arrivals_into_failed_retry() -> None
             first_flush_started.set()
             await release_first_flush.wait()
             raise RuntimeError("temporary failure")
+        retry_flush_finished.set()
 
     async def scenario() -> None:
         aggregator = PendingTurnAggregator(
@@ -202,7 +204,7 @@ def test_pending_turn_aggregator_merges_new_arrivals_into_failed_retry() -> None
         await first_flush_started.wait()
         await aggregator.submit(chat_id=21, sender_id="sender", text="second")
         release_first_flush.set()
-        await asyncio.sleep(0.04)
+        await asyncio.wait_for(retry_flush_finished.wait(), timeout=1.0)
 
         assert attempts == ["first", "first\n\nsecond"]
         await aggregator.stop()
