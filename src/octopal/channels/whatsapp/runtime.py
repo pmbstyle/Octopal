@@ -219,6 +219,7 @@ class WhatsAppRuntime:
         self._number_by_chat_id[chat_id] = chat_number
         await self._pending_turns.submit(
             chat_id=chat_id,
+            sender_id=sender,
             text=text,
             images=images,
             saved_file_paths=saved_file_paths,

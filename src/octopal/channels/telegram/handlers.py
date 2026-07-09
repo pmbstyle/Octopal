@@ -544,6 +544,7 @@ def register_handlers(
             assert _PENDING_TURNS is not None
             await _PENDING_TURNS.submit(
                 chat_id=message.chat.id,
+                sender_id=_telegram_sender_identity(message),
                 text=text,
                 images=images,
                 saved_file_paths=saved_file_paths,
@@ -1123,6 +1124,16 @@ def _telegram_sender_label(message: Message) -> str:
         str(getattr(user, "username", "") or "").strip(),
     ]
     return " / ".join(part for part in parts if part)
+
+
+def _telegram_sender_identity(message: Message) -> str:
+    user_id = getattr(getattr(message, "from_user", None), "id", None)
+    if user_id is not None:
+        return f"user:{user_id}"
+    sender_chat_id = getattr(getattr(message, "sender_chat", None), "id", None)
+    if sender_chat_id is not None:
+        return f"chat:{sender_chat_id}"
+    return ""
 
 
 def _chunk_text(text: str, limit: int) -> list[str]:
