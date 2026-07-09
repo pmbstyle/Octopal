@@ -50,6 +50,7 @@ class WhatsAppRuntime:
         self._pending_turns = PendingTurnAggregator(
             grace_seconds=getattr(settings, "user_message_grace_seconds", 5.0),
             flush_callback=self._flush_pending_turn,
+            terminal_failure_callback=self._notify_pending_turn_failure,
         )
         self._publish_metrics()
 
@@ -413,6 +414,21 @@ class WhatsAppRuntime:
             decision = resolve_user_delivery(final_text)
             if decision.user_visible:
                 await self.octo.internal_send(chat_id, decision.text)
+
+    async def _notify_pending_turn_failure(
+        self,
+        chat_id: int,
+        text: str,
+        images: list[str],
+        saved_file_paths: list[str],
+        metadata: dict[str, Any],
+        exc: Exception,
+    ) -> None:
+        del text, images, saved_file_paths, metadata, exc
+        await self.octo.internal_send(
+            chat_id,
+            "I received your message, but repeated processing attempts failed. Please try again.",
+        )
 
 
 def _persist_whatsapp_media_payload(

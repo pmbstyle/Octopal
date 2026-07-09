@@ -11,6 +11,10 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 PendingTurnKey = tuple[int, str]
+FlushCallback = Callable[[int, str, list[str], list[str], dict[str, Any]], Awaitable[None]]
+TerminalFailureCallback = Callable[
+    [int, str, list[str], list[str], dict[str, Any], Exception], Awaitable[None]
+]
 
 
 @dataclass(slots=True)
@@ -22,6 +26,7 @@ class PendingTurn:
     saved_file_paths: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     timer_task: asyncio.Task[None] | None = None
+    failed_attempts: int = 0
 
     def merged_text(self) -> str:
         return "\n\n".join(part for part in self.text_parts if part.strip()).strip()
@@ -32,12 +37,18 @@ class PendingTurnAggregator:
         self,
         *,
         grace_seconds: float,
-        flush_callback: Callable[[int, str, list[str], list[str], dict[str, Any]], Awaitable[None]],
+        flush_callback: FlushCallback,
+        terminal_failure_callback: TerminalFailureCallback | None = None,
         retry_seconds: float = 1.0,
+        max_retry_seconds: float = 30.0,
+        max_flush_attempts: int = 3,
     ) -> None:
         self.grace_seconds = max(0.0, float(grace_seconds))
         self.retry_seconds = max(0.01, float(retry_seconds))
+        self.max_retry_seconds = max(self.retry_seconds, float(max_retry_seconds))
+        self.max_flush_attempts = max(1, int(max_flush_attempts))
         self._flush_callback = flush_callback
+        self._terminal_failure_callback = terminal_failure_callback
         self._pending_by_key: dict[PendingTurnKey, PendingTurn] = {}
         self._guard = asyncio.Lock()
         self._stopped = False
@@ -143,16 +154,35 @@ class PendingTurnAggregator:
                 list(pending.saved_file_paths),
                 dict(pending.metadata),
             )
-        except Exception:
+        except Exception as exc:
+            pending.failed_attempts += 1
+            if pending.failed_attempts >= self.max_flush_attempts:
+                logger.exception(
+                    "Pending turn flush failed permanently",
+                    chat_id=chat_id,
+                    sender_id=pending.sender_id or None,
+                    attempts=pending.failed_attempts,
+                )
+                await self._notify_terminal_failure(pending, text, exc)
+                return
+
+            retry_delay = min(
+                self.max_retry_seconds,
+                self.retry_seconds * (2.0 ** min(pending.failed_attempts - 1, 16)),
+            )
             logger.exception(
                 "Pending turn flush failed; scheduling retry",
                 chat_id=chat_id,
                 sender_id=pending.sender_id or None,
-                retry_seconds=self.retry_seconds,
+                attempt=pending.failed_attempts,
+                max_attempts=self.max_flush_attempts,
+                retry_seconds=retry_delay,
             )
-            await self._requeue_failed(key, pending)
+            await self._requeue_failed(key, pending, retry_delay=retry_delay)
 
-    async def _requeue_failed(self, key: PendingTurnKey, failed: PendingTurn) -> None:
+    async def _requeue_failed(
+        self, key: PendingTurnKey, failed: PendingTurn, *, retry_delay: float
+    ) -> None:
         async with self._guard:
             if self._stopped:
                 return
@@ -162,10 +192,29 @@ class PendingTurnAggregator:
                 newer.timer_task.cancel()
 
             pending = _merge_pending_turns(failed, newer) if newer is not None else failed
-            pending.timer_task = asyncio.create_task(
-                self._sleep_then_flush(key, self.retry_seconds)
-            )
+            pending.timer_task = asyncio.create_task(self._sleep_then_flush(key, retry_delay))
             self._pending_by_key[key] = pending
+
+    async def _notify_terminal_failure(
+        self, pending: PendingTurn, text: str, exc: Exception
+    ) -> None:
+        if self._terminal_failure_callback is None or self._stopped:
+            return
+        try:
+            await self._terminal_failure_callback(
+                pending.chat_id,
+                text,
+                list(pending.images),
+                list(pending.saved_file_paths),
+                dict(pending.metadata),
+                exc,
+            )
+        except Exception:
+            logger.exception(
+                "Pending turn terminal failure notification failed",
+                chat_id=pending.chat_id,
+                sender_id=pending.sender_id or None,
+            )
 
 
 def _merge_pending_turns(older: PendingTurn, newer: PendingTurn) -> PendingTurn:
@@ -176,4 +225,5 @@ def _merge_pending_turns(older: PendingTurn, newer: PendingTurn) -> PendingTurn:
         images=[*older.images, *newer.images],
         saved_file_paths=[*older.saved_file_paths, *newer.saved_file_paths],
         metadata={**older.metadata, **newer.metadata},
+        failed_attempts=max(older.failed_attempts, newer.failed_attempts),
     )

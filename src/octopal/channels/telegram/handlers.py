@@ -222,6 +222,7 @@ def register_handlers(
     _PENDING_TURNS = PendingTurnAggregator(
         grace_seconds=getattr(settings, "user_message_grace_seconds", 5.0),
         flush_callback=_flush_pending_turn_factory(octo, settings, bot),
+        terminal_failure_callback=_pending_turn_terminal_failure_factory(bot),
     )
     allowed_chat_ids = parse_allowed_chat_ids(settings.allowed_telegram_chat_ids)
 
@@ -1027,6 +1028,26 @@ def _flush_pending_turn_factory(
             )
 
     return _flush_pending_turn
+
+
+def _pending_turn_terminal_failure_factory(bot: Bot):
+    async def _notify(
+        chat_id: int,
+        text: str,
+        images: list[str],
+        saved_file_paths: list[str],
+        metadata: dict[str, Any],
+        exc: Exception,
+    ) -> None:
+        del text, images, saved_file_paths, exc
+        await _enqueue_send(
+            bot,
+            chat_id,
+            "I received your message, but repeated processing attempts failed. Please try again.",
+            reply_to_message_id=metadata.get("reply_to_message_id"),
+        )
+
+    return _notify
 
 
 def _is_telegram_group_chat(message: Message) -> bool:

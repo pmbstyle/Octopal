@@ -208,3 +208,57 @@ def test_pending_turn_aggregator_merges_new_arrivals_into_failed_retry() -> None
         await aggregator.stop()
 
     asyncio.run(scenario())
+
+
+def test_pending_turn_aggregator_stops_after_bounded_failures_and_notifies() -> None:
+    attempts: list[str] = []
+    terminal_failures: list[tuple[int, str, str]] = []
+    terminal_notified = asyncio.Event()
+
+    async def _flush(
+        chat_id: int,
+        text: str,
+        images: list[str],
+        saved_file_paths: list[str],
+        metadata: dict,
+    ) -> None:
+        del chat_id, images, saved_file_paths, metadata
+        attempts.append(text)
+        if text == "poison turn":
+            raise RuntimeError("permanent failure")
+
+    async def _terminal_failure(
+        chat_id: int,
+        text: str,
+        images: list[str],
+        saved_file_paths: list[str],
+        metadata: dict,
+        exc: Exception,
+    ) -> None:
+        del images, saved_file_paths, metadata
+        terminal_failures.append((chat_id, text, str(exc)))
+        terminal_notified.set()
+
+    async def scenario() -> None:
+        aggregator = PendingTurnAggregator(
+            grace_seconds=0.0,
+            retry_seconds=0.01,
+            max_retry_seconds=0.02,
+            max_flush_attempts=3,
+            flush_callback=_flush,
+            terminal_failure_callback=_terminal_failure,
+        )
+        await aggregator.submit(chat_id=25, sender_id="sender", text="poison turn")
+        await asyncio.wait_for(terminal_notified.wait(), timeout=1.0)
+        await asyncio.sleep(0.05)
+
+        assert attempts == ["poison turn", "poison turn", "poison turn"]
+        assert terminal_failures == [(25, "poison turn", "permanent failure")]
+
+        await aggregator.submit(chat_id=25, sender_id="sender", text="fresh turn")
+        await asyncio.sleep(0.05)
+        assert attempts[-1] == "fresh turn"
+        assert terminal_failures == [(25, "poison turn", "permanent failure")]
+        await aggregator.stop()
+
+    asyncio.run(scenario())
