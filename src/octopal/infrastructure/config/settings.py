@@ -333,29 +333,17 @@ def config_from_settings(settings: Settings) -> OctopalConfig:
 
 
 def _legacy_llm_config(settings: Settings) -> LLMConfig:
-    if settings.litellm_provider_id or settings.litellm_model or settings.litellm_api_key:
-        return LLMConfig(
-            provider_id=settings.litellm_provider_id,
-            model=settings.litellm_model,
-            api_key=settings.litellm_api_key,
-            api_base=settings.litellm_api_base,
-            model_prefix=settings.litellm_model_prefix,
-        )
-    if settings.openrouter_api_key:
-        return LLMConfig(
-            provider_id="openrouter",
-            model=settings.openrouter_model,
-            api_key=settings.openrouter_api_key,
-            api_base=settings.openrouter_base_url,
-        )
-    if settings.zai_api_key:
-        return LLMConfig(
-            provider_id="zai",
-            model=settings.zai_model,
-            api_key=settings.zai_api_key,
-            api_base=settings.zai_base_url,
-        )
-    return LLMConfig()
+    # Import lazily to avoid the resolver's Settings import during module initialization.
+    from octopal.infrastructure.providers.profile_resolver import resolve_litellm_profile
+
+    profile = resolve_litellm_profile(settings)
+    return LLMConfig(
+        provider_id=profile.provider_id,
+        model=profile.raw_model,
+        api_key=profile.api_key,
+        api_base=profile.api_base,
+        model_prefix=profile.model_prefix,
+    )
 
 
 def _split_csv(value: object) -> list[str]:

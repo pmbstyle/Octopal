@@ -70,6 +70,35 @@ def test_load_settings_keeps_environment_values_without_config_json(tmp_path, mo
     assert settings.config_obj.gateway.port == 9123
 
 
+def test_load_settings_preserves_runtime_provider_precedence_during_migration(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+
+    settings = load_settings()
+
+    assert settings.config_obj is not None
+    assert settings.config_obj.llm.provider_id == "zai"
+    assert settings.config_obj.llm.model == settings.zai_model
+    assert settings.config_obj.llm.api_key == "zai-key"
+
+
+def test_load_settings_honors_explicit_legacy_openrouter_selection(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OCTOPAL_LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+
+    settings = load_settings()
+
+    assert settings.config_obj is not None
+    assert settings.config_obj.llm.provider_id == "openrouter"
+    assert settings.config_obj.llm.model == settings.openrouter_model
+    assert settings.config_obj.llm.api_key == "openrouter-key"
+
+
 def test_load_settings_reads_dotenv_before_structured_config_exists(tmp_path, monkeypatch) -> None:
     (tmp_path / ".env").write_text(
         "TELEGRAM_BOT_TOKEN=dotenv-token\nALLOWED_TELEGRAM_CHAT_IDS=777\n",
