@@ -771,18 +771,23 @@ def start(
 
     _maybe_warn_about_newer_release(settings)
 
+    launcher_status = ensure_worker_launcher_status(settings)
+    if launcher_status.configured_launcher == "docker" and (
+        not launcher_status.available or launcher_status.effective_launcher != "docker"
+    ):
+        console.print("[bold red]Docker worker isolation is unavailable.[/bold red]")
+        console.print(f"   [dim]Reason:[/dim] {launcher_status.reason}")
+        console.print(
+            "   Restore Docker, or explicitly select [magenta]same_env[/magenta] "
+            "for trusted local development."
+        )
+        raise typer.Exit(code=1)
+
     if foreground:
         _init_logging(settings)
         _schedule_webapp_build(settings)
         _maybe_enable_tailscale_serve(settings)
         write_start_status(settings)
-        launcher_status = ensure_worker_launcher_status(settings)
-        if launcher_status.configured_launcher == "docker" and launcher_status.effective_launcher != "docker":
-            console.print(
-                "[bold yellow]Docker workers are configured, but this run will use same_env.[/bold yellow]"
-            )
-            console.print(f"   [dim]Reason:[/dim] {launcher_status.reason}")
-
         with console.status("[bold green]Initializing Octopal Octo...[/bold green]", spinner="dots"):
             time.sleep(0.5)
 

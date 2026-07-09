@@ -6,7 +6,36 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import octopal.runtime.workers.launcher as launcher_mod
-from octopal.runtime.workers.launcher import DockerLauncher
+from octopal.runtime.workers.launcher import DockerLauncher, SameEnvLauncher
+
+
+def test_same_env_launcher_filters_unrelated_host_secrets(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_exec(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(pid=123)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    launcher = SameEnvLauncher()
+
+    asyncio.run(
+        launcher.launch(
+            spec_path=str(tmp_path / "spec.json"),
+            cwd=str(tmp_path),
+            env={
+                "PATH": "/usr/bin",
+                "PYTHONPATH": "src",
+                "BRAVE_API_KEY": "allowed-for-tool",
+                "UNRELATED_SECRET": "must-not-pass",
+            },
+        )
+    )
+
+    child_env = captured["kwargs"]["env"]
+    assert child_env["PATH"] == "/usr/bin"
+    assert child_env["BRAVE_API_KEY"] == "allowed-for-tool"
+    assert "UNRELATED_SECRET" not in child_env
 
 
 def test_docker_launcher_mounts_only_worker_dir_when_allowed_paths_missing(

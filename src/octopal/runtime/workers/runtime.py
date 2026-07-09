@@ -14,7 +14,7 @@ import os
 import re
 import signal
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -102,6 +102,30 @@ _WORKER_ENV_SETTING_FIELDS = (
     "litellm_rate_limit_base_delay_seconds",
     "litellm_rate_limit_max_delay_seconds",
 )
+_WORKER_HOST_ENV_ALLOWLIST = {
+    "ALL_PROXY",
+    "COMSPEC",
+    "CURL_CA_BUNDLE",
+    "HOME",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "NO_PROXY",
+    "PATH",
+    "PATHEXT",
+    "Path",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USERPROFILE",
+    "WINDIR",
+}
 
 
 class _WorkerStopRequested(RuntimeError):
@@ -798,7 +822,7 @@ class WorkerRuntime:
 
     def _build_worker_env(self, spec: WorkerSpec) -> dict[str, str]:
         env = {
-            **os.environ,
+            **_safe_worker_host_env(os.environ),
             "PYTHONPATH": _pythonpath(),
             "OCTOPAL_WORKSPACE_DIR": str(self.workspace_dir.resolve()),
         }
@@ -1976,6 +2000,15 @@ def _settings_env_name(field_name: str) -> str:
     if field and field.alias:
         return str(field.alias)
     return field_name.upper()
+
+
+def _safe_worker_host_env(source: Mapping[str, str]) -> dict[str, str]:
+    """Keep process essentials without inheriting unrelated host secrets."""
+    return {
+        key: str(value)
+        for key, value in source.items()
+        if key in _WORKER_HOST_ENV_ALLOWLIST and value not in (None, "")
+    }
 
 
 def _tool_env_from_settings(settings: Settings, tool_names: list[str]) -> dict[str, str]:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import octopal.runtime.workers.launcher_factory as launcher_factory
 from octopal.infrastructure.config.models import WorkerRuntimeConfig
 from octopal.infrastructure.config.settings import Settings
@@ -144,7 +146,7 @@ def test_build_launcher_returns_docker_launcher_when_cli_is_available(monkeypatc
     assert isinstance(launcher, DockerLauncher)
 
 
-def test_build_launcher_falls_back_to_same_env_when_docker_cli_is_missing(monkeypatch, tmp_path: Path) -> None:
+def test_build_launcher_fails_closed_when_docker_cli_is_missing(monkeypatch, tmp_path: Path) -> None:
     launcher_factory._docker_status_cache.clear()
     monkeypatch.setattr("octopal.runtime.workers.launcher_factory.shutil.which", lambda name: None)
     settings = Settings(
@@ -152,11 +154,11 @@ def test_build_launcher_falls_back_to_same_env_when_docker_cli_is_missing(monkey
         OCTOPAL_WORKER_LAUNCHER="docker",
     )
 
-    launcher = build_launcher(settings)
-    assert isinstance(launcher, SameEnvLauncher)
+    with pytest.raises(RuntimeError, match="Docker worker isolation is configured but unavailable"):
+        build_launcher(settings)
 
 
-def test_build_launcher_falls_back_when_docker_daemon_is_unavailable(monkeypatch, tmp_path: Path) -> None:
+def test_build_launcher_fails_closed_when_docker_daemon_is_unavailable(monkeypatch, tmp_path: Path) -> None:
     launcher_factory._docker_status_cache.clear()
     monkeypatch.setattr("octopal.runtime.workers.launcher_factory.shutil.which", lambda name: "/usr/bin/docker")
 
@@ -171,10 +173,10 @@ def test_build_launcher_falls_back_when_docker_daemon_is_unavailable(monkeypatch
         OCTOPAL_WORKER_LAUNCHER="docker",
     )
 
-    launcher = build_launcher(settings)
+    with pytest.raises(RuntimeError, match="Docker worker isolation is configured but unavailable"):
+        build_launcher(settings)
     status = get_worker_launcher_status(settings)
-    assert isinstance(launcher, SameEnvLauncher)
-    assert status.effective_launcher == "same_env"
+    assert status.effective_launcher == "unavailable"
     assert "daemon" in status.reason.lower()
 
 
@@ -187,7 +189,7 @@ def test_status_reports_missing_worker_image_without_auto_build(monkeypatch, tmp
     )
 
     status = get_worker_launcher_status(settings)
-    assert status.effective_launcher == "same_env"
+    assert status.effective_launcher == "unavailable"
     assert "build-worker-image" in status.reason
 
 
@@ -219,14 +221,14 @@ def test_passive_status_does_not_block_later_auto_build(monkeypatch, tmp_path: P
     passive_status = get_worker_launcher_status(settings)
     ensured_status = ensure_worker_launcher_status(settings)
 
-    assert passive_status.effective_launcher == "same_env"
+    assert passive_status.effective_launcher == "unavailable"
     assert "build-worker-image" in passive_status.reason
     assert ensured_status.effective_launcher == "docker"
     assert "built automatically" in ensured_status.reason
     assert any(cmd[1] == "build" for cmd in commands)
 
 
-def test_build_launcher_falls_back_when_auto_build_fails(monkeypatch, tmp_path: Path) -> None:
+def test_build_launcher_fails_closed_when_auto_build_fails(monkeypatch, tmp_path: Path) -> None:
     commands = _mock_docker_with_autobuild(monkeypatch, build_succeeds=False)
     settings = Settings(
         OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
@@ -234,10 +236,10 @@ def test_build_launcher_falls_back_when_auto_build_fails(monkeypatch, tmp_path: 
         OCTOPAL_WORKER_DOCKER_IMAGE="octopal-worker:latest",
     )
 
-    launcher = build_launcher(settings)
+    with pytest.raises(RuntimeError, match="Docker worker isolation is configured but unavailable"):
+        build_launcher(settings)
     status = ensure_worker_launcher_status(settings)
-    assert isinstance(launcher, SameEnvLauncher)
-    assert status.effective_launcher == "same_env"
+    assert status.effective_launcher == "unavailable"
     assert "automatic build failed" in status.reason
     assert "build-worker-image" in status.reason
     assert any(cmd[1] == "build" for cmd in commands)
@@ -252,7 +254,7 @@ def test_status_reports_stale_worker_image_without_auto_rebuild(monkeypatch, tmp
     )
 
     status = get_worker_launcher_status(settings)
-    assert status.effective_launcher == "same_env"
+    assert status.effective_launcher == "unavailable"
     assert "stale" in status.reason
     assert "build-worker-image" in status.reason
 
@@ -272,3 +274,14 @@ def test_build_launcher_auto_rebuilds_stale_worker_image(monkeypatch, tmp_path: 
     assert "rebuilt automatically" in status.reason
     assert any(cmd[1] == "build" for cmd in commands)
     assert any("io.octopal.worker-image-fingerprint=fingerprint-new" in part for cmd in commands for part in cmd)
+
+
+def test_build_launcher_allows_explicit_same_env(tmp_path: Path) -> None:
+    settings = Settings(
+        OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
+        OCTOPAL_WORKER_LAUNCHER="same_env",
+    )
+
+    launcher = build_launcher(settings)
+
+    assert isinstance(launcher, SameEnvLauncher)

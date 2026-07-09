@@ -537,7 +537,7 @@ def _configure_runtime_advanced(config: OctopalConfig, prompter) -> None:
             "Worker Launcher",
             [
                 "Docker workers are the recommended default, but Docker CLI was not detected on this machine.",
-                "If you keep the docker launcher selected, Octopal will fall back to same_env until Docker is installed.",
+                "Docker mode now fails closed. Select same_env explicitly only for trusted local development.",
             ],
         )
 
