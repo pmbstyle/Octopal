@@ -193,6 +193,10 @@ jobs:
         working-directory: desktop
         run: npm audit --audit-level=moderate
 
+      - name: Test desktop security helpers
+        working-directory: desktop
+        run: npm test
+
       - name: Set desktop release version
         working-directory: desktop
         env:

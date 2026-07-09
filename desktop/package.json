@@ -15,6 +15,7 @@
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:win": "npm run build && electron-builder --win nsis",
     "preview": "electron-vite preview",
+    "test": "node --test src/main/externalUrls.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "build": {
