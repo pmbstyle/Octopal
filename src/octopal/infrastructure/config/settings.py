@@ -220,16 +220,17 @@ def save_config(config: OctopalConfig) -> Path:
 
 
 def load_settings() -> Settings:
-    settings = Settings()
+    config_file = _resolve_config_file()
+    config = load_config() if config_file is not None else None
+    init_values = _settings_init_values_from_config(config) if config is not None else {}
+    settings = Settings(**init_values)  # type: ignore[arg-type]
 
     if not settings.zai_api_key:
         legacy = os.getenv("Z_AI_API_KEY")
         if legacy:
             settings = settings.model_copy(update={"zai_api_key": legacy})
 
-    config_file = _resolve_config_file()
-    if config_file is not None:
-        config = load_config()
+    if config is not None:
         # Structured config is authoritative when it exists.
         _sync_settings_from_config(settings, config)
     else:
@@ -363,6 +364,19 @@ def _split_csv(value: object) -> list[str]:
 
 def _sync_settings_from_config(settings: Settings, config: OctopalConfig) -> None:
     """Sync values from OctopalConfig to Settings for backward compatibility."""
+    settings.__dict__.update(_settings_updates_from_config(config))
+
+
+def _settings_init_values_from_config(config: OctopalConfig) -> dict[str, object | None]:
+    """Mask legacy environment values for fields owned by structured config."""
+    init_values: dict[str, object | None] = {}
+    for field_name, value in _settings_updates_from_config(config).items():
+        field = Settings.model_fields[field_name]
+        init_values[str(field.alias or field_name)] = value
+    return init_values
+
+
+def _settings_updates_from_config(config: OctopalConfig) -> dict[str, object | None]:
     updates: dict[str, object | None] = {}
 
     updates["user_channel"] = config.user_channel
@@ -462,5 +476,4 @@ def _sync_settings_from_config(settings: Settings, config: OctopalConfig) -> Non
     updates["user_message_grace_seconds"] = config.user_message_grace_seconds
     updates["connectors"] = config.connectors
 
-    # Apply all updates
-    settings.__dict__.update(updates)
+    return updates

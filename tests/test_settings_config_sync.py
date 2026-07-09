@@ -134,6 +134,25 @@ def test_load_settings_prefers_config_json_telegram_values(tmp_path, monkeypatch
     assert settings.allowed_telegram_chat_ids == ""
 
 
+@pytest.mark.parametrize("source", ["dotenv", "environment"])
+def test_load_settings_ignores_invalid_legacy_value_owned_by_structured_config(
+    tmp_path, monkeypatch, source
+) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps({"gateway": {"port": 9123}}),
+        encoding="utf-8",
+    )
+    if source == "dotenv":
+        (tmp_path / ".env").write_text("OCTOPAL_GATEWAY_PORT=not-a-number\n", encoding="utf-8")
+    else:
+        monkeypatch.setenv("OCTOPAL_GATEWAY_PORT", "not-a-number")
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.gateway_port == 9123
+
+
 def test_load_settings_migrates_legacy_connector_settings_shape(tmp_path, monkeypatch) -> None:
     (tmp_path / "config.json").write_text(
         json.dumps(
