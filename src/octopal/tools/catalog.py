@@ -129,14 +129,25 @@ async def _tool_github_review_bundle(args, ctx) -> str:
         return normalized
 
     base_args = {"owner": owner, "repo": repo, "pull_number": pull_number}
-    pr_payload, readiness_payload, reviews_payload, review_comments_payload, files_payload, commits_payload, convo_payload = await asyncio.gather(
+    (
+        pr_payload,
+        readiness_payload,
+        reviews_payload,
+        review_comments_payload,
+        files_payload,
+        commits_payload,
+        convo_payload,
+    ) = await asyncio.gather(
         _call("get_pull_request", base_args),
         _call("get_pull_merge_readiness", base_args),
         _call("list_pull_reviews", {**base_args, "per_page": review_limit}),
         _call("list_pull_review_comments", {**base_args, "per_page": comment_limit}),
         _call("list_pull_files", {**base_args, "per_page": file_limit}),
         _call("list_pull_commits", {**base_args, "per_page": commit_limit}),
-        _call("list_issue_comments", {"owner": owner, "repo": repo, "issue_number": pull_number, "per_page": comment_limit}),
+        _call(
+            "list_issue_comments",
+            {"owner": owner, "repo": repo, "issue_number": pull_number, "per_page": comment_limit},
+        ),
     )
 
     commit_comments: dict[str, Any] = {}
@@ -716,7 +727,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "problem": {"type": "string", "description": "Short description of the repeated inefficiency or issue."},
+                    "problem": {
+                        "type": "string",
+                        "description": "Short description of the repeated inefficiency or issue.",
+                    },
                     "classification": {
                         "type": "string",
                         "enum": ["behavioral", "system", "unclear"],
@@ -724,7 +738,13 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     },
                     "source": {
                         "type": "string",
-                        "enum": ["failures", "deliberation_audit", "manual_observation", "self_queue", "worker_result"],
+                        "enum": [
+                            "failures",
+                            "deliberation_audit",
+                            "manual_observation",
+                            "self_queue",
+                            "worker_result",
+                        ],
                     },
                     "status": {
                         "type": "string",
@@ -735,8 +755,14 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                         "items": {"type": "string"},
                         "description": "Short evidence bullets for why this issue is repeating.",
                     },
-                    "change_summary": {"type": "string", "description": "Optional short note about the attempted change."},
-                    "notes": {"type": "string", "description": "Optional short note or verdict detail."},
+                    "change_summary": {
+                        "type": "string",
+                        "description": "Optional short note about the attempted change.",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional short note or verdict detail.",
+                    },
                 },
                 "required": ["problem"],
                 "additionalProperties": False,
@@ -781,7 +807,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "force": {"type": "boolean", "description": "If true, reinitialize chain files."},
+                    "force": {
+                        "type": "boolean",
+                        "description": "If true, reinitialize chain files.",
+                    },
                 },
                 "additionalProperties": False,
             },
@@ -794,7 +823,12 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             description="List all scheduled tasks and their status. Only the Octo can use this.",
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             permission="self_control",
-            handler=lambda args, ctx: "\n".join([f"- {t['name']} (ID: {t['id']}): {t['frequency']}, Last run: {t['last_run_at'] or 'Never'}" for t in ctx["octo"].scheduler.store.get_scheduled_tasks()]),
+            handler=lambda args, ctx: "\n".join(
+                [
+                    f"- {t['name']} (ID: {t['id']}): {t['frequency']}, Last run: {t['last_run_at'] or 'Never'}"
+                    for t in ctx["octo"].scheduler.store.get_scheduled_tasks()
+                ]
+            ),
             is_async=True,
         ),
         ToolSpec(
@@ -833,9 +867,18 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Human-readable name of the task."},
-                    "frequency": {"type": "string", "description": "Frequency (e.g., 'Every 30 minutes', 'Daily at 14:00')."},
-                    "task": {"type": "string", "description": "The task description for the scheduled action."},
-                    "description": {"type": "string", "description": "Brief description of the task purpose."},
+                    "frequency": {
+                        "type": "string",
+                        "description": "Frequency (e.g., 'Every 30 minutes', 'Daily at 14:00').",
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "The task description for the scheduled action.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Brief description of the task purpose.",
+                    },
                     "execution_mode": {
                         "type": "string",
                         "enum": ["worker", "octo_task", "octo_control"],
@@ -845,7 +888,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                             "bounded scheduler/control-plane maintenance."
                         ),
                     },
-                    "worker_id": {"type": "string", "description": "Specific worker template ID to use when execution_mode=worker."},
+                    "worker_id": {
+                        "type": "string",
+                        "description": "Specific worker template ID to use when execution_mode=worker.",
+                    },
                     "inputs": {"type": "object", "description": "Optional: Inputs for the worker."},
                     "allowed_paths": {
                         "type": "array",
@@ -895,13 +941,19 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string", "description": "The ID of the task to remove (e.g., 'check_emails')."},
+                    "task_id": {
+                        "type": "string",
+                        "description": "The ID of the task to remove (e.g., 'check_emails').",
+                    },
                 },
                 "required": ["task_id"],
                 "additionalProperties": False,
             },
             permission="self_control",
-            handler=lambda args, ctx: (ctx["octo"].scheduler.remove_task(args["task_id"]), "Task removed.")[1],
+            handler=lambda args, ctx: (
+                ctx["octo"].scheduler.remove_task(args["task_id"]),
+                "Task removed.",
+            )[1],
             is_async=True,
         ),
         ToolSpec(
@@ -943,14 +995,23 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "prompt": {"type": "string", "description": "The specific instruction or task for the sub-task LLM."},
-                    "input": {"type": "object", "description": "Optional JSON-serializable input data for the task."},
-                    "schema": {"type": "object", "description": "Optional JSON schema to validate the LLM's output."},
+                    "prompt": {
+                        "type": "string",
+                        "description": "The specific instruction or task for the sub-task LLM.",
+                    },
+                    "input": {
+                        "type": "object",
+                        "description": "Optional JSON-serializable input data for the task.",
+                    },
+                    "schema": {
+                        "type": "object",
+                        "description": "Optional JSON schema to validate the LLM's output.",
+                    },
                 },
                 "required": ["prompt"],
                 "additionalProperties": False,
             },
-            permission="llm_subtask", # A new permission to control access to this powerful tool
+            permission="llm_subtask",  # A new permission to control access to this powerful tool
             handler=_tool_run_llm_subtask,
             is_async=True,
         ),
@@ -961,7 +1022,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "The URL of the file to download."},
-                    "filename": {"type": "string", "description": "Optional: The name to save the file as. If omitted, it will be inferred from the URL."},
+                    "filename": {
+                        "type": "string",
+                        "description": "Optional: The name to save the file as. If omitted, it will be inferred from the URL.",
+                    },
                 },
                 "required": ["url"],
                 "additionalProperties": False,
@@ -1125,8 +1189,14 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "URL to open."},
-                    "target_id": {"type": "string", "description": "Optional existing tab target id."},
-                    "new_tab": {"type": "boolean", "description": "Open in a new tab before loading the URL."},
+                    "target_id": {
+                        "type": "string",
+                        "description": "Optional existing tab target id.",
+                    },
+                    "new_tab": {
+                        "type": "boolean",
+                        "description": "Open in a new tab before loading the URL.",
+                    },
                 },
                 "required": ["url"],
                 "additionalProperties": False,
@@ -1164,7 +1234,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "target_id": {"type": "string", "description": "Optional tab target id to snapshot."},
+                    "target_id": {
+                        "type": "string",
+                        "description": "Optional tab target id to snapshot.",
+                    },
                 },
                 "additionalProperties": False,
             },
@@ -1179,7 +1252,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "ref": {"type": "string", "description": "Element reference (e.g. 'e1')."},
-                    "target_id": {"type": "string", "description": "Optional tab target id for the ref lookup."},
+                    "target_id": {
+                        "type": "string",
+                        "description": "Optional tab target id for the ref lookup.",
+                    },
                 },
                 "required": ["ref"],
                 "additionalProperties": False,
@@ -1196,8 +1272,14 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "properties": {
                     "ref": {"type": "string", "description": "Element reference (e.g. 'e1')."},
                     "text": {"type": "string", "description": "Text to type."},
-                    "press_enter": {"type": "boolean", "description": "Whether to press Enter after typing."},
-                    "target_id": {"type": "string", "description": "Optional tab target id for the ref lookup."},
+                    "press_enter": {
+                        "type": "boolean",
+                        "description": "Whether to press Enter after typing.",
+                    },
+                    "target_id": {
+                        "type": "string",
+                        "description": "Optional tab target id for the ref lookup.",
+                    },
                 },
                 "required": ["ref", "text"],
                 "additionalProperties": False,
@@ -1228,7 +1310,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "target_id": {"type": "string", "description": "Optional tab target id to close instead of the full session."},
+                    "target_id": {
+                        "type": "string",
+                        "description": "Optional tab target id to close instead of the full session.",
+                    },
                 },
                 "additionalProperties": False,
             },
@@ -1242,7 +1327,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "ref": {"type": "string", "description": "Optional element reference from browser_snapshot."},
+                    "ref": {
+                        "type": "string",
+                        "description": "Optional element reference from browser_snapshot.",
+                    },
                     "text": {"type": "string", "description": "Optional visible text to wait for."},
                     "target_id": {"type": "string", "description": "Optional tab target id."},
                     "state": {
@@ -1250,7 +1338,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                         "description": "Desired locator state.",
                         "enum": ["attached", "detached", "hidden", "visible"],
                     },
-                    "timeout_ms": {"type": "integer", "description": "Timeout in milliseconds (default 10000)."},
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "Timeout in milliseconds (default 10000).",
+                    },
                 },
                 "additionalProperties": False,
             },
@@ -1264,8 +1355,14 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "ref": {"type": "string", "description": "Optional element reference from browser_snapshot."},
-                    "max_chars": {"type": "integer", "description": "Maximum text length to return (100-20000)."},
+                    "ref": {
+                        "type": "string",
+                        "description": "Optional element reference from browser_snapshot.",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Maximum text length to return (100-20000).",
+                    },
                     "target_id": {"type": "string", "description": "Optional tab target id."},
                 },
                 "additionalProperties": False,
@@ -1281,7 +1378,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "target_id": {"type": "string", "description": "Optional tab target id."},
-                    "full_page": {"type": "boolean", "description": "Capture the full page instead of only the viewport."},
+                    "full_page": {
+                        "type": "boolean",
+                        "description": "Capture the full page instead of only the viewport.",
+                    },
                 },
                 "additionalProperties": False,
             },
@@ -1303,7 +1403,19 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                             "properties": {
                                 "action": {
                                     "type": "string",
-                                    "enum": ["open", "tabs", "focus_tab", "navigate", "snapshot", "screenshot", "click", "type", "wait_for", "extract", "close"],
+                                    "enum": [
+                                        "open",
+                                        "tabs",
+                                        "focus_tab",
+                                        "navigate",
+                                        "snapshot",
+                                        "screenshot",
+                                        "click",
+                                        "type",
+                                        "wait_for",
+                                        "extract",
+                                        "close",
+                                    ],
                                 },
                                 "url": {"type": "string"},
                                 "target_id": {"type": "string"},
@@ -1312,7 +1424,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                                 "text": {"type": "string"},
                                 "press_enter": {"type": "boolean"},
                                 "full_page": {"type": "boolean"},
-                                "state": {"type": "string", "enum": ["attached", "detached", "hidden", "visible"]},
+                                "state": {
+                                    "type": "string",
+                                    "enum": ["attached", "detached", "hidden", "visible"],
+                                },
                                 "timeout_ms": {"type": "integer"},
                                 "max_chars": {"type": "integer"},
                             },
@@ -1525,13 +1640,19 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["ps", "up", "down", "restart", "logs", "exec"]},
+                    "action": {
+                        "type": "string",
+                        "enum": ["ps", "up", "down", "restart", "logs", "exec"],
+                    },
                     "services": {"type": "array", "items": {"type": "string"}},
                     "compose_file": {"type": "string"},
                     "detach": {"type": "boolean"},
                     "lines": {"type": "integer"},
                     "command": {"type": "string"},
-                    "confirm": {"type": "boolean", "description": "Required for destructive actions."},
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Required for destructive actions.",
+                    },
                     "timeout_seconds": {"type": "integer"},
                 },
                 "required": ["action"],
@@ -1546,7 +1667,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["status", "fetch", "pull", "branch", "log", "show"]},
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "fetch", "pull", "branch", "log", "show"],
+                    },
                     "repo_path": {"type": "string"},
                     "limit": {"type": "integer"},
                     "ref": {"type": "string"},
@@ -1601,7 +1725,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             description="Run SQLite maintenance operations (integrity_check or vacuum).",
             parameters={
                 "type": "object",
-                "properties": {"db_path": {"type": "string"}, "action": {"type": "string", "enum": ["integrity_check", "vacuum"]}},
+                "properties": {
+                    "db_path": {"type": "string"},
+                    "action": {"type": "string", "enum": ["integrity_check", "vacuum"]},
+                },
                 "additionalProperties": False,
             },
             permission="db_admin",
@@ -1612,7 +1739,11 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             description="Run a read-only SELECT query against SQLite database.",
             parameters={
                 "type": "object",
-                "properties": {"db_path": {"type": "string"}, "query": {"type": "string"}, "limit": {"type": "integer"}},
+                "properties": {
+                    "db_path": {"type": "string"},
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer"},
+                },
                 "required": ["query"],
                 "additionalProperties": False,
             },
@@ -1653,7 +1784,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             description="Run allowlisted test/lint commands and return summarized output.",
             parameters={
                 "type": "object",
-                "properties": {"command": {"type": "string"}, "timeout_seconds": {"type": "integer"}},
+                "properties": {
+                    "command": {"type": "string"},
+                    "timeout_seconds": {"type": "integer"},
+                },
                 "required": ["command"],
                 "additionalProperties": False,
             },
@@ -1683,7 +1817,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             description="Create or list release snapshots for rollback planning.",
             parameters={
                 "type": "object",
-                "properties": {"action": {"type": "string", "enum": ["create", "list"]}, "note": {"type": "string"}},
+                "properties": {
+                    "action": {"type": "string", "enum": ["create", "list"]},
+                    "note": {"type": "string"},
+                },
                 "additionalProperties": False,
             },
             permission="deploy_control",
@@ -1706,18 +1843,49 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "mode": {"type": "string", "enum": ["soft", "hard"], "description": "soft keeps bootstrap, hard also resets bootstrap hash."},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["soft", "hard"],
+                        "description": "soft keeps bootstrap, hard also resets bootstrap hash.",
+                    },
                     "reason": {"type": "string", "description": "Why context reset is needed now."},
-                    "goal_now": {"type": "string", "description": "Primary goal to keep after reset."},
-                    "done": {"type": "array", "items": {"type": "string"}, "description": "Completed items worth preserving."},
-                    "open_threads": {"type": "array", "items": {"type": "string"}, "description": "Open threads still unresolved."},
-                    "critical_constraints": {"type": "array", "items": {"type": "string"}, "description": "Non-negotiable constraints."},
+                    "goal_now": {
+                        "type": "string",
+                        "description": "Primary goal to keep after reset.",
+                    },
+                    "done": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Completed items worth preserving.",
+                    },
+                    "open_threads": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Open threads still unresolved.",
+                    },
+                    "critical_constraints": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Non-negotiable constraints.",
+                    },
                     "next_step": {"type": "string", "description": "First step after wake-up."},
                     "current_interest": {"type": "string", "description": "Current focus area."},
-                    "pending_human_input": {"type": "string", "description": "Human input currently needed, if any."},
-                    "cognitive_state": {"type": "string", "enum": ["focused", "fatigued", "frustrated", "energized"]},
-                    "confidence": {"type": "number", "description": "Confidence in handoff quality (0-1)."},
-                    "confirm": {"type": "boolean", "description": "Required for hard reset or guarded retries."},
+                    "pending_human_input": {
+                        "type": "string",
+                        "description": "Human input currently needed, if any.",
+                    },
+                    "cognitive_state": {
+                        "type": "string",
+                        "enum": ["focused", "fatigued", "frustrated", "energized"],
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Confidence in handoff quality (0-1).",
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Required for hard reset or guarded retries.",
+                    },
                 },
                 "required": ["reason"],
                 "additionalProperties": False,
@@ -1732,7 +1900,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["graceful_shutdown", "reload_config", "status"]},
+                    "action": {
+                        "type": "string",
+                        "enum": ["graceful_shutdown", "reload_config", "status"],
+                    },
                     "reason": {"type": "string"},
                     "confirm": {"type": "boolean"},
                 },
@@ -1749,18 +1920,51 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "reason": {"type": "string", "description": "Why Octo should restart now."},
-                    "goal_now": {"type": "string", "description": "Primary goal to resume after restart."},
-                    "done": {"type": "array", "items": {"type": "string"}, "description": "Completed items worth preserving."},
-                    "open_threads": {"type": "array", "items": {"type": "string"}, "description": "Open threads still unresolved."},
-                    "critical_constraints": {"type": "array", "items": {"type": "string"}, "description": "Non-negotiable constraints."},
+                    "goal_now": {
+                        "type": "string",
+                        "description": "Primary goal to resume after restart.",
+                    },
+                    "done": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Completed items worth preserving.",
+                    },
+                    "open_threads": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Open threads still unresolved.",
+                    },
+                    "critical_constraints": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Non-negotiable constraints.",
+                    },
                     "next_step": {"type": "string", "description": "First step after restart."},
                     "current_interest": {"type": "string", "description": "Current focus area."},
-                    "pending_human_input": {"type": "string", "description": "Human input currently needed, if any."},
-                    "cognitive_state": {"type": "string", "enum": ["focused", "fatigued", "frustrated", "energized"]},
-                    "confidence": {"type": "number", "description": "Confidence in handoff quality (0-1)."},
-                    "delay_seconds": {"type": "integer", "description": "Delay before helper restarts Octo (3-60 seconds)."},
-                    "confirm": {"type": "boolean", "description": "Required; must be true to restart."},
-                    "force": {"type": "boolean", "description": "Allow a second restart despite a recent pending or completed self-control action. Use only after explicit user confirmation."},
+                    "pending_human_input": {
+                        "type": "string",
+                        "description": "Human input currently needed, if any.",
+                    },
+                    "cognitive_state": {
+                        "type": "string",
+                        "enum": ["focused", "fatigued", "frustrated", "energized"],
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Confidence in handoff quality (0-1).",
+                    },
+                    "delay_seconds": {
+                        "type": "integer",
+                        "description": "Delay before helper restarts Octo (3-60 seconds).",
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Required; must be true to restart.",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Allow a second restart despite a recent pending or completed self-control action. Use only after explicit user confirmation.",
+                    },
                 },
                 "required": ["reason", "confirm"],
                 "additionalProperties": False,
@@ -1788,18 +1992,54 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "reason": {"type": "string", "description": "Why Octo should update now."},
-                    "goal_now": {"type": "string", "description": "Primary goal to resume after update."},
-                    "done": {"type": "array", "items": {"type": "string"}, "description": "Completed items worth preserving."},
-                    "open_threads": {"type": "array", "items": {"type": "string"}, "description": "Open threads still unresolved."},
-                    "critical_constraints": {"type": "array", "items": {"type": "string"}, "description": "Non-negotiable constraints."},
-                    "next_step": {"type": "string", "description": "First step after update and restart."},
+                    "goal_now": {
+                        "type": "string",
+                        "description": "Primary goal to resume after update.",
+                    },
+                    "done": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Completed items worth preserving.",
+                    },
+                    "open_threads": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Open threads still unresolved.",
+                    },
+                    "critical_constraints": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Non-negotiable constraints.",
+                    },
+                    "next_step": {
+                        "type": "string",
+                        "description": "First step after update and restart.",
+                    },
                     "current_interest": {"type": "string", "description": "Current focus area."},
-                    "pending_human_input": {"type": "string", "description": "Human input currently needed, if any."},
-                    "cognitive_state": {"type": "string", "enum": ["focused", "fatigued", "frustrated", "energized"]},
-                    "confidence": {"type": "number", "description": "Confidence in handoff quality (0-1)."},
-                    "delay_seconds": {"type": "integer", "description": "Delay before helper updates Octo (3-60 seconds)."},
-                    "confirm": {"type": "boolean", "description": "Required; must be true to update."},
-                    "force": {"type": "boolean", "description": "Allow a second update despite a recent pending or completed self-control action. Use only after explicit user confirmation."},
+                    "pending_human_input": {
+                        "type": "string",
+                        "description": "Human input currently needed, if any.",
+                    },
+                    "cognitive_state": {
+                        "type": "string",
+                        "enum": ["focused", "fatigued", "frustrated", "energized"],
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Confidence in handoff quality (0-1).",
+                    },
+                    "delay_seconds": {
+                        "type": "integer",
+                        "description": "Delay before helper updates Octo (3-60 seconds).",
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Required; must be true to update.",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Allow a second update despite a recent pending or completed self-control action. Use only after explicit user confirmation.",
+                    },
                 },
                 "required": ["reason", "confirm"],
                 "additionalProperties": False,
@@ -1979,18 +2219,26 @@ async def _tool_scheduler_status(args, ctx) -> str:
     disabled_count = sum(1 for task in described if int(task.get("enabled", 1) or 0) != 1)
     hints: list[str] = []
     if due_count > 0:
-        hints.append(f"{due_count} scheduled task(s) are due now; run check_schedule or dispatch work.")
+        hints.append(
+            f"{due_count} scheduled task(s) are due now; run check_schedule or dispatch work."
+        )
     if disabled_count > 0 and not enabled_only:
-        hints.append(f"{disabled_count} scheduled task(s) are disabled and will not run until re-enabled.")
+        hints.append(
+            f"{disabled_count} scheduled task(s) are disabled and will not run until re-enabled."
+        )
     if any(task.get("overdue") for task in described):
-        hints.append("At least one scheduled task looks overdue; inspect execution flow or worker failures.")
+        hints.append(
+            "At least one scheduled task looks overdue; inspect execution flow or worker failures."
+        )
     not_dispatch_ready = [task for task in described if not bool(task.get("dispatch_ready", True))]
     if not_dispatch_ready:
         hints.append(
             f"{len(not_dispatch_ready)} scheduled task(s) are not dispatch-ready for the current worker loop."
         )
     suggested_migrations = [
-        task for task in not_dispatch_ready if str(task.get("suggested_execution_mode") or "").strip()
+        task
+        for task in not_dispatch_ready
+        if str(task.get("suggested_execution_mode") or "").strip()
     ]
     if suggested_migrations:
         hints.append(
@@ -2167,7 +2415,9 @@ def _tool_gateway_status(args, ctx) -> str:
 
     octo_status = build_octo_status(octo_metrics)
     last_heartbeat = status_data.get("last_internal_heartbeat_at")
-    last_user_message = status_data.get("last_user_message_at") or status_data.get("last_message_at")
+    last_user_message = status_data.get("last_user_message_at") or status_data.get(
+        "last_message_at"
+    )
     status_updated_at = status_data.get("status_updated_at")
 
     services = [
@@ -2223,13 +2473,19 @@ def _tool_gateway_status(args, ctx) -> str:
     ]
     hints: list[str] = []
     if not running:
-        hints.append("Gateway process is down; restart the Octopal runtime before expecting channel traffic.")
+        hints.append(
+            "Gateway process is down; restart the Octopal runtime before expecting channel traffic."
+        )
     if int(octo_metrics.get("followup_queues", 0) or 0) > 0:
-        hints.append("Octo follow-up queue is non-empty; check worker/gateway traffic before spawning more work.")
+        hints.append(
+            "Octo follow-up queue is non-empty; check worker/gateway traffic before spawning more work."
+        )
     if active_channel == "telegram" and int(telegram_metrics.get("chat_queues", 0) or 0) > 0:
         hints.append("Telegram queue depth is elevated; outbound delivery may be catching up.")
     if active_channel == "whatsapp" and int(bool(whatsapp_metrics.get("connected", 0))) == 0:
-        hints.append("WhatsApp bridge is not connected; expect delivery issues until it reconnects.")
+        hints.append(
+            "WhatsApp bridge is not connected; expect delivery issues until it reconnects."
+        )
     if _mcp_connected_count(connectivity_metrics) == 0:
         hints.append("No MCP servers are currently connected; tool availability may be reduced.")
     if int(scheduler_metrics.get("last_dispatch_rejected_by_policy", 0) or 0) > 0:
@@ -2237,8 +2493,13 @@ def _tool_gateway_status(args, ctx) -> str:
             "Some scheduled tasks were rejected by policy; check worker_id/task_text coverage."
         )
     if str(scheduler_metrics.get("last_tick_status", "") or "").strip().lower() == "failed":
-        hints.append("Last scheduler tick failed; inspect scheduler control-plane traces before trusting automation.")
-    if launcher_status.configured_launcher == "docker" and launcher_status.effective_launcher != "docker":
+        hints.append(
+            "Last scheduler tick failed; inspect scheduler control-plane traces before trusting automation."
+        )
+    if (
+        launcher_status.configured_launcher == "docker"
+        and launcher_status.effective_launcher != "docker"
+    ):
         hints.append(f"Docker worker launcher is not active: {launcher_status.reason}")
     if not hints:
         hints.append("Gateway control plane looks healthy.")
@@ -2276,12 +2537,16 @@ def _tool_gateway_status(args, ctx) -> str:
                 "id": active_channel,
                 "label": active_channel_label,
                 "updated_at": active_channel_metrics.get("updated_at"),
-                "queue_depth": int(active_channel_metrics.get("chat_queues", 0) or 0)
-                if active_channel == "telegram"
-                else 0,
-                "send_tasks": int(active_channel_metrics.get("send_tasks", 0) or 0)
-                if active_channel == "telegram"
-                else None,
+                "queue_depth": (
+                    int(active_channel_metrics.get("chat_queues", 0) or 0)
+                    if active_channel == "telegram"
+                    else 0
+                ),
+                "send_tasks": (
+                    int(active_channel_metrics.get("send_tasks", 0) or 0)
+                    if active_channel == "telegram"
+                    else None
+                ),
                 "connected": (
                     None
                     if active_channel != "whatsapp" and "connected" not in active_channel_metrics
@@ -2307,11 +2572,15 @@ def _tool_gateway_status(args, ctx) -> str:
                 "running": bool(scheduler_metrics.get("running")),
                 "last_tick_status": scheduler_metrics.get("last_tick_status"),
                 "last_due_count": int(scheduler_metrics.get("last_due_count", 0) or 0),
-                "last_dispatch_started": int(scheduler_metrics.get("last_dispatch_started", 0) or 0),
+                "last_dispatch_started": int(
+                    scheduler_metrics.get("last_dispatch_started", 0) or 0
+                ),
                 "last_dispatch_completed": int(
                     scheduler_metrics.get("last_dispatch_completed", 0) or 0
                 ),
-                "last_dispatch_duplicates": int(scheduler_metrics.get("last_dispatch_duplicates", 0) or 0),
+                "last_dispatch_duplicates": int(
+                    scheduler_metrics.get("last_dispatch_duplicates", 0) or 0
+                ),
                 "last_dispatch_rejected_by_policy": int(
                     scheduler_metrics.get("last_dispatch_rejected_by_policy", 0) or 0
                 ),
@@ -2338,7 +2607,9 @@ async def _tool_octo_context_reset(args, ctx) -> str:
     octo = ctx.get("octo")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "request_context_reset"):
-        return json.dumps({"status": "error", "message": "octo context reset is unavailable"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": "octo context reset is unavailable"}, ensure_ascii=False
+        )
     result = await octo.request_context_reset(chat_id, args or {})
     return json.dumps(result, ensure_ascii=False)
 
@@ -2392,7 +2663,9 @@ async def _tool_octo_restart_self(args, ctx) -> str:
     octo = ctx.get("octo")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "request_self_restart"):
-        return json.dumps({"status": "error", "message": "octo self restart is unavailable"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": "octo self restart is unavailable"}, ensure_ascii=False
+        )
     force_block = _self_control_force_guard(args or {}, ctx, action="octo_restart_self")
     if force_block is not None:
         return json.dumps(force_block, ensure_ascii=False)
@@ -2409,7 +2682,9 @@ async def _tool_octo_check_update(args, ctx) -> str:
     octo = ctx.get("octo")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "request_update_check"):
-        return json.dumps({"status": "error", "message": "octo update check is unavailable"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": "octo update check is unavailable"}, ensure_ascii=False
+        )
     result = await octo.request_update_check(chat_id, args or {})
     return json.dumps(result, ensure_ascii=False)
 
@@ -2423,7 +2698,9 @@ async def _tool_octo_update_self(args, ctx) -> str:
     octo = ctx.get("octo")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "request_self_update"):
-        return json.dumps({"status": "error", "message": "octo self update is unavailable"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": "octo self update is unavailable"}, ensure_ascii=False
+        )
     force_block = _self_control_force_guard(args or {}, ctx, action="octo_update_self")
     if force_block is not None:
         return json.dumps(force_block, ensure_ascii=False)
@@ -2435,7 +2712,9 @@ async def _tool_octo_context_health(args, ctx) -> str:
     octo = ctx.get("octo")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "get_context_health_snapshot"):
-        return json.dumps({"status": "error", "message": "octo context health is unavailable"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": "octo context health is unavailable"}, ensure_ascii=False
+        )
     snapshot = await octo.get_context_health_snapshot(chat_id)
     thresholds = (
         octo.get_context_thresholds()
@@ -2603,7 +2882,10 @@ async def _tool_octo_opportunity_scan(args, ctx) -> str:
     octo = ctx.get("octo")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "scan_opportunities"):
-        return json.dumps({"status": "error", "message": "octo opportunity scan is unavailable"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": "octo opportunity scan is unavailable"},
+            ensure_ascii=False,
+        )
     limit = int((args or {}).get("limit", 3) or 3)
     payload = await octo.scan_opportunities(chat_id, limit=limit)
     return json.dumps(payload, ensure_ascii=False)
@@ -2613,7 +2895,9 @@ async def _tool_octo_self_queue_add(args, ctx) -> str:
     octo = ctx.get("octo")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "add_self_queue_item"):
-        return json.dumps({"status": "error", "message": "octo self queue is unavailable"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": "octo self queue is unavailable"}, ensure_ascii=False
+        )
     payload = await octo.add_self_queue_item(chat_id, args or {})
     return json.dumps(payload, ensure_ascii=False)
 
@@ -2769,7 +3053,10 @@ async def _tool_execute_self_queue_item(args, ctx) -> str:
     octo = ctx.get("octo")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "execute_self_queue_item"):
-        return json.dumps({"status": "error", "message": "octo self queue executor is unavailable"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": "octo self queue executor is unavailable"},
+            ensure_ascii=False,
+        )
     payload = await octo.execute_self_queue_item(chat_id, args or {})
     return json.dumps(payload, ensure_ascii=False)
 
@@ -2778,16 +3065,23 @@ async def _tool_octo_self_queue_list(args, ctx) -> str:
     octo = ctx.get("octo")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "get_self_queue"):
-        return json.dumps({"status": "error", "message": "octo self queue is unavailable"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": "octo self queue is unavailable"}, ensure_ascii=False
+        )
     items = await octo.get_self_queue(chat_id)
-    return json.dumps({"status": "ok", "chat_id": chat_id, "items": items, "count": len(items)}, ensure_ascii=False)
+    return json.dumps(
+        {"status": "ok", "chat_id": chat_id, "items": items, "count": len(items)},
+        ensure_ascii=False,
+    )
 
 
 async def _tool_octo_self_queue_take(args, ctx) -> str:
     octo = ctx.get("octo")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "take_next_self_queue_item"):
-        return json.dumps({"status": "error", "message": "octo self queue is unavailable"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": "octo self queue is unavailable"}, ensure_ascii=False
+        )
     payload = await octo.take_next_self_queue_item(chat_id)
     return json.dumps(payload, ensure_ascii=False)
 
@@ -2796,6 +3090,8 @@ async def _tool_octo_self_queue_update(args, ctx) -> str:
     octo = ctx.get("octo")
     chat_id = int(ctx.get("chat_id", 0) or 0)
     if octo is None or not hasattr(octo, "update_self_queue_item"):
-        return json.dumps({"status": "error", "message": "octo self queue is unavailable"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": "octo self queue is unavailable"}, ensure_ascii=False
+        )
     payload = await octo.update_self_queue_item(chat_id, args or {})
     return json.dumps(payload, ensure_ascii=False)

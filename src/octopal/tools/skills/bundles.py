@@ -124,7 +124,9 @@ def load_skill_bundle(
 
     metadata = resolve_skill_bundle_metadata(frontmatter)
     scope = _resolve_scope(frontmatter, registry_entry)
-    enabled = bool(registry_entry.get("enabled", True)) if isinstance(registry_entry, dict) else True
+    enabled = (
+        bool(registry_entry.get("enabled", True)) if isinstance(registry_entry, dict) else True
+    )
 
     scripts_dir = _existing_child_dir(bundle_root, "scripts")
     references_dir = _existing_child_dir(bundle_root, "references")

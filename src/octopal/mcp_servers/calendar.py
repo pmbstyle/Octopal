@@ -55,7 +55,9 @@ def _parse_google_api_error(response: httpx.Response) -> CalendarApiError:
 
     error = payload.get("error")
     if isinstance(error, dict):
-        message = str(error.get("message") or response.reason_phrase or "Unknown Calendar API error").strip()
+        message = str(
+            error.get("message") or response.reason_phrase or "Unknown Calendar API error"
+        ).strip()
         errors = error.get("errors")
         reason = None
         if isinstance(errors, list) and errors:
@@ -98,9 +100,20 @@ def _normalize_event(event: dict[str, Any]) -> dict[str, Any]:
         "html_link": event.get("htmlLink"),
         "created": event.get("created"),
         "updated": event.get("updated"),
-        "start": {"date_time": start.get("dateTime"), "date": start.get("date"), "time_zone": start.get("timeZone")},
-        "end": {"date_time": end.get("dateTime"), "date": end.get("date"), "time_zone": end.get("timeZone")},
-        "organizer": {"email": organizer.get("email"), "display_name": organizer.get("displayName")},
+        "start": {
+            "date_time": start.get("dateTime"),
+            "date": start.get("date"),
+            "time_zone": start.get("timeZone"),
+        },
+        "end": {
+            "date_time": end.get("dateTime"),
+            "date": end.get("date"),
+            "time_zone": end.get("timeZone"),
+        },
+        "organizer": {
+            "email": organizer.get("email"),
+            "display_name": organizer.get("displayName"),
+        },
         "creator": {"email": creator.get("email"), "display_name": creator.get("displayName")},
         "attendees": [
             {
@@ -361,7 +374,9 @@ class CalendarApiClient:
         body: dict[str, Any] = {
             "timeMin": time_min,
             "timeMax": time_max,
-            "items": [{"id": calendar_id} for calendar_id in calendar_ids if str(calendar_id).strip()],
+            "items": [
+                {"id": calendar_id} for calendar_id in calendar_ids if str(calendar_id).strip()
+            ],
         }
         if time_zone:
             body["timeZone"] = time_zone
@@ -370,7 +385,10 @@ class CalendarApiClient:
         calendars = payload.get("calendars") or {}
         normalized_calendars = {
             calendar_id: {
-                "busy": [_normalize_busy_slot(slot) for slot in ((calendar_payload or {}).get("busy") or [])],
+                "busy": [
+                    _normalize_busy_slot(slot)
+                    for slot in ((calendar_payload or {}).get("busy") or [])
+                ],
                 "errors": (calendar_payload or {}).get("errors") or [],
             }
             for calendar_id, calendar_payload in calendars.items()

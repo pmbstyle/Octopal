@@ -46,13 +46,15 @@ def test_apply_tool_profile_filters_tool_list() -> None:
 
 
 def test_default_profiles_include_expected_foundation_profiles() -> None:
-    assert {"minimal", "research", "coding", "ops", "communication"} <= set(
-        DEFAULT_TOOL_PROFILES
-    )
+    assert {"minimal", "research", "coding", "ops", "communication"} <= set(DEFAULT_TOOL_PROFILES)
 
 
 def test_research_profile_exposes_fetch_plan_tool() -> None:
-    tools = [_tool("fetch_plan_tool"), _tool("web_search"), _tool("service_health", permission="service_read")]
+    tools = [
+        _tool("fetch_plan_tool"),
+        _tool("web_search"),
+        _tool("service_health", permission="service_read"),
+    ]
     out = apply_tool_profile(tools, "research")
 
     assert [tool.name for tool in out] == ["fetch_plan_tool", "web_search"]

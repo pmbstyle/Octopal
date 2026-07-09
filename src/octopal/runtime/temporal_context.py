@@ -42,4 +42,3 @@ def format_temporal_context_prompt(context: Mapping[str, Any] | None = None) -> 
         "- Treat relative dates like today, yesterday, tomorrow, this morning, and this "
         "week relative to this context unless the task gives a more specific date."
     )
-

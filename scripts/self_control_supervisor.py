@@ -27,7 +27,11 @@ def main() -> None:
         except Exception:
             start = 0
 
-        lines = req_file.read_text(encoding="utf-8", errors="ignore").splitlines() if req_file.exists() else []
+        lines = (
+            req_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if req_file.exists()
+            else []
+        )
         for idx in range(start, len(lines)):
             line = lines[idx].strip()
             if not line:

@@ -9,20 +9,36 @@ from playwright.async_api import Page
 
 logger = structlog.get_logger(__name__)
 
+
 class ElementRef(TypedDict):
     role: str
     name: str | None
     nth: int
 
+
 class SnapshotResult(TypedDict):
     snapshot: str
     refs: dict[str, ElementRef]
 
+
 INTERACTIVE_ROLES = {
-    "button", "link", "textbox", "checkbox", "radio", "combobox",
-    "listbox", "menuitem", "option", "searchbox", "slider",
-    "spinbutton", "switch", "tab", "treeitem"
+    "button",
+    "link",
+    "textbox",
+    "checkbox",
+    "radio",
+    "combobox",
+    "listbox",
+    "menuitem",
+    "option",
+    "searchbox",
+    "slider",
+    "spinbutton",
+    "switch",
+    "tab",
+    "treeitem",
 }
+
 
 def _get_indent_level(line: str) -> int:
     match = re.match(r"^(\s*)", line)
@@ -139,6 +155,7 @@ def _fallback_snapshot_from_html(html: str) -> SnapshotResult:
     parser.close()
     return parser.snapshot_result()
 
+
 async def capture_aria_snapshot(page: Page) -> SnapshotResult:
     """Capture an ARIA snapshot and inject stable references."""
     if hasattr(page, "aria_snapshot"):
@@ -178,11 +195,7 @@ async def capture_aria_snapshot(page: Page) -> SnapshotResult:
             nth = role_name_counts.get(key, 0)
             role_name_counts[key] = nth + 1
 
-            refs[ref_id] = {
-                "role": role,
-                "name": name,
-                "nth": nth
-            }
+            refs[ref_id] = {"role": role, "name": name, "nth": nth}
 
             # Inject ref into the snapshot line for the LLM
             ref_tag = f" [ref={ref_id}]"
@@ -198,7 +211,4 @@ async def capture_aria_snapshot(page: Page) -> SnapshotResult:
         else:
             result_lines.append(line)
 
-    return {
-        "snapshot": "\n".join(result_lines),
-        "refs": refs
-    }
+    return {"snapshot": "\n".join(result_lines), "refs": refs}

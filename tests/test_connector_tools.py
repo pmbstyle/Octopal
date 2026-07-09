@@ -200,7 +200,9 @@ def test_gmail_connector_tool_proxies_and_parses_json_payload() -> None:
 def test_gmail_write_connector_tools_use_gmail_write_capability() -> None:
     class _Manager:
         async def call_tool(self, server_id, tool_name, args, allow_name_fallback=False):
-            return type("_Result", (), {"content": [type("_Text", (), {"text": '{"id":"msg-2"}'})()]})()
+            return type(
+                "_Result", (), {"content": [type("_Text", (), {"text": '{"id":"msg-2"}'})()]}
+            )()
 
     tools = {tool.name: tool for tool in get_gmail_connector_tools(_Manager())}
 
@@ -209,14 +211,35 @@ def test_gmail_write_connector_tools_use_gmail_write_capability() -> None:
     assert tools["gmail_archive_message"].metadata.capabilities == ("gmail_write", "connector_use")
     assert tools["gmail_trash_message"].metadata.capabilities == ("gmail_write", "connector_use")
     assert tools["gmail_delete_message"].metadata.capabilities == ("gmail_write", "connector_use")
-    assert tools["gmail_mark_message_read"].metadata.capabilities == ("gmail_write", "connector_use")
-    assert tools["gmail_mark_message_unread"].metadata.capabilities == ("gmail_write", "connector_use")
-    assert tools["gmail_modify_message_labels"].metadata.capabilities == ("gmail_write", "connector_use")
+    assert tools["gmail_mark_message_read"].metadata.capabilities == (
+        "gmail_write",
+        "connector_use",
+    )
+    assert tools["gmail_mark_message_unread"].metadata.capabilities == (
+        "gmail_write",
+        "connector_use",
+    )
+    assert tools["gmail_modify_message_labels"].metadata.capabilities == (
+        "gmail_write",
+        "connector_use",
+    )
     assert tools["gmail_get_attachment"].metadata.capabilities == ("gmail_read", "connector_use")
-    assert tools["gmail_add_label_by_name"].metadata.capabilities == ("gmail_write", "connector_use")
-    assert tools["gmail_remove_label_by_name"].metadata.capabilities == ("gmail_write", "connector_use")
-    assert tools["gmail_move_message_to_inbox"].metadata.capabilities == ("gmail_write", "connector_use")
-    assert tools["gmail_move_message_out_of_inbox"].metadata.capabilities == ("gmail_write", "connector_use")
+    assert tools["gmail_add_label_by_name"].metadata.capabilities == (
+        "gmail_write",
+        "connector_use",
+    )
+    assert tools["gmail_remove_label_by_name"].metadata.capabilities == (
+        "gmail_write",
+        "connector_use",
+    )
+    assert tools["gmail_move_message_to_inbox"].metadata.capabilities == (
+        "gmail_write",
+        "connector_use",
+    )
+    assert tools["gmail_move_message_out_of_inbox"].metadata.capabilities == (
+        "gmail_write",
+        "connector_use",
+    )
 
 
 def test_calendar_connector_tool_proxies_and_parses_json_payload() -> None:
@@ -346,7 +369,9 @@ def test_drive_download_to_workspace_writes_file(tmp_path) -> None:
             assert tool_name == "download_file"
             assert args == {"file_id": "file-1"}
             assert allow_name_fallback is True
-            return _Result('{"file":{"id":"file-1","name":"spec.md"},"content_base64":"aGVsbG8=","size":5}')
+            return _Result(
+                '{"file":{"id":"file-1","name":"spec.md"},"content_base64":"aGVsbG8=","size":5}'
+            )
 
     tools = {tool.name: tool for tool in get_drive_connector_tools(_Manager())}
     payload = asyncio.run(
@@ -448,7 +473,9 @@ def test_drive_update_from_workspace_reads_file(tmp_path) -> None:
             assert args["file_id"] == "drive-file-1"
             assert args["content_base64"] == "dXBkYXRlZA=="
             assert allow_name_fallback is True
-            return _Result('{"id":"drive-file-1","name":"notes.txt","modified_time":"2026-04-02T12:00:00Z"}')
+            return _Result(
+                '{"id":"drive-file-1","name":"notes.txt","modified_time":"2026-04-02T12:00:00Z"}'
+            )
 
     tools = {tool.name: tool for tool in get_drive_connector_tools(_Manager())}
     payload = asyncio.run(
@@ -538,7 +565,9 @@ def test_drive_read_text_file_decodes_plain_text() -> None:
             assert tool_name == "download_file"
             assert args == {"file_id": "drive-file-2"}
             assert allow_name_fallback is True
-            return _Result('{"file":{"id":"drive-file-2","name":"notes.md"},"content_base64":"IyBIZWxsbw=="}')
+            return _Result(
+                '{"file":{"id":"drive-file-2","name":"notes.md"},"content_base64":"IyBIZWxsbw=="}'
+            )
 
     tools = {tool.name: tool for tool in get_drive_connector_tools(_Manager())}
     payload = asyncio.run(

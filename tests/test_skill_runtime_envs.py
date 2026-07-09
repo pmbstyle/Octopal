@@ -133,7 +133,9 @@ metadata:
     payload = prepare_skill_env("job-search", workspace_dir=workspace_dir)
 
     assert payload["status"] == "prepared"
-    manifest = json.loads((workspace_dir / ".skill-envs" / "job-search" / "env.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (workspace_dir / ".skill-envs" / "job-search" / "env.json").read_text(encoding="utf-8")
+    )
     assert manifest["kind"] == "python"
     assert manifest["python_packages"] == ["python-jobspy"]
 
@@ -185,17 +187,24 @@ metadata:
         return type("Completed", (), {"returncode": 0})()
 
     monkeypatch.setattr("octopal.tools.skills.runtime_envs.subprocess.run", _fake_run)
-    monkeypatch.setattr("octopal.tools.skills.runtime_envs.shutil.which", lambda name: "npm" if name in {"npm", "node"} else None)
+    monkeypatch.setattr(
+        "octopal.tools.skills.runtime_envs.shutil.which",
+        lambda name: "npm" if name in {"npm", "node"} else None,
+    )
 
     payload = prepare_skill_env("ui-helper", workspace_dir=workspace_dir)
 
     assert payload["status"] == "prepared"
     assert payload["kind"] == "node"
-    manifest = json.loads((workspace_dir / ".skill-envs" / "ui-helper" / "env.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (workspace_dir / ".skill-envs" / "ui-helper" / "env.json").read_text(encoding="utf-8")
+    )
     assert manifest["node_packages"] == ["tsx"]
 
 
-def test_get_skill_env_status_reads_python_requirements_txt_without_metadata(tmp_path: Path) -> None:
+def test_get_skill_env_status_reads_python_requirements_txt_without_metadata(
+    tmp_path: Path,
+) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "reporter"
     scripts_dir = skill_dir / "scripts"
@@ -259,7 +268,9 @@ description: Run TS helpers
     assert status["node_packages"] == ["chalk@^5.4.0", "tsx@^4.19.0"]
 
 
-def test_get_skill_env_status_marks_python_env_missing_when_requirements_change(tmp_path: Path) -> None:
+def test_get_skill_env_status_marks_python_env_missing_when_requirements_change(
+    tmp_path: Path,
+) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "reporter"
     scripts_dir = skill_dir / "scripts"
@@ -415,7 +426,9 @@ metadata:
     assert status["python_packages"] == ["requests"]
 
 
-def test_prepare_skill_env_preserves_existing_env_when_rebuild_fails(tmp_path: Path, monkeypatch) -> None:
+def test_prepare_skill_env_preserves_existing_env_when_rebuild_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace_dir = tmp_path / "workspace"
     skill_dir = workspace_dir / "skills" / "job-search"
     scripts_dir = skill_dir / "scripts"

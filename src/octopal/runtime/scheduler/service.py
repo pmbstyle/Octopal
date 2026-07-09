@@ -118,7 +118,10 @@ class SchedulerService:
             worker_id=worker_id,
         )
         worker_id_value = str(worker_id or "").strip() or None
-        if normalized_execution_mode == "octo_control" and normalized_notify_user == "if_significant":
+        if (
+            normalized_execution_mode == "octo_control"
+            and normalized_notify_user == "if_significant"
+        ):
             normalized_notify_user = "never"
         if normalized_execution_mode == "worker" and not worker_id_value:
             raise ValueError("worker_id is required when execution_mode=worker.")
@@ -168,7 +171,9 @@ class SchedulerService:
         allow_worker_id_override: bool = True,
         required_blocked_reason: str | None = None,
     ) -> dict[str, Any]:
-        selected_ids = {str(item or "").strip() for item in (task_ids or []) if str(item or "").strip()}
+        selected_ids = {
+            str(item or "").strip() for item in (task_ids or []) if str(item or "").strip()
+        }
         provided_worker_id = str(worker_id or "").strip() or None
         if not allow_worker_id_override:
             provided_worker_id = None
@@ -227,7 +232,9 @@ class SchedulerService:
                 )
                 continue
 
-            metadata = dict(task.get("metadata") or {}) if isinstance(task.get("metadata"), dict) else {}
+            metadata = (
+                dict(task.get("metadata") or {}) if isinstance(task.get("metadata"), dict) else {}
+            )
             metadata["notify_user"] = task.get("notify_user")
             metadata["execution_mode"] = suggested_mode
             metadata.pop(SCHEDULED_TASK_BLOCKED_UNTIL_KEY, None)
@@ -322,7 +329,7 @@ class SchedulerService:
         for t in tasks:
             lines.append(f"### {t['name']}")
             lines.append(f"- **ID**: {t['id']}")
-            if t['description']:
+            if t["description"]:
                 lines.append(f"- **Description**: {t['description']}")
             lines.append(f"- **Frequency**: {t['frequency']}")
             normalized = self._normalize_task_record(t)
@@ -332,13 +339,15 @@ class SchedulerService:
             lines.append(f"- **Execution mode**: {normalized['execution_mode']}")
             dispatch_line = "ready"
             if not bool(normalized.get("dispatch_ready")):
-                dispatch_line = f"rejected by policy ({normalized.get('dispatch_policy_reason') or 'unknown'})"
+                dispatch_line = (
+                    f"rejected by policy ({normalized.get('dispatch_policy_reason') or 'unknown'})"
+                )
             lines.append(f"- **Dispatch**: {dispatch_line}")
             if normalized.get("suggested_execution_mode"):
                 lines.append(
                     f"- **Suggested execution mode**: {normalized['suggested_execution_mode']}"
                 )
-            if t['worker_id']:
+            if t["worker_id"]:
                 lines.append(f"- **Worker**: {t['worker_id']}")
             lines.append(f"- **Task**: {t['task_text']}")
             lines.append(f"- **Last execution**: {t['last_run_at'] or 'Never'}")
@@ -356,7 +365,7 @@ class SchedulerService:
             logger.exception("Failed to sync HEARTBEAT.md")
 
     def _generate_id(self, name: str) -> str:
-        return re.sub(r'[^a-z0-9_]', '', name.lower().replace(' ', '_'))
+        return re.sub(r"[^a-z0-9_]", "", name.lower().replace(" ", "_"))
 
     def _should_run(self, task: dict[str, Any], now: datetime) -> bool:
         last_run_str = task.get("last_run_at")
@@ -425,7 +434,9 @@ class SchedulerService:
                 raise ValueError("Daily at HH:MM requires MM between 00 and 59.")
             return f"Daily at {hour:02d}:{minute:02d}"
 
-        raise ValueError("Unsupported frequency. Use 'Every X minutes', 'Every X hours', or 'Daily at HH:MM' (UTC).")
+        raise ValueError(
+            "Unsupported frequency. Use 'Every X minutes', 'Every X hours', or 'Daily at HH:MM' (UTC)."
+        )
 
     def _normalize_task_record(self, task: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(task)
@@ -452,7 +463,9 @@ class SchedulerService:
         try:
             normalized["notify_user"] = normalize_notify_user_policy(metadata.get("notify_user"))
         except ValueError:
-            logger.warning("Invalid scheduled task notify_user policy", task_id=normalized.get("id"))
+            logger.warning(
+                "Invalid scheduled task notify_user policy", task_id=normalized.get("id")
+            )
             normalized["notify_user"] = "if_significant"
         try:
             normalized["execution_mode"] = normalize_execution_mode(
@@ -465,7 +478,10 @@ class SchedulerService:
                 None,
                 worker_id=normalized.get("worker_id"),
             )
-        if normalized["execution_mode"] == "octo_control" and normalized["notify_user"] == "if_significant":
+        if (
+            normalized["execution_mode"] == "octo_control"
+            and normalized["notify_user"] == "if_significant"
+        ):
             normalized["notify_user"] = "never"
         normalized["delivery_chat_id"] = (
             str(
@@ -484,7 +500,9 @@ class SchedulerService:
             and not str(normalized.get("worker_id") or "").strip()
         ):
             suggested_execution_mode = "octo_task"
-        normalized["blocked_until"] = blocked_until.isoformat() if blocked_until is not None else None
+        normalized["blocked_until"] = (
+            blocked_until.isoformat() if blocked_until is not None else None
+        )
         normalized["blocked_reason"] = blocked_reason
         normalized["suggested_execution_mode"] = suggested_execution_mode
         dispatch_ready, dispatch_policy_reason = self._dispatch_readiness(normalized)
@@ -506,8 +524,15 @@ class SchedulerService:
                 blocked_until = datetime.fromisoformat(blocked_until_value)
             except ValueError:
                 blocked_until = None
-            if blocked_until is not None and blocked_until.tzinfo is not None and blocked_until > utc_now():
-                return False, str(task.get("blocked_reason") or "").strip() or "blocked_by_route_backoff"
+            if (
+                blocked_until is not None
+                and blocked_until.tzinfo is not None
+                and blocked_until > utc_now()
+            ):
+                return (
+                    False,
+                    str(task.get("blocked_reason") or "").strip() or "blocked_by_route_backoff",
+                )
         if execution_mode in {"octo_control", "octo_task"}:
             task_text = str(task.get("task_text") or "").strip()
             if not task_text:

@@ -17,7 +17,10 @@ from octopal.tools.skills.installer import (
 def test_detect_skill_install_source_supports_clawhub_slug_and_skill_md_url() -> None:
     assert detect_skill_install_source("zanblayde/agent-commons").kind == "clawhub_slug"
     assert detect_skill_install_source("clawhub:zanblayde/agent-commons").kind == "clawhub_slug"
-    assert detect_skill_install_source("https://example.com/skills/writer/SKILL.md").kind == "skill_md_url"
+    assert (
+        detect_skill_install_source("https://example.com/skills/writer/SKILL.md").kind
+        == "skill_md_url"
+    )
 
 
 def test_install_skill_from_local_dir_copies_bundle_and_writes_manifest(tmp_path: Path) -> None:
@@ -184,7 +187,9 @@ description: Research helper
         encoding="utf-8",
     )
     (scripts_dir / "tool.py").write_text("print('ok')\n", encoding="utf-8")
-    (source_dir / "package.json").write_text('{"dependencies":{"left-pad":"1.3.0"}}\n', encoding="utf-8")
+    (source_dir / "package.json").write_text(
+        '{"dependencies":{"left-pad":"1.3.0"}}\n', encoding="utf-8"
+    )
 
     payload = install_skill_from_source(str(source_dir), workspace_dir=workspace_dir)
 

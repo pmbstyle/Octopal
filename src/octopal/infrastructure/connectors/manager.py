@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+
 class ConnectorManager:
     def __init__(
         self,
@@ -32,7 +33,9 @@ class ConnectorManager:
     def get_connector(self, name: str):
         return self.connectors.get(name)
 
-    async def disconnect_connector(self, name: str, *, forget_credentials: bool = False) -> dict[str, Any]:
+    async def disconnect_connector(
+        self, name: str, *, forget_credentials: bool = False
+    ) -> dict[str, Any]:
         connector = self.get_connector(name)
         if connector is None:
             raise RuntimeError(f"Unknown connector '{name}'.")
@@ -41,6 +44,7 @@ class ConnectorManager:
     def save_config(self) -> None:
         """Save the overall Octopal config."""
         from octopal.infrastructure.config.settings import save_config
+
         save_config(self.octo_config)
 
     async def get_all_statuses(self) -> dict[str, dict[str, Any]]:

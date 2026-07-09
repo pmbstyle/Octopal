@@ -138,7 +138,9 @@ def _schedule_operational_memory_extraction(
                 source_ref=correlation_id,
             )
         except Exception:
-            logger.debug("Operational memory extraction task failed", chat_id=chat_id, exc_info=True)
+            logger.debug(
+                "Operational memory extraction task failed", chat_id=chat_id, exc_info=True
+            )
 
     asyncio.create_task(_run())
 

@@ -186,7 +186,9 @@ def test_send_message_posts_raw_payload_and_fetches_metadata() -> None:
 
     class _HTTPClient:
         async def request(self, method, path, params=None, json=None, headers=None):
-            requests.append({"method": method, "path": path, "params": params, "json": json, "headers": headers})
+            requests.append(
+                {"method": method, "path": path, "params": params, "json": json, "headers": headers}
+            )
             if method == "POST":
                 return httpx.Response(
                     200,
@@ -229,7 +231,9 @@ def test_send_message_posts_raw_payload_and_fetches_metadata() -> None:
     )
 
     raw = requests[0]["json"]["raw"]  # type: ignore[index]
-    parsed = BytesParser(policy=default).parsebytes(base64.urlsafe_b64decode(str(raw).encode("ascii")))
+    parsed = BytesParser(policy=default).parsebytes(
+        base64.urlsafe_b64decode(str(raw).encode("ascii"))
+    )
 
     assert requests[0]["path"] == "/users/me/messages/send"
     assert requests[0]["json"]["threadId"] == "thread-1"  # type: ignore[index]
@@ -246,7 +250,9 @@ def test_reply_to_message_uses_thread_headers_and_reply_all_recipients() -> None
 
     class _HTTPClient:
         async def request(self, method, path, params=None, json=None, headers=None):
-            requests.append({"method": method, "path": path, "params": params, "json": json, "headers": headers})
+            requests.append(
+                {"method": method, "path": path, "params": params, "json": json, "headers": headers}
+            )
             if method == "GET" and path == "/users/me/messages/original-1":
                 return httpx.Response(
                     200,
@@ -289,7 +295,10 @@ def test_reply_to_message_uses_thread_headers_and_reply_all_recipients() -> None
                     "payload": {
                         "headers": [
                             {"name": "Subject", "value": "Re: Project update"},
-                            {"name": "To", "value": "Team Inbox <team@example.com>, Bob <bob@example.com>"},
+                            {
+                                "name": "To",
+                                "value": "Team Inbox <team@example.com>, Bob <bob@example.com>",
+                            },
                             {"name": "Cc", "value": "Carol <carol@example.com>, dave@example.com"},
                         ]
                     },
@@ -316,7 +325,9 @@ def test_reply_to_message_uses_thread_headers_and_reply_all_recipients() -> None
     )
 
     raw = requests[2]["json"]["raw"]  # type: ignore[index]
-    parsed = BytesParser(policy=default).parsebytes(base64.urlsafe_b64decode(str(raw).encode("ascii")))
+    parsed = BytesParser(policy=default).parsebytes(
+        base64.urlsafe_b64decode(str(raw).encode("ascii"))
+    )
 
     assert requests[2]["path"] == "/users/me/messages/send"
     assert requests[2]["json"]["threadId"] == "thread-77"  # type: ignore[index]

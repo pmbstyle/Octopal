@@ -129,6 +129,7 @@ def configure_logging(log_level: str, log_dir: Path, debug_prompts: bool) -> Non
 
     try:
         import litellm
+
         litellm.set_verbose = False
         litellm.suppress_debug_info = True
         litellm.turn_off_message_logging = True
@@ -143,12 +144,14 @@ def configure_logging(log_level: str, log_dir: Path, debug_prompts: bool) -> Non
     # Special handling for our own debug flags
     if not debug_prompts:
         # If debug_prompts is off, ensure provider logs are not at DEBUG
-        logging.getLogger("octopal.infrastructure.providers.litellm_provider").setLevel(logging.INFO)
+        logging.getLogger("octopal.infrastructure.providers.litellm_provider").setLevel(
+            logging.INFO
+        )
 
     logger = structlog.get_logger("logging_config")
     logger.info(
         "Logging configured",
         log_level=log_level,
         log_path=str(log_path),
-        debug_prompts=debug_prompts
+        debug_prompts=debug_prompts,
     )

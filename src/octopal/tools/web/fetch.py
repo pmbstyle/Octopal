@@ -246,7 +246,9 @@ def markdown_new_fetch(args: dict[str, Any]) -> str:
     )
 
 
-def _fetch_firecrawl(url: str, api_key: str, max_chars: int, target_headers: dict[str, Any] | None = None) -> str:
+def _fetch_firecrawl(
+    url: str, api_key: str, max_chars: int, target_headers: dict[str, Any] | None = None
+) -> str:
     """Fetch content using Firecrawl API."""
     endpoint = "https://api.firecrawl.dev/v1/scrape"
     headers = {

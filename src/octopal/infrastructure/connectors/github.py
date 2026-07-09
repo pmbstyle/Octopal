@@ -35,7 +35,11 @@ class GitHubConnector(Connector):
         config = self._get_config()
         if not config:
             return []
-        enabled = [str(service).strip().lower() for service in config.enabled_services if str(service).strip()]
+        enabled = [
+            str(service).strip().lower()
+            for service in config.enabled_services
+            if str(service).strip()
+        ]
         deduped: list[str] = []
         for service in enabled:
             if service not in deduped:
@@ -161,7 +165,9 @@ class GitHubConnector(Connector):
         if not config:
             return {"error": "GitHub connector is not enabled. Run `octopal configure` first."}
         if not config.enabled:
-            return {"error": "GitHub connector is disabled. Run `octopal configure` to enable it first."}
+            return {
+                "error": "GitHub connector is disabled. Run `octopal configure` to enable it first."
+            }
 
         unsupported_services = self._unsupported_enabled_services()
         if unsupported_services:
@@ -174,7 +180,9 @@ class GitHubConnector(Connector):
 
         enabled_services = self._get_enabled_services()
         if not enabled_services:
-            return {"error": "No supported GitHub services are enabled. Re-run `octopal configure`."}
+            return {
+                "error": "No supported GitHub services are enabled. Re-run `octopal configure`."
+            }
 
         token = str(config.auth.access_token or "").strip()
         if not token:
@@ -191,7 +199,9 @@ class GitHubConnector(Connector):
                     },
                 )
             if response.status_code == 401:
-                return {"error": "GitHub rejected the token. Check that the personal access token is valid."}
+                return {
+                    "error": "GitHub rejected the token. Check that the personal access token is valid."
+                }
             if response.is_error:
                 detail = response.text.strip() or response.reason_phrase
                 return {"error": f"GitHub authorization check failed: {detail}"}

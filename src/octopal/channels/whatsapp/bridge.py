@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import mimetypes
 import os
 import re
 import subprocess
 import time
-import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -55,13 +55,17 @@ class WhatsAppBridgeController:
         return auth_dir
 
     def bridge_installed(self) -> bool:
-        return (self.bridge_dir / "node_modules" / "@whiskeysockets" / "baileys" / "package.json").is_file()
+        return (
+            self.bridge_dir / "node_modules" / "@whiskeysockets" / "baileys" / "package.json"
+        ).is_file()
 
     def install_bridge(self) -> None:
         self._require_bridge_sources()
         npm = self._find_command(("npm.cmd", "npm"))
         if npm is None:
-            raise WhatsAppBridgeError("npm is required to install the WhatsApp bridge dependencies.")
+            raise WhatsAppBridgeError(
+                "npm is required to install the WhatsApp bridge dependencies."
+            )
         node = self._find_command((self.settings.whatsapp_node_command, "node"))
         self._require_supported_node(node)
         subprocess.run([npm, "install"], cwd=str(self.bridge_dir), check=True)
@@ -96,9 +100,10 @@ class WhatsAppBridgeController:
             }
         )
 
-        with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open(
-            "w", encoding="utf-8"
-        ) as stderr_handle:
+        with (
+            stdout_path.open("w", encoding="utf-8") as stdout_handle,
+            stderr_path.open("w", encoding="utf-8") as stderr_handle,
+        ):
             self._process = subprocess.Popen(
                 [node, "bridge.mjs"],
                 cwd=str(self.bridge_dir),
@@ -132,7 +137,9 @@ class WhatsAppBridgeController:
             except Exception as exc:
                 last_error = str(exc)
             time.sleep(0.5)
-        raise WhatsAppBridgeError(f"WhatsApp bridge did not become ready: {last_error or 'timeout'}")
+        raise WhatsAppBridgeError(
+            f"WhatsApp bridge did not become ready: {last_error or 'timeout'}"
+        )
 
     def status(self) -> dict[str, Any]:
         return self._request("GET", "/status")
@@ -185,7 +192,9 @@ class WhatsAppBridgeController:
     def logout(self) -> dict[str, Any]:
         return self._request("POST", "/logout")
 
-    def _request(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request(
+        self, method: str, path: str, json: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         with httpx.Client(timeout=10.0) as client:
             response = client.request(method, f"{self.base_url}{path}", json=json)
             response.raise_for_status()

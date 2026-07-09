@@ -33,7 +33,9 @@ def detect_skill_runtime(bundle: SkillBundle) -> dict[str, Any]:
     if not python_packages:
         python_packages = _read_python_requirements(bundle.bundle_dir)
     if not node_packages:
-        node_packages, package_manager = _read_node_package_manifest(bundle.bundle_dir, package_manager)
+        node_packages, package_manager = _read_node_package_manifest(
+            bundle.bundle_dir, package_manager
+        )
 
     if (has_python_scripts or python_packages) and (has_node_scripts or node_packages):
         return {
@@ -226,7 +228,10 @@ def resolve_skill_runtime_execution(
 
     if status["kind"] == "python" and status["prepared"]:
         return {
-            "runner": [str(_python_env_executable(_skill_env_dir(workspace_dir, skill_id))), str(script_path)],
+            "runner": [
+                str(_python_env_executable(_skill_env_dir(workspace_dir, skill_id))),
+                str(script_path),
+            ],
             "env": None,
         }
 
@@ -235,7 +240,9 @@ def resolve_skill_runtime_execution(
         if suffix == ".ts":
             tsx_binary = _node_env_binary(env_dir, "tsx")
             if not tsx_binary.exists():
-                raise ValueError("typescript skill runtime requires the 'tsx' package in the prepared node env.")
+                raise ValueError(
+                    "typescript skill runtime requires the 'tsx' package in the prepared node env."
+                )
             return {
                 "runner": [str(tsx_binary), str(script_path)],
                 "env": _node_env_process_env(env_dir),
@@ -352,7 +359,9 @@ def _read_python_requirements(bundle_dir: Path) -> list[str]:
     return packages
 
 
-def _read_node_package_manifest(bundle_dir: Path, fallback_package_manager: str) -> tuple[list[str], str]:
+def _read_node_package_manifest(
+    bundle_dir: Path, fallback_package_manager: str
+) -> tuple[list[str], str]:
     package_json_path = bundle_dir / "package.json"
     if not package_json_path.exists() or not package_json_path.is_file():
         return [], fallback_package_manager
@@ -375,7 +384,9 @@ def _read_node_package_manifest(bundle_dir: Path, fallback_package_manager: str)
                 continue
             packages.append(f"{name}@{version}" if version else name)
 
-    package_manager = _normalize_node_package_manager(payload.get("packageManager"), fallback_package_manager)
+    package_manager = _normalize_node_package_manager(
+        payload.get("packageManager"), fallback_package_manager
+    )
     return packages, package_manager
 
 
@@ -387,7 +398,9 @@ def _normalize_node_package_manager(value: Any, fallback: str) -> str:
 
 
 def _prepare_python_env(env_dir: Path, packages: list[str]) -> None:
-    subprocess.run([sys.executable, "-m", "venv", str(env_dir)], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [sys.executable, "-m", "venv", str(env_dir)], check=True, capture_output=True, text=True
+    )
     if not packages:
         return
     python_executable = _python_env_executable(env_dir)
@@ -408,7 +421,9 @@ def _prepare_node_env(env_dir: Path, packages: list[str]) -> None:
         "private": True,
         "version": "0.0.0",
     }
-    (env_dir / "package.json").write_text(json.dumps(package_json, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (env_dir / "package.json").write_text(
+        json.dumps(package_json, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     if packages:
         subprocess.run(
             [npm_binary, "install", "--no-save", *packages],
@@ -442,23 +457,29 @@ def _node_env_process_env(env_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
     node_modules = env_dir / "node_modules"
     existing_node_path = env.get("NODE_PATH", "")
-    env["NODE_PATH"] = str(node_modules) if not existing_node_path else os.pathsep.join([str(node_modules), existing_node_path])
+    env["NODE_PATH"] = (
+        str(node_modules)
+        if not existing_node_path
+        else os.pathsep.join([str(node_modules), existing_node_path])
+    )
     return env
 
 
-def _is_env_manifest_usable(manifest: dict[str, Any], env_dir: Path, runtime: dict[str, Any]) -> bool:
+def _is_env_manifest_usable(
+    manifest: dict[str, Any], env_dir: Path, runtime: dict[str, Any]
+) -> bool:
     kind = str(manifest.get("kind", "")).strip()
     if kind != str(runtime.get("kind", "")).strip():
         return False
     if kind == "python":
-        return (
-            _python_env_executable(env_dir).exists()
-            and _manifest_list(manifest.get("python_packages")) == _manifest_list(runtime.get("python_packages"))
-        )
+        return _python_env_executable(env_dir).exists() and _manifest_list(
+            manifest.get("python_packages")
+        ) == _manifest_list(runtime.get("python_packages"))
     if kind == "node":
         return (
             (env_dir / "package.json").exists()
-            and _manifest_list(manifest.get("node_packages")) == _manifest_list(runtime.get("node_packages"))
+            and _manifest_list(manifest.get("node_packages"))
+            == _manifest_list(runtime.get("node_packages"))
             and str(manifest.get("package_manager", "")).strip()
             == str(runtime.get("package_manager", "")).strip()
         )

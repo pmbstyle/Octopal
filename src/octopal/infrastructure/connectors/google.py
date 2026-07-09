@@ -67,7 +67,11 @@ class GoogleConnector(Connector):
         config = self._get_config()
         if not config:
             return []
-        enabled = [str(service).strip().lower() for service in config.enabled_services if str(service).strip()]
+        enabled = [
+            str(service).strip().lower()
+            for service in config.enabled_services
+            if str(service).strip()
+        ]
         deduped: list[str] = []
         for service in enabled:
             if service not in deduped:
@@ -210,7 +214,9 @@ class GoogleConnector(Connector):
         if not config:
             return {"error": "Google connector is not enabled. Run `octopal configure` first."}
         if not config.enabled:
-            return {"error": "Google connector is disabled. Run `octopal configure` to enable it first."}
+            return {
+                "error": "Google connector is disabled. Run `octopal configure` to enable it first."
+            }
 
         client_id = config.credentials.client_id
         client_secret = config.credentials.client_secret
@@ -229,7 +235,9 @@ class GoogleConnector(Connector):
 
         scopes = self._get_scopes()
         if not scopes:
-            return {"error": "No supported Google services are enabled. Re-run `octopal configure`."}
+            return {
+                "error": "No supported Google services are enabled. Re-run `octopal configure`."
+            }
 
         client_config = self._build_client_config(client_id, client_secret)
 
@@ -254,8 +262,7 @@ class GoogleConnector(Connector):
             return {
                 "status": "success",
                 "message": (
-                    "Google connector authorized for "
-                    f"{', '.join(self._get_enabled_services())}."
+                    "Google connector authorized for " f"{', '.join(self._get_enabled_services())}."
                 ),
             }
         except webbrowser.Error as e:
@@ -289,7 +296,9 @@ class GoogleConnector(Connector):
 
         scopes = self._get_scopes()
         if not scopes:
-            raise RuntimeError("No supported Google services are enabled. Re-run `octopal configure`.")
+            raise RuntimeError(
+                "No supported Google services are enabled. Re-run `octopal configure`."
+            )
 
         flow = InstalledAppFlow.from_client_config(
             self._build_client_config(client_id, client_secret),
@@ -330,7 +339,9 @@ class GoogleConnector(Connector):
 
         try:
             with _oauthlib_insecure_transport_for_localhost():
-                if authorization_response.startswith("http://") or authorization_response.startswith("https://"):
+                if authorization_response.startswith(
+                    "http://"
+                ) or authorization_response.startswith("https://"):
                     parsed = urlparse(authorization_response)
                     params = parse_qs(parsed.query)
                     returned_state = str((params.get("state") or [""])[0] or "")
@@ -352,8 +363,7 @@ class GoogleConnector(Connector):
             return {
                 "status": "success",
                 "message": (
-                    "Google connector authorized for "
-                    f"{', '.join(self._get_enabled_services())}."
+                    "Google connector authorized for " f"{', '.join(self._get_enabled_services())}."
                 ),
             }
         except Exception as e:
@@ -384,7 +394,7 @@ class GoogleConnector(Connector):
                     "GMAIL_CLIENT_SECRET": config.credentials.client_secret,
                     "GMAIL_REFRESH_TOKEN": config.auth.refresh_token,
                 },
-                transport="stdio"
+                transport="stdio",
             )
             await self.manager.mcp_manager.connect_server(gmail_cfg)
 
@@ -399,7 +409,7 @@ class GoogleConnector(Connector):
                     "GOOGLE_CALENDAR_CLIENT_SECRET": config.credentials.client_secret,
                     "GOOGLE_CALENDAR_REFRESH_TOKEN": config.auth.refresh_token,
                 },
-                transport="stdio"
+                transport="stdio",
             )
             await self.manager.mcp_manager.connect_server(calendar_cfg)
 
@@ -429,7 +439,11 @@ class GoogleConnector(Connector):
                 try:
                     await self.manager.mcp_manager.disconnect_server(server_id, intentional=True)
                 except Exception:
-                    logger.warning("Failed to disconnect MCP server for Google connector", server_id=server_id, exc_info=True)
+                    logger.warning(
+                        "Failed to disconnect MCP server for Google connector",
+                        server_id=server_id,
+                        exc_info=True,
+                    )
 
         config.auth.refresh_token = None
         config.auth.access_token = None

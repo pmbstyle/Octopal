@@ -141,7 +141,9 @@ def _extract_ws_saved_file_paths(
     return saved_paths
 
 
-def _serialize_worker_snapshot(rows: list[Any], *, store: Any | None = None) -> list[dict[str, Any]]:
+def _serialize_worker_snapshot(
+    rows: list[Any], *, store: Any | None = None
+) -> list[dict[str, Any]]:
     snapshot: list[dict[str, Any]] = []
     for row in rows:
         if hasattr(row, "model_dump"):

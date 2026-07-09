@@ -46,7 +46,7 @@ class PolicyEngine:
 
         return Permit(
             id=str(uuid4()),
-            intent_id="auto", # Placeholder if not linked to a persisted intent record yet
+            intent_id="auto",  # Placeholder if not linked to a persisted intent record yet
             intent_type=intent.type,
             worker_id=worker_id,
             payload_hash=payload_hash,
@@ -67,4 +67,5 @@ def _hash_payload(payload: dict) -> str:
     import hashlib
 
     from octopal.runtime.intents.registry import canonical_json
+
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()

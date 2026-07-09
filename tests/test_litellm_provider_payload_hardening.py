@@ -61,9 +61,7 @@ def _minimax_settings() -> Settings:
 
 
 def _response(content: str):
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
-    )
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
 
 def test_complete_normalizes_system_only_payload_to_include_user(monkeypatch) -> None:
@@ -73,7 +71,9 @@ def test_complete_normalizes_system_only_payload_to_include_user(monkeypatch) ->
         captured.append(kwargs["messages"])
         return _response("ok")
 
-    monkeypatch.setattr("octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion
+    )
     provider = LiteLLMProvider(_settings())
 
     result = asyncio.run(provider.complete([{"role": "system", "content": "You are verifier"}]))
@@ -92,10 +92,14 @@ def test_complete_retries_with_strict_payload_on_1214(monkeypatch) -> None:
         calls["n"] += 1
         captured.append(kwargs["messages"])
         if calls["n"] == 1:
-            raise RuntimeError("Error code: 400 - {'error': {'code': '1214', 'message': 'The messages parameter is illegal.'}}")
+            raise RuntimeError(
+                "Error code: 400 - {'error': {'code': '1214', 'message': 'The messages parameter is illegal.'}}"
+            )
         return _response("ok-after-retry")
 
-    monkeypatch.setattr("octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion
+    )
     provider = LiteLLMProvider(_settings())
 
     result = asyncio.run(provider.complete([{"role": "system", "content": "Verifier prompt"}]))
@@ -156,7 +160,9 @@ def test_complete_retries_once_when_client_was_closed(monkeypatch) -> None:
             raise RuntimeError("Cannot send a request, as the client has been closed.")
         return _response("ok-after-client-retry")
 
-    monkeypatch.setattr("octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion
+    )
     provider = LiteLLMProvider(_settings())
 
     result = asyncio.run(provider.complete([{"role": "user", "content": "hello"}]))
@@ -177,11 +183,17 @@ def test_complete_records_shared_cooldown_after_rate_limit(monkeypatch) -> None:
     async def _fake_acompletion(**kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise RuntimeError("Error code: 429 - {'error': {'message': 'Rate limit reached for requests'}}")
+            raise RuntimeError(
+                "Error code: 429 - {'error': {'message': 'Rate limit reached for requests'}}"
+            )
         return _response("ok-after-rate-limit")
 
-    monkeypatch.setattr("octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
-    monkeypatch.setattr("octopal.infrastructure.providers.litellm_provider.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion
+    )
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.asyncio.sleep", _fake_sleep
+    )
     monkeypatch.setattr(
         "octopal.infrastructure.providers.litellm_provider._compute_rate_limit_delay",
         lambda **kwargs: 1.0,
@@ -210,8 +222,12 @@ def test_complete_respects_shared_cooldown_from_other_instance(monkeypatch) -> N
     async def _fake_acompletion(**kwargs):
         return _response("ok")
 
-    monkeypatch.setattr("octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
-    monkeypatch.setattr("octopal.infrastructure.providers.litellm_provider.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion
+    )
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.asyncio.sleep", _fake_sleep
+    )
     monkeypatch.setattr(LiteLLMProvider, "_now", lambda self: clock["now"])
     LiteLLMProvider._rate_limit_cooldowns.clear()
 
@@ -239,14 +255,16 @@ def test_complete_with_tools_downgrades_response_format_to_json_object(monkeypat
             "choices": [
                 {
                     "message": {
-                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "content": '{"type":"result","summary":"ok"}',
                         "tool_calls": [],
                     }
                 }
             ]
         }
 
-    monkeypatch.setattr("octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion
+    )
     LiteLLMProvider._tool_response_format_modes.clear()
     provider = LiteLLMProvider(_settings())
 
@@ -254,7 +272,10 @@ def test_complete_with_tools_downgrades_response_format_to_json_object(monkeypat
         provider.complete_with_tools(
             [{"role": "user", "content": "hello"}],
             tools=[{"type": "function", "function": {"name": "dummy"}}],
-            response_format={"type": "json_schema", "json_schema": {"name": "worker_result", "schema": {"type": "object"}}},
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "worker_result", "schema": {"type": "object"}},
+            },
         )
     )
 
@@ -262,7 +283,10 @@ def test_complete_with_tools_downgrades_response_format_to_json_object(monkeypat
     assert len(calls) == 2
     assert calls[0]["response_format"]["type"] == "json_schema"
     assert calls[1]["response_format"]["type"] == "json_object"
-    assert LiteLLMProvider._tool_response_format_modes[provider._tool_response_format_key()] == "json_object"
+    assert (
+        LiteLLMProvider._tool_response_format_modes[provider._tool_response_format_key()]
+        == "json_object"
+    )
 
 
 def test_complete_with_tools_reuses_cached_response_format_mode(monkeypatch) -> None:
@@ -274,23 +298,30 @@ def test_complete_with_tools_reuses_cached_response_format_mode(monkeypatch) -> 
             "choices": [
                 {
                     "message": {
-                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "content": '{"type":"result","summary":"ok"}',
                         "tool_calls": [],
                     }
                 }
             ]
         }
 
-    monkeypatch.setattr("octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion
+    )
     LiteLLMProvider._tool_response_format_modes.clear()
     provider = LiteLLMProvider(_settings())
-    LiteLLMProvider._tool_response_format_modes[provider._tool_response_format_key()] = "json_object"
+    LiteLLMProvider._tool_response_format_modes[provider._tool_response_format_key()] = (
+        "json_object"
+    )
 
     asyncio.run(
         provider.complete_with_tools(
             [{"role": "user", "content": "hello"}],
             tools=[{"type": "function", "function": {"name": "dummy"}}],
-            response_format={"type": "json_schema", "json_schema": {"name": "worker_result", "schema": {"type": "object"}}},
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "worker_result", "schema": {"type": "object"}},
+            },
         )
     )
 
@@ -310,14 +341,16 @@ def test_complete_with_tools_downgrades_to_no_response_format_when_needed(monkey
             "choices": [
                 {
                     "message": {
-                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "content": '{"type":"result","summary":"ok"}',
                         "tool_calls": [],
                     }
                 }
             ]
         }
 
-    monkeypatch.setattr("octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion
+    )
     LiteLLMProvider._tool_response_format_modes.clear()
     provider = LiteLLMProvider(_settings())
 
@@ -325,16 +358,28 @@ def test_complete_with_tools_downgrades_to_no_response_format_when_needed(monkey
         provider.complete_with_tools(
             [{"role": "user", "content": "hello"}],
             tools=[{"type": "function", "function": {"name": "dummy"}}],
-            response_format={"type": "json_schema", "json_schema": {"name": "worker_result", "schema": {"type": "object"}}},
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "worker_result", "schema": {"type": "object"}},
+            },
         )
     )
 
-    assert [call.get("response_format", {"type": "none"}).get("type", "none") if isinstance(call.get("response_format"), dict) else "none" for call in calls] == [
+    assert [
+        (
+            call.get("response_format", {"type": "none"}).get("type", "none")
+            if isinstance(call.get("response_format"), dict)
+            else "none"
+        )
+        for call in calls
+    ] == [
         "json_schema",
         "json_object",
         "none",
     ]
-    assert LiteLLMProvider._tool_response_format_modes[provider._tool_response_format_key()] == "none"
+    assert (
+        LiteLLMProvider._tool_response_format_modes[provider._tool_response_format_key()] == "none"
+    )
 
 
 def test_complete_with_tools_retries_auto_tool_choice_for_thinking_mode(monkeypatch) -> None:
@@ -351,7 +396,7 @@ def test_complete_with_tools_retries_auto_tool_choice_for_thinking_mode(monkeypa
             "choices": [
                 {
                     "message": {
-                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "content": '{"type":"result","summary":"ok"}',
                         "tool_calls": [],
                     }
                 }
@@ -388,7 +433,7 @@ def test_complete_with_tools_reuses_auto_tool_choice_mode(monkeypatch) -> None:
             "choices": [
                 {
                     "message": {
-                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "content": '{"type":"result","summary":"ok"}',
                         "tool_calls": [],
                     }
                 }
@@ -425,7 +470,7 @@ def test_complete_with_tools_does_not_override_explicit_tool_choice_with_cached_
             "choices": [
                 {
                     "message": {
-                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "content": '{"type":"result","summary":"ok"}',
                         "tool_calls": [],
                     }
                 }
@@ -474,14 +519,16 @@ def test_complete_with_tools_sanitizes_minimax_tools_and_response_format(monkeyp
             "choices": [
                 {
                     "message": {
-                        "content": "{\"type\":\"result\",\"summary\":\"ok\"}",
+                        "content": '{"type":"result","summary":"ok"}',
                         "tool_calls": [],
                     }
                 }
             ]
         }
 
-    monkeypatch.setattr("octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion
+    )
     LiteLLMProvider._tool_response_format_modes.clear()
     provider = LiteLLMProvider(_minimax_settings())
 
@@ -524,5 +571,7 @@ def test_complete_with_tools_sanitizes_minimax_tools_and_response_format(monkeyp
     assert len(captured) == 1
     tool_schema = captured[0]["tools"][0]["function"]["parameters"]["properties"]["payload"]
     assert tool_schema["type"] == "object"
-    response_schema = captured[0]["response_format"]["json_schema"]["schema"]["properties"]["output"]
+    response_schema = captured[0]["response_format"]["json_schema"]["schema"]["properties"][
+        "output"
+    ]
     assert response_schema["type"] == "object"

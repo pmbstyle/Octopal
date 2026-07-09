@@ -94,8 +94,48 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra dev
 
+      - name: Run Python quality checks
+        run: |
+          uv run ruff check .
+          uv run black --check .
+          uv run mypy
+
       - name: Run test suite
         run: uv run pytest
+
+  webapp:
+    name: Build and test web dashboard
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: webapp
+        run: npm ci
+
+      - name: Audit, build, and test web dashboard
+        working-directory: webapp
+        run: npm audit --audit-level=moderate && npm run build && npm test
+
+      - name: Install and audit WhatsApp bridge
+        working-directory: scripts/whatsapp_bridge
+        run: npm install --ignore-scripts && npm audit --audit-level=moderate
+
+      - name: Check WhatsApp bridge syntax
+        working-directory: scripts/whatsapp_bridge
+        run: node --check bridge.mjs
 
   desktop:
     name: Build desktop app (${{ matrix.name }})
@@ -149,6 +189,10 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      - name: Audit desktop dependencies
+        working-directory: desktop
+        run: npm audit --audit-level=moderate
+
       - name: Set desktop release version
         working-directory: desktop
         env:
@@ -175,6 +219,7 @@ jobs:
     needs:
       - validate
       - test
+      - webapp
       - desktop
 
     steps:

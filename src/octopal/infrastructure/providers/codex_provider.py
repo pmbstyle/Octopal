@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -113,7 +114,9 @@ class _CodexAppServerClient:
         process = self._require_process()
         if process.stdin is None:
             return
-        process.stdin.write((json.dumps({"id": request_id, "result": result}) + "\n").encode("utf-8"))
+        process.stdin.write(
+            (json.dumps({"id": request_id, "result": result}) + "\n").encode("utf-8")
+        )
         await process.stdin.drain()
 
     async def respond_error(self, request_id: int | str, message: str) -> None:
@@ -192,7 +195,9 @@ class _CodexAppServerClient:
                 if future and not future.done():
                     if message.get("error"):
                         error = message["error"]
-                        future.set_exception(CodexAppServerError(error.get("message") or "Codex request failed"))
+                        future.set_exception(
+                            CodexAppServerError(error.get("message") or "Codex request failed")
+                        )
                     else:
                         future.set_result(message.get("result"))
                 continue
@@ -218,7 +223,9 @@ class CodexProvider:
         trace_sink: object | None = None,
     ) -> None:
         self._settings = settings
-        self._profile = resolve_litellm_profile(settings, model_override=model, config_override=config)
+        self._profile = resolve_litellm_profile(
+            settings, model_override=model, config_override=config
+        )
         self._model = self._profile.raw_model or self._profile.model
 
     @property
@@ -299,14 +306,18 @@ class CodexProvider:
                         "model": self._model,
                         "approvalPolicy": "never",
                         "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
-                        "effort": _normalize_effort(getattr(self._settings, "codex_reasoning_effort", None)),
+                        "effort": _normalize_effort(
+                            getattr(self._settings, "codex_reasoning_effort", None)
+                        ),
                         "environments": [],
                     }
                 ),
                 timeout=CODEX_TURN_TIMEOUT_SECONDS,
             )
             turn_id = ((turn or {}).get("turn") or {}).get("id")
-            return await _collect_turn(client, thread_id=thread_id, turn_id=turn_id, on_partial=on_partial)
+            return await _collect_turn(
+                client, thread_id=thread_id, turn_id=turn_id, on_partial=on_partial
+            )
         finally:
             await client.close()
 
@@ -332,14 +343,12 @@ async def _collect_turn(
                 if call:
                     tool_calls.append(call)
                 if current_turn_id:
-                    try:
+                    with contextlib.suppress(Exception):
                         await client.request(
                             "turn/interrupt",
                             {"threadId": thread_id, "turnId": current_turn_id},
                             timeout=CODEX_REQUEST_TIMEOUT_SECONDS,
                         )
-                    except Exception:
-                        pass
                 await client.respond(
                     event["id"],
                     {
@@ -373,7 +382,9 @@ async def _collect_turn(
             raise CodexAppServerError(json.dumps(payload, ensure_ascii=False))
 
 
-async def _respond_to_auxiliary_request(client: _CodexAppServerClient, event: dict[str, Any]) -> None:
+async def _respond_to_auxiliary_request(
+    client: _CodexAppServerClient, event: dict[str, Any]
+) -> None:
     method = str(event.get("method") or "")
     if method == "item/tool/requestUserInput":
         await client.respond(event["id"], {"answers": {}})
@@ -437,7 +448,11 @@ def _tools_to_dynamic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]
             {
                 "name": name,
                 "description": str(function.get("description") or name),
-                "inputSchema": parameters if isinstance(parameters, dict) else {"type": "object", "properties": {}},
+                "inputSchema": (
+                    parameters
+                    if isinstance(parameters, dict)
+                    else {"type": "object", "properties": {}}
+                ),
             }
         )
     return dynamic_tools

@@ -103,10 +103,10 @@ class ProcessBuffer:
 
     def _reader(self, pipe, q):
         try:
-            for line in iter(pipe.readline, ''):
+            for line in iter(pipe.readline, ""):
                 q.put(line)
         except ValueError:
-            pass # Pipe closed
+            pass  # Pipe closed
 
     def read_stdout(self) -> str:
         return self._read_queue(self.stdout_queue)
@@ -149,7 +149,7 @@ def _handle_start(args: dict[str, Any], base_dir: Path) -> str:
                 stderr=subprocess.PIPE,
                 stdin=subprocess.PIPE,
                 text=True,
-                bufsize=1, # Line buffered
+                bufsize=1,  # Line buffered
                 **_background_popen_kwargs(),
             )
             session_id = str(uuid.uuid4())
@@ -165,11 +165,13 @@ def _handle_start(args: dict[str, Any], base_dir: Path) -> str:
                 "ended_at": None,
             }
             _publish_runtime_metrics()
-            return json.dumps({
-                "status": "started",
-                "session_id": session_id,
-                "message": "Process started in background."
-            })
+            return json.dumps(
+                {
+                    "status": "started",
+                    "session_id": session_id,
+                    "message": "Process started in background.",
+                }
+            )
         else:
             # Blocking execution (legacy behavior)
             result = subprocess.run(
@@ -192,6 +194,7 @@ def _handle_start(args: dict[str, Any], base_dir: Path) -> str:
     except Exception as exc:
         return f"exec_run error: {exc}"
 
+
 def _handle_management(action: str, args: dict[str, Any]) -> str:
     session_id = args.get("session_id")
     if not session_id:
@@ -213,24 +216,28 @@ def _handle_management(action: str, args: dict[str, Any]) -> str:
         stdout_chunk = pb.read_stdout()
         stderr_chunk = pb.read_stderr()
 
-        return json.dumps({
-            "session_id": session_id,
-            "running": is_running,
-            "returncode": returncode,
-            "stdout_new": stdout_chunk,
-            "stderr_new": stderr_chunk,
-        })
+        return json.dumps(
+            {
+                "session_id": session_id,
+                "running": is_running,
+                "returncode": returncode,
+                "stdout_new": stdout_chunk,
+                "stderr_new": stderr_chunk,
+            }
+        )
 
     elif action == "read":
         if proc.poll() is not None and session.get("ended_at") is None:
             session["ended_at"] = time.time()
         stdout_chunk = pb.read_stdout()
         stderr_chunk = pb.read_stderr()
-        return json.dumps({
-            "session_id": session_id,
-            "stdout_new": stdout_chunk,
-            "stderr_new": stderr_chunk,
-        })
+        return json.dumps(
+            {
+                "session_id": session_id,
+                "stdout_new": stdout_chunk,
+                "stderr_new": stderr_chunk,
+            }
+        )
 
     elif action == "write":
         input_data = args.get("input_data", "")
@@ -238,9 +245,9 @@ def _handle_management(action: str, args: dict[str, Any]) -> str:
             return "exec_run error: input_data required for write."
 
         if proc.poll() is not None:
-             if session.get("ended_at") is None:
-                 session["ended_at"] = time.time()
-             return "exec_run error: Process is not running."
+            if session.get("ended_at") is None:
+                session["ended_at"] = time.time()
+            return "exec_run error: Process is not running."
 
         try:
             if proc.stdin:
@@ -250,7 +257,7 @@ def _handle_management(action: str, args: dict[str, Any]) -> str:
             else:
                 return "exec_run error: Process stdin is not available."
         except Exception as e:
-             return f"exec_run error: Failed to write to process: {e}"
+            return f"exec_run error: Failed to write to process: {e}"
 
     elif action == "kill":
         _terminate_session_process(session)
