@@ -2254,6 +2254,79 @@ def test_action_state_retry_uses_verifier_instead_of_keyword_heuristic() -> None
     asyncio.run(scenario())
 
 
+def test_planner_reply_requiring_action_continues_through_execution_route(monkeypatch) -> None:
+    class DummyMemory:
+        def __init__(self) -> None:
+            self.persisted: list[tuple[str, str]] = []
+
+        async def add_message(self, role, content, metadata=None):
+            self.persisted.append((role, content))
+
+    class DummyOcto:
+        store = object()
+        canon = object()
+        internal_progress_send = None
+        is_ws_active = False
+        mcp_manager = None
+        operational_memory = None
+        runtime = SimpleNamespace(settings=SimpleNamespace(a2a=A2AConfig(enabled=False)))
+
+        async def set_typing(self, chat_id: int, active: bool) -> None:
+            return None
+
+        async def set_thinking(self, active: bool) -> None:
+            return None
+
+        def peek_context_wakeup(self, chat_id: int) -> str:
+            return ""
+
+    async def fake_build_octo_prompt(**kwargs):
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def fake_build_plan(provider, messages, has_tools):
+        return {"mode": "reply", "steps": [], "response": "I will check that now."}
+
+    async def fake_needs_action(**kwargs):
+        return True
+
+    async def fake_complete_route_with_tools(**kwargs):
+        return "Checked with runtime evidence."
+
+    def fake_get_octo_tools(octo, chat_id):
+        return [
+            ToolSpec(
+                name="dummy_tool",
+                description="dummy",
+                parameters={"type": "object", "properties": {}},
+                permission="exec",
+                handler=lambda args, ctx: {"status": "ok"},
+            )
+        ], {"octo": octo, "chat_id": chat_id}
+
+    import octopal.runtime.octo.router as router
+
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(router, "_build_plan", fake_build_plan)
+    monkeypatch.setattr(router, "_needs_action_or_blocked_retry", fake_needs_action)
+    monkeypatch.setattr(router, "_complete_route_with_tools", fake_complete_route_with_tools)
+    monkeypatch.setattr(router, "_get_octo_tools", fake_get_octo_tools)
+
+    async def scenario() -> None:
+        memory = DummyMemory()
+        response = await router.route_or_reply(
+            DummyOcto(),
+            object(),
+            memory,
+            "check status",
+            123,
+            "",
+        )
+        assert response == "Checked with runtime evidence."
+        assert memory.persisted == []
+
+    asyncio.run(scenario())
+
+
 def test_route_forces_pending_runtime_plan_step_to_runtime_state(monkeypatch) -> None:
     plan_result = {
         "status": "ok",

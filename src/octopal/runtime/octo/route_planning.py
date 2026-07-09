@@ -30,7 +30,8 @@ async def _build_plan(
         '{"mode":"execute|reply","steps":["..."],"response":"..."}.\n'
         "- Use mode=reply when no tools/workers are needed and a direct answer is sufficient.\n"
         "- Use mode=execute when tools/workers are needed; provide 1-8 concrete steps.\n"
-        "- If mode=reply, include response.\n"
+        "- If mode=reply, include a complete answer that can be delivered now. Never use reply "
+        "for promises, pending work, or claims that require a tool, worker, queue, or schedule.\n"
         "- If mode=execute, response is optional."
     )
     planner_messages = list(messages) + [Message(role="system", content=planning_prompt)]
