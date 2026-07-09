@@ -34,5 +34,6 @@ def test_context_pruning_trims_oversized_messages() -> None:
     )
 
     assert len(pruned) == 1
-    assert len(pruned[0][1]) > 1200  # Includes prune marker wrapper.
+    assert len(pruned[0][1]) <= 1200
+    assert "pruned for context window" in pruned[0][1]
     assert stats["trimmed"] == 1
