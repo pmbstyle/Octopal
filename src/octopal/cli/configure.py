@@ -171,8 +171,8 @@ def configure_wizard() -> None:
         )
 
         if action == "save":
-            save_config(config)
-            console.print(f"[bold {SUCCESS}]Settings saved to config.json![/bold {SUCCESS}]")
+            config_path = save_config(config)
+            console.print(f"[bold {SUCCESS}]Settings saved to {config_path}![/bold {SUCCESS}]")
             _print_next_steps(config, original_config)
             break
 
