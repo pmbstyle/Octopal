@@ -104,7 +104,9 @@ def test_calendar_request_returns_empty_payload_for_delete_without_body() -> Non
 
 
 def test_normalize_busy_slot_keeps_start_and_end() -> None:
-    slot = _normalize_busy_slot({"start": "2026-04-02T14:00:00Z", "end": "2026-04-02T15:00:00Z", "x": "ignored"})
+    slot = _normalize_busy_slot(
+        {"start": "2026-04-02T14:00:00Z", "end": "2026-04-02T15:00:00Z", "x": "ignored"}
+    )
 
     assert slot == {
         "start": "2026-04-02T14:00:00Z",

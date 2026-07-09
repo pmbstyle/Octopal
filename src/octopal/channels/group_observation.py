@@ -22,9 +22,7 @@ async def record_passive_group_observation(
     if not callable(add_message):
         return
     trimmed = (text or "").strip()
-    normalized_paths = [
-        str(path).strip() for path in (saved_file_paths or []) if str(path).strip()
-    ]
+    normalized_paths = [str(path).strip() for path in (saved_file_paths or []) if str(path).strip()]
     if not trimmed and not images and not normalized_paths:
         return
 

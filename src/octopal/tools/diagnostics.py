@@ -53,7 +53,9 @@ def resolve_tool_diagnostics(
                     reasons.append(reason)
                     break
 
-        entries.append(ToolResolutionEntry(tool=tool, available=not reasons, reasons=tuple(reasons)))
+        entries.append(
+            ToolResolutionEntry(tool=tool, available=not reasons, reasons=tuple(reasons))
+        )
 
     available_tools = tuple(entry.tool for entry in entries if entry.available)
     blocked_tools = tuple(entry for entry in entries if not entry.available)

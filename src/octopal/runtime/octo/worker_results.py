@@ -129,7 +129,9 @@ def _summarize_worker_artifacts(result: WorkerResult) -> _WorkerArtifactSummary:
     )
 
 
-def _build_worker_result_payload(worker_id: str, task_text: str, result: WorkerResult) -> dict[str, Any]:
+def _build_worker_result_payload(
+    worker_id: str, task_text: str, result: WorkerResult
+) -> dict[str, Any]:
     artifact_summary = _summarize_worker_artifacts(result)
     output_context = summarize_worker_output_for_context(
         result.output,

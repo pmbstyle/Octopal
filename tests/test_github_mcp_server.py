@@ -66,7 +66,9 @@ def test_normalize_pull_request_keeps_base_and_head_refs() -> None:
             "title": "Add connector",
             "state": "open",
             "mergeable_state": "clean",
-            "requested_reviewers": [{"login": "carol", "id": 12, "type": "User", "site_admin": False}],
+            "requested_reviewers": [
+                {"login": "carol", "id": 12, "type": "User", "site_admin": False}
+            ],
             "head": {"label": "octo:feature", "ref": "feature", "sha": "abc123"},
             "base": {"label": "octo:main", "ref": "main", "sha": "def456"},
             "user": {"login": "bob", "id": 11, "type": "User", "site_admin": False},
@@ -149,9 +151,21 @@ def test_normalize_commit_keeps_message_and_sha() -> None:
             "commit": {
                 "message": "Improve worker flow",
                 "comment_count": 1,
-                "author": {"name": "Alice", "email": "alice@example.com", "date": "2026-04-06T10:00:00Z"},
-                "committer": {"name": "Alice", "email": "alice@example.com", "date": "2026-04-06T10:00:00Z"},
-                "verification": {"verified": True, "reason": "valid", "verified_at": "2026-04-06T10:00:01Z"},
+                "author": {
+                    "name": "Alice",
+                    "email": "alice@example.com",
+                    "date": "2026-04-06T10:00:00Z",
+                },
+                "committer": {
+                    "name": "Alice",
+                    "email": "alice@example.com",
+                    "date": "2026-04-06T10:00:00Z",
+                },
+                "verification": {
+                    "verified": True,
+                    "reason": "valid",
+                    "verified_at": "2026-04-06T10:00:01Z",
+                },
             },
         }
     )
@@ -179,7 +193,10 @@ def test_normalize_commit_comment_keeps_path_and_body() -> None:
 def test_parse_github_api_error_prefers_message_from_json_payload() -> None:
     response = httpx.Response(
         403,
-        json={"message": "Resource not accessible by personal access token", "documentation_url": "https://docs.github.com"},
+        json={
+            "message": "Resource not accessible by personal access token",
+            "documentation_url": "https://docs.github.com",
+        },
     )
 
     error = _parse_github_api_error(response, method="GET", path="/repos/octo/demo")

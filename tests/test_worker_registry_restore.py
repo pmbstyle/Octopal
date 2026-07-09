@@ -93,5 +93,7 @@ def test_octo_restores_worker_registry_and_reconciles_stale_children() -> None:
     active_set = octo._lineage_children_active.get("lin-1")
     assert active_set is None or active_set == set()
 
-    reconciled_ids = {worker_id for worker_id, status in store.status_updates if status == "stopped"}
+    reconciled_ids = {
+        worker_id for worker_id, status in store.status_updates if status == "stopped"
+    }
     assert {"child-1", "orphan-1", "root-1"} <= reconciled_ids

@@ -16,7 +16,7 @@ from octopal.runtime.workers.launcher import DockerLauncher, SameEnvLauncher, Wo
 logger = structlog.get_logger(__name__)
 _DOCKER_STATUS_CACHE_TTL_SECONDS = 10.0
 _WORKER_IMAGE_FINGERPRINT_LABEL = "io.octopal.worker-image-fingerprint"
-_docker_status_cache: dict[tuple[str, str, str], tuple[float, WorkerLauncherStatus]] = {}
+_docker_status_cache: dict[tuple[str, str, str, str, str], tuple[float, WorkerLauncherStatus]] = {}
 
 
 @dataclass(frozen=True)
@@ -45,7 +45,9 @@ def ensure_worker_launcher_status(settings: Settings) -> WorkerLauncherStatus:
     return _get_worker_launcher_status(settings, auto_build_image=True)
 
 
-def _get_worker_launcher_status(settings: Settings, *, auto_build_image: bool) -> WorkerLauncherStatus:
+def _get_worker_launcher_status(
+    settings: Settings, *, auto_build_image: bool
+) -> WorkerLauncherStatus:
     configured = str(settings.worker_launcher or "same_env").strip() or "same_env"
     project_root = Path(__file__).resolve().parents[4]
     image_fingerprint = _compute_worker_image_fingerprint(project_root)
@@ -101,17 +103,19 @@ def _compute_worker_launcher_status(
         [docker_cli_path, "info", "--format", "{{.ServerVersion}}"],
         timeout=5,
     )
-    if daemon_error is not None:
+    if daemon_error is not None or daemon_result is None:
         return WorkerLauncherStatus(
             configured_launcher="docker",
             effective_launcher="same_env",
             available=False,
-            reason=f"Docker daemon is unavailable: {daemon_error}",
+            reason=f"Docker daemon is unavailable: {daemon_error or 'no result returned'}",
             docker_cli_path=docker_cli_path,
             docker_daemon_reachable=False,
         )
     if daemon_result.returncode != 0:
-        detail = (daemon_result.stderr or daemon_result.stdout or "").strip() or "Docker daemon is unavailable."
+        detail = (
+            daemon_result.stderr or daemon_result.stdout or ""
+        ).strip() or "Docker daemon is unavailable."
         return WorkerLauncherStatus(
             configured_launcher="docker",
             effective_launcher="same_env",
@@ -126,12 +130,12 @@ def _compute_worker_launcher_status(
         [docker_cli_path, "image", "inspect", image_name],
         timeout=5,
     )
-    if image_error is not None:
+    if image_error is not None or image_result is None:
         return WorkerLauncherStatus(
             configured_launcher="docker",
             effective_launcher="same_env",
             available=False,
-            reason=f"Docker image check failed: {image_error}",
+            reason=f"Docker image check failed: {image_error or 'no result returned'}",
             docker_cli_path=docker_cli_path,
             docker_daemon_reachable=True,
             docker_image_present=False,
@@ -157,15 +161,18 @@ def _compute_worker_launcher_status(
                     docker_image_present=True,
                 )
 
-            detail = build_error
-            if detail is None and build_result is not None:
-                detail = (build_result.stderr or build_result.stdout or "").strip() or "docker build failed."
+            build_detail = build_error
+            if build_detail is None and build_result is not None:
+                build_detail = (
+                    build_result.stderr or build_result.stdout or ""
+                ).strip() or "docker build failed."
+            build_detail = build_detail or "docker build failed without details."
             return WorkerLauncherStatus(
                 configured_launcher="docker",
                 effective_launcher="same_env",
                 available=False,
                 reason=(
-                    f"Docker image '{image_name}' is not available and automatic build failed: {detail} "
+                    f"Docker image '{image_name}' is not available and automatic build failed: {build_detail} "
                     f"Run 'uv run octopal build-worker-image --tag {image_name}'."
                 ),
                 docker_cli_path=docker_cli_path,
@@ -228,15 +235,18 @@ def _compute_worker_launcher_status(
                     docker_image_present=True,
                 )
 
-            detail = build_error
-            if detail is None and build_result is not None:
-                detail = (build_result.stderr or build_result.stdout or "").strip() or "docker build failed."
+            build_detail = build_error
+            if build_detail is None and build_result is not None:
+                build_detail = (
+                    build_result.stderr or build_result.stdout or ""
+                ).strip() or "docker build failed."
+            build_detail = build_detail or "docker build failed without details."
             return WorkerLauncherStatus(
                 configured_launcher="docker",
                 effective_launcher="same_env",
                 available=False,
                 reason=(
-                    f"Docker image '{image_name}' is stale and automatic rebuild failed: {detail} "
+                    f"Docker image '{image_name}' is stale and automatic rebuild failed: {build_detail} "
                     f"Run 'uv run octopal build-worker-image --tag {image_name}'."
                 ),
                 docker_cli_path=docker_cli_path,

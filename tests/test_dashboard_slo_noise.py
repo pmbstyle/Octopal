@@ -6,7 +6,9 @@ from octopal.gateway.dashboard import _build_noise_control, _build_slo_metrics
 from octopal.infrastructure.store.models import WorkerRecord
 
 
-def _worker(worker_id: str, status: str, updated_at: datetime, template_id: str = "coder") -> WorkerRecord:
+def _worker(
+    worker_id: str, status: str, updated_at: datetime, template_id: str = "coder"
+) -> WorkerRecord:
     return WorkerRecord(
         id=worker_id,
         status=status,

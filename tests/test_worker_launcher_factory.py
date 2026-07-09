@@ -34,7 +34,9 @@ def test_detect_docker_cli_reports_missing_when_not_on_path(monkeypatch) -> None
 
 def _mock_docker_ready(monkeypatch, *, image_present: bool = True) -> None:
     launcher_factory._docker_status_cache.clear()
-    monkeypatch.setattr("octopal.runtime.workers.launcher_factory.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "octopal.runtime.workers.launcher_factory.shutil.which", lambda name: "/usr/bin/docker"
+    )
     monkeypatch.setattr(
         "octopal.runtime.workers.launcher_factory._compute_worker_image_fingerprint",
         lambda project_root: "fingerprint-1",
@@ -62,7 +64,9 @@ def _mock_docker_ready(monkeypatch, *, image_present: bool = True) -> None:
 def _mock_docker_with_autobuild(monkeypatch, *, build_succeeds: bool) -> list[list[str]]:
     launcher_factory._docker_status_cache.clear()
     commands: list[list[str]] = []
-    monkeypatch.setattr("octopal.runtime.workers.launcher_factory.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "octopal.runtime.workers.launcher_factory.shutil.which", lambda name: "/usr/bin/docker"
+    )
     monkeypatch.setattr(
         "octopal.runtime.workers.launcher_factory._compute_worker_image_fingerprint",
         lambda project_root: "fingerprint-1",
@@ -100,7 +104,9 @@ def _mock_docker_with_autobuild(monkeypatch, *, build_succeeds: bool) -> list[li
 def _mock_docker_with_stale_image(monkeypatch, *, rebuild_succeeds: bool) -> list[list[str]]:
     launcher_factory._docker_status_cache.clear()
     commands: list[list[str]] = []
-    monkeypatch.setattr("octopal.runtime.workers.launcher_factory.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "octopal.runtime.workers.launcher_factory.shutil.which", lambda name: "/usr/bin/docker"
+    )
     monkeypatch.setattr(
         "octopal.runtime.workers.launcher_factory._compute_worker_image_fingerprint",
         lambda project_root: "fingerprint-new",
@@ -133,7 +139,9 @@ def _mock_docker_with_stale_image(monkeypatch, *, rebuild_succeeds: bool) -> lis
     return commands
 
 
-def test_build_launcher_returns_docker_launcher_when_cli_is_available(monkeypatch, tmp_path: Path) -> None:
+def test_build_launcher_returns_docker_launcher_when_cli_is_available(
+    monkeypatch, tmp_path: Path
+) -> None:
     _mock_docker_ready(monkeypatch)
     settings = Settings(
         OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
@@ -144,7 +152,9 @@ def test_build_launcher_returns_docker_launcher_when_cli_is_available(monkeypatc
     assert isinstance(launcher, DockerLauncher)
 
 
-def test_build_launcher_falls_back_to_same_env_when_docker_cli_is_missing(monkeypatch, tmp_path: Path) -> None:
+def test_build_launcher_falls_back_to_same_env_when_docker_cli_is_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
     launcher_factory._docker_status_cache.clear()
     monkeypatch.setattr("octopal.runtime.workers.launcher_factory.shutil.which", lambda name: None)
     settings = Settings(
@@ -156,13 +166,19 @@ def test_build_launcher_falls_back_to_same_env_when_docker_cli_is_missing(monkey
     assert isinstance(launcher, SameEnvLauncher)
 
 
-def test_build_launcher_falls_back_when_docker_daemon_is_unavailable(monkeypatch, tmp_path: Path) -> None:
+def test_build_launcher_falls_back_when_docker_daemon_is_unavailable(
+    monkeypatch, tmp_path: Path
+) -> None:
     launcher_factory._docker_status_cache.clear()
-    monkeypatch.setattr("octopal.runtime.workers.launcher_factory.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "octopal.runtime.workers.launcher_factory.shutil.which", lambda name: "/usr/bin/docker"
+    )
 
     def _fake_run(cmd, capture_output=True, text=True, timeout=5):
         if cmd[1:3] == ["info", "--format"]:
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Cannot connect to the Docker daemon")
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="Cannot connect to the Docker daemon"
+            )
         raise AssertionError(f"Unexpected docker command: {cmd}")
 
     monkeypatch.setattr("octopal.runtime.workers.launcher_factory.subprocess.run", _fake_run)
@@ -178,7 +194,9 @@ def test_build_launcher_falls_back_when_docker_daemon_is_unavailable(monkeypatch
     assert "daemon" in status.reason.lower()
 
 
-def test_status_reports_missing_worker_image_without_auto_build(monkeypatch, tmp_path: Path) -> None:
+def test_status_reports_missing_worker_image_without_auto_build(
+    monkeypatch, tmp_path: Path
+) -> None:
     _mock_docker_ready(monkeypatch, image_present=False)
     settings = Settings(
         OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
@@ -205,7 +223,11 @@ def test_build_launcher_auto_builds_missing_worker_image(monkeypatch, tmp_path: 
     assert status.effective_launcher == "docker"
     assert "built automatically" in status.reason
     assert any(cmd[1] == "build" for cmd in commands)
-    assert any("io.octopal.worker-image-fingerprint=fingerprint-1" in part for cmd in commands for part in cmd)
+    assert any(
+        "io.octopal.worker-image-fingerprint=fingerprint-1" in part
+        for cmd in commands
+        for part in cmd
+    )
 
 
 def test_passive_status_does_not_block_later_auto_build(monkeypatch, tmp_path: Path) -> None:
@@ -243,7 +265,9 @@ def test_build_launcher_falls_back_when_auto_build_fails(monkeypatch, tmp_path: 
     assert any(cmd[1] == "build" for cmd in commands)
 
 
-def test_status_reports_stale_worker_image_without_auto_rebuild(monkeypatch, tmp_path: Path) -> None:
+def test_status_reports_stale_worker_image_without_auto_rebuild(
+    monkeypatch, tmp_path: Path
+) -> None:
     _mock_docker_with_stale_image(monkeypatch, rebuild_succeeds=True)
     settings = Settings(
         OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
@@ -271,4 +295,8 @@ def test_build_launcher_auto_rebuilds_stale_worker_image(monkeypatch, tmp_path: 
     assert status.effective_launcher == "docker"
     assert "rebuilt automatically" in status.reason
     assert any(cmd[1] == "build" for cmd in commands)
-    assert any("io.octopal.worker-image-fingerprint=fingerprint-new" in part for cmd in commands for part in cmd)
+    assert any(
+        "io.octopal.worker-image-fingerprint=fingerprint-new" in part
+        for cmd in commands
+        for part in cmd
+    )

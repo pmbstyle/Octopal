@@ -74,7 +74,9 @@ def test_facts_service_returns_relevant_active_facts(tmp_path: Path) -> None:
     )
 
     async def scenario() -> None:
-        await canon.write_canon("decisions", "# Decisions\n\nPrimary installer is uv.\n", "overwrite")
+        await canon.write_canon(
+            "decisions", "# Decisions\n\nPrimary installer is uv.\n", "overwrite"
+        )
 
     asyncio.run(scenario())
     context = facts.get_relevant_facts(
@@ -120,7 +122,9 @@ Open question: is 70 percent content loss a bug or feature?
     assert rows[0].value_text == "healthy"
 
 
-def test_canon_fact_sync_only_treats_supported_canon_files_as_verified_facts(tmp_path: Path) -> None:
+def test_canon_fact_sync_only_treats_supported_canon_files_as_verified_facts(
+    tmp_path: Path,
+) -> None:
     store = SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
     facts = FactsService(store=store, owner_id="default")
 
@@ -148,13 +152,16 @@ def test_canon_fact_sync_only_treats_supported_canon_files_as_verified_facts(tmp
 
     result = facts.sync_verified_facts_from_canon("AGENTS.md", "This is my system.\n")
     assert result == {"active": 0, "superseded": 1}
-    assert store.list_memory_facts(
-        "default",
-        status="active",
-        source_kind="canon",
-        source_ref="AGENTS.md",
-        limit=20,
-    ) == []
+    assert (
+        store.list_memory_facts(
+            "default",
+            status="active",
+            source_kind="canon",
+            source_ref="AGENTS.md",
+            limit=20,
+        )
+        == []
+    )
 
 
 def test_canon_service_prunes_existing_unsupported_canon_facts_on_startup(tmp_path: Path) -> None:
@@ -189,10 +196,13 @@ def test_canon_service_prunes_existing_unsupported_canon_facts_on_startup(tmp_pa
         facts=facts,
     )
 
-    assert store.list_memory_facts(
-        "default",
-        status="active",
-        source_kind="canon",
-        source_ref="AGENTS.md",
-        limit=20,
-    ) == []
+    assert (
+        store.list_memory_facts(
+            "default",
+            status="active",
+            source_kind="canon",
+            source_ref="AGENTS.md",
+            limit=20,
+        )
+        == []
+    )

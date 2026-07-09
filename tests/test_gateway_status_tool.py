@@ -113,7 +113,10 @@ def test_gateway_status_summarizes_runtime_and_channel_state(monkeypatch, tmp_pa
         "docker_image_present": True,
     }
     assert payload["scheduler"]["last_dispatch_started"] == 1
-    assert any(service["id"] == "scheduler" and service["status"] == "warning" for service in payload["services"])
+    assert any(
+        service["id"] == "scheduler" and service["status"] == "warning"
+        for service in payload["services"]
+    )
     assert any(
         service["id"] == "worker-launcher"
         and service["status"] == "ok"
@@ -121,12 +124,16 @@ def test_gateway_status_summarizes_runtime_and_channel_state(monkeypatch, tmp_pa
         for service in payload["services"]
     )
     assert payload["mcp"]["servers_connected"] == 1
-    assert any(service["id"] == "gateway" and service["status"] == "ok" for service in payload["services"])
+    assert any(
+        service["id"] == "gateway" and service["status"] == "ok" for service in payload["services"]
+    )
     assert any("rejected by policy" in hint for hint in payload["hints"])
     assert any("follow-up queue" in hint for hint in payload["hints"])
 
 
-def test_gateway_status_treats_missing_scheduler_metrics_as_not_reporting(monkeypatch, tmp_path: Path) -> None:
+def test_gateway_status_treats_missing_scheduler_metrics_as_not_reporting(
+    monkeypatch, tmp_path: Path
+) -> None:
     settings = SimpleNamespace(
         state_dir=tmp_path / "data",
         workspace_dir=tmp_path / "workspace",
@@ -187,7 +194,9 @@ def test_gateway_status_treats_missing_scheduler_metrics_as_not_reporting(monkey
 
     payload = json.loads(tool_catalog._tool_gateway_status({}, {}))
 
-    scheduler_service = next(service for service in payload["services"] if service["id"] == "scheduler")
+    scheduler_service = next(
+        service for service in payload["services"] if service["id"] == "scheduler"
+    )
     assert scheduler_service["status"] == "ok"
     assert scheduler_service["reason"] == "scheduler metrics unavailable"
 
@@ -241,7 +250,9 @@ def test_gateway_status_warns_when_docker_launcher_falls_back(monkeypatch, tmp_p
     assert payload["worker_launcher"]["configured"] == "docker"
     assert payload["worker_launcher"]["effective"] == "same_env"
     assert payload["worker_launcher"]["available"] is False
-    launcher_service = next(service for service in payload["services"] if service["id"] == "worker-launcher")
+    launcher_service = next(
+        service for service in payload["services"] if service["id"] == "worker-launcher"
+    )
     assert launcher_service["status"] == "warning"
     assert launcher_service["metrics"]["docker_daemon_reachable"] is False
     assert any("Docker worker launcher is not active" in hint for hint in payload["hints"])

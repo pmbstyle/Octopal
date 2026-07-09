@@ -14,7 +14,9 @@ class JsonlRepairReport:
     backup_path: str | None = None
 
 
-def read_jsonl_dicts(path: Path, *, repair: bool = True) -> tuple[list[dict[str, Any]], JsonlRepairReport]:
+def read_jsonl_dicts(
+    path: Path, *, repair: bool = True
+) -> tuple[list[dict[str, Any]], JsonlRepairReport]:
     if not path.exists():
         return [], JsonlRepairReport(repaired=False, dropped_lines=0)
 

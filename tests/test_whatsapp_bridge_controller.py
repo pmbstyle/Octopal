@@ -17,7 +17,9 @@ def test_parse_node_major_returns_none_for_invalid_text() -> None:
 
 
 def test_require_supported_node_rejects_old_versions(monkeypatch) -> None:
-    monkeypatch.setattr(WhatsAppBridgeController, "_node_version", staticmethod(lambda _: "v18.19.1"))
+    monkeypatch.setattr(
+        WhatsAppBridgeController, "_node_version", staticmethod(lambda _: "v18.19.1")
+    )
 
     try:
         WhatsAppBridgeController._require_supported_node("node")
@@ -28,7 +30,9 @@ def test_require_supported_node_rejects_old_versions(monkeypatch) -> None:
 
 
 def test_require_supported_node_accepts_supported_versions(monkeypatch) -> None:
-    monkeypatch.setattr(WhatsAppBridgeController, "_node_version", staticmethod(lambda _: "v22.15.0"))
+    monkeypatch.setattr(
+        WhatsAppBridgeController, "_node_version", staticmethod(lambda _: "v22.15.0")
+    )
 
     WhatsAppBridgeController._require_supported_node("node")
 

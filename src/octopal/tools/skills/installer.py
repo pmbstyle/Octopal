@@ -44,7 +44,11 @@ def detect_skill_install_source(source: str) -> SkillInstallSource:
         lowered_path = parsed.path.lower()
         if lowered_path.endswith(".zip"):
             return SkillInstallSource(kind="zip_url", value=raw, normalized=normalized)
-        if lowered_path.endswith("/skill.md") or lowered_path.endswith("/skill.md/") or lowered_path.endswith("skill.md"):
+        if (
+            lowered_path.endswith("/skill.md")
+            or lowered_path.endswith("/skill.md/")
+            or lowered_path.endswith("skill.md")
+        ):
             return SkillInstallSource(kind="skill_md_url", value=raw, normalized=normalized)
         return SkillInstallSource(kind="remote_url", value=raw, normalized=normalized)
 
@@ -52,11 +56,17 @@ def detect_skill_install_source(source: str) -> SkillInstallSource:
     if candidate.exists():
         resolved = candidate.resolve()
         if resolved.is_dir():
-            return SkillInstallSource(kind="local_dir", value=str(resolved), normalized=str(resolved))
+            return SkillInstallSource(
+                kind="local_dir", value=str(resolved), normalized=str(resolved)
+            )
         if resolved.is_file() and resolved.name.lower() == "skill.md":
-            return SkillInstallSource(kind="local_skill_md", value=str(resolved), normalized=str(resolved))
+            return SkillInstallSource(
+                kind="local_skill_md", value=str(resolved), normalized=str(resolved)
+            )
         if resolved.is_file() and resolved.suffix.lower() == ".zip":
-            return SkillInstallSource(kind="local_zip", value=str(resolved), normalized=str(resolved))
+            return SkillInstallSource(
+                kind="local_zip", value=str(resolved), normalized=str(resolved)
+            )
         raise ValueError("local source must be a skill directory, SKILL.md, or .zip archive")
 
     return SkillInstallSource(kind="clawhub_slug", value=raw.strip("/"), normalized=raw.strip("/"))
@@ -139,7 +149,9 @@ def update_installed_skill(
     source = str(record.get("source", "")).strip()
     if not source:
         raise ValueError(f"skill '{skill_id}' does not have a stored source")
-    resolved_site = clawhub_site or str(record.get("clawhub_site", "")).strip() or _DEFAULT_CLAWHUB_SITE
+    resolved_site = (
+        clawhub_site or str(record.get("clawhub_site", "")).strip() or _DEFAULT_CLAWHUB_SITE
+    )
     trusted = bool(record.get("trusted", False))
     payload = install_skill_from_source(
         source,
@@ -166,7 +178,9 @@ def remove_installed_skill(skill_id: str, *, workspace_dir: Path) -> dict[str, A
         try:
             bundle_path.relative_to((workspace_dir / "skills").resolve())
         except ValueError as exc:
-            raise ValueError("stored install path points outside workspace skills directory") from exc
+            raise ValueError(
+                "stored install path points outside workspace skills directory"
+            ) from exc
         bundle_dir = bundle_path.parent
         if bundle_dir.exists():
             shutil.rmtree(bundle_dir)
@@ -315,7 +329,9 @@ def _materialize_install_source(
 ) -> Path:
     if install_source.kind == "clawhub_slug":
         archive_path = scratch_dir / "skill.zip"
-        _download_clawhub_archive(install_source.value, archive_path=archive_path, clawhub_site=clawhub_site)
+        _download_clawhub_archive(
+            install_source.value, archive_path=archive_path, clawhub_site=clawhub_site
+        )
         extracted_dir = scratch_dir / "bundle"
         extracted_dir.mkdir(parents=True, exist_ok=True)
         _extract_archive(archive_path, extracted_dir)

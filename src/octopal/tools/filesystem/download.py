@@ -24,14 +24,24 @@ async def download_file(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         try:
             filename = os.path.basename(url.split("?")[0])
             if not filename:
-                return json.dumps({"error": "download_file error: could not determine filename from URL. Please specify one."})
+                return json.dumps(
+                    {
+                        "error": "download_file error: could not determine filename from URL. Please specify one."
+                    }
+                )
         except Exception:
-            return json.dumps({"error": "download_file error: could not determine filename from URL. Please specify one."})
+            return json.dumps(
+                {
+                    "error": "download_file error: could not determine filename from URL. Please specify one."
+                }
+            )
     filename = filename.strip()
     if not filename:
         return json.dumps({"error": "download_file error: filename is empty."})
     if Path(filename).name != filename:
-        return json.dumps({"error": "download_file error: filename must not contain directory components."})
+        return json.dumps(
+            {"error": "download_file error: filename must not contain directory components."}
+        )
 
     # Determine the base directory from the context
     # The 'base_dir' in the context is the root workspace for the Octo.
@@ -46,14 +56,19 @@ async def download_file(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         download_dir.mkdir(parents=True, exist_ok=True)
         download_dir = resolve_workspace_path(base_dir, "downloads", must_exist=True)
     except Exception as e:
-        return json.dumps({"error": f"download_file error: could not create download directory: {e}"})
+        return json.dumps(
+            {"error": f"download_file error: could not create download directory: {e}"}
+        )
     try:
         save_path = resolve_workspace_path(base_dir, f"downloads/{filename}")
     except WorkspacePathError as e:
         return json.dumps({"error": f"download_file error: {e}."})
 
     try:
-        async with httpx.AsyncClient() as client, client.stream("GET", url, follow_redirects=True, timeout=30.0) as response:
+        async with (
+            httpx.AsyncClient() as client,
+            client.stream("GET", url, follow_redirects=True, timeout=30.0) as response,
+        ):
             response.raise_for_status()
 
             with open(save_path, "wb") as f:
@@ -61,14 +76,18 @@ async def download_file(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                     f.write(chunk)
 
         file_size = save_path.stat().st_size
-        return json.dumps({
-            "status": "success",
-            "path": str(save_path.relative_to(base_dir)),
-            "size": file_size,
-            "message": f"Successfully downloaded {file_size} bytes to {save_path.relative_to(base_dir)}"
-        })
+        return json.dumps(
+            {
+                "status": "success",
+                "path": str(save_path.relative_to(base_dir)),
+                "size": file_size,
+                "message": f"Successfully downloaded {file_size} bytes to {save_path.relative_to(base_dir)}",
+            }
+        )
 
     except httpx.HTTPStatusError as e:
-        return json.dumps({"error": f"download_file error: HTTP error {e.response.status_code} for URL {url}"})
+        return json.dumps(
+            {"error": f"download_file error: HTTP error {e.response.status_code} for URL {url}"}
+        )
     except Exception as e:
         return json.dumps({"error": f"download_file error: An unexpected error occurred: {e}"})

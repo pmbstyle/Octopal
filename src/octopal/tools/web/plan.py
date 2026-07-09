@@ -33,7 +33,9 @@ async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     allow_browser = bool(args.get("allow_browser", True))
     close_browser = bool(args.get("close_browser", True))
     max_chars = _bounded_int(args.get("max_chars"), default=20000, low=200, high=200000)
-    min_content_chars = _bounded_int(args.get("min_content_chars"), default=700, low=100, high=10000)
+    min_content_chars = _bounded_int(
+        args.get("min_content_chars"), default=700, low=100, high=10000
+    )
     timeout_seconds = float(_bounded_int(args.get("timeout_seconds"), default=120, low=5, high=300))
 
     attempts: list[dict[str, Any]] = []
@@ -87,12 +89,19 @@ async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
     # Step 3: browser-assisted fallback for JS-heavy pages
     if allow_browser and remaining_budget() > 1.0:
-        browser_attempt = {"tool": "browser_plan", "status": "error", "duration_ms": 0, "reason": ""}
+        browser_attempt = {
+            "tool": "browser_plan",
+            "status": "error",
+            "duration_ms": 0,
+            "reason": "",
+        }
         browser_start = time.perf_counter()
         browser_payload: dict[str, Any] | None = None
         try:
             open_resp = await browser_open({"url": url}, ctx)
-            open_result = _parse_browser_step_output(open_resp, success_text_prefixes=("successfully opened",))
+            open_result = _parse_browser_step_output(
+                open_resp, success_text_prefixes=("successfully opened",)
+            )
             if not open_result.get("ok", False):
                 browser_attempt["reason"] = str(open_result.get("error") or open_resp)
             else:
@@ -102,7 +111,9 @@ async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                     browser_attempt["reason"] = str(snap_result.get("error") or snap)
                 else:
                     target_id = snap_result.get("target_id")
-                    extract = await browser_extract({"max_chars": max_chars, "target_id": target_id}, ctx)
+                    extract = await browser_extract(
+                        {"max_chars": max_chars, "target_id": target_id}, ctx
+                    )
                     extract_result = _parse_fetch_output(extract)
                     snapshot_text = str(snap_result.get("snapshot") or "")
                     snippet = str(extract_result.get("text") or snapshot_text)[:max_chars]
@@ -118,7 +129,11 @@ async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                             "degraded": True,
                             "fallback_used": True,
                             "rate_limited": False,
-                            "source": "browser_extract" if extract_result.get("ok") else "browser_snapshot",
+                            "source": (
+                                "browser_extract"
+                                if extract_result.get("ok")
+                                else "browser_snapshot"
+                            ),
                             "url": url,
                             "goal": goal,
                             "target_id": target_id,
@@ -278,5 +293,7 @@ def _failure_next_action(goal: str, *, allow_browser: bool) -> str:
     if not allow_browser:
         return "retry with allow_browser=true or lower min_content_chars"
     if goal == "structured_extract":
-        return "retry with lower min_content_chars or inspect interactively with browser_snapshot refs"
+        return (
+            "retry with lower min_content_chars or inspect interactively with browser_snapshot refs"
+        )
     return "retry with lower min_content_chars or a page-specific browser interaction sequence"

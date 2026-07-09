@@ -11,8 +11,8 @@ def test_jsonl_guard_repairs_malformed_lines(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     path.write_text(
         '{"id":"ok-1","status":"pending"}\n'
-        '{not-json}\n'
-        '42\n'
+        "{not-json}\n"
+        "42\n"
         '{"id":"ok-2","status":"done"}\n',
         encoding="utf-8",
     )

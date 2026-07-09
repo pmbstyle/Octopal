@@ -22,7 +22,9 @@ class _NoopStore:
     def clear_canon_embeddings(self, filename: str) -> None:
         return None
 
-    def add_canon_embedding(self, filename: str, chunk_index: int, content: str, model: str, vector: list[float]) -> None:
+    def add_canon_embedding(
+        self, filename: str, chunk_index: int, content: str, model: str, vector: list[float]
+    ) -> None:
         return None
 
     def list_canon_embeddings(self, filename: str | None = None):
@@ -43,7 +45,9 @@ def _make_entry(role: str, content: str, *, owner_id: str, chat_id: int) -> Memo
 def test_memory_chat_filter_is_exact(tmp_path: Path) -> None:
     store = SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
     store.add_memory_entry(_make_entry("user", "chat twelve", owner_id="default", chat_id=12))
-    store.add_memory_entry(_make_entry("user", "chat one-two-three", owner_id="default", chat_id=123))
+    store.add_memory_entry(
+        _make_entry("user", "chat one-two-three", owner_id="default", chat_id=123)
+    )
 
     rows = store.list_memory_entries_by_chat(12, limit=20)
     assert len(rows) == 1

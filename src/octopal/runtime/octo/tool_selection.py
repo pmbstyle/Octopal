@@ -469,7 +469,9 @@ def _get_static_mode_tool_candidates(
 
     allowed = {str(name).strip().lower() for name in allowed_tool_names if str(name).strip()}
     resolved_get_tools = _resolve_get_tools(get_tools_fn)
-    candidates = tool_candidates if tool_candidates is not None else resolved_get_tools(mcp_manager=None)
+    candidates = (
+        tool_candidates if tool_candidates is not None else resolved_get_tools(mcp_manager=None)
+    )
     return [tool for tool in candidates if str(tool.name).strip().lower() in allowed]
 
 

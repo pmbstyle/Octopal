@@ -108,7 +108,9 @@ def memchain_init(workspace_dir: Path, *, force: bool = False) -> dict[str, Any]
     return memchain_record(workspace_dir, reason="init", meta={"source": "cli"})
 
 
-def memchain_record(workspace_dir: Path, *, reason: str = "manual", meta: dict[str, Any] | None = None) -> dict[str, Any]:
+def memchain_record(
+    workspace_dir: Path, *, reason: str = "manual", meta: dict[str, Any] | None = None
+) -> dict[str, Any]:
     chain_path, head_path = _chain_files(workspace_dir)
     entries = _iter_chain_entries(chain_path)
     prev_hash = str(entries[-1].get("entry_hash", "")) if entries else ""
@@ -214,4 +216,3 @@ def memchain_status(workspace_dir: Path) -> dict[str, Any]:
         "broken_at": result.broken_at,
         "changed_files": result.changed_files or [],
     }
-

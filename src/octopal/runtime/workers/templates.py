@@ -10,6 +10,7 @@ are now managed as JSON files in the workspace directory.
 Default templates are provided from the repository bootstrap templates at:
 workspace_templates/workers/
 """
+
 from __future__ import annotations
 
 import shutil

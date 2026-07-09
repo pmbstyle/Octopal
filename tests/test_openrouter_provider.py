@@ -120,10 +120,14 @@ def test_complete_posts_expected_payload(monkeypatch) -> None:
     _AsyncClientStub.response_payload = {"choices": [{"message": {"content": "router-ok"}}]}
     _AsyncClientStub.response_status = 200
     _AsyncClientStub.captured_calls = []
-    monkeypatch.setattr("octopal.infrastructure.providers.openrouter_provider.httpx.AsyncClient", _AsyncClientStub)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.openrouter_provider.httpx.AsyncClient", _AsyncClientStub
+    )
 
     provider = OpenRouterProvider(_settings())
-    result = asyncio.run(provider.complete([Message(role="user", content="hello")], temperature=0.7))
+    result = asyncio.run(
+        provider.complete([Message(role="user", content="hello")], temperature=0.7)
+    )
 
     assert result == "router-ok"
     assert len(_AsyncClientStub.captured_calls) == 1
@@ -143,7 +147,9 @@ def test_complete_with_tools_returns_content_and_tool_calls(monkeypatch) -> None
     }
     _AsyncClientStub.response_status = 200
     _AsyncClientStub.captured_calls = []
-    monkeypatch.setattr("octopal.infrastructure.providers.openrouter_provider.httpx.AsyncClient", _AsyncClientStub)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.openrouter_provider.httpx.AsyncClient", _AsyncClientStub
+    )
 
     provider = OpenRouterProvider(_settings())
     result = asyncio.run(
@@ -173,7 +179,9 @@ def test_complete_stream_invokes_partial_callback() -> None:
         seen.append(text)
 
     provider.complete = _fake_complete  # type: ignore[method-assign]
-    result = asyncio.run(provider.complete_stream([{"role": "user", "content": "hi"}], on_partial=_on_partial))
+    result = asyncio.run(
+        provider.complete_stream([{"role": "user", "content": "hi"}], on_partial=_on_partial)
+    )
 
     assert result == "streamed"
     assert seen == ["streamed"]
@@ -183,7 +191,9 @@ def test_complete_raises_runtime_error_for_http_failure(monkeypatch) -> None:
     _AsyncClientStub.response_payload = {"error": "bad"}
     _AsyncClientStub.response_status = 401
     _AsyncClientStub.captured_calls = []
-    monkeypatch.setattr("octopal.infrastructure.providers.openrouter_provider.httpx.AsyncClient", _AsyncClientStub)
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.openrouter_provider.httpx.AsyncClient", _AsyncClientStub
+    )
 
     provider = OpenRouterProvider(_settings())
 

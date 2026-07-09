@@ -69,16 +69,25 @@ def get_skill_management_tools() -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "Skill id (optional; inferred from name/path when omitted)."},
+                    "id": {
+                        "type": "string",
+                        "description": "Skill id (optional; inferred from name/path when omitted).",
+                    },
                     "name": {"type": "string", "description": "Human-friendly skill name."},
                     "description": {"type": "string", "description": "Short skill description."},
-                    "path": {"type": "string", "description": "Path to SKILL.md (or its containing directory)."},
+                    "path": {
+                        "type": "string",
+                        "description": "Path to SKILL.md (or its containing directory).",
+                    },
                     "scope": {
                         "type": "string",
                         "description": "Where the skill should be available.",
                         "enum": ["octo", "worker", "both"],
                     },
-                    "enabled": {"type": "boolean", "description": "Whether the skill is enabled (default true)."},
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Whether the skill is enabled (default true).",
+                    },
                 },
                 "required": ["path"],
                 "additionalProperties": False,
@@ -92,7 +101,10 @@ def get_skill_management_tools() -> list[ToolSpec]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "skill_id": {"type": "string", "description": "Skill id to read guidance from."},
+                    "skill_id": {
+                        "type": "string",
+                        "description": "Skill id to read guidance from.",
+                    },
                     "task": {
                         "type": "string",
                         "description": "Optional task context to pair with the skill guidance.",
@@ -133,7 +145,10 @@ def get_skill_management_tools() -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "id": {"type": "string", "description": "Skill id to update."},
-                    "enabled": {"type": "boolean", "description": "Whether the skill should be enabled."},
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Whether the skill should be enabled.",
+                    },
                 },
                 "required": ["id", "enabled"],
                 "additionalProperties": False,
@@ -148,7 +163,10 @@ def get_skill_management_tools() -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "skill_id": {"type": "string", "description": "Skill id to execute from."},
-                    "script": {"type": "string", "description": "Relative path inside the skill scripts/ directory."},
+                    "script": {
+                        "type": "string",
+                        "description": "Relative path inside the skill scripts/ directory.",
+                    },
                     "args": {
                         "type": "array",
                         "description": "Optional string arguments passed to the script.",
@@ -165,7 +183,16 @@ def get_skill_management_tools() -> list[ToolSpec]:
                     "runner": {
                         "type": "string",
                         "description": "Optional explicit runner.",
-                        "enum": ["python", "python3", "node", "bash", "sh", "powershell", "pwsh", "direct"],
+                        "enum": [
+                            "python",
+                            "python3",
+                            "node",
+                            "bash",
+                            "sh",
+                            "powershell",
+                            "pwsh",
+                            "direct",
+                        ],
                     },
                 },
                 "required": ["skill_id", "script"],
@@ -195,7 +222,9 @@ def get_registered_skill_tools() -> list[ToolSpec]:
         description = str(raw.get("description", "")).strip()
         scope = str(raw.get("scope", "both")).strip().lower() or "both"
 
-        def _handler(args: dict[str, Any], ctx: dict[str, Any], skill_data: dict[str, Any] = raw) -> str:
+        def _handler(
+            args: dict[str, Any], ctx: dict[str, Any], skill_data: dict[str, Any] = raw
+        ) -> str:
             return _run_skill(skill_data, args, ctx)
 
         tools.append(
@@ -204,7 +233,11 @@ def get_registered_skill_tools() -> list[ToolSpec]:
                 description=(
                     f"Apply internal skill '{name}'. "
                     f"{description}"
-                    + (" Use run_skill_script for bundled scripts." if bool(raw.get("has_scripts", False)) or bool(raw.get("scripts_dir", "")) else "")
+                    + (
+                        " Use run_skill_script for bundled scripts."
+                        if bool(raw.get("has_scripts", False)) or bool(raw.get("scripts_dir", ""))
+                        else ""
+                    )
                     + (f" Scope: {scope}." if scope in {"octo", "worker", "both"} else "")
                 ),
                 parameters={
@@ -244,7 +277,14 @@ def _tool_use_skill(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     skill_id = str(args.get("skill_id", "")).strip()
     if not _SKILL_ID_RE.fullmatch(skill_id):
         return "use_skill error: skill_id must match ^[a-z0-9][a-z0-9_-]*$."
-    skill_data = next((item for item in _load_skill_inventory(workspace_dir) if str(item.get("id", "")) == skill_id), None)
+    skill_data = next(
+        (
+            item
+            for item in _load_skill_inventory(workspace_dir)
+            if str(item.get("id", "")) == skill_id
+        ),
+        None,
+    )
     if skill_data is None:
         return f"use_skill error: skill '{skill_id}' not found."
     if not bool(skill_data.get("enabled", True)):
@@ -317,9 +357,13 @@ def _tool_add_skill(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         "enabled": enabled,
         "path": resolved_skill.relative_to(workspace_dir).as_posix(),
     }
-    bundle = load_skill_bundle(resolved_skill, workspace_dir=workspace_dir, registry_entry=candidate_entry)
+    bundle = load_skill_bundle(
+        resolved_skill, workspace_dir=workspace_dir, registry_entry=candidate_entry
+    )
     if bundle is None:
-        return "add_skill error: SKILL.md is invalid or incomplete. Name/description may be missing."
+        return (
+            "add_skill error: SKILL.md is invalid or incomplete. Name/description may be missing."
+        )
 
     skill_id = bundle.id
     if not _SKILL_ID_RE.fullmatch(skill_id):
@@ -327,7 +371,9 @@ def _tool_add_skill(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
     registry = _load_registry(workspace_dir)
     skills = [item for item in registry.get("skills", []) if isinstance(item, dict)]
-    existing_idx = next((i for i, item in enumerate(skills) if str(item.get("id", "")) == skill_id), None)
+    existing_idx = next(
+        (i for i, item in enumerate(skills) if str(item.get("id", "")) == skill_id), None
+    )
     record = {
         "id": bundle.id,
         "name": bundle.name,
@@ -394,7 +440,14 @@ def _tool_run_skill_script(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     if not _SKILL_ID_RE.fullmatch(skill_id):
         return "run_skill_script error: skill_id must match ^[a-z0-9][a-z0-9_-]*$."
 
-    skill_data = next((item for item in _load_skill_inventory(workspace_dir) if str(item.get("id", "")) == skill_id), None)
+    skill_data = next(
+        (
+            item
+            for item in _load_skill_inventory(workspace_dir)
+            if str(item.get("id", "")) == skill_id
+        ),
+        None,
+    )
     if skill_data is None:
         return f"run_skill_script error: skill '{skill_id}' not found."
     if not bool(skill_data.get("enabled", True)):
@@ -507,7 +560,9 @@ def _run_skill(skill_data: dict[str, Any], args: dict[str, Any], ctx: dict[str, 
     if skill_path is None or not skill_path.exists():
         return f"skill error: missing SKILL.md for '{current_skill.get('id', '<unknown>')}'."
 
-    max_chars = _bounded_int(args.get("max_chars"), default=_DEFAULT_MAX_CHARS, low=200, high=_MAX_CHARS_LIMIT)
+    max_chars = _bounded_int(
+        args.get("max_chars"), default=_DEFAULT_MAX_CHARS, low=200, high=_MAX_CHARS_LIMIT
+    )
     task = str(args.get("task", "")).strip()
     input_payload = args.get("input")
 
@@ -554,7 +609,11 @@ def _run_skill(skill_data: dict[str, Any], args: dict[str, Any], ctx: dict[str, 
         ),
         **_evaluate_skill_status(current_skill),
         "task": task,
-        "input": input_payload if isinstance(input_payload, (dict, list, str, int, float, bool)) else None,
+        "input": (
+            input_payload
+            if isinstance(input_payload, (dict, list, str, int, float, bool))
+            else None
+        ),
         "truncated": truncated,
         "guidance": content,
     }
@@ -565,7 +624,14 @@ def _refresh_skill_state(workspace_dir: Path, skill_data: dict[str, Any]) -> dic
     skill_id = str(skill_data.get("id", "")).strip()
     if not _SKILL_ID_RE.fullmatch(skill_id):
         return skill_data
-    return next((item for item in _load_skill_inventory(workspace_dir) if str(item.get("id", "")) == skill_id), None)
+    return next(
+        (
+            item
+            for item in _load_skill_inventory(workspace_dir)
+            if str(item.get("id", "")) == skill_id
+        ),
+        None,
+    )
 
 
 def _caller_scope(ctx: dict[str, Any]) -> str:
@@ -604,7 +670,9 @@ def _load_registry(workspace_dir: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
-        logger.warning("Failed to parse skills registry, using empty registry", path=str(path), error=str(exc))
+        logger.warning(
+            "Failed to parse skills registry, using empty registry", path=str(path), error=str(exc)
+        )
         return {"version": _REGISTRY_VERSION, "skills": []}
     if not isinstance(payload, dict):
         return {"version": _REGISTRY_VERSION, "skills": []}
@@ -692,7 +760,9 @@ def _load_skill_inventory(workspace_dir: Path) -> list[dict[str, Any]]:
                 auto_discovered=False,
             )
             record["trusted"] = bool(raw.get("trusted", True))
-            inventory_by_id[bundle.id] = _merge_installed_metadata(workspace_dir, record, installed_by_id.get(bundle.id))
+            inventory_by_id[bundle.id] = _merge_installed_metadata(
+                workspace_dir, record, installed_by_id.get(bundle.id)
+            )
             continue
         if not _SKILL_ID_RE.fullmatch(skill_id):
             continue
@@ -824,10 +894,16 @@ def _evaluate_skill_status(skill_data: dict[str, Any]) -> dict[str, Any]:
         reasons.append("missing env: " + ", ".join(missing_env))
     if missing_config:
         reasons.append("missing config: " + ", ".join(missing_config))
-    has_runtime_scripts = bool(skill_data.get("has_scripts", False)) or bool(skill_data.get("runtime_kind", "")) or bool(skill_data.get("runtime_required", False))
+    has_runtime_scripts = (
+        bool(skill_data.get("has_scripts", False))
+        or bool(skill_data.get("runtime_kind", ""))
+        or bool(skill_data.get("runtime_required", False))
+    )
     if has_runtime_scripts and not bool(skill_data.get("trusted", True)):
         reasons.append("skill scripts are not trusted yet")
-    if bool(skill_data.get("runtime_required", False)) and not bool(skill_data.get("runtime_prepared", False)):
+    if bool(skill_data.get("runtime_required", False)) and not bool(
+        skill_data.get("runtime_prepared", False)
+    ):
         runtime_status = str(skill_data.get("runtime_status", "")).strip()
         runtime_reason = str(skill_data.get("runtime_reason", "")).strip()
         next_step = str(skill_data.get("runtime_next_step", "")).strip()
@@ -868,7 +944,9 @@ def _merge_installed_metadata(
         skill_data.setdefault("installer_managed", False)
         skill_data.setdefault("trusted", True)
         skill_data.setdefault("has_scripts", bool(skill_data.get("scripts_dir")))
-        skill_data.setdefault("scan_status", "clean" if bool(skill_data.get("scripts_dir")) else "no_scripts")
+        skill_data.setdefault(
+            "scan_status", "clean" if bool(skill_data.get("scripts_dir")) else "no_scripts"
+        )
         skill_data.setdefault("scan_findings_count", 0)
         return skill_data
     merged = dict(skill_data)
@@ -876,10 +954,14 @@ def _merge_installed_metadata(
     findings = scan.get("findings", []) if isinstance(scan, dict) else []
     merged["installer_managed"] = True
     merged["trusted"] = bool(installed_record.get("trusted", False))
-    merged["has_scripts"] = bool(installed_record.get("has_scripts", bool(skill_data.get("scripts_dir"))))
+    merged["has_scripts"] = bool(
+        installed_record.get("has_scripts", bool(skill_data.get("scripts_dir")))
+    )
     merged["installed_source"] = str(installed_record.get("source", "")).strip()
     merged["installed_source_kind"] = str(installed_record.get("source_kind", "")).strip()
-    merged["scan_status"] = str(scan.get("status", "missing")) if isinstance(scan, dict) else "missing"
+    merged["scan_status"] = (
+        str(scan.get("status", "missing")) if isinstance(scan, dict) else "missing"
+    )
     merged["scan_findings_count"] = len(findings) if isinstance(findings, list) else 0
     return merged
 
@@ -901,7 +983,9 @@ def set_skill_trust(
         raise ValueError(f"skill '{skill_id}' not found")
 
     if bool(skill_data.get("installer_managed", False)):
-        return _set_installed_skill_trust(skill_id, workspace_dir=workspace_dir, trusted=trusted, force=force)
+        return _set_installed_skill_trust(
+            skill_id, workspace_dir=workspace_dir, trusted=trusted, force=force
+        )
 
     return _set_local_skill_trust(skill_data, workspace_dir=workspace_dir, trusted=trusted)
 
@@ -962,7 +1046,9 @@ def remove_skill(skill_id: str, *, workspace_dir: Path) -> dict[str, Any]:
     }
 
 
-def _set_local_skill_trust(skill_data: dict[str, Any], *, workspace_dir: Path, trusted: bool) -> dict[str, Any]:
+def _set_local_skill_trust(
+    skill_data: dict[str, Any], *, workspace_dir: Path, trusted: bool
+) -> dict[str, Any]:
     _upsert_registry_skill_override(
         skill_data,
         workspace_dir=workspace_dir,
@@ -1097,7 +1183,9 @@ def _remove_installed_skill(skill_id: str, *, workspace_dir: Path) -> dict[str, 
         try:
             bundle_path.relative_to((workspace_dir / "skills").resolve())
         except ValueError as exc:
-            raise ValueError("stored install path points outside workspace skills directory") from exc
+            raise ValueError(
+                "stored install path points outside workspace skills directory"
+            ) from exc
         bundle_dir = bundle_path.parent
         if bundle_dir.exists():
             shutil.rmtree(bundle_dir)
@@ -1212,7 +1300,9 @@ def _resolve_skill_script_path(scripts_dir: Path, script_raw: str) -> Path:
     return candidate
 
 
-def _resolve_skill_workdir(workspace_dir: Path, ctx: dict[str, Any], args: dict[str, Any]) -> Path | str:
+def _resolve_skill_workdir(
+    workspace_dir: Path, ctx: dict[str, Any], args: dict[str, Any]
+) -> Path | str:
     base_dir = ctx.get("base_dir")
     candidate_base = base_dir if isinstance(base_dir, Path) else workspace_dir
     base_path = Path(candidate_base).resolve()
@@ -1247,7 +1337,9 @@ def _build_skill_script_command(script_path: Path, runner: str) -> list[str]:
         return [str(script_path)]
 
     if explicit_runner in {"python", "python3"}:
-        executable = sys.executable if explicit_runner == "python" else shutil.which(explicit_runner)
+        executable = (
+            sys.executable if explicit_runner == "python" else shutil.which(explicit_runner)
+        )
         if not executable:
             raise ValueError(f"runner '{explicit_runner}' is not available.")
         return [executable, str(script_path)]

@@ -59,7 +59,9 @@ def _parse_google_api_error(response: httpx.Response) -> DriveApiError:
 
     error = payload.get("error")
     if isinstance(error, dict):
-        message = str(error.get("message") or response.reason_phrase or "Unknown Drive API error").strip()
+        message = str(
+            error.get("message") or response.reason_phrase or "Unknown Drive API error"
+        ).strip()
         errors = error.get("errors")
         reason = None
         if isinstance(errors, list) and errors:
@@ -127,14 +129,16 @@ def _normalize_file(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _multipart_related_body(metadata: dict[str, Any], content: bytes, mime_type: str) -> tuple[bytes, str]:
+def _multipart_related_body(
+    metadata: dict[str, Any], content: bytes, mime_type: str
+) -> tuple[bytes, str]:
     boundary = f"octopal-drive-{uuid.uuid4().hex}"
     parts = [
-        f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode("utf-8"),
+        f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode(),
         json.dumps(metadata, ensure_ascii=False).encode("utf-8"),
-        f"\r\n--{boundary}\r\nContent-Type: {mime_type}\r\n\r\n".encode("utf-8"),
+        f"\r\n--{boundary}\r\nContent-Type: {mime_type}\r\n\r\n".encode(),
         content,
-        f"\r\n--{boundary}--\r\n".encode("utf-8"),
+        f"\r\n--{boundary}--\r\n".encode(),
     ]
     return b"".join(parts), boundary
 
@@ -263,7 +267,9 @@ class DriveApiClient:
         page_token: str | None = None,
         corpora: str | None = None,
     ) -> dict[str, Any]:
-        return await self.list_files(query=query, page_size=page_size, page_token=page_token, corpora=corpora)
+        return await self.list_files(
+            query=query, page_size=page_size, page_token=page_token, corpora=corpora
+        )
 
     async def list_children(
         self,

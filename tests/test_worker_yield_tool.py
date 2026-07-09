@@ -42,7 +42,9 @@ class _RuntimeStub:
 class _StoreStub:
     def __init__(self) -> None:
         self._workers = {
-            "w1": _WorkerStub(worker_id="w1", status="running", task="Fetch docs", lineage_id="lin-1"),
+            "w1": _WorkerStub(
+                worker_id="w1", status="running", task="Fetch docs", lineage_id="lin-1"
+            ),
             "w2": _WorkerStub(
                 worker_id="w2",
                 status="running",
@@ -105,7 +107,9 @@ def test_worker_yield_recommends_followup_when_runs_are_still_active() -> None:
 
 def test_worker_yield_recommends_synthesis_when_parallel_results_are_ready() -> None:
     payload = json.loads(
-        _tool_worker_yield({"worker_ids": ["w3", "w4", "w5"], "lineage_id": "lin-2"}, {"octo": _OctoStub()})
+        _tool_worker_yield(
+            {"worker_ids": ["w3", "w4", "w5"], "lineage_id": "lin-2"}, {"octo": _OctoStub()}
+        )
     )
 
     assert payload["status"] == "ok"

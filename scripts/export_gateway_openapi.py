@@ -21,7 +21,9 @@ def build_openapi_document() -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Export FastAPI OpenAPI spec for frontend type generation.")
+    parser = argparse.ArgumentParser(
+        description="Export FastAPI OpenAPI spec for frontend type generation."
+    )
     parser.add_argument(
         "--out",
         default="webapp/openapi.json",

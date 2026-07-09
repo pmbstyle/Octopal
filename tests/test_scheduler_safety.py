@@ -260,10 +260,7 @@ def test_schedule_task_rejects_conflicting_delivery_target_and_chat_id(
         {"octo": SimpleNamespace(scheduler=scheduler), "chat_id": -1001234567890},
     )
 
-    assert (
-        result
-        == "schedule_task error: delivery_target and delivery_chat_id cannot both be set."
-    )
+    assert result == "schedule_task error: delivery_target and delivery_chat_id cannot both be set."
 
 
 def test_schedule_task_rejects_invalid_delivery_chat_id(tmp_path: Path) -> None:
@@ -324,7 +321,9 @@ def test_schedule_task_rejects_worker_id_for_octo_control_mode(tmp_path: Path) -
         },
         {"octo": SimpleNamespace(scheduler=scheduler)},
     )
-    assert result == "schedule_task error: worker_id must be omitted when execution_mode=octo_control."
+    assert (
+        result == "schedule_task error: worker_id must be omitted when execution_mode=octo_control."
+    )
 
 
 def test_schedule_task_rejects_worker_id_for_octo_task_mode(tmp_path: Path) -> None:
@@ -382,7 +381,9 @@ def test_schedule_task_rejects_allowed_paths_for_octo_task_mode(tmp_path: Path) 
         {"octo": SimpleNamespace(scheduler=scheduler)},
     )
 
-    assert result == "schedule_task error: allowed_paths can only be used when execution_mode=worker."
+    assert (
+        result == "schedule_task error: allowed_paths can only be used when execution_mode=worker."
+    )
 
 
 def test_schedule_task_derives_octo_task_mode_without_worker_id(tmp_path: Path) -> None:
@@ -665,7 +666,9 @@ def test_route_blocked_octo_control_stays_not_ready_after_backoff_expires(
     assert described[0]["due_now"] is False
 
 
-def test_scheduler_sync_to_markdown_shows_suggested_execution_mode_for_blocked_tasks(tmp_path: Path) -> None:
+def test_scheduler_sync_to_markdown_shows_suggested_execution_mode_for_blocked_tasks(
+    tmp_path: Path,
+) -> None:
     blocked_until = utc_now() + timedelta(minutes=30)
     store = _StoreStub(
         tasks=[
@@ -698,7 +701,9 @@ def test_scheduler_sync_to_markdown_shows_suggested_execution_mode_for_blocked_t
     assert "**Suggested execution mode**: octo_task" in heartbeat
 
 
-def test_scheduler_status_reports_suggested_execution_mode_for_blocked_tasks(tmp_path: Path) -> None:
+def test_scheduler_status_reports_suggested_execution_mode_for_blocked_tasks(
+    tmp_path: Path,
+) -> None:
     blocked_until = utc_now() + timedelta(minutes=30)
     store = _StoreStub(
         tasks=[
@@ -827,7 +832,9 @@ def test_repair_scheduled_tasks_applies_octo_task_migration(tmp_path: Path) -> N
     }
 
 
-def test_repair_scheduled_tasks_applies_worker_migration_with_valid_worker_id(tmp_path: Path) -> None:
+def test_repair_scheduled_tasks_applies_worker_migration_with_valid_worker_id(
+    tmp_path: Path,
+) -> None:
     blocked_until = utc_now() + timedelta(minutes=30)
     _write_worker_template(tmp_path)
     store = _StoreStub(
@@ -1242,7 +1249,9 @@ async def test_execute_self_queue_item_blocks_items_without_worker_id(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_execute_self_queue_item_dry_run_does_not_block_missing_worker_id(tmp_path, monkeypatch):
+async def test_execute_self_queue_item_dry_run_does_not_block_missing_worker_id(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(octo_core, "_workspace_dir", lambda: tmp_path)
     octo = Octo(
         provider=object(),
@@ -1466,7 +1475,9 @@ async def test_scan_opportunities_includes_blocked_scheduled_task_octo_task_cand
 
 
 @pytest.mark.asyncio
-async def test_scan_opportunities_skips_scheduled_candidate_when_queue_has_active_dedupe(tmp_path, monkeypatch):
+async def test_scan_opportunities_skips_scheduled_candidate_when_queue_has_active_dedupe(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(octo_core, "_workspace_dir", lambda: tmp_path)
     store = _StoreStub(
         tasks=[
@@ -1558,7 +1569,9 @@ async def test_scan_opportunities_includes_stale_claimed_self_queue_item(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_route_scheduled_octo_control_uses_control_plane_prompt_and_skips_planner(monkeypatch):
+async def test_route_scheduled_octo_control_uses_control_plane_prompt_and_skips_planner(
+    monkeypatch,
+):
     calls = {"control_prompt": 0, "complete_route": 0}
 
     class DummyOcto:
@@ -1632,7 +1645,9 @@ async def test_route_scheduled_octo_task_uses_full_conversation_route(monkeypatc
         assert chat_id == 123
         return SimpleNamespace(content="<workspace>full context</workspace>")
 
-    async def _route_or_reply(octo, provider, memory, user_text, chat_id, bootstrap_context, **kwargs):
+    async def _route_or_reply(
+        octo, provider, memory, user_text, chat_id, bootstrap_context, **kwargs
+    ):
         calls["route"] += 1
         assert "full autonomous workspace task" in user_text
         assert "memory/draft.md" in user_text
@@ -1645,7 +1660,9 @@ async def test_route_scheduled_octo_task_uses_full_conversation_route(monkeypatc
     async def _build_control_plane_prompt_should_not_run(**kwargs):
         raise AssertionError("control-plane prompt should not run for octo_task")
 
-    monkeypatch.setattr(octo_router, "build_bootstrap_context_prompt", _build_bootstrap_context_prompt)
+    monkeypatch.setattr(
+        octo_router, "build_bootstrap_context_prompt", _build_bootstrap_context_prompt
+    )
     monkeypatch.setattr(octo_router, "route_or_reply", _route_or_reply)
     monkeypatch.setattr(
         octo_router,
@@ -1925,7 +1942,9 @@ async def test_octo_dispatch_due_scheduled_tasks_starts_dispatchable_workers(mon
 
 
 @pytest.mark.asyncio
-async def test_octo_dispatch_due_scheduled_tasks_passes_stored_allowed_paths(monkeypatch, tmp_path: Path):
+async def test_octo_dispatch_due_scheduled_tasks_passes_stored_allowed_paths(
+    monkeypatch, tmp_path: Path
+):
     started_calls = []
     scheduler = SchedulerService(
         store=_StoreStub(
@@ -2400,7 +2419,9 @@ async def test_octo_dispatch_due_scheduled_tasks_runs_full_octo_tasks(monkeypatc
     route_calls: list[dict] = []
 
     async def _start_worker_async(self, **kwargs):
-        raise AssertionError("_start_worker_async should not be called directly for octo_task tasks")
+        raise AssertionError(
+            "_start_worker_async should not be called directly for octo_task tasks"
+        )
 
     async def _route_scheduled_octo_task(octo, task, *, chat_id=0):
         route_calls.append({"task": task, "chat_id": chat_id})
@@ -2438,7 +2459,9 @@ async def test_octo_dispatch_due_scheduled_tasks_runs_full_octo_tasks(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_octo_dispatch_due_scheduled_tasks_does_not_infer_octo_control_block_from_text(monkeypatch):
+async def test_octo_dispatch_due_scheduled_tasks_does_not_infer_octo_control_block_from_text(
+    monkeypatch,
+):
     scheduler = SchedulerService(
         store=_StoreStub(
             tasks=[
@@ -2661,7 +2684,9 @@ async def test_octo_dispatch_due_scheduled_tasks_skips_persisted_octo_control_ba
 
 
 @pytest.mark.asyncio
-async def test_octo_dispatch_due_scheduled_tasks_sends_user_visible_octo_control_update(monkeypatch):
+async def test_octo_dispatch_due_scheduled_tasks_sends_user_visible_octo_control_update(
+    monkeypatch,
+):
     sent_messages = []
     scheduler = SchedulerService(
         store=_StoreStub(

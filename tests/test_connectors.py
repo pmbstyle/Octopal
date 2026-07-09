@@ -6,9 +6,9 @@ import types
 
 import pytest
 
-from octopal.infrastructure.connectors import github as github_connector_module
 from octopal.cli.configure import _collect_connector_next_steps
 from octopal.infrastructure.config.models import ConnectorInstanceConfig, OctopalConfig
+from octopal.infrastructure.connectors import github as github_connector_module
 from octopal.infrastructure.connectors.google import _oauthlib_insecure_transport_for_localhost
 from octopal.infrastructure.connectors.manager import ConnectorManager
 
@@ -255,14 +255,18 @@ def test_github_connector_authorize_rejects_classic_token_without_write_scopes(m
                 headers={"X-OAuth-Scopes": "read:org"},
             )
 
-    monkeypatch.setattr(github_connector_module.httpx, "AsyncClient", lambda *args, **kwargs: _FakeClient())
+    monkeypatch.setattr(
+        github_connector_module.httpx, "AsyncClient", lambda *args, **kwargs: _FakeClient()
+    )
 
     result = asyncio.run(connector.authorize())
 
     assert "public_repo" in result["error"]
 
 
-def test_github_connector_authorize_accepts_fine_grained_token_without_scope_headers(monkeypatch) -> None:
+def test_github_connector_authorize_accepts_fine_grained_token_without_scope_headers(
+    monkeypatch,
+) -> None:
     config = OctopalConfig()
     config.connectors.instances["github"] = ConnectorInstanceConfig(
         enabled=True,
@@ -282,7 +286,9 @@ def test_github_connector_authorize_accepts_fine_grained_token_without_scope_hea
         async def get(self, path, headers):
             return github_connector_module.httpx.Response(200, json={"login": "pmbstyle"})
 
-    monkeypatch.setattr(github_connector_module.httpx, "AsyncClient", lambda *args, **kwargs: _FakeClient())
+    monkeypatch.setattr(
+        github_connector_module.httpx, "AsyncClient", lambda *args, **kwargs: _FakeClient()
+    )
 
     result = asyncio.run(connector.authorize())
 

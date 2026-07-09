@@ -65,7 +65,9 @@ class _PageStub:
     async def title(self) -> str:
         return "Example title"
 
-    async def goto(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 30000) -> None:
+    async def goto(
+        self, url: str, wait_until: str = "domcontentloaded", timeout: int = 30000
+    ) -> None:
         assert wait_until == "domcontentloaded"
         assert timeout == 30000
         self.url = url
@@ -74,7 +76,9 @@ class _PageStub:
 class _ManagerStub:
     def __init__(self, page: _PageStub) -> None:
         self._page = page
-        self._pages = [{"target_id": "t1", "url": page.url, "title": "Example title", "is_current": True}]
+        self._pages = [
+            {"target_id": "t1", "url": page.url, "title": "Example title", "is_current": True}
+        ]
 
     async def get_page(self, chat_id: int, target_id: str | None = None):
         assert chat_id == 7
@@ -90,7 +94,9 @@ class _ManagerStub:
         assert target_id == "t1"
         return self._page
 
-    async def screenshot_page(self, chat_id: int, target_id: str | None = None, full_page: bool = True):
+    async def screenshot_page(
+        self, chat_id: int, target_id: str | None = None, full_page: bool = True
+    ):
         assert chat_id == 7
         assert target_id in {None, "t1"}
         return {"target_id": target_id or "t1", "path": "C:/tmp/browser.png"}
@@ -137,7 +143,13 @@ def test_browser_extract_can_use_snapshot_ref(monkeypatch) -> None:
 
     async def scenario() -> None:
         result = await browser_actions.browser_extract({"ref": "e1"}, {"chat_id": 7})
-        assert result == {"ok": True, "source": "ref", "ref": "e1", "target_id": "t1", "text": "Save"}
+        assert result == {
+            "ok": True,
+            "source": "ref",
+            "ref": "e1",
+            "target_id": "t1",
+            "text": "Save",
+        }
 
     asyncio.run(scenario())
 
@@ -230,7 +242,9 @@ def test_browser_open_returns_structured_result(monkeypatch) -> None:
     monkeypatch.setattr(browser_actions, "get_browser_manager", lambda: _ManagerStub(page))
 
     async def scenario() -> None:
-        result = await browser_actions.browser_open({"url": "https://example.com/docs"}, {"chat_id": 7})
+        result = await browser_actions.browser_open(
+            {"url": "https://example.com/docs"}, {"chat_id": 7}
+        )
         assert result["ok"] is True
         assert result["target_id"] == "t1"
         assert result["url"] == "https://example.com/docs"
@@ -248,7 +262,9 @@ def test_browser_open_returns_structured_error_when_browser_unavailable(monkeypa
     monkeypatch.setattr(browser_actions, "get_browser_manager", lambda: _FailingManager())
 
     async def scenario() -> None:
-        result = await browser_actions.browser_open({"url": "https://example.com/docs"}, {"chat_id": 7})
+        result = await browser_actions.browser_open(
+            {"url": "https://example.com/docs"}, {"chat_id": 7}
+        )
         assert result["ok"] is False
         assert result["url"] == "https://example.com/docs"
         assert "Playwright browser is not installed" in result["error"]
@@ -261,7 +277,10 @@ def test_browser_snapshot_returns_structured_result(monkeypatch) -> None:
     monkeypatch.setattr(browser_actions, "get_browser_manager", lambda: _ManagerStub(page))
 
     async def _fake_capture(_page):
-        return {"snapshot": '- button "Save" [ref=e1]', "refs": {"e1": {"role": "button", "name": "Save", "nth": 0}}}
+        return {
+            "snapshot": '- button "Save" [ref=e1]',
+            "refs": {"e1": {"role": "button", "name": "Save", "nth": 0}},
+        }
 
     monkeypatch.setattr(browser_actions, "capture_aria_snapshot", _fake_capture)
 
@@ -270,6 +289,6 @@ def test_browser_snapshot_returns_structured_result(monkeypatch) -> None:
         assert result["ok"] is True
         assert result["target_id"] == "t1"
         assert result["refs_count"] == 1
-        assert '[ref=e1]' in result["snapshot"]
+        assert "[ref=e1]" in result["snapshot"]
 
     asyncio.run(scenario())

@@ -1,1 +1,1 @@
-from octopal._version import __version__
+from octopal._version import __version__ as __version__

@@ -67,7 +67,9 @@ def service_health(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             cmd = f"ps -eo comm | grep -E '^{re.escape(name)}$' || true"
         rc, out, err = _run_shell(cmd, timeout_seconds=10)
         ok = bool(out and name.lower() in out.lower())
-        return _json({"mode": "process", "name": name, "ok": ok, "returncode": rc, "stderr": err[:500]})
+        return _json(
+            {"mode": "process", "name": name, "ok": ok, "returncode": rc, "stderr": err[:500]}
+        )
 
     if mode == "docker":
         container = str(args.get("container", "")).strip()
@@ -77,7 +79,15 @@ def service_health(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         rc, out, err = _run_shell(cmd, timeout_seconds=10)
         names = [line.strip() for line in out.splitlines() if line.strip()]
         ok = any(container in n for n in names)
-        return _json({"mode": "docker", "container": container, "ok": ok, "returncode": rc, "stderr": err[:500]})
+        return _json(
+            {
+                "mode": "docker",
+                "container": container,
+                "ok": ok,
+                "returncode": rc,
+                "stderr": err[:500],
+            }
+        )
 
     return f"service_health error: unsupported mode '{mode}'."
 
@@ -99,7 +109,9 @@ def service_logs(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         rc, out, err = _run_shell(cmd, timeout_seconds=20)
         text = out if out else err
         text = _grep_filter(text, grep)
-        return _json({"mode": "docker", "container": container, "returncode": rc, "logs": text[-12000:]})
+        return _json(
+            {"mode": "docker", "container": container, "returncode": rc, "logs": text[-12000:]}
+        )
 
     if mode == "file":
         base_dir = _base_dir(ctx)
@@ -112,7 +124,9 @@ def service_logs(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         content = target.read_text(encoding="utf-8", errors="replace")
         tail = "\n".join(content.splitlines()[-lines:])
         tail = _grep_filter(tail, grep)
-        return _json({"mode": "file", "path": str(target.relative_to(base_dir)), "logs": tail[-12000:]})
+        return _json(
+            {"mode": "file", "path": str(target.relative_to(base_dir)), "logs": tail[-12000:]}
+        )
 
     return f"service_logs error: unsupported mode '{mode}'."
 
@@ -133,7 +147,9 @@ def docker_compose_control(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     if services and not all(s in allowed_services for s in services):
         return f"docker_compose_control error: service not allowed. Allowed: {sorted(allowed_services)}"
 
-    compose_file = str(args.get("compose_file", "docker-compose.yml")).strip() or "docker-compose.yml"
+    compose_file = (
+        str(args.get("compose_file", "docker-compose.yml")).strip() or "docker-compose.yml"
+    )
     base_dir = _base_dir(ctx)
     compose_path = (base_dir / compose_file).resolve()
     if not compose_path.exists():
@@ -161,8 +177,18 @@ def docker_compose_control(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         services = []
     cmd.extend(services)
 
-    rc, out, err = _run_command(cmd, cwd=base_dir, timeout_seconds=int(args.get("timeout_seconds", 90) or 90))
-    return _json({"action": action, "services": services, "returncode": rc, "stdout": out[-12000:], "stderr": err[-4000:]})
+    rc, out, err = _run_command(
+        cmd, cwd=base_dir, timeout_seconds=int(args.get("timeout_seconds", 90) or 90)
+    )
+    return _json(
+        {
+            "action": action,
+            "services": services,
+            "returncode": rc,
+            "stdout": out[-12000:],
+            "stderr": err[-4000:],
+        }
+    )
 
 
 def git_ops(args: dict[str, Any], ctx: dict[str, Any]) -> str:
@@ -195,8 +221,18 @@ def git_ops(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         ref = str(args.get("ref", "HEAD")).strip() or "HEAD"
         cmd.extend(["show", "--stat", "--oneline", ref])
 
-    rc, out, err = _run_command(cmd, cwd=repo, timeout_seconds=int(args.get("timeout_seconds", 60) or 60))
-    return _json({"action": action, "repo": str(repo.relative_to(base_dir)), "returncode": rc, "stdout": out[-12000:], "stderr": err[-4000:]})
+    rc, out, err = _run_command(
+        cmd, cwd=repo, timeout_seconds=int(args.get("timeout_seconds", 60) or 60)
+    )
+    return _json(
+        {
+            "action": action,
+            "repo": str(repo.relative_to(base_dir)),
+            "returncode": rc,
+            "stdout": out[-12000:],
+            "stderr": err[-4000:],
+        }
+    )
 
 
 def process_inspect(args: dict[str, Any], ctx: dict[str, Any]) -> str:
@@ -207,11 +243,15 @@ def process_inspect(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         else:
             cmd = "ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head -n 40"
         rc, out, err = _run_shell(cmd, timeout_seconds=15)
-        return _json({"action": action, "returncode": rc, "stdout": out[-12000:], "stderr": err[-4000:]})
+        return _json(
+            {"action": action, "returncode": rc, "stdout": out[-12000:], "stderr": err[-4000:]}
+        )
     if action == "ports":
         cmd = "netstat -ano" if os.name == "nt" else "ss -ltnp || netstat -ltnp"
         rc, out, err = _run_shell(cmd, timeout_seconds=20)
-        return _json({"action": action, "returncode": rc, "stdout": out[-12000:], "stderr": err[-4000:]})
+        return _json(
+            {"action": action, "returncode": rc, "stdout": out[-12000:], "stderr": err[-4000:]}
+        )
     return "process_inspect error: action must be one of ['list','ports']."
 
 
@@ -348,7 +388,9 @@ def config_audit(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             "TELEGRAM_BOT_TOKEN": bool(settings.telegram_bot_token),
             "OCTOPAL_LLM_PROVIDER": bool(settings.llm_provider),
             "ALLOWED_TELEGRAM_CHAT_IDS": bool(settings.allowed_telegram_chat_ids),
-            "OCTOPAL_LITELLM_PROVIDER_ID": bool(settings.litellm_provider_id or resolved_profile.provider_id),
+            "OCTOPAL_LITELLM_PROVIDER_ID": bool(
+                settings.litellm_provider_id or resolved_profile.provider_id
+            ),
             "OCTOPAL_LITELLM_API_KEY": bool(resolved_profile.api_key),
             "OCTOPAL_LITELLM_MODEL": bool(resolved_profile.raw_model),
             "OPENROUTER_API_KEY": bool(settings.openrouter_api_key),
@@ -439,7 +481,9 @@ def release_snapshot(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     if action != "create":
         return "release_snapshot error: action must be create or list."
     base_dir = _base_dir(ctx)
-    rc, commit, _ = _run_command(["git", "-C", str(base_dir), "rev-parse", "HEAD"], cwd=base_dir, timeout_seconds=15)
+    rc, commit, _ = _run_command(
+        ["git", "-C", str(base_dir), "rev-parse", "HEAD"], cwd=base_dir, timeout_seconds=15
+    )
     snapshot = {
         "id": datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
         "created_at": datetime.now(UTC).isoformat(),
@@ -467,8 +511,18 @@ def rollback_release(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     if not commit:
         return "rollback_release error: snapshot has no commit."
     base_dir = _base_dir(ctx)
-    rc, out, err = _run_command(["git", "-C", str(base_dir), "checkout", commit], cwd=base_dir, timeout_seconds=30)
-    return _json({"status": "ok" if rc == 0 else "error", "snapshot": snap, "returncode": rc, "stdout": out[-4000:], "stderr": err[-4000:]})
+    rc, out, err = _run_command(
+        ["git", "-C", str(base_dir), "checkout", commit], cwd=base_dir, timeout_seconds=30
+    )
+    return _json(
+        {
+            "status": "ok" if rc == 0 else "error",
+            "snapshot": snap,
+            "returncode": rc,
+            "stdout": out[-4000:],
+            "stderr": err[-4000:],
+        }
+    )
 
 
 def self_control(args: dict[str, Any], ctx: dict[str, Any]) -> str:
@@ -524,7 +578,9 @@ def _resolve_db_path(args: dict[str, Any], ctx: dict[str, Any]) -> Path | str:
     return db
 
 
-def _run_shell(command: str, cwd: Path | None = None, timeout_seconds: int = 30) -> tuple[int, str, str]:
+def _run_shell(
+    command: str, cwd: Path | None = None, timeout_seconds: int = 30
+) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
             command,
@@ -539,7 +595,9 @@ def _run_shell(command: str, cwd: Path | None = None, timeout_seconds: int = 30)
         return 1, "", str(exc)
 
 
-def _run_command(command: list[str], cwd: Path | None = None, timeout_seconds: int = 30) -> tuple[int, str, str]:
+def _run_command(
+    command: list[str], cwd: Path | None = None, timeout_seconds: int = 30
+) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
             command,
@@ -578,7 +636,12 @@ def _is_allowed_test_command(argv: list[str]) -> bool:
         return False
     if argv[0] in {"pytest", "ruff", "mypy"}:
         return True
-    return len(argv) >= 3 and argv[0] == "python" and argv[1] == "-m" and argv[2] in {"pytest", "ruff", "mypy"}
+    return (
+        len(argv) >= 3
+        and argv[0] == "python"
+        and argv[1] == "-m"
+        and argv[2] in {"pytest", "ruff", "mypy"}
+    )
 
 
 def _contains_shell_control_tokens(argv: list[str]) -> bool:

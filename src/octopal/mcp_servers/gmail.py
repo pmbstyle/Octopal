@@ -198,7 +198,9 @@ def _extract_body(payload: dict[str, Any] | None) -> dict[str, str | None]:
         body = part.get("body") or {}
         data = body.get("data")
         if data:
-            decoded = base64.urlsafe_b64decode(str(data).encode("utf-8")).decode("utf-8", errors="replace")
+            decoded = base64.urlsafe_b64decode(str(data).encode("utf-8")).decode(
+                "utf-8", errors="replace"
+            )
             if mime_type == "text/plain":
                 text_parts.append(decoded)
             elif mime_type == "text/html":
@@ -283,7 +285,9 @@ def _parse_google_api_error(response: httpx.Response) -> GmailApiError:
 
     error = payload.get("error")
     if isinstance(error, dict):
-        message = str(error.get("message") or response.reason_phrase or "Unknown Gmail API error").strip()
+        message = str(
+            error.get("message") or response.reason_phrase or "Unknown Gmail API error"
+        ).strip()
         errors = error.get("errors")
         reason = None
         if isinstance(errors, list) and errors:
@@ -380,7 +384,9 @@ class GmailApiClient:
             return {}
         return response.json()
 
-    async def _get_message_payload(self, message_id: str, *, format: str = "full") -> dict[str, Any]:
+    async def _get_message_payload(
+        self, message_id: str, *, format: str = "full"
+    ) -> dict[str, Any]:
         return await self._request(
             "GET",
             f"/users/me/messages/{message_id}",
@@ -403,7 +409,10 @@ class GmailApiClient:
         for label in labels:
             label_id = str(label.get("id", "")).strip()
             label_name = str(label.get("name", "")).strip()
-            if _normalize_label_key(label_id) == target_key or _normalize_label_key(label_name) == target_key:
+            if (
+                _normalize_label_key(label_id) == target_key
+                or _normalize_label_key(label_name) == target_key
+            ):
                 return label_id or label_name
         raise ValueError(f"Gmail label not found: {target}")
 
@@ -463,8 +472,12 @@ class GmailApiClient:
         *,
         format: str = "metadata",
     ) -> dict[str, Any]:
-        limited_ids = [str(message_id).strip() for message_id in message_ids if str(message_id).strip()][:25]
-        messages = await asyncio.gather(*(self.get_message(message_id, format=format) for message_id in limited_ids))
+        limited_ids = [
+            str(message_id).strip() for message_id in message_ids if str(message_id).strip()
+        ][:25]
+        messages = await asyncio.gather(
+            *(self.get_message(message_id, format=format) for message_id in limited_ids)
+        )
         return {"messages": messages, "count": len(messages)}
 
     async def get_thread(self, thread_id: str, *, format: str = "full") -> dict[str, Any]:
@@ -476,7 +489,9 @@ class GmailApiClient:
         return {
             "id": payload.get("id"),
             "history_id": payload.get("historyId"),
-            "messages": [_normalize_message(message) for message in (payload.get("messages") or [])],
+            "messages": [
+                _normalize_message(message) for message in (payload.get("messages") or [])
+            ],
         }
 
     async def get_unread_count(self, *, label_id: str | None = "INBOX") -> dict[str, Any]:
@@ -537,7 +552,9 @@ class GmailApiClient:
         remove_label_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         add_ids = [str(label).strip() for label in (add_label_ids or []) if str(label).strip()]
-        remove_ids = [str(label).strip() for label in (remove_label_ids or []) if str(label).strip()]
+        remove_ids = [
+            str(label).strip() for label in (remove_label_ids or []) if str(label).strip()
+        ]
         if not add_ids and not remove_ids:
             raise ValueError("At least one label change is required.")
         payload = await self._request(
@@ -559,7 +576,9 @@ class GmailApiClient:
 
     async def remove_label_by_name(self, *, message_id: str, label_name: str) -> dict[str, Any]:
         label_id = await self._resolve_label_id(label_name)
-        payload = await self.modify_message_labels(message_id=message_id, remove_label_ids=[label_id])
+        payload = await self.modify_message_labels(
+            message_id=message_id, remove_label_ids=[label_id]
+        )
         payload["resolved_label_id"] = label_id
         payload["resolved_label_name"] = label_name
         return payload
@@ -659,7 +678,9 @@ class GmailApiClient:
         headers = (original.get("payload") or {}).get("headers") or []
         original_message_id = _get_header_value(headers, "Message-ID")
         if not original_message_id:
-            raise RuntimeError("Original Gmail message is missing a Message-ID header required for replies.")
+            raise RuntimeError(
+                "Original Gmail message is missing a Message-ID header required for replies."
+            )
 
         profile = await self.get_profile()
         self_email = str(profile.get("emailAddress", "") or "").strip().lower()
@@ -699,7 +720,9 @@ class GmailApiClient:
             cc_recipients = [addr for addr in cc_recipients if self_email not in addr.lower()]
             bcc_recipients = [addr for addr in bcc_recipients if self_email not in addr.lower()]
         if not to_recipients:
-            raise RuntimeError("Could not determine reply recipients from the original Gmail message.")
+            raise RuntimeError(
+                "Could not determine reply recipients from the original Gmail message."
+            )
 
         references = _split_reference_chain(_get_header_value(headers, "References"))
         references.append(original_message_id)

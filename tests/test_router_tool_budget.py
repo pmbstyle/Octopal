@@ -1401,7 +1401,7 @@ def test_normalize_worker_followup_reply_uses_structured_user_response() -> None
 
 
 def test_normalize_worker_followup_reply_recovers_jsonish_user_response() -> None:
-    raw = '''```json
+    raw = """```json
 {
   "user_response": "Moltbook чек:
 
@@ -1411,7 +1411,7 @@ n• comment one",
   "actions_taken": [],
   "reason": "scheduled follow-up"
 }
-```'''
+```"""
     normalized = _normalize_worker_followup_reply(raw)
 
     assert normalized.startswith("Moltbook чек:")
@@ -1421,7 +1421,7 @@ n• comment one",
 
 
 def test_normalize_worker_followup_reply_recovers_jsonish_response_with_quotes() -> None:
-    raw = '''```json
+    raw = """```json
 {
   "user_response": "He said "hello" today.
 Then shipped it.",
@@ -1429,18 +1429,18 @@ Then shipped it.",
   "actions_taken": [],
   "reason": "scheduled follow-up"
 }
-```'''
+```"""
     assert _normalize_worker_followup_reply(raw) == 'He said "hello" today.\nThen shipped it.'
 
 
 def test_normalize_worker_followup_reply_recovers_uppercase_jsonish_user_response() -> None:
-    raw = '''```json
+    raw = """```json
 {
   "USER_RESPONSE": "Uppercase keys still carry the visible update.",
   "NO_USER_RESPONSE": false,
   "ACTIONS_TAKEN": []
 }
-```'''
+```"""
     assert _normalize_worker_followup_reply(raw) == "Uppercase keys still carry the visible update."
 
 
