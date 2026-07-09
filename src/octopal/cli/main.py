@@ -28,7 +28,12 @@ from rich.table import Table
 
 from octopal.channels import normalize_user_channel, user_channel_label
 from octopal.cli.branding import print_banner
-from octopal.infrastructure.config.settings import Settings, load_settings, save_config
+from octopal.infrastructure.config.settings import (
+    Settings,
+    config_write_path,
+    load_settings,
+    save_config,
+)
 from octopal.infrastructure.logging import configure_logging
 from octopal.infrastructure.store.sqlite import SQLiteStore
 from octopal.runtime.metrics import read_metrics_snapshot
@@ -797,21 +802,23 @@ def start(
 
     _maybe_warn_about_newer_release(settings)
 
+    launcher_status = ensure_worker_launcher_status(settings)
+    if launcher_status.configured_launcher == "docker" and (
+        not launcher_status.available or launcher_status.effective_launcher != "docker"
+    ):
+        console.print("[bold red]Docker worker isolation is unavailable.[/bold red]")
+        console.print(f"   [dim]Reason:[/dim] {launcher_status.reason}")
+        console.print(
+            "   Restore Docker, or explicitly select [magenta]same_env[/magenta] "
+            "for trusted local development."
+        )
+        raise typer.Exit(code=1)
+
     if foreground:
         _init_logging(settings)
         _schedule_webapp_build(settings)
         _maybe_enable_tailscale_serve(settings)
         write_start_status(settings)
-        launcher_status = ensure_worker_launcher_status(settings)
-        if (
-            launcher_status.configured_launcher == "docker"
-            and launcher_status.effective_launcher != "docker"
-        ):
-            console.print(
-                "[bold yellow]Docker workers are configured, but this run will use same_env.[/bold yellow]"
-            )
-            console.print(f"   [dim]Reason:[/dim] {launcher_status.reason}")
-
         with console.status(
             "[bold green]Initializing Octopal Octo...[/bold green]", spinner="dots"
         ):
@@ -1516,16 +1523,16 @@ def config_migrate() -> None:
         console.print("[red]Error: Could not initialize configuration object.[/red]")
         return
 
-    config_path = Path.cwd() / "config.json"
+    config_path = config_write_path()
     if config_path.exists() and not Confirm.ask(
-        "[yellow]config.json already exists. Overwrite?[/yellow]"
+        f"[yellow]{config_path} already exists. Overwrite?[/yellow]"
     ):
         return
 
-    save_config(settings.config_obj)
+    config_path = save_config(settings.config_obj)
     console.print(f"[green]Successfully migrated settings to {config_path}[/green]")
     console.print(
-        "[dim]You can now use config.json for advanced settings like worker overrides.[/dim]"
+        "[dim]You can now use structured config for advanced settings like worker overrides.[/dim]"
     )
 
 

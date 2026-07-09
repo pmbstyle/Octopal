@@ -10,6 +10,43 @@ from typing import Protocol
 
 _WORKER_SHARED_WORKSPACE_DIRS = ("skills", ".skill-envs")
 _FILE_LIKE_SUFFIXES = {".json", ".jsonl", ".md", ".txt", ".csv", ".tsv", ".yaml", ".yml", ".py"}
+_SAME_ENV_ENV_ALLOWLIST = {
+    "ALL_PROXY",
+    "BRAVE_API_KEY",
+    "COMSPEC",
+    "CURL_CA_BUNDLE",
+    "FIRECRAWL_API_KEY",
+    "HOME",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LITELLM_CACHING",
+    "LITELLM_DROP_PARAMS",
+    "LITELLM_FALLBACKS",
+    "LITELLM_MAX_CONCURRENCY",
+    "LITELLM_NUM_RETRIES",
+    "LITELLM_RATE_LIMIT_BASE_DELAY_SECONDS",
+    "LITELLM_RATE_LIMIT_MAX_DELAY_SECONDS",
+    "LITELLM_RATE_LIMIT_MAX_RETRIES",
+    "LITELLM_TIMEOUT",
+    "NO_PROXY",
+    "OCTOPAL_WORKSPACE_DIR",
+    "PATH",
+    "PATHEXT",
+    "PYTHONPATH",
+    "Path",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USERPROFILE",
+    "WINDIR",
+}
 
 
 class WorkerLauncher(Protocol):
@@ -38,7 +75,7 @@ class SameEnvLauncher:
             self.entrypoint_module,
             spec_path,
             cwd=cwd,
-            env=env,
+            env=_filter_same_env_env(env),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -183,6 +220,14 @@ def _filter_container_env(
     if container_workspace:
         filtered["OCTOPAL_WORKSPACE_DIR"] = container_workspace
     return filtered
+
+
+def _filter_same_env_env(env: dict[str, str]) -> dict[str, str]:
+    return {
+        key: str(value)
+        for key, value in env.items()
+        if key in _SAME_ENV_ENV_ALLOWLIST and value not in (None, "")
+    }
 
 
 def _prepare_worker_mount_target(

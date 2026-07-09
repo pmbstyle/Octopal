@@ -35,6 +35,8 @@ This mode runs workers as subprocesses directly on the host machine. It is faste
 - **Python-Level Bounds:** Filesystem access is still protected by `allowed_paths` via the Python tool wrappers, preventing accidental file modifications.
 - **Warning:** In this mode, workers run under the same OS user and inherit the host's capabilities. Malicious code executed by a worker (e.g., via the `exec_run` tool) could theoretically bypass Python-level path restrictions or access host environment variables. Use this mode only when you fully trust the tasks and tools available to the worker.
 
+Docker mode fails closed: if Docker or the configured worker image is unavailable, Octopal does not silently downgrade to `same_env`. Local development must opt into `same_env` explicitly. Worker subprocesses receive only a small allowlist of process essentials and tool-specific variables rather than the complete host environment.
+
 ## Worker Temporary Directories
 
 Regardless of the launcher used, every worker is assigned a unique, ephemeral directory (`workspace/workers/<worker_id>`). 

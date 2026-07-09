@@ -799,6 +799,25 @@ def test_runtime_launch_env_keeps_provider_secrets_out_of_worker_env(
     assert "OPENROUTER_API_KEY" not in env
 
 
+def test_runtime_launch_env_does_not_inherit_unrelated_host_secrets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OCTOPAL_AUDIT_SECRET", "must-not-reach-worker")
+    settings = Settings()
+    runtime = WorkerRuntime(
+        store=object(),
+        policy=object(),
+        workspace_dir=tmp_path / "workspace",
+        launcher=object(),
+        settings=settings,
+    )
+
+    env = runtime._build_worker_env(SimpleNamespace(available_tools=[]))
+
+    assert "OCTOPAL_AUDIT_SECRET" not in env
+    assert env["OCTOPAL_WORKSPACE_DIR"] == str((tmp_path / "workspace").resolve())
+
+
 def test_runtime_ignores_task_level_model_override(tmp_path: Path) -> None:
     template = WorkerTemplateRecord(
         id="worker",

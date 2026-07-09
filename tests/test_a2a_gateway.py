@@ -15,7 +15,7 @@ from octopal.infrastructure.config.models import A2AConfig, A2APeerConfig
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.logging import correlation_id_var
 from octopal.interop.a2a.client import A2AClientError, _message_send_endpoint
-from octopal.interop.a2a.routes import register_a2a_routes
+from octopal.interop.a2a.routes import _a2a_message_lock, register_a2a_routes
 from octopal.runtime.tool_payloads import render_tool_result_for_llm
 from octopal.tools.communication import a2a as a2a_tools
 from octopal.tools.communication.a2a import a2a_list_peers
@@ -42,6 +42,12 @@ class _DummyOcto:
         self.suppressed_channel_followups.append(
             {"correlation_id": correlation_id, "reason": reason}
         )
+
+
+class _FailingOcto(_DummyOcto):
+    async def handle_message(self, text: str, chat_id: int, **kwargs):
+        await super().handle_message(text, chat_id, **kwargs)
+        raise RuntimeError("temporary runtime failure")
 
 
 def _app(config: A2AConfig, octo: object | None = None, state_dir: Path | None = None) -> FastAPI:
@@ -308,6 +314,68 @@ def test_message_send_deduplicates_same_peer_message_id() -> None:
     assert first.json() == second.json()
     assert len(octo.calls) == 1
     assert len(octo.suppressed_channel_followups) == 1
+
+
+def test_message_send_cleans_dedupe_locks_after_failed_unique_requests() -> None:
+    app = _app(
+        A2AConfig(
+            enabled=True,
+            max_requests_per_minute=100,
+            peers={"bob": A2APeerConfig(name="Bob", token="secret")},
+        ),
+        octo=_FailingOcto(),
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = {"Authorization": "Bearer secret"}
+
+    for index in range(20):
+        response = client.post(
+            "/a2a/v1/message:send",
+            headers=headers,
+            json={
+                "message": {
+                    "role": "ROLE_USER",
+                    "messageId": f"failed-message-{index}",
+                    "parts": [{"text": "retry later"}],
+                }
+            },
+        )
+        assert response.status_code == 500
+
+    assert app.state.a2a_message_locks == {}
+
+
+def test_a2a_dedupe_lock_is_shared_by_waiters_and_removed_after_use() -> None:
+    app = FastAPI()
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    second_entered = asyncio.Event()
+
+    async def first() -> None:
+        async with _a2a_message_lock(app, ("bob", "same-message")):
+            first_entered.set()
+            await release_first.wait()
+
+    async def second() -> None:
+        await first_entered.wait()
+        async with _a2a_message_lock(app, ("bob", "same-message")):
+            second_entered.set()
+
+    async def scenario() -> None:
+        first_task = asyncio.create_task(first())
+        second_task = asyncio.create_task(second())
+        await first_entered.wait()
+        await asyncio.sleep(0)
+
+        entry = app.state.a2a_message_locks[("bob", "same-message")]
+        assert entry.users == 2
+        assert not second_entered.is_set()
+
+        release_first.set()
+        await asyncio.gather(first_task, second_task)
+        assert app.state.a2a_message_locks == {}
+
+    asyncio.run(scenario())
 
 
 def test_message_send_routes_data_and_file_url_parts_to_octo_prompt() -> None:
