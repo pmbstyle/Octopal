@@ -6,6 +6,9 @@ import binascii
 import copy
 import re
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -29,6 +32,12 @@ from octopal.interop.a2a.security import (
     require_a2a_enabled,
     require_peer_capability,
 )
+
+
+@dataclass(slots=True)
+class _A2AMessageLockEntry:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
 
 
 def register_a2a_routes(app: FastAPI) -> None:
@@ -79,8 +88,7 @@ def register_a2a_routes(app: FastAPI) -> None:
 
         dedupe_key = _message_dedupe_key(peer.peer_id, request_payload.message)
         if dedupe_key is not None:
-            lock = _a2a_message_lock(app, dedupe_key)
-            async with lock:
+            async with _a2a_message_lock(app, dedupe_key):
                 cached = _cached_a2a_message_response(app, dedupe_key)
                 if cached is not None:
                     return cached
@@ -189,17 +197,28 @@ def _message_dedupe_key(peer_id: str, message: A2AMessage) -> tuple[str, str] | 
     return str(peer_id or "").strip(), message_id
 
 
-def _a2a_message_lock(app: FastAPI, key: tuple[str, str]) -> asyncio.Lock:
+@asynccontextmanager
+async def _a2a_message_lock(
+    app: FastAPI, key: tuple[str, str]
+) -> AsyncIterator[None]:
     _prune_a2a_message_dedupe(app)
     locks = getattr(app.state, "a2a_message_locks", None)
     if not isinstance(locks, dict):
         locks = {}
         app.state.a2a_message_locks = locks
-    lock = locks.get(key)
-    if not isinstance(lock, asyncio.Lock):
-        lock = asyncio.Lock()
-        locks[key] = lock
-    return lock
+    entry = locks.get(key)
+    if not isinstance(entry, _A2AMessageLockEntry):
+        entry = _A2AMessageLockEntry()
+        locks[key] = entry
+    entry.users += 1
+    try:
+        async with entry.lock:
+            yield
+    finally:
+        entry.users -= 1
+        current_locks = getattr(app.state, "a2a_message_locks", None)
+        if isinstance(current_locks, dict) and current_locks.get(key) is entry and entry.users <= 0:
+            current_locks.pop(key, None)
 
 
 def _cached_a2a_message_response(app: FastAPI, key: tuple[str, str]) -> dict[str, Any] | None:
@@ -228,21 +247,20 @@ def _cache_a2a_message_response(
 
 def _prune_a2a_message_dedupe(app: FastAPI, *, ttl_seconds: float = 600.0) -> None:
     cache = getattr(app.state, "a2a_message_response_cache", None)
-    if not isinstance(cache, dict):
-        return
-    cutoff = time.monotonic() - ttl_seconds
-    stale = [
-        key
-        for key, entry in list(cache.items())
-        if not isinstance(entry, tuple) or len(entry) != 2 or float(entry[0]) < cutoff
-    ]
-    for key in stale:
-        cache.pop(key, None)
+    stale: list[tuple[str, str]] = []
+    if isinstance(cache, dict):
+        cutoff = time.monotonic() - ttl_seconds
+        stale = [
+            key
+            for key, entry in list(cache.items())
+            if not isinstance(entry, tuple) or len(entry) != 2 or float(entry[0]) < cutoff
+        ]
+        for key in stale:
+            cache.pop(key, None)
     locks = getattr(app.state, "a2a_message_locks", None)
     if isinstance(locks, dict):
-        for key in stale:
-            lock = locks.get(key)
-            if not isinstance(lock, asyncio.Lock) or not lock.locked():
+        for key, entry in list(locks.items()):
+            if not isinstance(entry, _A2AMessageLockEntry) or entry.users <= 0:
                 locks.pop(key, None)
 
 
