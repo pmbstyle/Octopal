@@ -503,7 +503,7 @@ async def build_octo_prompt(
 
     normalized_paths = [str(path).strip() for path in (saved_file_paths or []) if str(path).strip()]
     if normalized_paths:
-        attachment_metadata = {
+        attachment_metadata: dict[str, Any] = {
             "attachment_kind": "image" if images else "file",
             "saved_paths": normalized_paths,
         }
@@ -531,7 +531,7 @@ async def build_octo_prompt(
             text_segments.append("User uploaded an image.")
 
         text_content = "\n\n".join(segment for segment in text_segments if segment)
-        content_blocks = [{"type": "text", "text": text_content}]
+        content_blocks: list[dict[str, Any]] = [{"type": "text", "text": text_content}]
         for img in images:
             content_blocks.append(
                 {"type": "image_url", "image_url": {"url": img, "detail": "auto"}}
