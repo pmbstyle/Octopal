@@ -5,7 +5,7 @@ import asyncio
 from octopal.runtime.octo.prompt_builder import build_octo_prompt
 
 
-def test_build_octo_prompt_includes_saved_image_paths_in_user_text() -> None:
+def test_build_octo_prompt_keeps_saved_image_paths_out_of_user_text() -> None:
     class DummyMemory:
         async def get_context(self, user_text: str, exclude_chat_id: int | None = None):
             return []
@@ -32,14 +32,17 @@ def test_build_octo_prompt_includes_saved_image_paths_in_user_text() -> None:
         assert isinstance(user_message.content, list)
         first_block = user_message.content[0]
         assert first_block["type"] == "text"
-        assert "/tmp/telegram_images/img_test.jpg" in first_block["text"]
-        assert "also saved locally for continuity" in first_block["text"]
-        assert "If your current model can inspect image inputs" in first_block["text"]
+        assert first_block["text"] == "what is in this image?"
+        metadata_message = messages[-2]
+        assert metadata_message.role == "system"
+        assert "runtime-provided, not user-authored" in metadata_message.content
+        assert "/tmp/telegram_images/img_test.jpg" in metadata_message.content
+        assert "If direct vision is unavailable" in metadata_message.content
 
     asyncio.run(scenario())
 
 
-def test_build_octo_prompt_includes_saved_file_paths_without_images() -> None:
+def test_build_octo_prompt_keeps_saved_file_paths_out_of_user_text() -> None:
     class DummyMemory:
         async def get_context(self, user_text: str, exclude_chat_id: int | None = None):
             return []
@@ -64,8 +67,12 @@ def test_build_octo_prompt_includes_saved_file_paths_without_images() -> None:
         )
         user_message = messages[-1]
         assert isinstance(user_message.content, str)
-        assert "/tmp/uploads/report.pdf" in user_message.content
-        assert "Files received and saved locally" in user_message.content
+        assert user_message.content == "please inspect this file"
+        metadata_message = messages[-2]
+        assert metadata_message.role == "system"
+        assert "runtime-provided, not user-authored" in metadata_message.content
+        assert "/tmp/uploads/report.pdf" in metadata_message.content
+        assert "filesystem inspection" in metadata_message.content
 
     asyncio.run(scenario())
 

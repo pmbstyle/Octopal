@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -500,6 +501,28 @@ async def build_octo_prompt(
                 )
             )
 
+    normalized_paths = [str(path).strip() for path in (saved_file_paths or []) if str(path).strip()]
+    if normalized_paths:
+        attachment_metadata: dict[str, Any] = {
+            "attachment_kind": "image" if images else "file",
+            "saved_paths": normalized_paths,
+        }
+        guidance = (
+            "If direct vision is unavailable or a later turn refers back to the image, use the exact saved paths."
+            if images
+            else "Use the exact saved paths when filesystem inspection is needed."
+        )
+        messages.append(
+            Message(
+                role="system",
+                content=(
+                    "Current turn attachment metadata (runtime-provided, not user-authored):\n"
+                    f"{json.dumps(attachment_metadata, ensure_ascii=False)}\n"
+                    f"{guidance}"
+                ),
+            )
+        )
+
     if images:
         text_segments: list[str] = []
         if user_text.strip():
@@ -507,42 +530,16 @@ async def build_octo_prompt(
         else:
             text_segments.append("User uploaded an image.")
 
-        normalized_paths = [
-            str(path).strip() for path in (saved_file_paths or []) if str(path).strip()
-        ]
-        if normalized_paths:
-            path_lines = "\n".join(f"- {path}" for path in normalized_paths)
-            text_segments.append(
-                "Image received and also saved locally for continuity and optional tool-based inspection.\n"
-                f"{path_lines}\n"
-                "If your current model can inspect image inputs, use the image directly. "
-                "If direct vision is unavailable or later turns refer back to the image, use these exact paths."
-            )
-
         text_content = "\n\n".join(segment for segment in text_segments if segment)
-        content_blocks = [{"type": "text", "text": text_content}]
+        content_blocks: list[dict[str, Any]] = [{"type": "text", "text": text_content}]
         for img in images:
             content_blocks.append(
                 {"type": "image_url", "image_url": {"url": img, "detail": "auto"}}
             )
         messages.append(Message(role="user", content=content_blocks))
     else:
-        normalized_paths = [
-            str(path).strip() for path in (saved_file_paths or []) if str(path).strip()
-        ]
         if normalized_paths:
-            text_segments: list[str] = []
-            if user_text.strip():
-                text_segments.append(user_text.strip())
-            else:
-                text_segments.append("User uploaded file(s).")
-            path_lines = "\n".join(f"- {path}" for path in normalized_paths)
-            text_segments.append(
-                "Files received and saved locally for tool-based inspection.\n"
-                f"{path_lines}\n"
-                "If you need filesystem tools, use these exact absolute paths."
-            )
-            messages.append(Message(role="user", content="\n\n".join(text_segments)))
+            messages.append(Message(role="user", content=user_text or "User uploaded file(s)."))
         else:
             messages.append(Message(role="user", content=user_text))
 

@@ -11,7 +11,10 @@ from octopal.infrastructure.observability.helpers import safe_preview
 from octopal.infrastructure.providers.base import InferenceProvider, Message
 from octopal.runtime.octo.route_loop_helpers import _parse_tool_result_payload
 from octopal.runtime.octo.route_planning import _extract_json_object
-from octopal.runtime.octo.route_verification import _messages_to_text
+from octopal.runtime.octo.route_verification import (
+    _build_untrusted_review_messages,
+    _messages_to_text,
+)
 from octopal.tools.registry import ToolSpec
 
 logger = structlog.get_logger(__name__)
@@ -32,7 +35,7 @@ async def _worker_followup_requires_autonomous_continuation(
     reply_text: str,
     complete_text_fn: _CompleteTextFn,
 ) -> bool:
-    prompt = (
+    instructions = (
         "Classify whether a worker-result follow-up output may be delivered to the user, "
         "or whether the runtime must continue the task autonomously first.\n"
         "Return JSON only with this shape:\n"
@@ -43,21 +46,19 @@ async def _worker_followup_requires_autonomous_continuation(
         "should be completed by the broader route. Judge the speech act and evidence, not "
         "individual words or banned phrases. Use final for grounded results, real blocked "
         "states, and normal user-facing questions. Use requires_user_input only when the next "
-        "safe step truly needs the user's decision or missing data.\n\n"
-        "<WORKER_RESULTS>\n"
-        f"{worker_results_payload[:12000]}\n"
-        "</WORKER_RESULTS>\n\n"
-        "<EVIDENCE>\n"
-        f"{_messages_to_text(messages)}\n"
-        "</EVIDENCE>\n\n"
-        "<DRAFT_FOLLOWUP>\n"
-        f"{reply_text}\n"
-        "</DRAFT_FOLLOWUP>"
+        "safe step truly needs the user's decision or missing data."
     )
     try:
         raw = await complete_text_fn(
             provider,
-            [Message(role="system", content=prompt)],
+            _build_untrusted_review_messages(
+                instructions,
+                payload={
+                    "worker_results": worker_results_payload[:12000],
+                    "evidence": _messages_to_text(messages),
+                    "draft_followup": reply_text,
+                },
+            ),
             context="worker_followup_autonomy_verifier",
         )
     except Exception:
