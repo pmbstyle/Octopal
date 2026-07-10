@@ -3,6 +3,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import readline from "node:readline";
 
+import { isAllowedAuthUrl } from "./externalUrls";
+
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 type RpcResponse = {
@@ -238,8 +240,11 @@ class CodexAuthManager {
       if (response.type !== "chatgpt" || !authUrl) {
         return { success: false, error: "Codex did not return a ChatGPT authorization URL." };
       }
+      if (!isAllowedAuthUrl(authUrl)) {
+        return { success: false, error: "The authorization URL did not use HTTPS." };
+      }
 
-      void shell.openExternal(authUrl);
+      await shell.openExternal(authUrl);
       this.waitForLoginCompletion(client, typeof response.loginId === "string" ? response.loginId : undefined);
       return { success: true, authUrl, loginId: typeof response.loginId === "string" ? response.loginId : undefined };
     } catch (error) {

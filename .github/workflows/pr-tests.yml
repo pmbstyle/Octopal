@@ -92,7 +92,7 @@ jobs:
 
       - name: Build desktop app
         working-directory: desktop
-        run: npm run build
+        run: npm run build && npm test
 
   whatsapp-bridge:
     name: WhatsApp bridge

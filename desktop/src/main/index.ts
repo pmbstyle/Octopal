@@ -39,6 +39,11 @@ import {
 } from "./connectors";
 import { registerCodexAuthIPCHandlers, stopCodexAuthServer } from "./codexAuth";
 import {
+  classifyRendererNavigation,
+  isAllowedExternalUrl,
+  isAllowedRendererDevUrl,
+} from "./externalUrls";
+import {
   checkOctopalUpdateSafely,
   ensureWorkspaceBootstrap,
   getOctopalStatusSafely,
@@ -1822,17 +1827,8 @@ function resolveBrandIcon(): string | undefined {
   return undefined;
 }
 
-function isExternalUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return ["http:", "https:", "tg:"].includes(parsed.protocol);
-  } catch {
-    return false;
-  }
-}
-
 function openExternalUrl(url: string): boolean {
-  if (!isExternalUrl(url)) {
+  if (!isAllowedExternalUrl(url)) {
     return false;
   }
 
@@ -1854,10 +1850,14 @@ function createWindow(): void {
     transparent: true,
     hasShadow: true,
     webPreferences: {
-      preload: join(__dirname, "../preload/index.mjs"),
+      preload: join(__dirname, "../preload/index.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      navigateOnDragDrop: false,
+      webviewTag: false,
     },
   });
 
@@ -1866,14 +1866,22 @@ function createWindow(): void {
     return { action: "deny" };
   });
 
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (url !== mainWindow.webContents.getURL() && openExternalUrl(url)) {
-      event.preventDefault();
+  const guardRendererNavigation = (event: Electron.Event, url: string): void => {
+    const decision = classifyRendererNavigation(mainWindow.webContents.getURL(), url);
+    if (!decision.prevent) {
+      return;
     }
-  });
+    event.preventDefault();
+    if (decision.openExternal) {
+      openExternalUrl(url);
+    }
+  };
+  mainWindow.webContents.on("will-navigate", guardRendererNavigation);
+  mainWindow.webContents.on("will-redirect", guardRendererNavigation);
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
+  const rendererDevUrl = process.env.ELECTRON_RENDERER_URL ?? "";
+  if (isAllowedRendererDevUrl(rendererDevUrl, app.isPackaged)) {
+    void mainWindow.loadURL(rendererDevUrl);
   } else {
     void mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
   }
