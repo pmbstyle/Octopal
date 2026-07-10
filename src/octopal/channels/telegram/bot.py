@@ -39,7 +39,9 @@ async def _heartbeat_poker(octo: Octo, interval_seconds: int, chat_id: int):
         try:
             context_hint = await octo.build_heartbeat_context_hint(chat_id)
             heartbeat_prompt = (
-                "This is a heartbeat trigger. Use `check_schedule` to identify and execute any due tasks.\n\n"
+                "This is a heartbeat trigger. Use `check_schedule` only to inspect due tasks and runtime state. "
+                "Scheduled task dispatch is handled separately by the scheduler runtime; do not claim this "
+                "heartbeat executed a task.\n\n"
                 f"{context_hint}"
             )
             reply = await octo.handle_message(
