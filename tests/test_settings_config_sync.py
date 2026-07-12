@@ -42,6 +42,59 @@ def test_load_settings_accepts_desktop_user_channel(tmp_path, monkeypatch) -> No
     assert settings.user_channel == "desktop"
 
 
+def test_load_settings_syncs_webclaw_runtime_config(tmp_path, monkeypatch) -> None:
+    binary = tmp_path / "webclaw"
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "web": {
+                    "webclaw_enabled": True,
+                    "webclaw_binary": str(binary),
+                    "webclaw_timeout_seconds": 17.5,
+                    "webclaw_prefer_local": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.webclaw_enabled is True
+    assert settings.webclaw_binary == str(binary)
+    assert settings.webclaw_timeout_seconds == 17.5
+    assert settings.webclaw_prefer_local is True
+
+
+def test_load_settings_syncs_pinchtab_runtime_config(tmp_path, monkeypatch) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "browser": {
+                    "backend": "pinchtab",
+                    "pinchtab_base_url": "http://host.docker.internal:9867",
+                    "pinchtab_token": "server-token",
+                    "pinchtab_session": "ses_worker",
+                    "pinchtab_browser": "cloak",
+                    "pinchtab_timeout_seconds": 12.5,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.browser_backend == "pinchtab"
+    assert settings.pinchtab_base_url == "http://host.docker.internal:9867"
+    assert settings.pinchtab_token == "server-token"
+    assert settings.pinchtab_session == "ses_worker"
+    assert settings.pinchtab_browser == "cloak"
+    assert settings.pinchtab_timeout_seconds == 12.5
+
+
 def test_load_settings_defaults_to_empty_telegram_values_without_config_json(
     tmp_path, monkeypatch
 ) -> None:

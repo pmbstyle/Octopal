@@ -1140,7 +1140,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
         ),
         ToolSpec(
             name="fetch_plan_tool",
-            description="Orchestrate URL fetching across markdown_new_fetch, web_fetch, and browser fallback with a traceable execution plan.",
+            description="Orchestrate URL fetching across local WebClaw, markdown_new_fetch, generic web_fetch, and browser fallback with a traceable execution plan.",
             parameters={
                 "type": "object",
                 "properties": {

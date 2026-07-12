@@ -6,6 +6,70 @@ import json
 import octopal.tools.web.plan as plan_mod
 
 
+def test_fetch_plan_tool_uses_webclaw_after_markdown(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(plan_mod, "webclaw_enabled", lambda: True)
+    monkeypatch.setattr(plan_mod, "webclaw_prefer_local", lambda: False)
+    monkeypatch.setattr(
+        plan_mod,
+        "markdown_new_fetch",
+        lambda args: calls.append("markdown") or json.dumps({"ok": False, "error": "thin"}),
+    )
+    monkeypatch.setattr(
+        plan_mod,
+        "webclaw_fetch",
+        lambda args: calls.append("webclaw")
+        or json.dumps({"ok": True, "snippet": "local content " * 20}),
+    )
+    monkeypatch.setattr(
+        plan_mod,
+        "web_fetch",
+        lambda args: (_ for _ in ()).throw(AssertionError("web_fetch should not run")),
+    )
+
+    result = json.loads(
+        asyncio.run(
+            plan_mod.fetch_plan_tool(
+                {"url": "https://example.com", "min_content_chars": 100},
+                {"chat_id": 1},
+            )
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["source"] == "webclaw"
+    assert result["fallback_used"] is True
+    assert calls == ["markdown", "webclaw"]
+
+
+def test_fetch_plan_tool_can_prefer_local_webclaw(monkeypatch) -> None:
+    monkeypatch.setattr(plan_mod, "webclaw_enabled", lambda: True)
+    monkeypatch.setattr(plan_mod, "webclaw_prefer_local", lambda: True)
+    monkeypatch.setattr(
+        plan_mod,
+        "webclaw_fetch",
+        lambda args: json.dumps({"ok": True, "snippet": "local content " * 20}),
+    )
+    monkeypatch.setattr(
+        plan_mod,
+        "markdown_new_fetch",
+        lambda args: (_ for _ in ()).throw(AssertionError("markdown should not run")),
+    )
+
+    result = json.loads(
+        asyncio.run(
+            plan_mod.fetch_plan_tool(
+                {"url": "https://example.com", "min_content_chars": 100},
+                {"chat_id": 1},
+            )
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["source"] == "webclaw"
+    assert result["fallback_used"] is False
+
+
 def test_fetch_plan_tool_uses_browser_extract_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
         plan_mod,

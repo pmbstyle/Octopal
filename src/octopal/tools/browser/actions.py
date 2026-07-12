@@ -4,10 +4,16 @@ from typing import Any
 
 from playwright.async_api import Locator, Page
 
+from octopal.browser.backend import BrowserBackend
 from octopal.browser.manager import get_browser_manager
+from octopal.browser.pinchtab import get_pinchtab_backend
 from octopal.browser.snapshot import capture_aria_snapshot
 
 _SESSION_REFS: dict[int, dict[str, dict[str, Any]]] = {}
+
+
+def _external_backend() -> BrowserBackend | None:
+    return get_pinchtab_backend()
 
 
 def _format_browser_error(exc: Exception) -> str:
@@ -54,6 +60,8 @@ async def _get_page_and_target(args: dict[str, Any], ctx: dict[str, Any]) -> tup
 
 
 async def browser_open(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    if backend := _external_backend():
+        return await backend.open(args, ctx)
     url = args.get("url")
     if not url:
         return {"ok": False, "error": "url is required"}
@@ -85,6 +93,8 @@ async def browser_open(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, A
 
 
 async def browser_tabs(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    if backend := _external_backend():
+        return await backend.tabs(args, ctx)
     del args
     chat_id = _get_chat_id(ctx)
     pages = await get_browser_manager().list_pages(chat_id)
@@ -92,6 +102,8 @@ async def browser_tabs(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, A
 
 
 async def browser_focus_tab(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    if backend := _external_backend():
+        return await backend.focus_tab(args, ctx)
     chat_id = _get_chat_id(ctx)
     target_id = str(args.get("target_id") or "").strip()
     if not target_id:
@@ -104,6 +116,8 @@ async def browser_focus_tab(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 async def browser_navigate(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    if backend := _external_backend():
+        return await backend.navigate(args, ctx)
     url = str(args.get("url") or "").strip()
     if not url:
         return "Error: url is required"
@@ -116,6 +130,8 @@ async def browser_navigate(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 async def browser_snapshot(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    if backend := _external_backend():
+        return await backend.snapshot(args, ctx)
     chat_id = _get_chat_id(ctx)
     page, target_id = await _get_page_and_target(args, ctx)
 
@@ -133,6 +149,8 @@ async def browser_snapshot(args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
 
 
 async def browser_click(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    if backend := _external_backend():
+        return await backend.click(args, ctx)
     ref = args.get("ref")
     if not ref:
         return "Error: ref is required"
@@ -149,6 +167,8 @@ async def browser_click(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 async def browser_type(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    if backend := _external_backend():
+        return await backend.type(args, ctx)
     ref = args.get("ref")
     text = args.get("text")
     press_enter = args.get("press_enter", False)
@@ -170,6 +190,8 @@ async def browser_type(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 async def browser_close(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    if backend := _external_backend():
+        return await backend.close(args, ctx)
     chat_id = _get_chat_id(ctx)
     target_id = str(args.get("target_id") or "").strip()
     if target_id:
@@ -186,6 +208,8 @@ async def browser_close(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 async def browser_wait_for(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    if backend := _external_backend():
+        return await backend.wait_for(args, ctx)
     ref = str(args.get("ref") or "").strip()
     text = str(args.get("text") or "").strip()
     state = str(args.get("state") or "visible").strip() or "visible"
@@ -212,6 +236,8 @@ async def browser_wait_for(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 async def browser_extract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    if backend := _external_backend():
+        return await backend.extract(args, ctx)
     ref = str(args.get("ref") or "").strip()
     max_chars = max(100, min(int(args.get("max_chars") or 4000), 20000))
     chat_id = _get_chat_id(ctx)
@@ -250,6 +276,8 @@ async def browser_extract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str
 
 
 async def browser_screenshot(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    if backend := _external_backend():
+        return await backend.screenshot(args, ctx)
     chat_id = _get_chat_id(ctx)
     target_id = str(args.get("target_id") or "").strip() or None
     full_page = bool(args.get("full_page", True))

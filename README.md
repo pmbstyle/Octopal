@@ -464,6 +464,50 @@ Add the preferred search provider key in `config.json`:
 }
 ```
 
+Octopal can use a separately installed local WebClaw binary as an extraction fast path inside
+`fetch_plan_tool`. The hosted WebClaw API is not used by this integration. Keep it disabled until
+the binary is installed on the Octo/worker runtime:
+
+```json
+{
+  "web": {
+    "webclaw_enabled": false,
+    "webclaw_binary": "webclaw",
+    "webclaw_timeout_seconds": 30.0,
+    "webclaw_prefer_local": false
+  }
+}
+```
+
+When enabled, `webclaw_prefer_local=false` tries WebClaw after `markdown.new` and before generic
+`web_fetch`. Set it to `true` only after validating the local binary with the backend benchmark in
+[`docs/web-surfing-benchmark.md`](docs/web-surfing-benchmark.md). Generic `web_fetch` remains the
+path for API requests and non-GET methods.
+
+The browser tools can also use a separately managed PinchTab service while keeping their existing
+tool schemas. Playwright remains the default and changing the backend is an explicit opt-in:
+
+```json
+{
+  "browser": {
+    "backend": "pinchtab",
+    "pinchtab_base_url": "http://host.docker.internal:9867",
+    "pinchtab_token": null,
+    "pinchtab_session": null,
+    "pinchtab_browser": "chrome",
+    "pinchtab_timeout_seconds": 30.0
+  }
+}
+```
+
+Use `127.0.0.1` for same-environment workers and `host.docker.internal` when PinchTab runs on the
+Docker host. Octopal uses explicit tab-scoped calls and only exposes tabs owned by the current chat.
+The server token is never copied into worker environments. When it is configured, Octo creates a
+dedicated PinchTab agent session for each browser-capable worker, passes only that session token,
+and revokes it when the worker exits. A configured `pinchtab_session` is a manual fallback for
+setups where Octo cannot create sessions. PinchTab sessions are still a trusted-automation feature,
+not a hostile multi-tenant boundary; do not expose the service to the public internet.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

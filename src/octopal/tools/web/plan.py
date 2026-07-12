@@ -12,6 +12,7 @@ from octopal.tools.browser.actions import (
     browser_snapshot,
 )
 from octopal.tools.web.fetch import markdown_new_fetch, web_fetch
+from octopal.tools.web.webclaw import webclaw_enabled, webclaw_fetch, webclaw_prefer_local
 
 
 async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
@@ -40,12 +41,44 @@ async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
     attempts: list[dict[str, Any]] = []
     budget_started = time.perf_counter()
+    webclaw_active = webclaw_enabled()
+    prefer_local = webclaw_active and webclaw_prefer_local()
+    webclaw_attempted = False
 
     def remaining_budget() -> float:
         elapsed = time.perf_counter() - budget_started
         return max(1.0, timeout_seconds - elapsed)
 
-    # Step 1: markdown_new_fetch (preferred)
+    def attempt_webclaw() -> dict[str, Any] | None:
+        nonlocal webclaw_attempted
+        webclaw_attempted = True
+        wc_args = {
+            "url": url,
+            "max_chars": max_chars,
+            "timeout_seconds": min(120, remaining_budget()),
+            "only_main_content": goal != "full_content",
+        }
+        wc_result, wc_attempt = _run_sync_fetch("webclaw", webclaw_fetch, wc_args)
+        attempts.append(wc_attempt)
+        return wc_result
+
+    # Step 1: local WebClaw when explicitly preferred.
+    if prefer_local and remaining_budget() > 1.0:
+        wc_result = attempt_webclaw()
+        if wc_result and wc_result.get("ok") and _has_enough_content(wc_result, min_content_chars):
+            return _to_json(
+                _build_success_payload(
+                    url=url,
+                    goal=goal,
+                    source="webclaw",
+                    attempts=attempts,
+                    result=wc_result,
+                    degraded=False,
+                    fallback_used=False,
+                )
+            )
+
+    # Step 2: markdown_new_fetch (preferred hosted markdown path).
     if prefer_markdown and remaining_budget() > 1.0:
         mk_args = {
             "url": url,
@@ -69,7 +102,23 @@ async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                 )
             )
 
-    # Step 2: web_fetch fallback
+    # Step 3: local WebClaw after markdown.new unless it already ran first.
+    if webclaw_active and not webclaw_attempted and remaining_budget() > 1.0:
+        wc_result = attempt_webclaw()
+        if wc_result and wc_result.get("ok") and _has_enough_content(wc_result, min_content_chars):
+            return _to_json(
+                _build_success_payload(
+                    url=url,
+                    goal=goal,
+                    source="webclaw",
+                    attempts=attempts,
+                    result=wc_result,
+                    degraded=bool(prefer_markdown),
+                    fallback_used=bool(prefer_markdown),
+                )
+            )
+
+    # Step 4: generic web_fetch fallback.
     if remaining_budget() > 1.0:
         wf_args = {"url": url, "method": "GET", "max_chars": max_chars}
         wf_result, wf_attempt = _run_sync_fetch("web_fetch", web_fetch, wf_args)
@@ -87,7 +136,7 @@ async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                 )
             )
 
-    # Step 3: browser-assisted fallback for JS-heavy pages
+    # Step 5: browser-assisted fallback for JS-heavy pages.
     if allow_browser and remaining_budget() > 1.0:
         browser_attempt = {
             "tool": "browser_plan",
