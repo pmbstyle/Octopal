@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from octopal.runtime.workers.agent_worker import (
     _build_worker_completion_protocol_prompt,
+    _build_worker_context_manifest,
     _build_worker_file_write_prompt,
     _build_worker_skill_usage_prompt,
     _build_worker_task_prompt,
@@ -13,6 +14,7 @@ from octopal.runtime.workers.agent_worker import (
     _required_tool_call_missing,
     _tool_schema_chars,
 )
+from octopal.runtime.workers.contracts import WorkerSpec
 from octopal.tools.registry import ToolSpec
 
 
@@ -192,3 +194,43 @@ def test_worker_context_telemetry_records_prompt_and_tool_result_growth() -> Non
     assert context["tool_result_raw_chars_total"] > context["tool_result_rendered_chars_total"]
     assert context["tool_result_rendered_chars_by_tool"]["web_fetch"] == 20
     assert context["tool_result_truncated_chars_total"] > 0
+
+
+def test_worker_context_manifest_records_selection_without_prompt_content() -> None:
+    tool = ToolSpec(
+        name="web_fetch",
+        description="Fetch web content.",
+        parameters={"type": "object", "properties": {"url": {"type": "string"}}},
+        permission="network",
+        handler=lambda args, ctx: {"ok": True},
+    )
+    spec = WorkerSpec(
+        id="worker-1",
+        template_id="research",
+        task="Secret task text must not appear in telemetry",
+        inputs={"private": "secret input"},
+        system_prompt="Research carefully.",
+        available_tools=["web_fetch", "missing_tool"],
+        granted_capabilities=[],
+        timeout_seconds=30,
+        max_thinking_steps=4,
+        run_id="run-1",
+        effective_permissions=["network"],
+        allowed_paths=["reports"],
+    )
+
+    manifest = _build_worker_context_manifest(
+        spec=spec,
+        tools=[tool],
+        prompt_sections={"system": "system text", "task": spec.task},
+    )
+
+    assert manifest["version"] == 1
+    assert manifest["task"]["run_id"] == "run-1"
+    assert manifest["tools"]["active_names"] == ["web_fetch"]
+    assert manifest["tools"]["unavailable_requested_names"] == ["missing_tool"]
+    assert manifest["tools"]["schema_chars_by_tool"]["web_fetch"] > 0
+    assert manifest["prompt_sections_chars"]["task"] == len(spec.task)
+    assert manifest["policy"]["allowed_path_count"] == 1
+    assert "Secret task text" not in str(manifest)
+    assert "secret input" not in str(manifest)

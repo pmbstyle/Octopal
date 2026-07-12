@@ -6,7 +6,11 @@ from octopal.runtime.workers.bench import (
     WorkerBenchScenario,
     _run_scenarios,
     build_worker_spec,
+    grade_worker_messages,
+    load_scenarios_file,
+    main,
     parse_worker_jsonl,
+    run_worker_bench,
     select_scenarios,
     summarize_worker_messages,
 )
@@ -87,6 +91,10 @@ def test_summarize_worker_messages_extracts_telemetry() -> None:
                         "tool_result_truncated_chars_total": 200,
                         "tool_result_rendered_chars_by_tool": {"web_search": 700},
                     },
+                    "context_manifest": {
+                        "version": 1,
+                        "tools": {"active_names": ["web_search"]},
+                    },
                 }
             },
         },
@@ -112,6 +120,7 @@ def test_summarize_worker_messages_extracts_telemetry() -> None:
     assert summary["latency_ms"]["llm_total"] == 1234
     assert summary["context"]["tool_schema_chars"] == 500
     assert summary["context"]["tool_result_rendered_chars_by_tool"] == {"web_search": 700}
+    assert summary["context_manifest"]["tools"]["active_names"] == ["web_search"]
     assert summary["message_count"] == 2
     assert summary["log_count"] == 1
 
@@ -159,3 +168,250 @@ def test_run_scenarios_omits_artifact_paths_for_ephemeral_runs(monkeypatch, tmp_
 
     assert summaries[0]["status"] == "completed"
     assert "artifacts" not in summaries[0]
+
+
+def test_load_scenarios_file_defaults_external_scenarios_to_replay_only(tmp_path) -> None:
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "scenarios": [
+                    {
+                        "id": "structured-result",
+                        "template_id": "example",
+                        "task": "Return a structured result",
+                        "inputs": {},
+                        "graders": [
+                            {"type": "terminal_status", "expected": "completed"},
+                            {"type": "structured_output"},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    scenarios = load_scenarios_file(suite_path)
+
+    assert scenarios[0].id == "structured-result"
+    assert scenarios[0].live_allowed is False
+    assert scenarios[0].graders[1]["type"] == "structured_output"
+
+
+def test_load_scenarios_file_rejects_path_like_ids(tmp_path) -> None:
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "scenarios": [
+                    {
+                        "id": "../../escape",
+                        "template_id": "example",
+                        "task": "Unsafe artifact id",
+                        "graders": [{"type": "terminal_status", "expected": "completed"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        load_scenarios_file(suite_path)
+    except ValueError as exc:
+        assert "cannot start with punctuation" in str(exc)
+    else:
+        raise AssertionError("expected unsafe scenario id rejection")
+
+
+def test_grade_worker_messages_reports_assertion_evidence() -> None:
+    scenario = WorkerBenchScenario(
+        id="example",
+        template_id="example",
+        task="Return a structured result",
+        inputs={},
+        graders=(
+            {"type": "terminal_status", "expected": "completed"},
+            {"type": "structured_output"},
+            {"type": "required_output_path", "path": "report.title"},
+            {"type": "required_tool", "tool": "web_search"},
+            {"type": "forbidden_tool", "tool": "send_file_to_user"},
+            {"type": "max_tool_calls", "maximum": 2},
+            {"type": "max_thinking_steps", "maximum": 4},
+        ),
+    )
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "result": {
+                "status": "completed",
+                "thinking_steps": 2,
+                "tools_used": ["web_search"],
+                "output": {
+                    "report": {"title": "Evidence"},
+                    "_telemetry": {"tool_calls": 1},
+                },
+            },
+        }
+    )
+
+    grade = grade_worker_messages(scenario=scenario, stdout=stdout)
+
+    assert grade["passed"] is True
+    assert grade["passed_count"] == 7
+    assert grade["assertions"][2]["evidence"]["path"] == "report.title"
+    assert grade["assertions"][2]["evidence"]["value_type"] == "str"
+    assert "Evidence" not in json.dumps(grade)
+
+
+def test_replay_mode_does_not_load_provider_settings(monkeypatch, tmp_path) -> None:
+    scenario = WorkerBenchScenario(
+        id="offline",
+        template_id="unused",
+        task="Replay only",
+        inputs={},
+        graders=({"type": "terminal_status", "expected": "completed"},),
+        live_allowed=False,
+    )
+    replay_dir = tmp_path / "replay"
+    replay_dir.mkdir()
+    (replay_dir / "offline.out.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "result": {"status": "completed", "summary": "offline result"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_loaded():
+        raise AssertionError("replay must not load settings or provider credentials")
+
+    monkeypatch.setattr("octopal.runtime.workers.bench.load_settings", fail_if_loaded)
+
+    summary = run_worker_bench(
+        workspace_dir=tmp_path / "unused-workspace",
+        scenarios=[scenario],
+        execution_mode="replay",
+        replay_dir=replay_dir,
+    )
+
+    assert summary["execution_mode"] == "replay"
+    assert summary["graded_trials"] == 1
+    assert summary["passed_trials"] == 1
+    assert summary["failed_trials"] == 0
+    assert summary["scenarios"][0]["grade"]["passed"] is True
+    assert summary["scenarios"][0]["returncode"] is None
+    assert summary["scenarios"][0]["elapsed_ms"] is None
+
+
+def test_live_mode_enforces_trial_cap_before_loading_settings(monkeypatch, tmp_path) -> None:
+    def fail_if_loaded():
+        raise AssertionError("trial validation must happen before loading settings")
+
+    monkeypatch.setattr("octopal.runtime.workers.bench.load_settings", fail_if_loaded)
+
+    try:
+        run_worker_bench(workspace_dir=tmp_path, trials=4)
+    except ValueError as exc:
+        assert "capped at 3 total trials" in str(exc)
+    else:
+        raise AssertionError("expected live trial cap error")
+
+
+def test_live_mode_caps_total_runs_across_scenarios(monkeypatch, tmp_path) -> None:
+    scenarios = [
+        WorkerBenchScenario(
+            id=f"scenario-{index}",
+            template_id="unused",
+            task="Live test",
+            inputs={},
+        )
+        for index in range(2)
+    ]
+
+    def fail_if_loaded():
+        raise AssertionError("total run validation must happen before loading settings")
+
+    monkeypatch.setattr("octopal.runtime.workers.bench.load_settings", fail_if_loaded)
+
+    try:
+        run_worker_bench(workspace_dir=tmp_path, scenarios=scenarios, trials=2)
+    except ValueError as exc:
+        assert "requested 4" in str(exc)
+    else:
+        raise AssertionError("expected total live run cap error")
+
+
+def test_live_mode_rejects_replay_only_external_scenario(monkeypatch, tmp_path) -> None:
+    scenario = WorkerBenchScenario(
+        id="offline",
+        template_id="unused",
+        task="Replay only",
+        inputs={},
+        graders=({"type": "terminal_status", "expected": "completed"},),
+        live_allowed=False,
+    )
+
+    def fail_if_loaded():
+        raise AssertionError("scenario safety validation must happen before loading settings")
+
+    monkeypatch.setattr("octopal.runtime.workers.bench.load_settings", fail_if_loaded)
+
+    try:
+        run_worker_bench(workspace_dir=tmp_path, scenarios=[scenario])
+    except ValueError as exc:
+        assert "live execution is disabled" in str(exc)
+    else:
+        raise AssertionError("expected live execution safety error")
+
+
+def test_cli_returns_nonzero_when_a_replay_grade_fails(tmp_path, capsys) -> None:
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "scenarios": [
+                    {
+                        "id": "failure",
+                        "template_id": "unused",
+                        "task": "Detect missing output",
+                        "graders": [{"type": "structured_output"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    replay_dir = tmp_path / "replay"
+    replay_dir.mkdir()
+    (replay_dir / "failure.out.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "result": {"status": "completed", "output": {"_telemetry": {}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "--suite",
+            str(suite_path),
+            "--mode",
+            "replay",
+            "--replay-dir",
+            str(replay_dir),
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert output["graded_trials"] == 1
+    assert output["failed_trials"] == 1

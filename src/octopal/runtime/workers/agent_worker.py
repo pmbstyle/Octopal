@@ -34,7 +34,7 @@ from octopal.runtime.tool_loop import (
     _resolve_tool_loop_thresholds,
 )
 from octopal.runtime.tool_payloads import render_tool_result_for_llm
-from octopal.runtime.workers.contracts import WorkerResult
+from octopal.runtime.workers.contracts import WorkerResult, WorkerSpec
 from octopal.tools.registry import ToolPolicy, ToolPolicyPipelineStep, apply_tool_policy_pipeline
 from octopal.tools.tools import get_tools
 from octopal.worker_sdk.worker import Worker
@@ -363,6 +363,59 @@ def _tool_schema_chars(tools: list[Any]) -> int:
         return len(json.dumps(payload, ensure_ascii=False, default=str))
     except Exception:
         return 0
+
+
+def _tool_schema_chars_by_name(tools: list[Any]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for tool in tools:
+        name = str(getattr(tool, "name", "") or "").strip() or "<unknown>"
+        result[name] = _tool_schema_chars([tool])
+    return result
+
+
+def _build_worker_context_manifest(
+    *,
+    spec: WorkerSpec,
+    tools: list[Any],
+    prompt_sections: dict[str, str],
+) -> dict[str, Any]:
+    active_tool_names = [
+        str(getattr(tool, "name", "") or "").strip()
+        for tool in tools
+        if str(getattr(tool, "name", "") or "").strip()
+    ]
+    requested_tool_names = [str(name).strip() for name in spec.available_tools if str(name).strip()]
+    active_name_set = set(active_tool_names)
+    return {
+        "version": 1,
+        "scope": "worker_run",
+        "task": {
+            "template_id": spec.template_id,
+            "run_id": spec.run_id or spec.id,
+            "model": spec.model,
+            "max_thinking_steps": spec.max_thinking_steps,
+            "spawn_depth": spec.spawn_depth,
+        },
+        "prompt_sections_chars": {name: len(content) for name, content in prompt_sections.items()},
+        "tools": {
+            "requested_names": requested_tool_names,
+            "active_names": active_tool_names,
+            "unavailable_requested_names": sorted(set(requested_tool_names) - active_name_set),
+            "active_count": len(active_tool_names),
+            "mcp_count": len(spec.mcp_tools),
+            "schema_chars": _tool_schema_chars(tools),
+            "schema_chars_by_tool": _tool_schema_chars_by_name(tools),
+        },
+        "policy": {
+            "effective_permissions": sorted(set(spec.effective_permissions)),
+            "allowed_path_count": len(spec.allowed_paths or []),
+        },
+        "memory": {
+            "selected_ids": [],
+            "recipe_ids": [],
+            "provenance_summary": {},
+        },
+    }
 
 
 def _message_chars(messages: list[dict[str, Any]]) -> int:
@@ -1031,6 +1084,7 @@ async def execute_agent_task(
     temporal_context_prompt = format_temporal_context_prompt()
 
     worker_base_prompt = _load_worker_base_prompt()
+    completion_protocol_prompt = _build_worker_completion_protocol_prompt()
 
     system_prompt = f"""{worker_base_prompt}
 
@@ -1044,10 +1098,23 @@ Available tools:
 
 {guidance_prompt}
 
-{_build_worker_completion_protocol_prompt()}
+{completion_protocol_prompt}
 """
 
     task_prompt = _build_worker_task_prompt(spec.task, spec.inputs)
+    context_manifest = _build_worker_context_manifest(
+        spec=spec,
+        tools=filtered_tools,
+        prompt_sections={
+            "worker_base": worker_base_prompt,
+            "template_role": spec.system_prompt,
+            "temporal_context": temporal_context_prompt,
+            "tool_inventory": tool_inventory,
+            "guidance": guidance_prompt,
+            "completion_protocol": completion_protocol_prompt,
+            "task": task_prompt,
+        },
+    )
     messages = [
         {"role": "system", "content": system_prompt},
         {
@@ -1078,6 +1145,7 @@ Available tools:
         "empty_turns": 0,
         "paused_seconds": 0,
         "tokens": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "context_manifest": context_manifest,
         "context": {
             "system_prompt_chars": len(system_prompt),
             "task_prompt_chars": len(task_prompt),
