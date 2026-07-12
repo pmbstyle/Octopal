@@ -90,9 +90,7 @@ class Settings(BaseSettings):
     webclaw_prefer_local: bool = Field(True, alias="OCTOPAL_WEBCLAW_PREFER_LOCAL")
     browser_backend: str = Field("auto", alias="OCTOPAL_BROWSER_BACKEND")
     pinchtab_managed: bool = Field(True, alias="OCTOPAL_PINCHTAB_MANAGED")
-    pinchtab_image: str = Field(
-        "pinchtab/pinchtab:0.11.0", alias="OCTOPAL_PINCHTAB_IMAGE"
-    )
+    pinchtab_image: str = Field("pinchtab/pinchtab:0.11.0", alias="OCTOPAL_PINCHTAB_IMAGE")
     pinchtab_fallback_to_playwright: bool = Field(
         True, alias="OCTOPAL_PINCHTAB_FALLBACK_TO_PLAYWRIGHT"
     )
@@ -494,9 +492,7 @@ def _settings_updates_from_config(config: OctopalConfig) -> dict[str, object | N
     updates["browser_backend"] = config.browser.backend
     updates["pinchtab_managed"] = config.browser.pinchtab_managed
     updates["pinchtab_image"] = config.browser.pinchtab_image
-    updates["pinchtab_fallback_to_playwright"] = (
-        config.browser.pinchtab_fallback_to_playwright
-    )
+    updates["pinchtab_fallback_to_playwright"] = config.browser.pinchtab_fallback_to_playwright
     updates["pinchtab_base_url"] = config.browser.pinchtab_base_url
     updates["pinchtab_worker_base_url"] = config.browser.pinchtab_worker_base_url
     updates["pinchtab_token"] = config.browser.pinchtab_token

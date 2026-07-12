@@ -572,8 +572,8 @@ class WorkerRuntime:
         result: WorkerResult | None = None
 
         try:
-            pinchtab_session_id, pinchtab_session_token = (
-                await self._prepare_pinchtab_worker_env(spec, env, pinchtab_ownership_file)
+            pinchtab_session_id, pinchtab_session_token = await self._prepare_pinchtab_worker_env(
+                spec, env, pinchtab_ownership_file
             )
             while attempts < max_attempts:
                 if self._is_stop_requested(spec.id):

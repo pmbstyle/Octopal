@@ -17,9 +17,7 @@ def test_managed_web_defaults_enable_auto_stack() -> None:
     assert settings.pinchtab_image == "pinchtab/pinchtab:0.11.0"
 
 
-def test_prepare_managed_web_runtime_activates_healthy_sidecar(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_prepare_managed_web_runtime_activates_healthy_sidecar(tmp_path: Path, monkeypatch) -> None:
     settings = Settings(
         OCTOPAL_STATE_DIR=tmp_path / "state",
         OCTOPAL_WORKER_LAUNCHER="docker",
@@ -53,9 +51,7 @@ def test_prepare_managed_web_runtime_activates_healthy_sidecar(
     ).read_text(encoding="utf-8")
 
 
-def test_prepare_managed_web_runtime_falls_back_to_playwright(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_prepare_managed_web_runtime_falls_back_to_playwright(tmp_path: Path, monkeypatch) -> None:
     settings = Settings(OCTOPAL_STATE_DIR=tmp_path / "state")
     monkeypatch.setattr(managed, "_prepare_host_webclaw", lambda _settings: None)
 

@@ -108,9 +108,7 @@ def test_load_settings_defaults_to_empty_telegram_values_without_config_json(
     assert settings.allowed_telegram_chat_ids == ""
 
 
-def test_load_settings_adds_managed_web_defaults_to_legacy_config(
-    tmp_path, monkeypatch
-) -> None:
+def test_load_settings_adds_managed_web_defaults_to_legacy_config(tmp_path, monkeypatch) -> None:
     (tmp_path / "config.json").write_text(
         json.dumps({"user_channel": "desktop"}),
         encoding="utf-8",
