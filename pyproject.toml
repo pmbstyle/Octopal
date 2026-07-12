@@ -24,6 +24,7 @@ dependencies = [
   "colorama>=0.4.6",
   "rich>=13.7.0",
   "mcp>=1.0.0",
+  "orjson>=3.10.0",
   "google-auth>=2.38.0",
   "google-auth-oauthlib>=1.2.0",
   "telegramify-markdown>=0.5.4",
