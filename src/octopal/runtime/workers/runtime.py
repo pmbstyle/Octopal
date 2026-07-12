@@ -49,7 +49,7 @@ from octopal.runtime.workers.contracts import (
     WorkerResult,
     WorkerSpec,
 )
-from octopal.runtime.workers.launcher import WorkerLauncher
+from octopal.runtime.workers.launcher import DockerLauncher, WorkerLauncher
 from octopal.utils import utc_now
 
 logger = structlog.get_logger(__name__)
@@ -572,16 +572,9 @@ class WorkerRuntime:
         result: WorkerResult | None = None
 
         try:
-            if self._worker_uses_pinchtab(spec):
-                env["OCTOPAL_PINCHTAB_OWNERSHIP_FILE"] = pinchtab_ownership_file.name
-                if self.settings.pinchtab_token:
-                    pinchtab_session_id, pinchtab_session_token = (
-                        await self._create_pinchtab_session(spec)
-                    )
-                elif self.settings.pinchtab_session:
-                    pinchtab_session_token = self.settings.pinchtab_session
-                if pinchtab_session_token:
-                    env["OCTOPAL_PINCHTAB_SESSION"] = pinchtab_session_token
+            pinchtab_session_id, pinchtab_session_token = (
+                await self._prepare_pinchtab_worker_env(spec, env, pinchtab_ownership_file)
+            )
             while attempts < max_attempts:
                 if self._is_stop_requested(spec.id):
                     raise _WorkerStopRequested(f"Worker {spec.id} stop requested before launch")
@@ -864,11 +857,46 @@ class WorkerRuntime:
 
         if self.settings.pinchtab_worker_base_url:
             env["OCTOPAL_PINCHTAB_BASE_URL"] = self.settings.pinchtab_worker_base_url
+        if isinstance(self.launcher, DockerLauncher) and self.settings.webclaw_enabled:
+            env["OCTOPAL_WEBCLAW_BINARY"] = "webclaw"
 
         tool_env = _tool_env_from_settings(self.settings, spec.available_tools)
         env.update(tool_env)
 
         return env
+
+    async def _prepare_pinchtab_worker_env(
+        self,
+        spec: WorkerSpec,
+        env: dict[str, str],
+        ownership_file: Path,
+    ) -> tuple[str | None, str | None]:
+        if not self._worker_uses_pinchtab(spec):
+            return None, None
+
+        env["OCTOPAL_PINCHTAB_OWNERSHIP_FILE"] = ownership_file.name
+        session_id: str | None = None
+        session_token: str | None = None
+        if self.settings.pinchtab_token:
+            try:
+                session_id, session_token = await self._create_pinchtab_session(spec)
+            except Exception:
+                if not self.settings.pinchtab_fallback_to_playwright:
+                    raise
+                logger.warning(
+                    "PinchTab session unavailable; worker will use Playwright",
+                    worker_id=spec.id,
+                    exc_info=True,
+                )
+                env["OCTOPAL_BROWSER_BACKEND"] = "playwright"
+                env.pop("OCTOPAL_PINCHTAB_OWNERSHIP_FILE", None)
+                return None, None
+        elif self.settings.pinchtab_session:
+            session_token = self.settings.pinchtab_session
+
+        if session_token:
+            env["OCTOPAL_PINCHTAB_SESSION"] = session_token
+        return session_id, session_token
 
     def _worker_uses_pinchtab(self, spec: WorkerSpec) -> bool:
         if self.settings.browser_backend.strip().lower() != "pinchtab":

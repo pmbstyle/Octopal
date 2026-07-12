@@ -68,8 +68,8 @@
 - Docker worker mode fails closed when the CLI, daemon, or worker image is unavailable. Select `same_env` explicitly only for trusted local development, and verify the effective launcher in `uv run octopal status` or the dashboard.
 - **Tailscale Integration:** Managed in the `gateway` section of `config.json` via `tailscale_auto_serve` (boolean) and `tailscale_ips` (comma-separated string).
 - Important settings include channel credentials, provider API keys, dashboard protection, and the storage paths in `config.json`.
-- Optional local WebClaw extraction is configured under `web` with `webclaw_enabled`, `webclaw_binary`, `webclaw_timeout_seconds`, and `webclaw_prefer_local`. The adapter removes WebClaw cloud credentials and falls back through the existing fetch plan.
-- Browser automation defaults to Playwright. Set `browser.backend` to `pinchtab` only when a separately managed PinchTab service is reachable; keep calls tab-scoped and never pass the PinchTab server token into worker environments.
+- Local WebClaw extraction is enabled by default under `web`; Docker workers include the pinned binary and host startup manages a checksum-verified copy. The adapter removes WebClaw cloud credentials and falls back through the existing fetch plan.
+- Browser automation defaults to `auto`: Octopal manages a pinned loopback-only PinchTab container and falls back to Playwright when it is unavailable. Keep calls tab-scoped and never pass the PinchTab server token into worker environments.
 - Treat `data/`, WhatsApp auth state, and generated workspace files as local runtime artifacts unless the repo explicitly needs fixtures.
 
 ## Octo Context Reset Policy

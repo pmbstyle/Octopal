@@ -252,6 +252,32 @@ def test_browser_open_returns_structured_result(monkeypatch) -> None:
     asyncio.run(scenario())
 
 
+def test_browser_open_falls_back_to_playwright_when_pinchtab_is_unavailable(monkeypatch) -> None:
+    page = _PageStub()
+    monkeypatch.setattr(browser_actions, "get_browser_manager", lambda: _ManagerStub(page))
+    monkeypatch.setattr(browser_actions, "_PLAYWRIGHT_FALLBACK_CHATS", set())
+
+    class _UnavailablePinchTab:
+        async def open(self, args, ctx):
+            del args, ctx
+            return {
+                "ok": False,
+                "error": "Error opening URL: PinchTab connection failed: refused",
+            }
+
+    monkeypatch.setattr(browser_actions, "get_pinchtab_backend", lambda: _UnavailablePinchTab())
+
+    async def scenario() -> None:
+        result = await browser_actions.browser_open(
+            {"url": "https://example.com/docs"}, {"chat_id": 7}
+        )
+        assert result["ok"] is True
+        assert result["target_id"] == "t1"
+        assert 7 in browser_actions._PLAYWRIGHT_FALLBACK_CHATS
+
+    asyncio.run(scenario())
+
+
 def test_browser_open_returns_structured_error_when_browser_unavailable(monkeypatch) -> None:
     class _FailingManager:
         async def get_page(self, chat_id: int, target_id: str | None = None):

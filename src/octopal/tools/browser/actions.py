@@ -10,10 +10,28 @@ from octopal.browser.pinchtab import get_pinchtab_backend
 from octopal.browser.snapshot import capture_aria_snapshot
 
 _SESSION_REFS: dict[int, dict[str, dict[str, Any]]] = {}
+_PLAYWRIGHT_FALLBACK_CHATS: set[int] = set()
 
 
-def _external_backend() -> BrowserBackend | None:
+def _external_backend(ctx: dict[str, Any]) -> BrowserBackend | None:
+    if _get_chat_id(ctx) in _PLAYWRIGHT_FALLBACK_CHATS:
+        return None
     return get_pinchtab_backend()
+
+
+def _pinchtab_unavailable(result: dict[str, Any]) -> bool:
+    error = str(result.get("error") or "").lower()
+    return any(
+        marker in error
+        for marker in (
+            "connection failed",
+            "connection refused",
+            "timed out",
+            "pinchtab http 502",
+            "pinchtab http 503",
+            "pinchtab http 504",
+        )
+    )
 
 
 def _format_browser_error(exc: Exception) -> str:
@@ -60,8 +78,11 @@ async def _get_page_and_target(args: dict[str, Any], ctx: dict[str, Any]) -> tup
 
 
 async def browser_open(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    if backend := _external_backend():
-        return await backend.open(args, ctx)
+    if backend := _external_backend(ctx):
+        result = await backend.open(args, ctx)
+        if result.get("ok") or not _pinchtab_unavailable(result):
+            return result
+        _PLAYWRIGHT_FALLBACK_CHATS.add(_get_chat_id(ctx))
     url = args.get("url")
     if not url:
         return {"ok": False, "error": "url is required"}
@@ -93,7 +114,7 @@ async def browser_open(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, A
 
 
 async def browser_tabs(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    if backend := _external_backend():
+    if backend := _external_backend(ctx):
         return await backend.tabs(args, ctx)
     del args
     chat_id = _get_chat_id(ctx)
@@ -102,7 +123,7 @@ async def browser_tabs(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, A
 
 
 async def browser_focus_tab(args: dict[str, Any], ctx: dict[str, Any]) -> str:
-    if backend := _external_backend():
+    if backend := _external_backend(ctx):
         return await backend.focus_tab(args, ctx)
     chat_id = _get_chat_id(ctx)
     target_id = str(args.get("target_id") or "").strip()
@@ -116,7 +137,7 @@ async def browser_focus_tab(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 async def browser_navigate(args: dict[str, Any], ctx: dict[str, Any]) -> str:
-    if backend := _external_backend():
+    if backend := _external_backend(ctx):
         return await backend.navigate(args, ctx)
     url = str(args.get("url") or "").strip()
     if not url:
@@ -130,7 +151,7 @@ async def browser_navigate(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 async def browser_snapshot(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    if backend := _external_backend():
+    if backend := _external_backend(ctx):
         return await backend.snapshot(args, ctx)
     chat_id = _get_chat_id(ctx)
     page, target_id = await _get_page_and_target(args, ctx)
@@ -149,7 +170,7 @@ async def browser_snapshot(args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
 
 
 async def browser_click(args: dict[str, Any], ctx: dict[str, Any]) -> str:
-    if backend := _external_backend():
+    if backend := _external_backend(ctx):
         return await backend.click(args, ctx)
     ref = args.get("ref")
     if not ref:
@@ -167,7 +188,7 @@ async def browser_click(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 async def browser_type(args: dict[str, Any], ctx: dict[str, Any]) -> str:
-    if backend := _external_backend():
+    if backend := _external_backend(ctx):
         return await backend.type(args, ctx)
     ref = args.get("ref")
     text = args.get("text")
@@ -190,7 +211,7 @@ async def browser_type(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 async def browser_close(args: dict[str, Any], ctx: dict[str, Any]) -> str:
-    if backend := _external_backend():
+    if backend := _external_backend(ctx):
         return await backend.close(args, ctx)
     chat_id = _get_chat_id(ctx)
     target_id = str(args.get("target_id") or "").strip()
@@ -204,11 +225,12 @@ async def browser_close(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
     await get_browser_manager().close_chat_session(chat_id)
     _SESSION_REFS.pop(chat_id, None)
+    _PLAYWRIGHT_FALLBACK_CHATS.discard(chat_id)
     return "Browser session closed"
 
 
 async def browser_wait_for(args: dict[str, Any], ctx: dict[str, Any]) -> str:
-    if backend := _external_backend():
+    if backend := _external_backend(ctx):
         return await backend.wait_for(args, ctx)
     ref = str(args.get("ref") or "").strip()
     text = str(args.get("text") or "").strip()
@@ -236,7 +258,7 @@ async def browser_wait_for(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 async def browser_extract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    if backend := _external_backend():
+    if backend := _external_backend(ctx):
         return await backend.extract(args, ctx)
     ref = str(args.get("ref") or "").strip()
     max_chars = max(100, min(int(args.get("max_chars") or 4000), 20000))
@@ -276,7 +298,7 @@ async def browser_extract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str
 
 
 async def browser_screenshot(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    if backend := _external_backend():
+    if backend := _external_backend(ctx):
         return await backend.screenshot(args, ctx)
     chat_id = _get_chat_id(ctx)
     target_id = str(args.get("target_id") or "").strip() or None

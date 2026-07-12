@@ -84,11 +84,18 @@ class Settings(BaseSettings):
 
     brave_api_key: str | None = Field(default=None, alias="BRAVE_API_KEY")
     firecrawl_api_key: str | None = Field(default=None, alias="FIRECRAWL_API_KEY")
-    webclaw_enabled: bool = Field(False, alias="OCTOPAL_WEBCLAW_ENABLED")
+    webclaw_enabled: bool = Field(True, alias="OCTOPAL_WEBCLAW_ENABLED")
     webclaw_binary: str = Field("webclaw", alias="OCTOPAL_WEBCLAW_BINARY")
     webclaw_timeout_seconds: float = Field(30.0, alias="OCTOPAL_WEBCLAW_TIMEOUT_SECONDS")
-    webclaw_prefer_local: bool = Field(False, alias="OCTOPAL_WEBCLAW_PREFER_LOCAL")
-    browser_backend: str = Field("playwright", alias="OCTOPAL_BROWSER_BACKEND")
+    webclaw_prefer_local: bool = Field(True, alias="OCTOPAL_WEBCLAW_PREFER_LOCAL")
+    browser_backend: str = Field("auto", alias="OCTOPAL_BROWSER_BACKEND")
+    pinchtab_managed: bool = Field(True, alias="OCTOPAL_PINCHTAB_MANAGED")
+    pinchtab_image: str = Field(
+        "pinchtab/pinchtab:0.11.0", alias="OCTOPAL_PINCHTAB_IMAGE"
+    )
+    pinchtab_fallback_to_playwright: bool = Field(
+        True, alias="OCTOPAL_PINCHTAB_FALLBACK_TO_PLAYWRIGHT"
+    )
     pinchtab_base_url: str = Field("http://127.0.0.1:9867", alias="OCTOPAL_PINCHTAB_BASE_URL")
     pinchtab_worker_base_url: str | None = Field(
         default=None, alias="OCTOPAL_PINCHTAB_WORKER_BASE_URL"
@@ -336,6 +343,9 @@ def config_from_settings(settings: Settings) -> OctopalConfig:
         ),
         browser=BrowserRuntimeConfig(
             backend=settings.browser_backend,
+            pinchtab_managed=settings.pinchtab_managed,
+            pinchtab_image=settings.pinchtab_image,
+            pinchtab_fallback_to_playwright=settings.pinchtab_fallback_to_playwright,
             pinchtab_base_url=settings.pinchtab_base_url,
             pinchtab_worker_base_url=settings.pinchtab_worker_base_url,
             pinchtab_token=settings.pinchtab_token,
@@ -482,6 +492,11 @@ def _settings_updates_from_config(config: OctopalConfig) -> dict[str, object | N
 
     # Browser runtime
     updates["browser_backend"] = config.browser.backend
+    updates["pinchtab_managed"] = config.browser.pinchtab_managed
+    updates["pinchtab_image"] = config.browser.pinchtab_image
+    updates["pinchtab_fallback_to_playwright"] = (
+        config.browser.pinchtab_fallback_to_playwright
+    )
     updates["pinchtab_base_url"] = config.browser.pinchtab_base_url
     updates["pinchtab_worker_base_url"] = config.browser.pinchtab_worker_base_url
     updates["pinchtab_token"] = config.browser.pinchtab_token

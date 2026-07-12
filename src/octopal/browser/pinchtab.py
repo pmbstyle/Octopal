@@ -439,11 +439,20 @@ def _truncate(text: str, max_chars: int) -> str:
 
 _BACKEND: PinchTabBrowserBackend | None = None
 _BACKEND_KEY: tuple[Any, ...] | None = None
+_RUNTIME_SETTINGS: Settings | None = None
+
+
+def configure_pinchtab_backend(settings: Settings | None) -> None:
+    """Bind resolved runtime settings without persisting the managed server token."""
+    global _BACKEND, _BACKEND_KEY, _RUNTIME_SETTINGS
+    _BACKEND = None
+    _BACKEND_KEY = None
+    _RUNTIME_SETTINGS = settings
 
 
 def get_pinchtab_backend(settings: Settings | None = None) -> PinchTabBrowserBackend | None:
     global _BACKEND, _BACKEND_KEY
-    settings = settings or load_settings()
+    settings = settings or _RUNTIME_SETTINGS or load_settings()
     if settings.browser_backend.strip().lower() != "pinchtab":
         return None
     ownership_path = str(os.getenv("OCTOPAL_PINCHTAB_OWNERSHIP_FILE") or "").strip()

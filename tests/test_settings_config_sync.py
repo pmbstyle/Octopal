@@ -108,6 +108,25 @@ def test_load_settings_defaults_to_empty_telegram_values_without_config_json(
     assert settings.allowed_telegram_chat_ids == ""
 
 
+def test_load_settings_adds_managed_web_defaults_to_legacy_config(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps({"user_channel": "desktop"}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.webclaw_enabled is True
+    assert settings.webclaw_prefer_local is True
+    assert settings.browser_backend == "auto"
+    assert settings.pinchtab_managed is True
+    assert settings.pinchtab_image == "pinchtab/pinchtab:0.11.0"
+    assert settings.pinchtab_fallback_to_playwright is True
+
+
 def test_load_settings_keeps_environment_values_without_config_json(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "legacy-token")

@@ -91,14 +91,17 @@ class SearchConfig(BaseModel):
 
 
 class WebRuntimeConfig(BaseModel):
-    webclaw_enabled: bool = False
+    webclaw_enabled: bool = True
     webclaw_binary: str = "webclaw"
     webclaw_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
-    webclaw_prefer_local: bool = False
+    webclaw_prefer_local: bool = True
 
 
 class BrowserRuntimeConfig(BaseModel):
-    backend: Literal["playwright", "pinchtab"] = "playwright"
+    backend: Literal["auto", "playwright", "pinchtab"] = "auto"
+    pinchtab_managed: bool = True
+    pinchtab_image: str = "pinchtab/pinchtab:0.11.0"
+    pinchtab_fallback_to_playwright: bool = True
     pinchtab_base_url: str = "http://127.0.0.1:9867"
     pinchtab_worker_base_url: str | None = None
     pinchtab_token: str | None = None

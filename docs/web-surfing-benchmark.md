@@ -8,12 +8,13 @@ using a live Octo instance.
 - `basic`: the direct `web_fetch` HTTP path with Firecrawl disabled for the run.
 - `markdown_new`: `markdown.new` without its fallback.
 - `webclaw`: the local WebClaw binary with cloud credentials removed.
-- `browser`: the configured browser tool path (Playwright by default, or PinchTab when explicitly enabled).
+- `browser`: the configured browser tool path (managed PinchTab by default, with Playwright fallback).
 
 ## Run
 
-Use a pinned local WebClaw binary and write results outside the repository or under ignored
-runtime storage:
+After starting Octopal once, use the managed WebClaw binary reported by the runtime, or pass any
+pinned local binary explicitly. Write results outside the repository or under ignored runtime
+storage:
 
 ```bash
 uv run python scripts/benchmark_web_backends.py \
