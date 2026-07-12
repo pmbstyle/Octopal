@@ -491,7 +491,8 @@ tool schemas. Playwright remains the default and changing the backend is an expl
 {
   "browser": {
     "backend": "pinchtab",
-    "pinchtab_base_url": "http://host.docker.internal:9867",
+    "pinchtab_base_url": "http://127.0.0.1:9867",
+    "pinchtab_worker_base_url": "http://host.docker.internal:9867",
     "pinchtab_token": null,
     "pinchtab_session": null,
     "pinchtab_browser": "chrome",
@@ -500,8 +501,10 @@ tool schemas. Playwright remains the default and changing the backend is an expl
 }
 ```
 
-Use `127.0.0.1` for same-environment workers and `host.docker.internal` when PinchTab runs on the
-Docker host. Octopal uses explicit tab-scoped calls and only exposes tabs owned by the current chat.
+`pinchtab_base_url` is the host-side control URL used by Octo to create and revoke sessions.
+Set `pinchtab_worker_base_url` when Docker workers need a different route to the same service; it
+defaults to the control URL for same-environment workers. Octopal uses explicit tab-scoped calls
+and only exposes tabs owned by the current chat.
 The server token is never copied into worker environments. When it is configured, Octo creates a
 dedicated PinchTab agent session for each browser-capable worker, passes only that session token,
 and revokes it when the worker exits. A configured `pinchtab_session` is a manual fallback for

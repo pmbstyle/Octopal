@@ -862,6 +862,9 @@ class WorkerRuntime:
                 continue
             env[_settings_env_name(field_name)] = str(value)
 
+        if self.settings.pinchtab_worker_base_url:
+            env["OCTOPAL_PINCHTAB_BASE_URL"] = self.settings.pinchtab_worker_base_url
+
         tool_env = _tool_env_from_settings(self.settings, spec.available_tools)
         env.update(tool_env)
 

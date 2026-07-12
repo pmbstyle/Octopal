@@ -73,7 +73,8 @@ def test_load_settings_syncs_pinchtab_runtime_config(tmp_path, monkeypatch) -> N
             {
                 "browser": {
                     "backend": "pinchtab",
-                    "pinchtab_base_url": "http://host.docker.internal:9867",
+                    "pinchtab_base_url": "http://127.0.0.1:9867",
+                    "pinchtab_worker_base_url": "http://host.docker.internal:9867",
                     "pinchtab_token": "server-token",
                     "pinchtab_session": "ses_worker",
                     "pinchtab_browser": "cloak",
@@ -88,7 +89,8 @@ def test_load_settings_syncs_pinchtab_runtime_config(tmp_path, monkeypatch) -> N
     settings = load_settings()
 
     assert settings.browser_backend == "pinchtab"
-    assert settings.pinchtab_base_url == "http://host.docker.internal:9867"
+    assert settings.pinchtab_base_url == "http://127.0.0.1:9867"
+    assert settings.pinchtab_worker_base_url == "http://host.docker.internal:9867"
     assert settings.pinchtab_token == "server-token"
     assert settings.pinchtab_session == "ses_worker"
     assert settings.pinchtab_browser == "cloak"

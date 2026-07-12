@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     webclaw_prefer_local: bool = Field(False, alias="OCTOPAL_WEBCLAW_PREFER_LOCAL")
     browser_backend: str = Field("playwright", alias="OCTOPAL_BROWSER_BACKEND")
     pinchtab_base_url: str = Field("http://127.0.0.1:9867", alias="OCTOPAL_PINCHTAB_BASE_URL")
+    pinchtab_worker_base_url: str | None = Field(
+        default=None, alias="OCTOPAL_PINCHTAB_WORKER_BASE_URL"
+    )
     pinchtab_token: str | None = Field(default=None, alias="OCTOPAL_PINCHTAB_TOKEN")
     pinchtab_session: str | None = Field(default=None, alias="OCTOPAL_PINCHTAB_SESSION")
     pinchtab_browser: str = Field("chrome", alias="OCTOPAL_PINCHTAB_BROWSER")
@@ -334,6 +337,7 @@ def config_from_settings(settings: Settings) -> OctopalConfig:
         browser=BrowserRuntimeConfig(
             backend=settings.browser_backend,
             pinchtab_base_url=settings.pinchtab_base_url,
+            pinchtab_worker_base_url=settings.pinchtab_worker_base_url,
             pinchtab_token=settings.pinchtab_token,
             pinchtab_session=settings.pinchtab_session,
             pinchtab_browser=settings.pinchtab_browser,
@@ -479,6 +483,7 @@ def _settings_updates_from_config(config: OctopalConfig) -> dict[str, object | N
     # Browser runtime
     updates["browser_backend"] = config.browser.backend
     updates["pinchtab_base_url"] = config.browser.pinchtab_base_url
+    updates["pinchtab_worker_base_url"] = config.browser.pinchtab_worker_base_url
     updates["pinchtab_token"] = config.browser.pinchtab_token
     updates["pinchtab_session"] = config.browser.pinchtab_session
     updates["pinchtab_browser"] = config.browser.pinchtab_browser

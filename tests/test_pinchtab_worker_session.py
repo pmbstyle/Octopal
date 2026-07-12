@@ -86,6 +86,26 @@ def test_worker_runtime_skips_pinchtab_session_without_browser_tools(tmp_path: P
     )
 
 
+def test_worker_runtime_uses_separate_pinchtab_worker_url(tmp_path: Path) -> None:
+    settings = Settings(
+        OCTOPAL_BROWSER_BACKEND="pinchtab",
+        OCTOPAL_PINCHTAB_BASE_URL="http://127.0.0.1:9867",
+        OCTOPAL_PINCHTAB_WORKER_BASE_URL="http://host.docker.internal:9867",
+    )
+    runtime = WorkerRuntime(
+        store=object(),
+        policy=object(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        settings=settings,
+    )
+
+    env = runtime._build_worker_env(SimpleNamespace(available_tools=["fetch_plan_tool"]))
+
+    assert env["OCTOPAL_PINCHTAB_BASE_URL"] == "http://host.docker.internal:9867"
+    assert runtime._pinchtab_client().base_url == httpx.URL("http://127.0.0.1:9867")
+
+
 def test_worker_runtime_closes_owned_tabs_before_revoke(tmp_path: Path, monkeypatch) -> None:
     ownership_file = tmp_path / "pinchtab-tabs.json"
     ownership_file.write_text(json.dumps(["tab-one", "tab-two"]), encoding="utf-8")

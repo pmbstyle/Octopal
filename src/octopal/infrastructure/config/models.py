@@ -100,6 +100,7 @@ class WebRuntimeConfig(BaseModel):
 class BrowserRuntimeConfig(BaseModel):
     backend: Literal["playwright", "pinchtab"] = "playwright"
     pinchtab_base_url: str = "http://127.0.0.1:9867"
+    pinchtab_worker_base_url: str | None = None
     pinchtab_token: str | None = None
     pinchtab_session: str | None = None
     pinchtab_browser: str = "chrome"
