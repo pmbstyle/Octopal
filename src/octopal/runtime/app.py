@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+from octopal.browser.managed import prepare_managed_web_runtime
+from octopal.browser.pinchtab import configure_pinchtab_backend
 from octopal.channels.telegram.approvals import ApprovalManager
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.mcp.manager import MCPManager
@@ -25,6 +27,8 @@ from octopal.tools.skills.management import ensure_skills_layout
 def build_octo(settings: Settings) -> Octo:
     os.environ.setdefault("OCTOPAL_STATE_DIR", str(settings.state_dir))
     os.environ.setdefault("OCTOPAL_WORKSPACE_DIR", str(settings.workspace_dir))
+    prepare_managed_web_runtime(settings)
+    configure_pinchtab_backend(settings)
     ensure_skills_layout(settings.workspace_dir)
 
     trace_sink = build_trace_sink(settings)

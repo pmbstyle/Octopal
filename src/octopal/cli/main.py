@@ -26,6 +26,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
 
+from octopal.browser.managed import read_managed_web_status
 from octopal.channels import normalize_user_channel, user_channel_label
 from octopal.cli.branding import print_banner
 from octopal.infrastructure.config.settings import (
@@ -1163,6 +1164,15 @@ def status() -> None:
         launcher_value += f" [dim](configured: {launcher_status.configured_launcher})[/dim]"
     grid.add_row("Worker Launcher", launcher_value)
     grid.add_row("Launcher Health", launcher_status.reason)
+    extraction = "WebClaw preferred" if settings.webclaw_enabled else "legacy fetch chain"
+    grid.add_row("Web Extraction", extraction)
+    managed_web = read_managed_web_status(settings)
+    browser_value = managed_web.detail or managed_web.status
+    if managed_web.status == "ready":
+        browser_value = f"[bright_green]{browser_value}[/bright_green]"
+    elif managed_web.status == "degraded":
+        browser_value = f"[yellow]{browser_value}[/yellow]"
+    grid.add_row("Browser Runtime", browser_value)
 
     metrics = read_metrics_snapshot(settings.state_dir)
     octo_metrics = metrics.get("octo", {}) if isinstance(metrics, dict) else {}

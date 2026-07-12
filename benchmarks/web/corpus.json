@@ -1,0 +1,62 @@
+[
+  {
+    "id": "example",
+    "category": "static",
+    "url": "https://example.com/",
+    "expected_terms": ["Example Domain"]
+  },
+  {
+    "id": "python-docs",
+    "category": "documentation",
+    "url": "https://docs.python.org/3/",
+    "expected_terms": ["Python", "Documentation"]
+  },
+  {
+    "id": "http-semantics",
+    "category": "specification",
+    "url": "https://www.rfc-editor.org/rfc/rfc9110.html",
+    "expected_terms": ["HTTP Semantics"]
+  },
+  {
+    "id": "pinchtab-github",
+    "category": "github",
+    "url": "https://github.com/pinchtab/pinchtab",
+    "expected_terms": ["PinchTab", "Browser control"]
+  },
+  {
+    "id": "webclaw-github",
+    "category": "github",
+    "url": "https://github.com/0xMassi/webclaw",
+    "expected_terms": ["webclaw", "web content extraction"]
+  },
+  {
+    "id": "web-scraping-wikipedia",
+    "category": "encyclopedia",
+    "url": "https://en.wikipedia.org/wiki/Web_scraping",
+    "expected_terms": ["Web scraping"]
+  },
+  {
+    "id": "wcag",
+    "category": "specification",
+    "url": "https://www.w3.org/TR/WCAG22/",
+    "expected_terms": ["Web Content Accessibility Guidelines", "WCAG 2.2"]
+  },
+  {
+    "id": "attention-paper",
+    "category": "paper",
+    "url": "https://arxiv.org/abs/1706.03762",
+    "expected_terms": ["Attention Is All You Need"]
+  },
+  {
+    "id": "dummy-pdf",
+    "category": "pdf",
+    "url": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+    "expected_terms": ["Dummy PDF file"]
+  },
+  {
+    "id": "react",
+    "category": "javascript-capable",
+    "url": "https://react.dev/",
+    "expected_terms": ["React"]
+  }
+]

@@ -19,7 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import quote
 
+import httpx
 import structlog
 
 from octopal.infrastructure.config.models import LLMConfig
@@ -47,7 +49,7 @@ from octopal.runtime.workers.contracts import (
     WorkerResult,
     WorkerSpec,
 )
-from octopal.runtime.workers.launcher import WorkerLauncher
+from octopal.runtime.workers.launcher import DockerLauncher, WorkerLauncher
 from octopal.utils import utc_now
 
 logger = structlog.get_logger(__name__)
@@ -101,6 +103,14 @@ _WORKER_ENV_SETTING_FIELDS = (
     "litellm_rate_limit_max_retries",
     "litellm_rate_limit_base_delay_seconds",
     "litellm_rate_limit_max_delay_seconds",
+    "webclaw_enabled",
+    "webclaw_binary",
+    "webclaw_timeout_seconds",
+    "webclaw_prefer_local",
+    "browser_backend",
+    "pinchtab_base_url",
+    "pinchtab_browser",
+    "pinchtab_timeout_seconds",
 )
 _WORKER_HOST_ENV_ALLOWLIST = {
     "ALL_PROXY",
@@ -550,8 +560,11 @@ class WorkerRuntime:
             },
         )
 
-        # Build environment
+        # Build environment and mint a least-privilege browser credential when needed.
         env = self._build_worker_env(spec)
+        pinchtab_session_id: str | None = None
+        pinchtab_session_token: str | None = None
+        pinchtab_ownership_file = worker_dir / "pinchtab-tabs.json"
 
         attempts = 0
         max_attempts = 1 + _MAX_RECOVERY_ATTEMPTS
@@ -559,6 +572,9 @@ class WorkerRuntime:
         result: WorkerResult | None = None
 
         try:
+            pinchtab_session_id, pinchtab_session_token = await self._prepare_pinchtab_worker_env(
+                spec, env, pinchtab_ownership_file
+            )
             while attempts < max_attempts:
                 if self._is_stop_requested(spec.id):
                     raise _WorkerStopRequested(f"Worker {spec.id} stop requested before launch")
@@ -749,6 +765,12 @@ class WorkerRuntime:
                 raise RuntimeError(f"Worker failed after recovery attempts: {last_error}") from None
             raise
         finally:
+            if pinchtab_session_token is not None:
+                await self._close_pinchtab_worker_tabs(
+                    pinchtab_session_token, pinchtab_ownership_file
+                )
+            if pinchtab_session_id is not None:
+                await self._revoke_pinchtab_session(pinchtab_session_id)
             if worker_trace_ctx is not None and trace_sink is not None:
                 finish_meta = dict(worker_trace_metadata)
                 finish_meta["duration_ms"] = round(now_ms() - worker_started_at_ms, 2)
@@ -833,10 +855,146 @@ class WorkerRuntime:
                 continue
             env[_settings_env_name(field_name)] = str(value)
 
+        if self.settings.pinchtab_worker_base_url:
+            env["OCTOPAL_PINCHTAB_BASE_URL"] = self.settings.pinchtab_worker_base_url
+        if isinstance(self.launcher, DockerLauncher) and self.settings.webclaw_enabled:
+            env["OCTOPAL_WEBCLAW_BINARY"] = "webclaw"
+
         tool_env = _tool_env_from_settings(self.settings, spec.available_tools)
         env.update(tool_env)
 
         return env
+
+    async def _prepare_pinchtab_worker_env(
+        self,
+        spec: WorkerSpec,
+        env: dict[str, str],
+        ownership_file: Path,
+    ) -> tuple[str | None, str | None]:
+        if not self._worker_uses_pinchtab(spec):
+            return None, None
+
+        env["OCTOPAL_PINCHTAB_OWNERSHIP_FILE"] = ownership_file.name
+        session_id: str | None = None
+        session_token: str | None = None
+        if self.settings.pinchtab_token:
+            try:
+                session_id, session_token = await self._create_pinchtab_session(spec)
+            except Exception:
+                if not self.settings.pinchtab_fallback_to_playwright:
+                    raise
+                logger.warning(
+                    "PinchTab session unavailable; worker will use Playwright",
+                    worker_id=spec.id,
+                    exc_info=True,
+                )
+                env["OCTOPAL_BROWSER_BACKEND"] = "playwright"
+                env.pop("OCTOPAL_PINCHTAB_OWNERSHIP_FILE", None)
+                return None, None
+        elif self.settings.pinchtab_session:
+            session_token = self.settings.pinchtab_session
+
+        if session_token:
+            env["OCTOPAL_PINCHTAB_SESSION"] = session_token
+        return session_id, session_token
+
+    def _worker_uses_pinchtab(self, spec: WorkerSpec) -> bool:
+        if self.settings.browser_backend.strip().lower() != "pinchtab":
+            return False
+        return any(
+            str(name).startswith("browser_") or str(name) == "fetch_plan_tool"
+            for name in spec.available_tools
+        )
+
+    async def _close_pinchtab_worker_tabs(self, session_token: str, ownership_file: Path) -> None:
+        try:
+            raw = await asyncio.to_thread(ownership_file.read_text, encoding="utf-8")
+            payload = json.loads(raw)
+            tab_ids = (
+                [str(tab_id).strip() for tab_id in payload if str(tab_id).strip()]
+                if isinstance(payload, list)
+                else []
+            )
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning(
+                "Failed to read PinchTab worker tab ownership",
+                path=str(ownership_file),
+                error=str(exc),
+            )
+            return
+
+        headers = {"Authorization": f"Session {session_token}"}
+        failed_tab_ids: list[str] = []
+        for tab_id in tab_ids:
+            try:
+                async with self._pinchtab_client() as client:
+                    response = await client.post(
+                        f"/tabs/{quote(tab_id, safe='')}/close", headers=headers, json={}
+                    )
+                    response.raise_for_status()
+            except httpx.HTTPError as exc:
+                failed_tab_ids.append(tab_id)
+                logger.warning(
+                    "Failed to close PinchTab worker tab",
+                    tab_id=tab_id,
+                    error=str(exc),
+                )
+        if failed_tab_ids:
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(
+                    ownership_file.write_text,
+                    json.dumps(failed_tab_ids),
+                    encoding="utf-8",
+                )
+            return
+        with contextlib.suppress(OSError):
+            await asyncio.to_thread(ownership_file.unlink)
+
+    async def _create_pinchtab_session(self, spec: WorkerSpec) -> tuple[str, str]:
+        headers = {"Authorization": f"Bearer {self.settings.pinchtab_token}"}
+        payload = {
+            "agentId": f"octopal-worker-{spec.id}",
+            "label": f"Octopal worker {spec.id}",
+            "browser": self.settings.pinchtab_browser,
+        }
+        try:
+            async with self._pinchtab_client() as client:
+                response = await client.post("/sessions", headers=headers, json=payload)
+                response.raise_for_status()
+                result = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise RuntimeError(f"Failed to create PinchTab worker session: {exc}") from exc
+
+        session_id = str(result.get("id") or "").strip() if isinstance(result, dict) else ""
+        session_token = (
+            str(result.get("sessionToken") or "").strip() if isinstance(result, dict) else ""
+        )
+        if not session_id or not session_token:
+            raise RuntimeError("PinchTab session response is missing id or sessionToken")
+        return session_id, session_token
+
+    async def _revoke_pinchtab_session(self, session_id: str) -> None:
+        headers = {"Authorization": f"Bearer {self.settings.pinchtab_token}"}
+        try:
+            async with self._pinchtab_client() as client:
+                response = await client.post(
+                    f"/sessions/{quote(session_id, safe='')}/revoke", headers=headers
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Failed to revoke PinchTab worker session",
+                session_id=session_id,
+                error=str(exc),
+            )
+
+    def _pinchtab_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=self.settings.pinchtab_base_url.rstrip("/"),
+            timeout=self.settings.pinchtab_timeout_seconds,
+        )
 
     async def _write_to_worker(
         self, process: asyncio.subprocess.Process, payload: dict[str, Any]

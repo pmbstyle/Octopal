@@ -464,6 +464,56 @@ Add the preferred search provider key in `config.json`:
 }
 ```
 
+Octopal uses WebClaw as the default local extraction fast path inside `fetch_plan_tool`. Docker
+worker images include a checksum-verified WebClaw release, while the host runtime installs the same
+pinned release into `data/managed-web` on first start. The hosted WebClaw API is never used. If the
+binary cannot be installed or a page cannot be extracted, the fetch plan continues through the
+existing `markdown.new` and generic fetch paths:
+
+```json
+{
+  "web": {
+    "webclaw_enabled": true,
+    "webclaw_binary": "webclaw",
+    "webclaw_timeout_seconds": 30.0,
+    "webclaw_prefer_local": true
+  }
+}
+```
+
+Set `webclaw_enabled=false` to opt out. Generic `web_fetch` remains the path for API requests and
+non-GET methods. The backend benchmark in
+[`docs/web-surfing-benchmark.md`](docs/web-surfing-benchmark.md) can compare the installed paths.
+
+Browser tools default to `auto`. On startup, Octopal launches a pinned PinchTab container on a free
+loopback port, creates a private server token under `data/managed-web`, and derives the separate
+host and Docker-worker URLs automatically. Each browser-capable worker receives a dedicated agent
+session rather than the server token; the session and its tabs are revoked when the worker exits.
+If Docker, PinchTab, or its health check is unavailable, Octopal keeps running on Playwright:
+
+```json
+{
+  "browser": {
+    "backend": "auto",
+    "pinchtab_managed": true,
+    "pinchtab_image": "pinchtab/pinchtab:0.11.0",
+    "pinchtab_fallback_to_playwright": true,
+    "pinchtab_base_url": "http://127.0.0.1:9867",
+    "pinchtab_worker_base_url": null,
+    "pinchtab_token": null,
+    "pinchtab_session": null,
+    "pinchtab_browser": "chrome",
+    "pinchtab_timeout_seconds": 30.0
+  }
+}
+```
+
+Set `backend=playwright` to opt out. To use an operator-managed PinchTab service, set
+`backend=pinchtab`, provide `pinchtab_token`, and optionally provide a different
+`pinchtab_worker_base_url` for Docker workers. The server token is never copied into worker
+environments. PinchTab sessions are still a trusted-automation feature, not a hostile multi-tenant
+boundary; do not expose the service to the public internet.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from octopal.channels import DEFAULT_USER_CHANNEL
 from octopal.infrastructure.config.models import (
     A2AConfig,
+    BrowserRuntimeConfig,
     ConnectorsConfig,
     GatewayConfig,
     GroupAddressingConfig,
@@ -22,6 +23,7 @@ from octopal.infrastructure.config.models import (
     SearchConfig,
     StorageConfig,
     TelegramConfig,
+    WebRuntimeConfig,
     WhatsAppConfig,
     WorkerRuntimeConfig,
 )
@@ -82,6 +84,24 @@ class Settings(BaseSettings):
 
     brave_api_key: str | None = Field(default=None, alias="BRAVE_API_KEY")
     firecrawl_api_key: str | None = Field(default=None, alias="FIRECRAWL_API_KEY")
+    webclaw_enabled: bool = Field(True, alias="OCTOPAL_WEBCLAW_ENABLED")
+    webclaw_binary: str = Field("webclaw", alias="OCTOPAL_WEBCLAW_BINARY")
+    webclaw_timeout_seconds: float = Field(30.0, alias="OCTOPAL_WEBCLAW_TIMEOUT_SECONDS")
+    webclaw_prefer_local: bool = Field(True, alias="OCTOPAL_WEBCLAW_PREFER_LOCAL")
+    browser_backend: str = Field("auto", alias="OCTOPAL_BROWSER_BACKEND")
+    pinchtab_managed: bool = Field(True, alias="OCTOPAL_PINCHTAB_MANAGED")
+    pinchtab_image: str = Field("pinchtab/pinchtab:0.11.0", alias="OCTOPAL_PINCHTAB_IMAGE")
+    pinchtab_fallback_to_playwright: bool = Field(
+        True, alias="OCTOPAL_PINCHTAB_FALLBACK_TO_PLAYWRIGHT"
+    )
+    pinchtab_base_url: str = Field("http://127.0.0.1:9867", alias="OCTOPAL_PINCHTAB_BASE_URL")
+    pinchtab_worker_base_url: str | None = Field(
+        default=None, alias="OCTOPAL_PINCHTAB_WORKER_BASE_URL"
+    )
+    pinchtab_token: str | None = Field(default=None, alias="OCTOPAL_PINCHTAB_TOKEN")
+    pinchtab_session: str | None = Field(default=None, alias="OCTOPAL_PINCHTAB_SESSION")
+    pinchtab_browser: str = Field("chrome", alias="OCTOPAL_PINCHTAB_BROWSER")
+    pinchtab_timeout_seconds: float = Field(30.0, alias="OCTOPAL_PINCHTAB_TIMEOUT_SECONDS")
     observability_enabled: bool = Field(False, alias="OCTOPAL_OBSERVABILITY_ENABLED")
     observability_backend: str = Field("noop", alias="OCTOPAL_OBSERVABILITY_BACKEND")
     observability_capture_content: bool = Field(
@@ -313,6 +333,24 @@ def config_from_settings(settings: Settings) -> OctopalConfig:
             brave_api_key=settings.brave_api_key,
             firecrawl_api_key=settings.firecrawl_api_key,
         ),
+        web=WebRuntimeConfig(
+            webclaw_enabled=settings.webclaw_enabled,
+            webclaw_binary=settings.webclaw_binary,
+            webclaw_timeout_seconds=settings.webclaw_timeout_seconds,
+            webclaw_prefer_local=settings.webclaw_prefer_local,
+        ),
+        browser=BrowserRuntimeConfig(
+            backend=settings.browser_backend,
+            pinchtab_managed=settings.pinchtab_managed,
+            pinchtab_image=settings.pinchtab_image,
+            pinchtab_fallback_to_playwright=settings.pinchtab_fallback_to_playwright,
+            pinchtab_base_url=settings.pinchtab_base_url,
+            pinchtab_worker_base_url=settings.pinchtab_worker_base_url,
+            pinchtab_token=settings.pinchtab_token,
+            pinchtab_session=settings.pinchtab_session,
+            pinchtab_browser=settings.pinchtab_browser,
+            pinchtab_timeout_seconds=settings.pinchtab_timeout_seconds,
+        ),
         observability=ObservabilityConfig(
             enabled=settings.observability_enabled,
             backend=settings.observability_backend,
@@ -443,6 +481,24 @@ def _settings_updates_from_config(config: OctopalConfig) -> dict[str, object | N
     # Search
     updates["brave_api_key"] = config.search.brave_api_key
     updates["firecrawl_api_key"] = config.search.firecrawl_api_key
+
+    # Web extraction runtime
+    updates["webclaw_enabled"] = config.web.webclaw_enabled
+    updates["webclaw_binary"] = config.web.webclaw_binary
+    updates["webclaw_timeout_seconds"] = config.web.webclaw_timeout_seconds
+    updates["webclaw_prefer_local"] = config.web.webclaw_prefer_local
+
+    # Browser runtime
+    updates["browser_backend"] = config.browser.backend
+    updates["pinchtab_managed"] = config.browser.pinchtab_managed
+    updates["pinchtab_image"] = config.browser.pinchtab_image
+    updates["pinchtab_fallback_to_playwright"] = config.browser.pinchtab_fallback_to_playwright
+    updates["pinchtab_base_url"] = config.browser.pinchtab_base_url
+    updates["pinchtab_worker_base_url"] = config.browser.pinchtab_worker_base_url
+    updates["pinchtab_token"] = config.browser.pinchtab_token
+    updates["pinchtab_session"] = config.browser.pinchtab_session
+    updates["pinchtab_browser"] = config.browser.pinchtab_browser
+    updates["pinchtab_timeout_seconds"] = config.browser.pinchtab_timeout_seconds
 
     # Observability
     updates["observability_enabled"] = config.observability.enabled

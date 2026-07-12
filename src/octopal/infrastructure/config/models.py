@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -87,6 +88,26 @@ class WhatsAppConfig(BaseModel):
 class SearchConfig(BaseModel):
     brave_api_key: str | None = None
     firecrawl_api_key: str | None = None
+
+
+class WebRuntimeConfig(BaseModel):
+    webclaw_enabled: bool = True
+    webclaw_binary: str = "webclaw"
+    webclaw_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    webclaw_prefer_local: bool = True
+
+
+class BrowserRuntimeConfig(BaseModel):
+    backend: Literal["auto", "playwright", "pinchtab"] = "auto"
+    pinchtab_managed: bool = True
+    pinchtab_image: str = "pinchtab/pinchtab:0.11.0"
+    pinchtab_fallback_to_playwright: bool = True
+    pinchtab_base_url: str = "http://127.0.0.1:9867"
+    pinchtab_worker_base_url: str | None = None
+    pinchtab_token: str | None = None
+    pinchtab_session: str | None = None
+    pinchtab_browser: str = "chrome"
+    pinchtab_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
 
 
 class ObservabilityConfig(BaseModel):
@@ -193,6 +214,8 @@ class OctopalConfig(BaseModel):
     workers: WorkerRuntimeConfig = Field(default_factory=WorkerRuntimeConfig)
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
+    web: WebRuntimeConfig = Field(default_factory=WebRuntimeConfig)
+    browser: BrowserRuntimeConfig = Field(default_factory=BrowserRuntimeConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)

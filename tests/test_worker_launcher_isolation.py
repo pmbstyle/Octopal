@@ -27,6 +27,13 @@ def test_same_env_launcher_filters_unrelated_host_secrets(tmp_path: Path, monkey
                 "PATH": "/usr/bin",
                 "PYTHONPATH": "src",
                 "BRAVE_API_KEY": "allowed-for-tool",
+                "OCTOPAL_WEBCLAW_ENABLED": "true",
+                "OCTOPAL_WEBCLAW_BINARY": "/opt/webclaw",
+                "OCTOPAL_BROWSER_BACKEND": "pinchtab",
+                "OCTOPAL_PINCHTAB_BASE_URL": "http://127.0.0.1:9867",
+                "OCTOPAL_PINCHTAB_OWNERSHIP_FILE": "pinchtab-tabs.json",
+                "OCTOPAL_PINCHTAB_SESSION": "worker-session",
+                "OCTOPAL_PINCHTAB_TOKEN": "must-not-pass",
                 "UNRELATED_SECRET": "must-not-pass",
             },
         )
@@ -35,6 +42,13 @@ def test_same_env_launcher_filters_unrelated_host_secrets(tmp_path: Path, monkey
     child_env = captured["kwargs"]["env"]
     assert child_env["PATH"] == "/usr/bin"
     assert child_env["BRAVE_API_KEY"] == "allowed-for-tool"
+    assert child_env["OCTOPAL_WEBCLAW_ENABLED"] == "true"
+    assert child_env["OCTOPAL_WEBCLAW_BINARY"] == "/opt/webclaw"
+    assert child_env["OCTOPAL_BROWSER_BACKEND"] == "pinchtab"
+    assert child_env["OCTOPAL_PINCHTAB_BASE_URL"] == "http://127.0.0.1:9867"
+    assert child_env["OCTOPAL_PINCHTAB_OWNERSHIP_FILE"] == "pinchtab-tabs.json"
+    assert child_env["OCTOPAL_PINCHTAB_SESSION"] == "worker-session"
+    assert "OCTOPAL_PINCHTAB_TOKEN" not in child_env
     assert "UNRELATED_SECRET" not in child_env
 
 
@@ -66,6 +80,13 @@ def test_docker_launcher_mounts_only_worker_dir_when_allowed_paths_missing(
                 "PYTHONPATH": "src",
                 "OCTOPAL_WORKSPACE_DIR": "/workspace",
                 "BRAVE_API_KEY": "brave-test-key",
+                "OCTOPAL_WEBCLAW_ENABLED": "true",
+                "OCTOPAL_WEBCLAW_BINARY": "/opt/webclaw",
+                "OCTOPAL_BROWSER_BACKEND": "pinchtab",
+                "OCTOPAL_PINCHTAB_BASE_URL": "http://host.docker.internal:9867",
+                "OCTOPAL_PINCHTAB_OWNERSHIP_FILE": "pinchtab-tabs.json",
+                "OCTOPAL_PINCHTAB_SESSION": "worker-session",
+                "OCTOPAL_PINCHTAB_TOKEN": "must-not-pass",
                 "OPENROUTER_API_KEY": "should-not-pass",
                 "SECRET": "nope",
             },
@@ -87,6 +108,13 @@ def test_docker_launcher_mounts_only_worker_dir_when_allowed_paths_missing(
     assert "HOME=/workspace/workers/worker-1" in args
     assert "PYTHONPATH=src" in args
     assert "BRAVE_API_KEY=brave-test-key" in args
+    assert "OCTOPAL_WEBCLAW_ENABLED=true" in args
+    assert "OCTOPAL_WEBCLAW_BINARY=/opt/webclaw" in args
+    assert "OCTOPAL_BROWSER_BACKEND=pinchtab" in args
+    assert "OCTOPAL_PINCHTAB_BASE_URL=http://host.docker.internal:9867" in args
+    assert "OCTOPAL_PINCHTAB_OWNERSHIP_FILE=pinchtab-tabs.json" in args
+    assert "OCTOPAL_PINCHTAB_SESSION=worker-session" in args
+    assert "OCTOPAL_PINCHTAB_TOKEN=must-not-pass" not in args
     assert "OPENROUTER_API_KEY=should-not-pass" not in args
     assert f"{workspace}:/workspace" not in args
     assert "SECRET" not in args

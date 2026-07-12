@@ -5,6 +5,7 @@ import sys
 
 import structlog
 
+from octopal.browser.managed import stop_managed_web_runtime
 from octopal.browser.manager import get_browser_manager as _default_get_browser_manager
 from octopal.runtime.housekeeping import (
     cleanup_ephemeral_worker_dirs,
@@ -169,3 +170,4 @@ class OctoBackgroundRuntimeMixin:
             await self.mcp_manager.shutdown()
 
         await _get_browser_manager().shutdown()
+        await asyncio.to_thread(stop_managed_web_runtime)
