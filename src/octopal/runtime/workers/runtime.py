@@ -55,6 +55,11 @@ from octopal.runtime.workers.contracts import (
     WorkerSpec,
 )
 from octopal.runtime.workers.launcher import DockerLauncher, WorkerLauncher
+from octopal.runtime.workers.programmatic_bridge import (
+    ProgrammaticReadBridgeOutcome,
+    handle_programmatic_read_bridge_request,
+    safe_programmatic_read_request_id,
+)
 from octopal.utils import utc_now
 
 logger = structlog.get_logger(__name__)
@@ -186,6 +191,7 @@ class WorkerRuntime:
     _running: dict[str, asyncio.subprocess.Process] = field(default_factory=dict)
     _stop_requests: set[str] = field(default_factory=set)
     _instruction_waiters: dict[tuple[str, str], asyncio.Future[str]] = field(default_factory=dict)
+    _programmatic_read_calls_used: dict[str, int] = field(default_factory=dict)
     _episode_evidence_cipher: EpisodeEvidenceCipher | None = field(
         init=False,
         repr=False,
@@ -585,6 +591,7 @@ class WorkerRuntime:
         max_attempts = 1 + _MAX_RECOVERY_ATTEMPTS
         last_error: Exception | None = None
         result: WorkerResult | None = None
+        self._programmatic_read_calls_used[spec.id] = 0
 
         try:
             pinchtab_session_id, pinchtab_session_token = await self._prepare_pinchtab_worker_env(
@@ -813,6 +820,7 @@ class WorkerRuntime:
                 raise RuntimeError(f"Worker failed after recovery attempts: {last_error}") from None
             raise
         finally:
+            self._programmatic_read_calls_used.pop(spec.id, None)
             if pinchtab_session_token is not None:
                 await self._close_pinchtab_worker_tabs(
                     pinchtab_session_token, pinchtab_ownership_file
@@ -1447,7 +1455,7 @@ class WorkerRuntime:
         buffer = b""
 
         async def _handle_line(line: bytes) -> WorkerResult | None:
-            nonlocal invalid_lines, consecutive_invalid_lines, invalid_limit_reached
+            nonlocal consecutive_invalid_lines, invalid_limit_reached, invalid_lines
             payload = _safe_parse_json(line)
             if payload is None:
                 text_line = line.decode("utf-8", errors="replace").strip()
@@ -1473,6 +1481,43 @@ class WorkerRuntime:
                     return None
                 log_method = getattr(logger, level, logger.debug)
                 log_method("Worker %s: %s", spec.id, message)
+                return None
+            if msg_type == "programmatic_read_batch":
+                call_budget = int(spec.programmatic_read_call_budget)
+                programmatic_read_calls_used = self._programmatic_read_calls_used.get(spec.id, 0)
+                remaining_calls = max(0, call_budget - programmatic_read_calls_used)
+                try:
+                    outcome = await handle_programmatic_read_bridge_request(
+                        spec=spec,
+                        payload=payload,
+                        remaining_calls=remaining_calls,
+                        ctx={
+                            "base_dir": self.workspace_dir,
+                            "worker": SimpleNamespace(spec=spec),
+                        },
+                    )
+                except Exception:
+                    logger.exception(
+                        "Programmatic read bridge failed",
+                        worker_id=spec.id,
+                    )
+                    self._programmatic_read_calls_used[spec.id] = call_budget
+                    outcome = ProgrammaticReadBridgeOutcome(
+                        response={
+                            "type": "programmatic_read_batch_result",
+                            "request_id": safe_programmatic_read_request_id(payload),
+                            "ok": False,
+                            "remaining_calls": 0,
+                            "error": {"code": "bridge_internal_error"},
+                        },
+                        consumed_calls=remaining_calls,
+                    )
+                else:
+                    self._programmatic_read_calls_used[spec.id] = min(
+                        call_budget,
+                        programmatic_read_calls_used + outcome.consumed_calls,
+                    )
+                await self._write_to_worker(process, outcome.response)
                 return None
             if msg_type == "octo_tool_call":
                 if not self.octo:
@@ -1525,14 +1570,16 @@ class WorkerRuntime:
                         "worker": SimpleNamespace(spec=spec),
                     }
                     if spec_tool.is_async:
-                        result = spec_tool.handler(arguments, tool_ctx)
-                        if inspect.isawaitable(result):
-                            result = await result
+                        tool_result = spec_tool.handler(arguments, tool_ctx)
+                        if inspect.isawaitable(tool_result):
+                            tool_result = await tool_result
                     else:
-                        result = await asyncio.to_thread(spec_tool.handler, arguments, tool_ctx)
+                        tool_result = await asyncio.to_thread(
+                            spec_tool.handler, arguments, tool_ctx
+                        )
                     await self._write_to_worker(
                         process,
-                        {"type": "octo_tool_result", "ok": True, "result": result},
+                        {"type": "octo_tool_result", "ok": True, "result": tool_result},
                     )
                 except Exception as exc:
                     await self._write_to_worker(
@@ -1542,12 +1589,12 @@ class WorkerRuntime:
                 return None
             if msg_type == "mcp_call":
                 server_id = payload.get("server_id")
-                tool_name = payload.get("tool_name")
+                mcp_tool_name = payload.get("tool_name")
                 args = payload.get("arguments", {})
                 mcp_tool_error = _validate_worker_mcp_tool_call(
                     spec=spec,
                     server_id=server_id,
-                    tool_name=tool_name,
+                    tool_name=mcp_tool_name,
                 )
                 if mcp_tool_error is not None:
                     await self._write_to_worker(
@@ -1571,7 +1618,7 @@ class WorkerRuntime:
                             "Failed to restore MCP session for worker call",
                             worker_id=spec.id,
                             server_id=server_id,
-                            tool=tool_name,
+                            tool=mcp_tool_name,
                             exc_info=True,
                         )
                     session = self.mcp_manager.sessions.get(server_id)
@@ -1587,18 +1634,18 @@ class WorkerRuntime:
                         "Executing MCP call for worker",
                         worker_id=spec.id,
                         server_id=server_id,
-                        tool=tool_name,
+                        tool=mcp_tool_name,
                     )
-                    result = await self.mcp_manager.call_tool(
+                    mcp_result = await self.mcp_manager.call_tool(
                         str(server_id),
-                        str(tool_name),
+                        str(mcp_tool_name),
                         args,
                         allow_name_fallback=True,
                     )
                     # Convert MCP content objects to something serializable
                     content = [
                         c.model_dump() if hasattr(c, "model_dump") else str(c)
-                        for c in result.content
+                        for c in mcp_result.content
                     ]
                     await self._write_to_worker(process, {"type": "mcp_result", "result": content})
                 except Exception as e:
@@ -1795,7 +1842,7 @@ class WorkerRuntime:
             if msg_type == "result":
                 raw_result = payload.get("result", {})
                 repaired_result = _repair_worker_result_payload(raw_result)
-                result = WorkerResult.model_validate(repaired_result)
+                worker_result: WorkerResult = WorkerResult.model_validate(repaired_result)
                 if raw_result != repaired_result:
                     await self._append_audit(
                         "worker_result_repaired",
@@ -1803,22 +1850,26 @@ class WorkerRuntime:
                         correlation_id=spec.id,
                         data={"reason": "malformed_worker_result_payload"},
                     )
-                worker_status = "failed" if result.status == "failed" else "completed"
+                worker_status = "failed" if worker_result.status == "failed" else "completed"
                 stored_output = _merge_existing_orchestration_plan_output(
                     self.store,
                     spec.id,
-                    result.output,
+                    worker_result.output,
                 )
                 await asyncio.to_thread(self.store.update_worker_status, spec.id, worker_status)
                 await asyncio.to_thread(
                     self.store.update_worker_result,
                     spec.id,
-                    summary=result.summary,
+                    summary=worker_result.summary,
                     output=stored_output,
-                    error=_worker_result_error_text(result) if worker_status == "failed" else None,
-                    tools_used=result.tools_used,
+                    error=(
+                        _worker_result_error_text(worker_result)
+                        if worker_status == "failed"
+                        else None
+                    ),
+                    tools_used=worker_result.tools_used,
                 )
-                return result
+                return worker_result
             return None
 
         while True:
@@ -2114,7 +2165,8 @@ def _child_worker_outcome_from_record(record: WorkerRecord) -> ChildWorkerOutcom
 
 def _safe_parse_json(line: bytes) -> dict[str, Any] | None:
     try:
-        return json.loads(line.decode("utf-8"))
+        payload = json.loads(line.decode("utf-8"))
+        return payload if isinstance(payload, dict) else None
     except Exception:
         return None
 

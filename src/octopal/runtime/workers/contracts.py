@@ -105,6 +105,7 @@ class WorkerSpec(BaseModel):
     spawn_depth: int = 0
     effective_permissions: list[str] = Field(default_factory=list)
     allowed_paths: list[str] | None = None
+    programmatic_read_call_budget: int = Field(default=0, ge=0, le=16)
 
     @model_validator(mode="after")
     def validate_inference_budget(self) -> Self:
@@ -118,6 +119,10 @@ class WorkerSpec(BaseModel):
             raise ValueError("budgeted max_llm_calls must not exceed 6")
         if self.inference_budget.max_tool_calls > 6:
             raise ValueError("budgeted max_tool_calls must not exceed 6")
+        if self.programmatic_read_call_budget > self.inference_budget.max_tool_calls:
+            raise ValueError(
+                "programmatic_read_call_budget must not exceed budgeted max_tool_calls"
+            )
         return self
 
 

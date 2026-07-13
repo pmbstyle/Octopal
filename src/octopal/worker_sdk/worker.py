@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
+import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from octopal.runtime.intents.registry import canonical_json, normalize_payload
@@ -106,7 +109,7 @@ class Worker:
         clean_target = str(target or "octo").strip().lower()
         if clean_target not in {"octo", "parent"}:
             clean_target = "octo"
-        request_id = f"{self.spec.id}-instruction-{__import__('uuid').uuid4().hex[:12]}"
+        request_id = f"{self.spec.id}-instruction-{uuid.uuid4().hex[:12]}"
         await self._write_message(
             {
                 "type": "instruction_request",
@@ -163,6 +166,36 @@ class Worker:
             )
         return response.get("result")
 
+    async def programmatic_read_batch(self, calls: list[dict[str, Any]]) -> dict[str, Any]:
+        """Call the host's inventory-bound read-only batch bridge."""
+        request_id = f"prb-{uuid.uuid4().hex}"
+        await self._write_message(
+            {
+                "type": "programmatic_read_batch",
+                "request_id": request_id,
+                "calls": calls,
+            }
+        )
+        response = await self._read_message()
+        if response.get("type") != "programmatic_read_batch_result":
+            raise RuntimeError("Unexpected response from programmatic read bridge")
+        if response.get("request_id") != request_id:
+            raise RuntimeError("Programmatic read bridge response id mismatch")
+        if not bool(response.get("ok", False)):
+            error = response.get("error")
+            error_obj = error if isinstance(error, dict) else {}
+            code = str(error_obj.get("code") or "programmatic_read_failed")
+            details = error_obj.get("details")
+            raise ToolBridgeError(
+                code,
+                bridge="programmatic_read",
+                classification=code,
+                retryable=False,
+                details={"reasons": details} if isinstance(details, list) else None,
+            )
+        result = response.get("result")
+        return result if isinstance(result, dict) else {}
+
     async def _write_message(self, payload: dict[str, Any]) -> None:
         line = json.dumps(payload)
         sys.stdout.write(line + "\n")
@@ -172,12 +205,15 @@ class Worker:
         line = await asyncio.to_thread(sys.stdin.readline)
         if not line:
             raise RuntimeError("No response from Octo")
-        return json.loads(line)
+        payload = json.loads(line)
+        if not isinstance(payload, dict):
+            raise RuntimeError("Invalid response from Octo")
+        return payload
 
 
 def _hash_payload(payload: dict[str, Any]) -> str:
-    return __import__("hashlib").sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def _read_text(path: str) -> str:
-    return __import__("pathlib").Path(path).read_text(encoding="utf-8")
+    return Path(path).read_text(encoding="utf-8")

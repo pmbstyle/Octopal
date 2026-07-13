@@ -6,6 +6,8 @@ VALID_MESSAGE_TYPES = {
     "intent_executed",
     "octo_tool_call",
     "octo_tool_result",
+    "programmatic_read_batch",
+    "programmatic_read_batch_result",
     "mcp_call",
     "mcp_result",
     "error",

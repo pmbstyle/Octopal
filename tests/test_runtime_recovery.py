@@ -95,6 +95,7 @@ def _spec(
     *,
     mcp_tools: list[dict] | None = None,
     effective_permissions: list[str] | None = None,
+    programmatic_read_call_budget: int = 0,
 ) -> WorkerSpec:
     return WorkerSpec(
         id="w1",
@@ -111,6 +112,7 @@ def _spec(
         lifecycle="ephemeral",
         correlation_id=None,
         effective_permissions=effective_permissions or [],
+        programmatic_read_call_budget=programmatic_read_call_budget,
     )
 
 
@@ -185,6 +187,37 @@ def test_runtime_recovers_after_transient_failure(tmp_path: Path) -> None:
     assert result.output["_recovery"]["recovered"] is True
     assert len(store.execution_episodes) == 1
     assert store.execution_episodes[0].status == "completed"
+
+
+def test_runtime_preserves_programmatic_read_budget_across_recovery(tmp_path: Path) -> None:
+    store = _StoreStub()
+    runtime = WorkerRuntime(
+        store=store,
+        policy=_PolicyStub(),
+        workspace_dir=tmp_path,
+        launcher=_LauncherStub(),
+        mcp_manager=None,
+        settings=Settings(),
+    )
+    calls = 0
+
+    async def fake_read_loop(spec, process, approval_requester=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert runtime._programmatic_read_calls_used[spec.id] == 0
+            runtime._programmatic_read_calls_used[spec.id] = 1
+            raise RuntimeError("Worker stalled without output")
+        assert runtime._programmatic_read_calls_used[spec.id] == 1
+        return WorkerResult(summary="ok", output={})
+
+    runtime._read_loop = fake_read_loop  # type: ignore[method-assign]
+
+    result = asyncio.run(runtime.run(_spec(programmatic_read_call_budget=2)))
+
+    assert result.summary == "ok"
+    assert calls == 2
+    assert "w1" not in runtime._programmatic_read_calls_used
 
 
 def test_runtime_fails_after_recovery_exhausted(tmp_path: Path) -> None:
