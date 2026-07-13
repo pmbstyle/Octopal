@@ -409,6 +409,15 @@ uv run octopal memory stats
 uv run octopal memory cleanup --dry-run
 ```
 
+Worker execution episodes store metadata-only fingerprints by default. To also retain raw task,
+prompt, and result evidence, generate a dedicated 32-byte key and set
+`OCTOPAL_EPISODE_EVIDENCE_KEY` to its URL-safe base64 value. Raw evidence is encrypted with
+AES-256-GCM before it reaches SQLite; the runtime LLM credential is not copied automatically.
+Task, prompt, tool, and result content can still contain secrets, so treat the evidence key as
+sensitive. Set `OCTOPAL_EPISODE_EVIDENCE_RETENTION_DAYS` to control automatic ciphertext deletion
+(default: 30). Keep the key outside the repository and back it up securely: losing it makes
+retained evidence unrecoverable.
+
 ## 💻 Development
 
 ```bash

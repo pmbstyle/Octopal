@@ -39,6 +39,10 @@ from octopal.infrastructure.store.base import Store
 from octopal.infrastructure.store.models import AuditEvent, WorkerRecord, WorkerTemplateRecord
 from octopal.runtime.housekeeping import remove_tree_with_retries
 from octopal.runtime.intents.types import ActionIntent
+from octopal.runtime.memory.episode_evidence import (
+    EpisodeEvidenceCipher,
+    build_encrypted_worker_episode_evidence,
+)
 from octopal.runtime.memory.episodes import build_worker_execution_episode
 from octopal.runtime.policy.engine import PolicyEngine
 from octopal.runtime.tool_errors import ToolBridgeError
@@ -182,6 +186,16 @@ class WorkerRuntime:
     _running: dict[str, asyncio.subprocess.Process] = field(default_factory=dict)
     _stop_requests: set[str] = field(default_factory=set)
     _instruction_waiters: dict[tuple[str, str], asyncio.Future[str]] = field(default_factory=dict)
+    _episode_evidence_cipher: EpisodeEvidenceCipher | None = field(
+        init=False,
+        repr=False,
+        default=None,
+    )
+
+    def __post_init__(self) -> None:
+        encoded_key = self.settings.episode_evidence_key
+        if encoded_key:
+            self._episode_evidence_cipher = EpisodeEvidenceCipher.from_encoded_key(encoded_key)
 
     async def run_task(
         self,
@@ -1863,8 +1877,27 @@ class WorkerRuntime:
                 stored_output=evidence_output,
                 status=worker_status,
                 launcher_kind=type(self.launcher).__name__,
+                evidence_storage=(
+                    "aes256gcm" if self._episode_evidence_cipher is not None else "metadata_only"
+                ),
             )
-            await asyncio.to_thread(add_execution_episode, episode)
+            if self._episode_evidence_cipher is None:
+                await asyncio.to_thread(add_execution_episode, episode)
+            else:
+                add_bundle = getattr(self.store, "add_execution_episode_bundle", None)
+                if not callable(add_bundle):
+                    raise RuntimeError(
+                        "store does not support atomic encrypted execution episode evidence"
+                    )
+                encrypted_evidence = build_encrypted_worker_episode_evidence(
+                    cipher=self._episode_evidence_cipher,
+                    episode=episode,
+                    spec=spec,
+                    result=result,
+                    stored_output=evidence_output,
+                    retention_days=self.settings.episode_evidence_retention_days,
+                )
+                await asyncio.to_thread(add_bundle, episode, encrypted_evidence)
         except Exception as exc:
             logger.warning(
                 "Failed to record execution episode",
@@ -1893,6 +1926,7 @@ class WorkerRuntime:
                     "episode_id": episode.id,
                     "source_kind": episode.source_kind,
                     "trust_state": episode.trust_state,
+                    "evidence_storage": episode.provenance.get("evidence_storage"),
                 },
             )
         except Exception:

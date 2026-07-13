@@ -91,6 +91,20 @@ class ExecutionEpisodeRecord(BaseModel):
         return self
 
 
+class ExecutionEpisodeEvidenceRecord(BaseModel):
+    """Encrypted raw evidence that may be erased without rewriting episode metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    episode_id: str
+    algorithm: Literal["AES-256-GCM"]
+    key_id: str = Field(min_length=16, max_length=64)
+    nonce: bytes = Field(min_length=12, max_length=12)
+    ciphertext: bytes = Field(min_length=16)
+    created_at: datetime
+    expires_at: datetime
+
+
 class IntentRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 

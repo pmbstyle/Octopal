@@ -17,6 +17,7 @@ def build_worker_execution_episode(
     stored_output: dict[str, Any] | None,
     status: Literal["completed", "failed", "stopped"],
     launcher_kind: str,
+    evidence_storage: Literal["metadata_only", "aes256gcm"] = "metadata_only",
 ) -> ExecutionEpisodeRecord:
     """Build a content-addressed evidence index without copying task or output values."""
 
@@ -107,7 +108,12 @@ def build_worker_execution_episode(
             ),
             "code_version": __version__,
             "result_storage": "workers.output_json",
-            "content_policy": "metadata_only_v1",
+            "content_policy": (
+                "metadata_with_encrypted_raw_v1"
+                if evidence_storage == "aes256gcm"
+                else "metadata_only_v1"
+            ),
+            "evidence_storage": evidence_storage,
         },
         created_at=utc_now(),
     )

@@ -12,6 +12,7 @@ from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.store.base import UNSET, Store
 from octopal.infrastructure.store.models import (
     AuditEvent,
+    ExecutionEpisodeEvidenceRecord,
     ExecutionEpisodeRecord,
     IntentRecord,
     MemoryEntry,
@@ -81,6 +82,10 @@ class LockedConnection:
     def commit(self) -> None:
         with self._lock:
             self._conn.commit()
+
+    def rollback(self) -> None:
+        with self._lock:
+            self._conn.rollback()
 
     def __getattr__(self, item: str) -> Any:
         return getattr(self._conn, item)
@@ -173,6 +178,26 @@ class SQLiteStore(Store):
             BEFORE DELETE ON execution_episodes
             BEGIN
                 SELECT RAISE(ABORT, 'execution episodes are immutable');
+            END;
+
+            CREATE TABLE IF NOT EXISTS execution_episode_evidence (
+                episode_id TEXT PRIMARY KEY,
+                algorithm TEXT NOT NULL,
+                key_id TEXT NOT NULL,
+                nonce BLOB NOT NULL,
+                ciphertext BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY(episode_id) REFERENCES execution_episodes(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_execution_episode_evidence_expires
+                ON execution_episode_evidence (expires_at);
+
+            CREATE TRIGGER IF NOT EXISTS execution_episode_evidence_reject_update
+            BEFORE UPDATE ON execution_episode_evidence
+            BEGIN
+                SELECT RAISE(ABORT, 'execution episode evidence is immutable');
             END;
 
             CREATE TABLE IF NOT EXISTS permits (
@@ -778,6 +803,10 @@ class SQLiteStore(Store):
         return [self._row_to_worker(row) for row in cursor.fetchall()]
 
     def add_execution_episode(self, record: ExecutionEpisodeRecord) -> None:
+        self._insert_execution_episode(record)
+        self._conn.commit()
+
+    def _insert_execution_episode(self, record: ExecutionEpisodeRecord) -> None:
         self._conn.execute(
             """
             INSERT INTO execution_episodes (
@@ -808,7 +837,38 @@ class SQLiteStore(Store):
                 record.created_at.isoformat(),
             ),
         )
-        self._conn.commit()
+
+    def add_execution_episode_bundle(
+        self,
+        record: ExecutionEpisodeRecord,
+        evidence: ExecutionEpisodeEvidenceRecord,
+    ) -> None:
+        if evidence.episode_id != record.id:
+            raise ValueError("execution episode evidence must reference the bundled episode")
+        with self._lock:
+            try:
+                self._insert_execution_episode(record)
+                self._conn.execute(
+                    """
+                    INSERT INTO execution_episode_evidence (
+                        episode_id, algorithm, key_id, nonce, ciphertext, created_at, expires_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        evidence.episode_id,
+                        evidence.algorithm,
+                        evidence.key_id,
+                        evidence.nonce,
+                        evidence.ciphertext,
+                        evidence.created_at.isoformat(),
+                        evidence.expires_at.isoformat(),
+                    ),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def get_execution_episode(self, episode_id: str) -> ExecutionEpisodeRecord | None:
         cursor = self._conn.execute("SELECT * FROM execution_episodes WHERE id = ?", (episode_id,))
@@ -838,6 +898,35 @@ class SQLiteStore(Store):
                 (worker_run_id, safe_limit),
             )
         return [self._row_to_execution_episode(row) for row in cursor.fetchall()]
+
+    def get_execution_episode_evidence(
+        self, episode_id: str
+    ) -> ExecutionEpisodeEvidenceRecord | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM execution_episode_evidence WHERE episode_id = ?",
+            (episode_id,),
+        )
+        row = cursor.fetchone()
+        return self._row_to_execution_episode_evidence(row) if row else None
+
+    def delete_execution_episode_evidence(self, episode_id: str) -> bool:
+        cursor = self._conn.execute(
+            "DELETE FROM execution_episode_evidence WHERE episode_id = ?",
+            (episode_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def cleanup_expired_execution_episode_evidence(self, now: datetime) -> int:
+        cursor = self._conn.execute(
+            """
+            DELETE FROM execution_episode_evidence
+            WHERE julianday(expires_at) <= julianday(?)
+            """,
+            (now.isoformat(),),
+        )
+        self._conn.commit()
+        return cursor.rowcount
 
     def count_workers_created_since(self, since: datetime) -> int:
         cursor = self._conn.execute(
@@ -1848,6 +1937,19 @@ class SQLiteStore(Store):
             verification=_loads_json(row["verification_json"], {}),
             provenance=_loads_json(row["provenance_json"], {}),
             created_at=_parse_dt(row["created_at"]),
+        )
+
+    def _row_to_execution_episode_evidence(
+        self, row: sqlite3.Row
+    ) -> ExecutionEpisodeEvidenceRecord:
+        return ExecutionEpisodeEvidenceRecord(
+            episode_id=row["episode_id"],
+            algorithm=row["algorithm"],
+            key_id=row["key_id"],
+            nonce=bytes(row["nonce"]),
+            ciphertext=bytes(row["ciphertext"]),
+            created_at=_parse_dt(row["created_at"]),
+            expires_at=_parse_dt(row["expires_at"]),
         )
 
     def _row_to_permit(self, row: sqlite3.Row) -> PermitRecord:
