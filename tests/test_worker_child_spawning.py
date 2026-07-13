@@ -168,6 +168,37 @@ def test_start_worker_forwards_max_thinking_steps_override() -> None:
     assert octo.last_launch["max_thinking_steps"] == 18
 
 
+def test_start_worker_forwards_programmatic_read_budget() -> None:
+    templates = {"child": _template("child", perms=["network"])}
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store(templates)
+            self.last_launch = None
+
+        async def _start_worker_async(self, **kwargs):
+            self.last_launch = kwargs
+            return {"status": "started", "worker_id": "run-1", "run_id": "run-1"}
+
+    octo = _Octo()
+
+    async def _scenario() -> dict[str, object]:
+        payload = await _tool_start_worker(
+            {
+                "worker_id": "child",
+                "task": "search",
+                "programmatic_read_call_budget": 2,
+            },
+            {"octo": octo, "chat_id": 1},
+        )
+        return json.loads(payload)
+
+    result = asyncio.run(_scenario())
+
+    assert result["status"] == "started"
+    assert octo.last_launch["programmatic_read_call_budget"] == 2
+
+
 def test_start_child_worker_still_enforces_whitelist() -> None:
     templates = {
         "parent": _template(

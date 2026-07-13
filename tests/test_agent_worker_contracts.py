@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.runtime.workers.agent_worker import (
     _build_worker_completion_protocol_prompt,
@@ -14,9 +16,12 @@ from octopal.runtime.workers.agent_worker import (
     _record_worker_tool_result_context,
     _required_tool_call_missing,
     _tool_schema_chars,
+    _with_programmatic_read_proxies,
 )
 from octopal.runtime.workers.contracts import WorkerSpec
+from octopal.tools.metadata import ProgrammaticReadContract, ToolMetadata
 from octopal.tools.registry import ToolSpec
+from octopal.worker_sdk.worker import Worker
 
 
 def test_required_tool_call_missing_uses_explicit_contract() -> None:
@@ -151,6 +156,68 @@ def test_request_instruction_tool_schema_stays_compact() -> None:
     assert "blocking guidance" in tool.description
     assert "question" in tool.parameters["required"]
     assert tool.parameters["properties"]["target"]["enum"] == ["octo", "parent"]
+
+
+def test_programmatic_read_proxy_keeps_normal_tool_shape_and_calls_host_bridge(
+    monkeypatch,
+) -> None:
+    worker = Worker(
+        spec=WorkerSpec(
+            id="worker-1",
+            task="Research",
+            inputs={},
+            system_prompt="Research",
+            available_tools=["web_search"],
+            granted_capabilities=[],
+            timeout_seconds=30,
+            max_thinking_steps=3,
+            effective_permissions=["network"],
+            programmatic_read_call_budget=1,
+        )
+    )
+    calls: list[dict] = []
+
+    async def _fake_batch(batch: list[dict]) -> dict:
+        calls.extend(batch)
+        return {
+            "results": [
+                {
+                    "call_id": batch[0]["call_id"],
+                    "tool_name": "web_search",
+                    "status": "completed",
+                    "value": {"ok": True, "results": []},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(worker, "programmatic_read_batch", _fake_batch)
+    tool = ToolSpec(
+        name="web_search",
+        description="Search",
+        parameters={"type": "object"},
+        permission="network",
+        handler=lambda args, ctx: "local handler must not run",
+        metadata=ToolMetadata(
+            category="web",
+            read_only=True,
+            programmatic_read=ProgrammaticReadContract(
+                idempotent=True,
+                max_parallel_calls=2,
+                result_shape="json_object",
+                max_result_bytes=64_000,
+            ),
+        ),
+    )
+
+    proxied = _with_programmatic_read_proxies([tool], worker)[0]
+    result = asyncio.run(proxied.handler({"query": "Octopal"}, {}))
+
+    assert proxied.name == tool.name
+    assert proxied.parameters == tool.parameters
+    assert proxied.metadata == tool.metadata
+    assert result == {"ok": True, "results": []}
+    assert calls[0]["tool_name"] == "web_search"
+    assert calls[0]["arguments"] == {"query": "Octopal"}
 
 
 def test_worker_context_telemetry_records_prompt_and_tool_result_growth() -> None:

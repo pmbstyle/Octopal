@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from octopal.tools.web.providers.registry import (
@@ -28,6 +29,7 @@ def web_search(args: dict[str, Any]) -> str:
 
 async def web_search_async(args: dict[str, Any], _ctx: dict[str, Any] | None = None) -> str:
     """Cancellable web search handler for workers and programmatic batches."""
+    credentials = _search_credentials(_ctx)
     query = str(args.get("query", "")).strip()
     if not query:
         return _to_json(
@@ -37,11 +39,24 @@ async def web_search_async(args: dict[str, Any], _ctx: dict[str, Any] | None = N
                 "fallback_used": False,
                 "rate_limited": False,
                 "source": "web_search",
-                "provider": resolve_search_provider(args),
+                "provider": resolve_search_provider(args, credentials=credentials),
                 "error": "query is required",
             }
         )
-    return _to_json(await run_search_async(args))
+    if credentials is None:
+        return _to_json(await run_search_async(args))
+    return _to_json(await run_search_async(args, credentials=credentials))
+
+
+def _search_credentials(ctx: dict[str, Any] | None) -> Mapping[str, str] | None:
+    raw = ctx.get("search_credentials") if isinstance(ctx, dict) else None
+    if not isinstance(raw, Mapping):
+        return None
+    return {
+        str(name).strip().lower(): str(value).strip()
+        for name, value in raw.items()
+        if str(name).strip() and str(value).strip()
+    }
 
 
 def _to_json(payload: dict[str, Any]) -> str:

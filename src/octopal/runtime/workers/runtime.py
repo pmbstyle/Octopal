@@ -58,6 +58,7 @@ from octopal.runtime.workers.launcher import DockerLauncher, WorkerLauncher
 from octopal.runtime.workers.programmatic_bridge import (
     ProgrammaticReadBridgeOutcome,
     handle_programmatic_read_bridge_request,
+    programmatic_read_proxy_tool_names,
     safe_programmatic_read_request_id,
 )
 from octopal.utils import utc_now
@@ -396,6 +397,7 @@ class WorkerRuntime:
             spawn_depth=task_request.spawn_depth,
             effective_permissions=granted_permission_names,
             allowed_paths=task_request.allowed_paths,
+            programmatic_read_call_budget=task_request.programmatic_read_call_budget,
         )
 
         # Run worker
@@ -916,7 +918,12 @@ class WorkerRuntime:
         if isinstance(self.launcher, DockerLauncher) and self.settings.webclaw_enabled:
             env["OCTOPAL_WEBCLAW_BINARY"] = "webclaw"
 
-        tool_env = _tool_env_from_settings(self.settings, spec.available_tools)
+        host_proxy_tools = programmatic_read_proxy_tool_names(spec)
+        tool_env = _tool_env_from_settings(
+            self.settings,
+            spec.available_tools,
+            host_proxy_tools=host_proxy_tools,
+        )
         env.update(tool_env)
 
         return env
@@ -1494,6 +1501,7 @@ class WorkerRuntime:
                         ctx={
                             "base_dir": self.workspace_dir,
                             "worker": SimpleNamespace(spec=spec),
+                            "search_credentials": _search_credentials_from_settings(self.settings),
                         },
                     )
                 except Exception:
@@ -2353,7 +2361,12 @@ def _safe_worker_host_env(source: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def _tool_env_from_settings(settings: Settings, tool_names: list[str]) -> dict[str, str]:
+def _tool_env_from_settings(
+    settings: Settings,
+    tool_names: list[str],
+    *,
+    host_proxy_tools: frozenset[str] = frozenset(),
+) -> dict[str, str]:
     lowered_tools = {str(name).strip().lower() for name in tool_names if str(name).strip()}
     env: dict[str, str] = {}
     brave_api_key = (
@@ -2363,7 +2376,7 @@ def _tool_env_from_settings(settings: Settings, tool_names: list[str]) -> dict[s
         settings.config_obj.search.firecrawl_api_key if settings.config_obj else None
     ) or settings.firecrawl_api_key
 
-    if "web_search" in lowered_tools and brave_api_key:
+    if "web_search" in lowered_tools - host_proxy_tools and brave_api_key:
         env["BRAVE_API_KEY"] = brave_api_key
 
     if (
@@ -2373,6 +2386,23 @@ def _tool_env_from_settings(settings: Settings, tool_names: list[str]) -> dict[s
         env["FIRECRAWL_API_KEY"] = firecrawl_api_key
 
     return env
+
+
+def _search_credentials_from_settings(settings: Settings) -> dict[str, str]:
+    brave_api_key = (
+        settings.config_obj.search.brave_api_key if settings.config_obj else None
+    ) or settings.brave_api_key
+    firecrawl_api_key = (
+        settings.config_obj.search.firecrawl_api_key if settings.config_obj else None
+    ) or settings.firecrawl_api_key
+    return {
+        name: value
+        for name, value in {
+            "brave": brave_api_key,
+            "firecrawl": firecrawl_api_key,
+        }.items()
+        if value
+    }
 
 
 def _extract_mcp_tool_identity(

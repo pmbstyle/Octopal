@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from octopal.infrastructure.config.models import LLMConfig, OctopalConfig
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.store.models import WorkerRecord, WorkerTemplateRecord
-from octopal.runtime.workers.contracts import Capability, TaskRequest, WorkerResult
+from octopal.runtime.workers.contracts import Capability, TaskRequest, WorkerResult, WorkerSpec
 from octopal.runtime.workers.runtime import (
     WorkerRuntime,
     _validate_worker_local_tool_call,
@@ -122,6 +122,59 @@ def test_runtime_uses_task_max_thinking_steps_override(tmp_path: Path) -> None:
 
     spec = captured["spec"]
     assert spec.max_thinking_steps == 19
+
+
+def test_runtime_forwards_programmatic_read_budget_to_worker_spec(tmp_path: Path) -> None:
+    template = WorkerTemplateRecord(
+        id="worker",
+        name="Worker",
+        description="Test worker",
+        system_prompt="Do work",
+        available_tools=["web_search"],
+        required_permissions=["network"],
+        model=None,
+        max_thinking_steps=3,
+        default_timeout_seconds=30,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    class _Store:
+        def get_worker_template(self, worker_id: str):
+            return template
+
+    class _Policy:
+        def grant_capabilities(self, capabilities):
+            return [Capability(type="network", scope="worker")]
+
+    runtime = WorkerRuntime(
+        store=_Store(),
+        policy=_Policy(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        mcp_manager=None,
+        settings=Settings(),
+    )
+    captured: dict[str, object] = {}
+
+    async def _fake_run(spec, approval_requester=None):
+        captured["spec"] = spec
+        return WorkerResult(summary="ok")
+
+    runtime.run = _fake_run  # type: ignore[method-assign]
+
+    asyncio.run(
+        runtime.run_task(
+            TaskRequest(
+                worker_id="worker",
+                task="hello",
+                programmatic_read_call_budget=2,
+            )
+        )
+    )
+
+    spec = captured["spec"]
+    assert spec.programmatic_read_call_budget == 2
 
 
 def test_runtime_allows_worker_manage_templates(tmp_path: Path) -> None:
@@ -724,6 +777,37 @@ def test_runtime_launch_env_includes_search_keys_from_config(tmp_path: Path, mon
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["BRAVE_API_KEY"] == "brave-from-config"
+
+
+def test_runtime_launch_env_keeps_programmatic_search_key_host_side(tmp_path: Path) -> None:
+    settings = Settings(config_obj=OctopalConfig(search={"brave_api_key": "host-only-key"}))
+    runtime = WorkerRuntime(
+        store=object(),
+        policy=object(),
+        workspace_dir=tmp_path / "workspace",
+        launcher=object(),
+        settings=settings,
+    )
+    spec = WorkerSpec(
+        id="worker",
+        task="search",
+        inputs={},
+        system_prompt="search",
+        available_tools=["web_search"],
+        granted_capabilities=[],
+        timeout_seconds=30,
+        max_thinking_steps=3,
+        effective_permissions=["network"],
+        programmatic_read_call_budget=1,
+    )
+
+    env = runtime._build_worker_env(spec)
+    inconsistent_env = runtime._build_worker_env(
+        spec.model_copy(update={"effective_permissions": []})
+    )
+
+    assert "BRAVE_API_KEY" not in env
+    assert "BRAVE_API_KEY" not in inconsistent_env
 
 
 def test_runtime_launch_env_keeps_provider_secrets_out_of_worker_env(

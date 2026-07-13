@@ -48,6 +48,7 @@ class TaskRequest(BaseModel):
     root_task_id: str | None = None
     spawn_depth: int = 0
     allowed_paths: list[str] | None = None  # Restricted workspace paths the worker can access
+    programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
 
 
 class WorkerInferenceBudget(BaseModel):
@@ -105,7 +106,7 @@ class WorkerSpec(BaseModel):
     spawn_depth: int = 0
     effective_permissions: list[str] = Field(default_factory=list)
     allowed_paths: list[str] | None = None
-    programmatic_read_call_budget: int = Field(default=0, ge=0, le=16)
+    programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
 
     @model_validator(mode="after")
     def validate_inference_budget(self) -> Self:

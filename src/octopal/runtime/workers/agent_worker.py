@@ -17,6 +17,7 @@ import os
 import random
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from octopal.runtime.tool_loop import (
 )
 from octopal.runtime.tool_payloads import render_tool_result_for_llm
 from octopal.runtime.workers.contracts import WorkerResult, WorkerSpec
+from octopal.tools.programmatic import resolve_programmatic_read_tool
 from octopal.tools.registry import ToolPolicy, ToolPolicyPipelineStep, apply_tool_policy_pipeline
 from octopal.tools.tools import get_tools
 from octopal.worker_sdk.worker import Worker
@@ -1007,6 +1009,7 @@ async def execute_agent_task(
         ],
     )
     filtered_tools = _with_octo_tool_proxies(filtered_tools, worker)
+    filtered_tools = _with_programmatic_read_proxies(filtered_tools, worker)
     has_child_spawn_tools = any(
         getattr(tool, "name", "") in _CHILD_SPAWN_TOOLS for tool in filtered_tools
     )
@@ -2133,6 +2136,67 @@ def _with_octo_tool_proxies(tools: list[Any], worker: Worker) -> list[Any]:
             continue
         proxied.append(_make_octo_proxy_tool(tool, worker))
     return proxied
+
+
+def _with_programmatic_read_proxies(tools: list[Any], worker: Worker) -> list[Any]:
+    if worker.spec.programmatic_read_call_budget <= 0:
+        return tools
+    return [
+        (
+            _make_programmatic_read_proxy_tool(tool, worker)
+            if resolve_programmatic_read_tool(tool).allowed
+            else tool
+        )
+        for tool in tools
+    ]
+
+
+def _make_programmatic_read_proxy_tool(tool: Any, worker: Worker) -> Any:
+    from octopal.tools.registry import ToolSpec
+
+    async def _proxy_handler(args: dict[str, Any], _ctx: dict[str, Any]) -> Any:
+        call_id = f"{tool.name}-{uuid.uuid4().hex[:12]}"
+        result = await worker.programmatic_read_batch(
+            [
+                {
+                    "call_id": call_id,
+                    "tool_name": tool.name,
+                    "arguments": args,
+                }
+            ]
+        )
+        raw_results = result.get("results")
+        item = raw_results[0] if isinstance(raw_results, list) and raw_results else None
+        if not isinstance(item, dict) or item.get("call_id") != call_id:
+            raise ToolBridgeError(
+                "programmatic_read_result_invalid",
+                bridge="programmatic_read",
+                classification="programmatic_read_result_invalid",
+                retryable=False,
+                tool_name=tool.name,
+            )
+        if item.get("status") == "completed":
+            return item.get("value")
+        code = str(item.get("error_code") or "programmatic_read_call_failed")
+        details = item.get("error_details")
+        raise ToolBridgeError(
+            code,
+            bridge="programmatic_read",
+            classification=code,
+            retryable=False,
+            tool_name=tool.name,
+            details={"reasons": details} if isinstance(details, list) else None,
+        )
+
+    return ToolSpec(
+        name=tool.name,
+        description=tool.description,
+        parameters=tool.parameters,
+        permission=tool.permission,
+        handler=_proxy_handler,
+        is_async=True,
+        metadata=tool.metadata,
+    )
 
 
 def _make_octo_proxy_tool(tool: Any, worker: Worker) -> Any:

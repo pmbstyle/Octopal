@@ -12,6 +12,7 @@ from octopal.runtime.workers.contracts import (
 )
 from octopal.runtime.workers.programmatic_bridge import (
     handle_programmatic_read_bridge_request,
+    programmatic_read_proxy_tool_names,
     safe_programmatic_read_request_id,
 )
 from octopal.tools.metadata import ProgrammaticReadContract, ToolMetadata
@@ -97,6 +98,22 @@ def test_worker_spec_disables_programmatic_bridge_by_default() -> None:
     spec = _spec(call_budget=0)
 
     assert spec.programmatic_read_call_budget == 0
+
+
+@pytest.mark.parametrize("value", [True, 1.0, "1"])
+def test_worker_spec_requires_strict_integer_programmatic_budget(value: object) -> None:
+    with pytest.raises(ValidationError, match="programmatic_read_call_budget"):
+        _spec(call_budget=value)  # type: ignore[arg-type]
+
+
+def test_proxy_tool_names_require_budget_inventory_and_contract() -> None:
+    tool = _tool(lambda args, ctx: "{}")
+
+    assert programmatic_read_proxy_tool_names(_spec(call_budget=2), tools=[tool]) == {"lookup"}
+    assert not programmatic_read_proxy_tool_names(_spec(call_budget=0), tools=[tool])
+    assert programmatic_read_proxy_tool_names(
+        _spec(effective_permissions=["filesystem_read"]), tools=[tool]
+    ) == {"lookup"}
 
 
 def test_request_id_is_echoed_only_when_protocol_safe() -> None:

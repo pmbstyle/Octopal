@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from octopal.runtime.workers.contracts import WorkerSpec
+from octopal.tools.programmatic import resolve_programmatic_read_tool
 from octopal.tools.programmatic_execution import (
     ProgrammaticReadBatchError,
     ProgrammaticReadBatchLimits,
@@ -168,6 +169,22 @@ def safe_programmatic_read_request_id(payload: Mapping[str, Any]) -> str:
     if not isinstance(request_id, str) or not _REQUEST_ID_PATTERN.fullmatch(request_id):
         return ""
     return request_id
+
+
+def programmatic_read_proxy_tool_names(
+    spec: WorkerSpec, *, tools: Iterable[ToolSpec] | None = None
+) -> frozenset[str]:
+    """Resolve the exact local tools that an opted-in worker will execute on the host."""
+    if int(getattr(spec, "programmatic_read_call_budget", 0) or 0) <= 0:
+        return frozenset()
+    allowed_names = _normalized_names(spec.available_tools)
+    catalog = list(tools) if tools is not None else _core_tool_catalog()
+    return frozenset(
+        normalized_name
+        for tool in catalog
+        if (normalized_name := str(tool.name).strip().lower()) in allowed_names
+        and resolve_programmatic_read_tool(tool).allowed
+    )
 
 
 def _core_tool_catalog() -> list[ToolSpec]:

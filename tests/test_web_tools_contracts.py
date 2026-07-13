@@ -150,6 +150,50 @@ async def test_async_web_search_uses_cancellable_brave_client(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_async_web_search_accepts_host_context_credential_without_environment(
+    monkeypatch,
+) -> None:
+    captured_headers: dict[str, str] = {}
+
+    class _ResponseStub:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"web": {"results": []}}
+
+    class _AsyncClientStub:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, *args, **kwargs):
+            captured_headers.update(kwargs["headers"])
+            return _ResponseStub()
+
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "octopal.tools.web.providers.brave_provider.httpx.AsyncClient", _AsyncClientStub
+    )
+
+    payload = json.loads(
+        await search_mod.web_search_async(
+            {"query": "Octopal"},
+            {"search_credentials": {"brave": "host-only-key"}},
+        )
+    )
+
+    assert payload["ok"] is True
+    assert captured_headers["X-Subscription-Token"] == "host-only-key"
+
+
+@pytest.mark.asyncio
 async def test_async_web_search_uses_cancellable_firecrawl_client(monkeypatch) -> None:
     class _ResponseStub:
         def raise_for_status(self) -> None:

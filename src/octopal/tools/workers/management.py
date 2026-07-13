@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 _WORKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _MAX_PARALLEL_BATCH = 10
 _MAX_THINKING_STEPS_OVERRIDE = 30
+_MAX_PROGRAMMATIC_READ_CALL_BUDGET = 16
 _WORKER_BLOCKED_TOOL_NAMES = {
     "send_file_to_user",
     "self_control",
@@ -68,6 +69,10 @@ _MAX_THINKING_STEPS_GUIDANCE = (
     "not a cosmetic hint: if Octo expands the task scope, expects staged investigation, tool retries, "
     "verification, child supervision, or synthesis, raise this along with timeout_seconds. "
     f"Default comes from the template; maximum override is {_MAX_THINKING_STEPS_OVERRIDE}."
+)
+_PROGRAMMATIC_READ_BUDGET_GUIDANCE = (
+    "Optional host-side budget for explicitly eligible bounded read-only tools. "
+    "Default 0 keeps the bridge disabled; maximum 16."
 )
 
 
@@ -441,6 +446,12 @@ def get_worker_tools() -> list[ToolSpec]:
                         "type": "number",
                         "description": _MAX_THINKING_STEPS_GUIDANCE,
                     },
+                    "programmatic_read_call_budget": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": _MAX_PROGRAMMATIC_READ_CALL_BUDGET,
+                        "description": _PROGRAMMATIC_READ_BUDGET_GUIDANCE,
+                    },
                     "scheduled_task_id": {
                         "type": "string",
                         "description": "Optional schedule task ID when this worker run comes from check_schedule. Enables reliable execution tracking.",
@@ -528,6 +539,12 @@ def get_worker_tools() -> list[ToolSpec]:
                         "type": "number",
                         "description": _MAX_THINKING_STEPS_GUIDANCE,
                     },
+                    "programmatic_read_call_budget": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": _MAX_PROGRAMMATIC_READ_CALL_BUDGET,
+                        "description": _PROGRAMMATIC_READ_BUDGET_GUIDANCE,
+                    },
                     "required_tools": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -576,7 +593,7 @@ def get_worker_tools() -> list[ToolSpec]:
                 "properties": {
                     "tasks": {
                         "type": "array",
-                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, a subset-only tools override, timeout_seconds, max_thinking_steps, required_tools, required_permissions, required_tool_calls, plan_run_id, plan_step_id, orchestration_item_id, and allowed_paths.",
+                        "description": "List of tasks to launch. Each item must include worker_id and task, and may include inputs, a subset-only tools override, timeout_seconds, max_thinking_steps, programmatic_read_call_budget, required_tools, required_permissions, required_tool_calls, plan_run_id, plan_step_id, orchestration_item_id, and allowed_paths.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -597,6 +614,12 @@ def get_worker_tools() -> list[ToolSpec]:
                                 "max_thinking_steps": {
                                     "type": "number",
                                     "description": _MAX_THINKING_STEPS_GUIDANCE,
+                                },
+                                "programmatic_read_call_budget": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": _MAX_PROGRAMMATIC_READ_CALL_BUDGET,
+                                    "description": _PROGRAMMATIC_READ_BUDGET_GUIDANCE,
                                 },
                                 "required_tools": {"type": "array", "items": {"type": "string"}},
                                 "required_permissions": {
@@ -1258,12 +1281,20 @@ async def _start_worker_common(
         args.get("max_thinking_steps"),
         error_prefix="start_child_worker error" if require_worker_context else "start_worker error",
     )
+    programmatic_read_call_budget, bridge_budget_error = _parse_programmatic_read_call_budget(
+        args.get("programmatic_read_call_budget"),
+        error_prefix=(
+            "start_child_worker error" if require_worker_context else "start_worker error"
+        ),
+    )
     scheduled_task_id = str(args.get("scheduled_task_id", "")).strip() or None
 
     if not task:
         return "start_worker error: task is required."
     if max_steps_error:
         return max_steps_error
+    if bridge_budget_error:
+        return bridge_budget_error
 
     resolution = _resolve_worker_for_start(
         octo=octo,
@@ -1358,6 +1389,7 @@ async def _start_worker_common(
         root_task_id=child_ctx["root_task_id"] if child_ctx else None,
         spawn_depth=(child_ctx["spawn_depth"] + 1) if child_ctx else 0,
         allowed_paths=allowed_paths,
+        programmatic_read_call_budget=programmatic_read_call_budget,
     )
     status = str(launch.get("status", "started"))
     launched_worker_id = launch.get("worker_id")
@@ -1680,6 +1712,12 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
         )
         if max_steps_error:
             return {"index": index, "status": "error", "error": max_steps_error}
+        programmatic_read_call_budget, bridge_budget_error = _parse_programmatic_read_call_budget(
+            item.get("programmatic_read_call_budget"),
+            error_prefix="start_workers_parallel error",
+        )
+        if bridge_budget_error:
+            return {"index": index, "status": "error", "error": bridge_budget_error}
         required_tools = _normalize_str_list(item.get("required_tools"))
         required_permissions = _normalize_str_list(item.get("required_permissions"))
         required_tool_calls = _normalize_tool_name_list(item.get("required_tool_calls"))
@@ -1756,6 +1794,7 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
                 lineage_id=child_ctx["lineage_id"] if child_ctx else None,
                 root_task_id=child_ctx["root_task_id"] if child_ctx else None,
                 spawn_depth=(child_ctx["spawn_depth"] + 1) if child_ctx else 0,
+                programmatic_read_call_budget=programmatic_read_call_budget,
                 allowed_paths=(
                     item.get("allowed_paths")
                     if "allowed_paths" in item
@@ -2787,6 +2826,22 @@ def _parse_max_thinking_steps_override(
             f"{error_prefix}: max_thinking_steps must be <= {_MAX_THINKING_STEPS_OVERRIDE}.",
         )
     return steps, None
+
+
+def _parse_programmatic_read_call_budget(
+    value: object, *, error_prefix: str
+) -> tuple[int, str | None]:
+    if value in (None, ""):
+        return 0, None
+    if type(value) is not int:
+        return 0, f"{error_prefix}: programmatic_read_call_budget must be an integer."
+    if not 0 <= value <= _MAX_PROGRAMMATIC_READ_CALL_BUDGET:
+        return (
+            0,
+            f"{error_prefix}: programmatic_read_call_budget must be between 0 and "
+            f"{_MAX_PROGRAMMATIC_READ_CALL_BUDGET}.",
+        )
+    return value, None
 
 
 def _merge_tool_requirements(*values: list[str] | None) -> list[str]:
