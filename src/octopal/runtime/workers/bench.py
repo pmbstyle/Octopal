@@ -16,9 +16,20 @@ from math import ceil
 from pathlib import Path
 from typing import Any
 
-from octopal.infrastructure.config.settings import load_settings
-from octopal.infrastructure.providers.catalog import list_registered_provider_ids
+from octopal.infrastructure.config.models import (
+    BrowserRuntimeConfig,
+    LiteLLMRuntimeConfig,
+    LLMConfig,
+    OctopalConfig,
+    SearchConfig,
+    StorageConfig,
+)
+from octopal.infrastructure.providers.catalog import (
+    get_provider_catalog_entry,
+    list_registered_provider_ids,
+)
 from octopal.runtime.workers.contracts import WorkerInferenceBudget
+from octopal.tools.catalog import get_tools
 
 
 @dataclass(frozen=True)
@@ -54,6 +65,24 @@ _MAX_LIVE_RUN_COST_MICROUSD = 100_000
 _MAX_LIVE_INVOCATION_TOTAL_TOKENS = 100_000
 _MAX_LIVE_INVOCATION_COST_MICROUSD = 200_000
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_BENCH_ENV_PASSTHROUGH = (
+    "LANG",
+    "LC_ALL",
+    "PATH",
+    "PYTHONPATH",
+    "SSL_CERT_FILE",
+    "VIRTUAL_ENV",
+)
+
+
+@dataclass(frozen=True)
+class WorkerBenchIsolation:
+    root_dir: Path
+    workspace_dir: Path
+    state_dir: Path
+    browser_profile_dir: Path
+    home_dir: Path
+    config_path: Path
 
 
 DEFAULT_SCENARIOS: tuple[WorkerBenchScenario, ...] = (
@@ -429,6 +458,8 @@ def run_worker_bench(
     execution_mode: str = "live",
     replay_dir: Path | None = None,
     trials: int = 1,
+    config_path: Path | None = None,
+    preflight_only: bool = False,
 ) -> dict[str, Any]:
     if execution_mode not in {"live", "replay"}:
         raise ValueError("execution_mode must be 'live' or 'replay'")
@@ -436,6 +467,8 @@ def run_worker_bench(
         raise ValueError("trials must be greater than zero")
     available_scenarios = list(scenarios) if scenarios is not None else list(DEFAULT_SCENARIOS)
     selected_scenarios = select_scenarios_from(available_scenarios, scenario_names)
+    if not selected_scenarios:
+        raise ValueError("worker bench requires at least one selected scenario")
     if execution_mode == "live":
         requested_live_runs = len(selected_scenarios) * trials
         if requested_live_runs > _MAX_LIVE_RUNS:
@@ -482,8 +515,12 @@ def run_worker_bench(
                 "live worker bench cost budgets exceed the invocation safety cap of "
                 f"{_MAX_LIVE_INVOCATION_COST_MICROUSD} micro-USD"
             )
+        if config_path is None:
+            raise ValueError("config_path is required for live worker bench execution")
     elif replay_dir is None:
         raise ValueError("replay_dir is required for replay mode")
+    elif preflight_only:
+        raise ValueError("preflight_only is only available in live mode")
 
     started_at = datetime.now(UTC)
     summaries: list[dict[str, Any]] = []
@@ -496,27 +533,57 @@ def run_worker_bench(
             trials=trials,
         )
     else:
-        settings = load_settings()
-        if artifacts_dir is None:
-            with tempfile.TemporaryDirectory(prefix="octopal-worker-bench-") as tmp:
-                summaries = _run_scenarios(
-                    workspace_dir=workspace_dir,
-                    scenarios=selected_scenarios,
-                    artifacts_dir=Path(tmp),
-                    timeout_seconds=timeout_seconds,
-                    env=_worker_bench_env(settings, workspace_dir),
-                    include_artifacts=False,
-                    trials=trials,
-                )
-        else:
-            artifacts_dir.mkdir(parents=True, exist_ok=True)
+        assert config_path is not None
+        source_config = _load_bench_source_config(config_path)
+        preflight = preflight_worker_bench(
+            workspace_dir=workspace_dir,
+            scenarios=selected_scenarios,
+            source_config=source_config,
+        )
+        if not preflight["passed"]:
+            raise ValueError(
+                "live worker bench preflight failed: " + "; ".join(preflight["errors"])
+            )
+        if preflight_only:
+            finished_at = datetime.now(UTC)
+            return {
+                "started_at": started_at.isoformat(),
+                "finished_at": finished_at.isoformat(),
+                "workspace_dir": str(workspace_dir),
+                "execution_mode": "live",
+                "preflight_only": True,
+                "preflight": preflight,
+                "scenario_count": len(selected_scenarios),
+                "trial_count": 0,
+                "graded_trials": 0,
+                "passed_trials": 0,
+                "failed_trials": 0,
+                "success_rate": None,
+                "assertion_pass_rate": None,
+                "multi_trial": {},
+                "distributions": {},
+                "failure_categories": {},
+                "scenarios": [],
+            }
+
+        with tempfile.TemporaryDirectory(prefix="octopal-worker-bench-") as tmp:
+            isolation = _prepare_worker_bench_isolation(
+                root_dir=Path(tmp),
+                source_config=source_config,
+                provider_id=str(selected_scenarios[0].provider_id),
+                model=str(selected_scenarios[0].model),
+            )
+            run_artifacts_dir, include_artifacts = _prepare_live_artifacts_dir(
+                requested=artifacts_dir,
+                isolation=isolation,
+            )
             summaries = _run_scenarios(
                 workspace_dir=workspace_dir,
                 scenarios=selected_scenarios,
-                artifacts_dir=artifacts_dir,
+                artifacts_dir=run_artifacts_dir,
                 timeout_seconds=timeout_seconds,
-                env=_worker_bench_env(settings, workspace_dir),
-                include_artifacts=True,
+                env=_worker_bench_env(source_config, isolation),
+                include_artifacts=include_artifacts,
                 trials=trials,
             )
 
@@ -529,7 +596,7 @@ def run_worker_bench(
         if item.get("grade", {}).get("passed") is True and not _trial_failed(item)
     )
     aggregate = aggregate_worker_bench_summaries(summaries)
-    return {
+    result = {
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
         "workspace_dir": str(workspace_dir),
@@ -546,6 +613,9 @@ def run_worker_bench(
         "failure_categories": aggregate["failure_categories"],
         "scenarios": summaries,
     }
+    if execution_mode == "live":
+        result["preflight"] = preflight
+    return result
 
 
 def aggregate_worker_bench_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -736,6 +806,15 @@ def main(argv: list[str] | None = None) -> int:
         default="live",
         help="Execute workers or grade saved JSONL without provider/tool calls.",
     )
+    parser.add_argument(
+        "--config",
+        help="Explicit source config for live mode. A sanitized temporary copy is used by workers.",
+    )
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="Validate live provider, budgets, tools, templates, and isolation without execution.",
+    )
     parser.add_argument("--replay-dir", help="Directory containing saved scenario JSONL files.")
     parser.add_argument(
         "--trials",
@@ -767,6 +846,8 @@ def main(argv: list[str] | None = None) -> int:
             execution_mode=args.mode,
             replay_dir=Path(args.replay_dir) if args.replay_dir else None,
             trials=args.trials,
+            config_path=Path(args.config) if args.config else None,
+            preflight_only=args.preflight_only,
         )
         if baseline is not None:
             summary["baseline_comparison"] = compare_worker_bench_to_baseline(
@@ -896,20 +977,258 @@ def _replay_scenarios(
     return summaries
 
 
-def _worker_bench_env(settings: Any, workspace_dir: Path) -> dict[str, str]:
-    env = dict(os.environ)
-    env["OCTOPAL_WORKSPACE_DIR"] = str(workspace_dir)
-    config_obj = getattr(settings, "config_obj", None)
-    brave_api_key = getattr(getattr(config_obj, "search", None), "brave_api_key", None) or getattr(
-        settings, "brave_api_key", None
+def preflight_worker_bench(
+    *,
+    workspace_dir: Path,
+    scenarios: list[WorkerBenchScenario],
+    source_config: OctopalConfig,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    scenario_reports: list[dict[str, Any]] = []
+    all_tools_by_name = {tool.name.strip().lower(): tool for tool in get_tools(mcp_manager=None)}
+    source_provider_id = str(source_config.llm.provider_id or "").strip().lower()
+    selected_search_provider, _ = _selected_search_credential(source_config)
+    configured_search_providers = [selected_search_provider] if selected_search_provider else []
+
+    for scenario in scenarios:
+        template_path = workspace_dir / "workers" / scenario.template_id / "worker.json"
+        try:
+            template = _read_json_object(template_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            errors.append(f"scenario {scenario.id} template cannot be loaded: {exc}")
+            continue
+
+        provider_id = str(scenario.provider_id or "").strip().lower()
+        model = str(scenario.model or "").strip()
+        expected_pricing_model = _resolved_pricing_model(
+            provider_id=provider_id,
+            model=model,
+            model_prefix=source_config.llm.model_prefix,
+        )
+        scenario_errors: list[str] = []
+        if provider_id != source_provider_id:
+            scenario_errors.append(
+                f"provider {provider_id!r} does not match source config provider "
+                f"{source_provider_id!r}"
+            )
+        provider_entry = get_provider_catalog_entry(provider_id)
+        if provider_entry.requires_api_key and not str(source_config.llm.api_key or "").strip():
+            scenario_errors.append(f"source config has no API key for provider {provider_id!r}")
+        if (
+            scenario.inference_budget is not None
+            and scenario.inference_budget.pricing_model != expected_pricing_model
+        ):
+            scenario_errors.append(
+                "live_budget pricing_model must match the resolved model "
+                f"{expected_pricing_model!r}"
+            )
+
+        required_permissions = {
+            permission.strip().lower()
+            for permission in _str_list(template.get("required_permissions"))
+        }
+        tool_reports: list[dict[str, Any]] = []
+        available_tools = _str_list(template.get("available_tools"))
+        if not available_tools:
+            scenario_errors.append("template must expose at least one explicitly read-only tool")
+        for raw_name in available_tools:
+            normalized_name = raw_name.strip().lower()
+            tool = all_tools_by_name.get(normalized_name)
+            if tool is None:
+                scenario_errors.append(f"template references unknown tool {raw_name!r}")
+                continue
+            metadata = tool.metadata
+            if not metadata.read_only or metadata.risk != "safe" or metadata.owner != "core":
+                scenario_errors.append(
+                    f"tool {raw_name!r} is not declared as a safe core read-only tool"
+                )
+            permission = str(tool.permission or "").strip().lower()
+            if permission not in required_permissions:
+                scenario_errors.append(
+                    f"tool {raw_name!r} requires undeclared permission {permission!r}"
+                )
+            if "search" in metadata.capabilities and not configured_search_providers:
+                scenario_errors.append(
+                    f"tool {raw_name!r} requires a configured isolated search provider"
+                )
+            tool_reports.append(
+                {
+                    "name": tool.name,
+                    "permission": permission,
+                    "risk": metadata.risk,
+                    "owner": metadata.owner,
+                    "read_only": metadata.read_only,
+                    "capabilities": list(metadata.capabilities),
+                }
+            )
+
+        if scenario_errors:
+            errors.extend(f"scenario {scenario.id}: {message}" for message in scenario_errors)
+        scenario_reports.append(
+            {
+                "id": scenario.id,
+                "template_id": scenario.template_id,
+                "provider_id": provider_id,
+                "model": model,
+                "pricing_model": expected_pricing_model,
+                "credential_present": bool(str(source_config.llm.api_key or "").strip()),
+                "tools": tool_reports,
+                "passed": not scenario_errors,
+            }
+        )
+
+    return {
+        "passed": not errors,
+        "errors": errors,
+        "scenarios": scenario_reports,
+        "configured_search_providers": configured_search_providers,
+        "isolation": {
+            "temporary_workspace": True,
+            "temporary_state": True,
+            "temporary_config": True,
+            "temporary_browser_profile": True,
+            "minimal_environment": True,
+            "connectors_disabled": True,
+            "observability_disabled": True,
+        },
+    }
+
+
+def _load_bench_source_config(path: Path) -> OctopalConfig:
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise ValueError(f"live worker bench config does not exist: {resolved}")
+    try:
+        return OctopalConfig.model_validate(_read_json_object(resolved))
+    except Exception as exc:
+        raise ValueError(f"invalid live worker bench config {resolved}: {exc}") from exc
+
+
+def _resolved_pricing_model(*, provider_id: str, model: str, model_prefix: str | None) -> str:
+    entry = get_provider_catalog_entry(provider_id)
+    prefix = str(model_prefix or entry.model_prefix or "").strip()
+    if not prefix:
+        return model
+    if entry.always_prefix_model:
+        return model if model.startswith(f"{prefix}/") else f"{prefix}/{model}"
+    if "/" in model:
+        return model
+    return f"{prefix}/{model}"
+
+
+def _selected_search_credential(source_config: OctopalConfig) -> tuple[str | None, str | None]:
+    brave_key = str(source_config.search.brave_api_key or "").strip()
+    if brave_key:
+        return "brave", brave_key
+    firecrawl_key = str(source_config.search.firecrawl_api_key or "").strip()
+    if firecrawl_key:
+        return "firecrawl", firecrawl_key
+    return None, None
+
+
+def _prepare_worker_bench_isolation(
+    *,
+    root_dir: Path,
+    source_config: OctopalConfig,
+    provider_id: str,
+    model: str,
+) -> WorkerBenchIsolation:
+    workspace_dir = root_dir / "workspace"
+    state_dir = root_dir / "state"
+    browser_profile_dir = root_dir / "browser-profile"
+    home_dir = root_dir / "home"
+    config_path = root_dir / "config.json"
+    for directory in (workspace_dir, state_dir, browser_profile_dir, home_dir, root_dir / "tmp"):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    search_provider, search_key = _selected_search_credential(source_config)
+    isolated_search = SearchConfig(
+        brave_api_key=search_key if search_provider == "brave" else None,
+        firecrawl_api_key=search_key if search_provider == "firecrawl" else None,
     )
-    firecrawl_api_key = getattr(
-        getattr(config_obj, "search", None), "firecrawl_api_key", None
-    ) or getattr(settings, "firecrawl_api_key", None)
-    if brave_api_key and not env.get("BRAVE_API_KEY"):
-        env["BRAVE_API_KEY"] = str(brave_api_key)
-    if firecrawl_api_key and not env.get("FIRECRAWL_API_KEY"):
-        env["FIRECRAWL_API_KEY"] = str(firecrawl_api_key)
+    isolated_config = OctopalConfig(
+        llm=LLMConfig(
+            provider_id=provider_id,
+            model=model,
+            api_key=source_config.llm.api_key,
+            api_base=source_config.llm.api_base,
+            model_prefix=source_config.llm.model_prefix,
+        ),
+        litellm=LiteLLMRuntimeConfig(
+            num_retries=0,
+            timeout=source_config.litellm.timeout,
+            fallbacks=None,
+            drop_params=source_config.litellm.drop_params,
+            caching=False,
+            max_concurrency=1,
+            rate_limit_max_retries=0,
+            rate_limit_base_delay_seconds=source_config.litellm.rate_limit_base_delay_seconds,
+            rate_limit_max_delay_seconds=source_config.litellm.rate_limit_max_delay_seconds,
+        ),
+        storage=StorageConfig(state_dir=state_dir, workspace_dir=workspace_dir),
+        search=isolated_search,
+        web=source_config.web.model_copy(deep=True),
+        browser=BrowserRuntimeConfig(
+            backend="playwright",
+            pinchtab_managed=False,
+            pinchtab_fallback_to_playwright=False,
+            pinchtab_token=None,
+            pinchtab_session=None,
+        ),
+    )
+    config_path.write_text(
+        json.dumps(isolated_config.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    if os.name != "nt":
+        os.chmod(config_path, 0o600)
+    return WorkerBenchIsolation(
+        root_dir=root_dir,
+        workspace_dir=workspace_dir,
+        state_dir=state_dir,
+        browser_profile_dir=browser_profile_dir,
+        home_dir=home_dir,
+        config_path=config_path,
+    )
+
+
+def _prepare_live_artifacts_dir(
+    *, requested: Path | None, isolation: WorkerBenchIsolation
+) -> tuple[Path, bool]:
+    if requested is None:
+        artifacts_dir = isolation.root_dir / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        return artifacts_dir, False
+    artifacts_dir = requested.expanduser().resolve()
+    if artifacts_dir.exists() and any(artifacts_dir.iterdir()):
+        raise ValueError(f"live artifacts_dir must be empty: {artifacts_dir}")
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    return artifacts_dir, True
+
+
+def _worker_bench_env(
+    source_config: OctopalConfig, isolation: WorkerBenchIsolation
+) -> dict[str, str]:
+    env = {name: os.environ[name] for name in _BENCH_ENV_PASSTHROUGH if os.environ.get(name)}
+    env.update(
+        {
+            "HOME": str(isolation.home_dir),
+            "TMPDIR": str(isolation.root_dir / "tmp"),
+            "XDG_CACHE_HOME": str(isolation.root_dir / "cache"),
+            "XDG_CONFIG_HOME": str(isolation.root_dir / "config-home"),
+            "OCTOPAL_CONFIG_FILE": str(isolation.config_path),
+            "OCTOPAL_WORKSPACE_DIR": str(isolation.workspace_dir),
+            "OCTOPAL_STATE_DIR": str(isolation.state_dir),
+            "OCTOPAL_PINCHTAB_OWNERSHIP_FILE": str(
+                isolation.browser_profile_dir / "pinchtab-ownership.json"
+            ),
+        }
+    )
+    search_provider, search_key = _selected_search_credential(source_config)
+    if search_provider == "brave" and search_key:
+        env["BRAVE_API_KEY"] = search_key
+    if search_provider == "firecrawl" and search_key:
+        env["FIRECRAWL_API_KEY"] = search_key
     return env
 
 

@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from types import SimpleNamespace
+from pathlib import Path
 
+from octopal.infrastructure.config.models import OctopalConfig
 from octopal.runtime.workers.bench import (
+    WorkerBenchIsolation,
     WorkerBenchScenario,
+    _prepare_live_artifacts_dir,
+    _prepare_worker_bench_isolation,
+    _resolved_pricing_model,
     _run_scenarios,
+    _worker_bench_env,
     aggregate_worker_bench_summaries,
     build_worker_spec,
     compare_worker_bench_to_baseline,
@@ -14,6 +20,7 @@ from octopal.runtime.workers.bench import (
     load_scenarios_file,
     main,
     parse_worker_jsonl,
+    preflight_worker_bench,
     run_worker_bench,
     select_scenarios,
     summarize_worker_messages,
@@ -41,6 +48,37 @@ def _budgeted_live_scenario(
             input_cost_microusd_per_million_tokens=200_000,
             completion_cost_microusd_per_million_tokens=1_000_000,
         ),
+    )
+
+
+def _live_source_config() -> OctopalConfig:
+    return OctopalConfig.model_validate(
+        {
+            "llm": {
+                "provider_id": "zai",
+                "model": "glm-test",
+                "api_key": "test-provider-key",
+            },
+            "search": {"brave_api_key": "test-search-key"},
+        }
+    )
+
+
+def _write_live_template(workspace_dir: Path, *, tools: list[str] | None = None) -> None:
+    template_dir = workspace_dir / "workers" / "web_search_ranked"
+    template_dir.mkdir(parents=True)
+    (template_dir / "worker.json").write_text(
+        json.dumps(
+            {
+                "name": "Web Search Ranked",
+                "system_prompt": "Search carefully.",
+                "available_tools": tools or ["web_search"],
+                "required_permissions": ["network"],
+                "max_thinking_steps": 4,
+                "default_timeout_seconds": 30,
+            }
+        ),
+        encoding="utf-8",
     )
 
 
@@ -708,10 +746,10 @@ def test_replay_mode_does_not_load_provider_settings(monkeypatch, tmp_path) -> N
         encoding="utf-8",
     )
 
-    def fail_if_loaded():
-        raise AssertionError("replay must not load settings or provider credentials")
+    def fail_if_loaded(_path):
+        raise AssertionError("replay must not load config or provider credentials")
 
-    monkeypatch.setattr("octopal.runtime.workers.bench.load_settings", fail_if_loaded)
+    monkeypatch.setattr("octopal.runtime.workers.bench._load_bench_source_config", fail_if_loaded)
 
     summary = run_worker_bench(
         workspace_dir=tmp_path / "unused-workspace",
@@ -729,11 +767,173 @@ def test_replay_mode_does_not_load_provider_settings(monkeypatch, tmp_path) -> N
     assert summary["scenarios"][0]["elapsed_ms"] is None
 
 
-def test_live_mode_enforces_trial_cap_before_loading_settings(monkeypatch, tmp_path) -> None:
-    def fail_if_loaded():
-        raise AssertionError("trial validation must happen before loading settings")
+def test_live_preflight_accepts_only_declared_read_only_tools(tmp_path) -> None:
+    _write_live_template(tmp_path)
 
-    monkeypatch.setattr("octopal.runtime.workers.bench.load_settings", fail_if_loaded)
+    report = preflight_worker_bench(
+        workspace_dir=tmp_path,
+        scenarios=[_budgeted_live_scenario()],
+        source_config=_live_source_config(),
+    )
+
+    assert report["passed"] is True
+    assert report["errors"] == []
+    assert report["scenarios"][0]["tools"] == [
+        {
+            "name": "web_search",
+            "permission": "network",
+            "risk": "safe",
+            "owner": "core",
+            "read_only": True,
+            "capabilities": ["network_fetch", "search"],
+        }
+    ]
+
+
+def test_live_preflight_rejects_network_tool_without_read_only_declaration(tmp_path) -> None:
+    _write_live_template(tmp_path, tools=["web_fetch"])
+
+    report = preflight_worker_bench(
+        workspace_dir=tmp_path,
+        scenarios=[_budgeted_live_scenario()],
+        source_config=_live_source_config(),
+    )
+
+    assert report["passed"] is False
+    assert "tool 'web_fetch' is not declared as a safe core read-only tool" in " ".join(
+        report["errors"]
+    )
+
+
+def test_live_preflight_only_does_not_execute_worker(monkeypatch, tmp_path) -> None:
+    _write_live_template(tmp_path)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(_live_source_config().model_dump(mode="json")), encoding="utf-8"
+    )
+
+    def fail_if_executed(**_kwargs):
+        raise AssertionError("preflight-only must not execute a worker")
+
+    monkeypatch.setattr("octopal.runtime.workers.bench._run_scenarios", fail_if_executed)
+
+    summary = run_worker_bench(
+        workspace_dir=tmp_path,
+        scenarios=[_budgeted_live_scenario()],
+        config_path=config_path,
+        preflight_only=True,
+    )
+
+    assert summary["preflight_only"] is True
+    assert summary["preflight"]["passed"] is True
+    assert summary["trial_count"] == 0
+
+
+def test_isolated_worker_config_strips_shared_runtime_credentials(tmp_path) -> None:
+    source_payload = _live_source_config().model_dump(mode="json")
+    source_payload.update(
+        {
+            "connectors": {
+                "instances": {
+                    "gmail": {
+                        "enabled": True,
+                        "auth": {"access_token": "shared-access-token"},
+                    }
+                }
+            },
+            "browser": {"pinchtab_token": "shared-browser-token"},
+            "search": {
+                "brave_api_key": "test-search-key",
+                "firecrawl_api_key": "unused-fallback-key",
+            },
+            "storage": {"state_dir": "shared-state", "workspace_dir": "shared-workspace"},
+        }
+    )
+    source_config = OctopalConfig.model_validate(source_payload)
+
+    isolation = _prepare_worker_bench_isolation(
+        root_dir=tmp_path / "isolation",
+        source_config=source_config,
+        provider_id="zai",
+        model="glm-test",
+    )
+    isolated_payload = json.loads(isolation.config_path.read_text(encoding="utf-8"))
+
+    assert isolated_payload["connectors"]["instances"] == {}
+    assert isolated_payload["browser"]["pinchtab_token"] is None
+    assert isolated_payload["search"] == {
+        "brave_api_key": "test-search-key",
+        "firecrawl_api_key": None,
+    }
+    assert isolated_payload["storage"] == {
+        "state_dir": str(isolation.state_dir),
+        "workspace_dir": str(isolation.workspace_dir),
+    }
+    serialized = json.dumps(isolated_payload)
+    assert "shared-access-token" not in serialized
+    assert "shared-browser-token" not in serialized
+    assert isolation.config_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_worker_bench_env_does_not_inherit_unapproved_secrets(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-leak")
+    root = tmp_path / "isolation"
+    isolation = WorkerBenchIsolation(
+        root_dir=root,
+        workspace_dir=root / "workspace",
+        state_dir=root / "state",
+        browser_profile_dir=root / "browser",
+        home_dir=root / "home",
+        config_path=root / "config.json",
+    )
+
+    env = _worker_bench_env(_live_source_config(), isolation)
+
+    assert "UNRELATED_SECRET" not in env
+    assert env["BRAVE_API_KEY"] == "test-search-key"
+    assert env["OCTOPAL_CONFIG_FILE"] == str(isolation.config_path)
+    assert env["OCTOPAL_WORKSPACE_DIR"] == str(isolation.workspace_dir)
+    assert env["OCTOPAL_STATE_DIR"] == str(isolation.state_dir)
+
+
+def test_worker_bench_env_selects_only_one_search_credential(tmp_path) -> None:
+    source_payload = _live_source_config().model_dump(mode="json")
+    source_payload["search"] = {
+        "brave_api_key": "preferred-search-key",
+        "firecrawl_api_key": "fallback-search-key",
+    }
+    root = tmp_path / "isolation"
+    isolation = WorkerBenchIsolation(
+        root_dir=root,
+        workspace_dir=root / "workspace",
+        state_dir=root / "state",
+        browser_profile_dir=root / "browser",
+        home_dir=root / "home",
+        config_path=root / "config.json",
+    )
+
+    env = _worker_bench_env(OctopalConfig.model_validate(source_payload), isolation)
+
+    assert env["BRAVE_API_KEY"] == "preferred-search-key"
+    assert "FIRECRAWL_API_KEY" not in env
+
+
+def test_resolved_pricing_model_honors_always_prefix_provider() -> None:
+    assert (
+        _resolved_pricing_model(
+            provider_id="openrouter",
+            model="x-ai/grok-4.3",
+            model_prefix=None,
+        )
+        == "openrouter/x-ai/grok-4.3"
+    )
+
+
+def test_live_mode_enforces_trial_cap_before_loading_settings(monkeypatch, tmp_path) -> None:
+    def fail_if_loaded(_path):
+        raise AssertionError("trial validation must happen before loading config")
+
+    monkeypatch.setattr("octopal.runtime.workers.bench._load_bench_source_config", fail_if_loaded)
 
     try:
         run_worker_bench(workspace_dir=tmp_path, trials=4)
@@ -741,6 +941,36 @@ def test_live_mode_enforces_trial_cap_before_loading_settings(monkeypatch, tmp_p
         assert "capped at 3 total trials" in str(exc)
     else:
         raise AssertionError("expected live trial cap error")
+
+
+def test_live_mode_requires_explicit_config_path() -> None:
+    try:
+        run_worker_bench(workspace_dir=Path("."), scenarios=[_budgeted_live_scenario()])
+    except ValueError as exc:
+        assert "config_path is required" in str(exc)
+    else:
+        raise AssertionError("expected explicit live config error")
+
+
+def test_live_artifacts_directory_must_be_empty(tmp_path) -> None:
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    (artifacts_dir / "old-result.json").write_text("{}", encoding="utf-8")
+    isolation = WorkerBenchIsolation(
+        root_dir=tmp_path / "isolation",
+        workspace_dir=tmp_path / "isolation" / "workspace",
+        state_dir=tmp_path / "isolation" / "state",
+        browser_profile_dir=tmp_path / "isolation" / "browser",
+        home_dir=tmp_path / "isolation" / "home",
+        config_path=tmp_path / "isolation" / "config.json",
+    )
+
+    try:
+        _prepare_live_artifacts_dir(requested=artifacts_dir, isolation=isolation)
+    except ValueError as exc:
+        assert "must be empty" in str(exc)
+    else:
+        raise AssertionError("expected non-empty artifact directory error")
 
 
 def test_live_mode_caps_total_runs_across_scenarios(monkeypatch, tmp_path) -> None:
@@ -754,10 +984,10 @@ def test_live_mode_caps_total_runs_across_scenarios(monkeypatch, tmp_path) -> No
         for index in range(2)
     ]
 
-    def fail_if_loaded():
-        raise AssertionError("total run validation must happen before loading settings")
+    def fail_if_loaded(_path):
+        raise AssertionError("total run validation must happen before loading config")
 
-    monkeypatch.setattr("octopal.runtime.workers.bench.load_settings", fail_if_loaded)
+    monkeypatch.setattr("octopal.runtime.workers.bench._load_bench_source_config", fail_if_loaded)
 
     try:
         run_worker_bench(workspace_dir=tmp_path, scenarios=scenarios, trials=2)
@@ -779,10 +1009,10 @@ def test_live_mode_caps_total_declared_token_budget(monkeypatch, tmp_path) -> No
         for index in range(3)
     ]
 
-    def fail_if_loaded():
-        raise AssertionError("invocation budget validation must happen before loading settings")
+    def fail_if_loaded(_path):
+        raise AssertionError("invocation budget validation must happen before loading config")
 
-    monkeypatch.setattr("octopal.runtime.workers.bench.load_settings", fail_if_loaded)
+    monkeypatch.setattr("octopal.runtime.workers.bench._load_bench_source_config", fail_if_loaded)
 
     try:
         run_worker_bench(workspace_dir=tmp_path, scenarios=scenarios)
@@ -802,10 +1032,10 @@ def test_live_mode_rejects_replay_only_external_scenario(monkeypatch, tmp_path) 
         live_allowed=False,
     )
 
-    def fail_if_loaded():
-        raise AssertionError("scenario safety validation must happen before loading settings")
+    def fail_if_loaded(_path):
+        raise AssertionError("scenario safety validation must happen before loading config")
 
-    monkeypatch.setattr("octopal.runtime.workers.bench.load_settings", fail_if_loaded)
+    monkeypatch.setattr("octopal.runtime.workers.bench._load_bench_source_config", fail_if_loaded)
 
     try:
         run_worker_bench(workspace_dir=tmp_path, scenarios=[scenario])
@@ -816,8 +1046,13 @@ def test_live_mode_rejects_replay_only_external_scenario(monkeypatch, tmp_path) 
 
 
 def test_live_summary_counts_ungraded_execution_failure(monkeypatch, tmp_path) -> None:
+    source_config = _live_source_config()
     monkeypatch.setattr(
-        "octopal.runtime.workers.bench.load_settings", lambda: SimpleNamespace(config_obj=None)
+        "octopal.runtime.workers.bench._load_bench_source_config", lambda _path: source_config
+    )
+    monkeypatch.setattr(
+        "octopal.runtime.workers.bench.preflight_worker_bench",
+        lambda **_kwargs: {"passed": True, "errors": []},
     )
     monkeypatch.setattr(
         "octopal.runtime.workers.bench._run_scenarios",
@@ -834,6 +1069,7 @@ def test_live_summary_counts_ungraded_execution_failure(monkeypatch, tmp_path) -
     summary = run_worker_bench(
         workspace_dir=tmp_path,
         scenarios=[_budgeted_live_scenario()],
+        config_path=tmp_path / "config.json",
     )
 
     assert summary["graded_trials"] == 0
@@ -841,8 +1077,13 @@ def test_live_summary_counts_ungraded_execution_failure(monkeypatch, tmp_path) -
 
 
 def test_execution_failure_is_not_also_counted_as_passed(monkeypatch, tmp_path) -> None:
+    source_config = _live_source_config()
     monkeypatch.setattr(
-        "octopal.runtime.workers.bench.load_settings", lambda: SimpleNamespace(config_obj=None)
+        "octopal.runtime.workers.bench._load_bench_source_config", lambda _path: source_config
+    )
+    monkeypatch.setattr(
+        "octopal.runtime.workers.bench.preflight_worker_bench",
+        lambda **_kwargs: {"passed": True, "errors": []},
     )
     monkeypatch.setattr(
         "octopal.runtime.workers.bench._run_scenarios",
@@ -859,6 +1100,7 @@ def test_execution_failure_is_not_also_counted_as_passed(monkeypatch, tmp_path) 
     summary = run_worker_bench(
         workspace_dir=tmp_path,
         scenarios=[_budgeted_live_scenario()],
+        config_path=tmp_path / "config.json",
     )
 
     assert summary["graded_trials"] == 1

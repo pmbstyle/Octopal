@@ -51,11 +51,14 @@ def resolve_litellm_profile(
         settings.litellm_model_prefix if shared_profile_values else None,
         entry.model_prefix,
     )
-    api_base = _first_non_empty(
-        config.api_base if config else None,
-        settings.litellm_api_base if shared_profile_values else None,
-        *_legacy_base_candidates(settings, provider_id),
-        entry.default_api_base,
+    api_base = _normalize_provider_api_base(
+        provider_id,
+        _first_non_empty(
+            config.api_base if config else None,
+            settings.litellm_api_base if shared_profile_values else None,
+            *_legacy_base_candidates(settings, provider_id),
+            entry.default_api_base,
+        ),
     )
     api_key = _first_non_empty(
         config.api_key if config else None,
@@ -150,3 +153,14 @@ def _qualify_model_name(
     if "/" in model_name:
         return model_name
     return f"{prefix}/{model_name}"
+
+
+def _normalize_provider_api_base(provider_id: str, api_base: str | None) -> str | None:
+    normalized = str(api_base or "").strip().rstrip("/")
+    if not normalized:
+        return None
+    if provider_id == "minimax":
+        for legacy_suffix in ("/anthropic/v1", "/anthropic"):
+            if normalized.endswith(legacy_suffix):
+                return normalized[: -len(legacy_suffix)] + "/v1"
+    return normalized

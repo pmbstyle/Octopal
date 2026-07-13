@@ -480,6 +480,29 @@ subscription route is rejected for live evals because it does not currently retu
 Initial safety caps are 50,000 tokens and USD 0.10 per run, and 100,000 tokens and USD 0.20 for the
 whole invocation.
 
+Live mode also requires an explicit `--config`; it never falls back to the normal runtime config.
+Before execution, run the same command with `--preflight-only`. Preflight resolves the selected
+templates against tool metadata and rejects unknown, non-core, guarded, dangerous, or not explicitly
+read-only tools. It also verifies provider/model/pricing identity and credential presence without
+printing secret values. Each execution uses temporary workspace, state, browser-profile, home, and
+sanitized config directories. Connector, channel, A2A, observability, and PinchTab credentials are
+not copied, and the worker subprocess receives a minimal environment instead of inheriting all host
+variables. A persistent `--artifacts-dir` is accepted only when it is empty.
+
+The MiniMax LiteLLM route uses the provider's OpenAI-compatible base URL
+`https://api.minimax.io/v1`. Existing MiniMax profiles ending in `/anthropic` or
+`/anthropic/v1` are normalized to `/v1`; the LiteLLM `minimax/…` route otherwise appends an
+OpenAI chat-completions path to the Anthropic base and receives a 404.
+
+```bash
+uv run python scripts/worker_bench.py \
+  --suite /path/to/live-suite.json \
+  --workspace workspace_templates \
+  --mode live \
+  --config /path/to/dedicated-test-config.json \
+  --preflight-only
+```
+
 GitHub releases use date-based versions in `src/octopal/_version.py` and tags like `vYYYY.MM.DD` or `vYYYY.MM.DD.N`.
 
 ## ⁉️ Troubleshooting

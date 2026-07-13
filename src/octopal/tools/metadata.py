@@ -35,6 +35,7 @@ class ToolMetadata:
     category: str = "misc"
     risk: ToolRiskLevel = "safe"
     owner: ToolOwner = "core"
+    read_only: bool = False
     profile_tags: tuple[str, ...] = field(default_factory=tuple)
     capabilities: tuple[str, ...] = field(default_factory=tuple)
 

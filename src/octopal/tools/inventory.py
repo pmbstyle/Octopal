@@ -59,6 +59,7 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
     ),
     "web_search": ToolMetadata(
         category="web",
+        read_only=True,
         profile_tags=("research", "minimal"),
         capabilities=("network_fetch", "search"),
     ),
