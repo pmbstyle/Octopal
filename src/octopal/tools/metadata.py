@@ -30,7 +30,11 @@ def normalize_tool_tags(values: Iterable[str] | None) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class ProgrammaticReadContract:
-    """Bounded result contract for side-effect-free programmatic tool calls."""
+    """Bounded result contract for side-effect-free programmatic tool calls.
+
+    Idempotence means repeated calls add no side effects; it does not promise
+    deterministic results from changing external data sources.
+    """
 
     idempotent: bool
     max_parallel_calls: int

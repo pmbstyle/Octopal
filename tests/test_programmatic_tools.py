@@ -9,8 +9,10 @@ from octopal.tools.metadata import (
     ToolMetadata,
 )
 from octopal.tools.programmatic import (
+    ProgrammaticReadResultError,
     filter_programmatic_read_tools,
     resolve_programmatic_read_tool,
+    validate_programmatic_read_result,
 )
 from octopal.tools.registry import ToolSpec
 
@@ -144,11 +146,104 @@ def test_programmatic_resolver_requires_explicit_idempotence() -> None:
     assert resolve_programmatic_read_tool(tool).reasons == ("tool_not_declared_idempotent",)
 
 
-def test_existing_catalog_remains_programmatic_default_deny() -> None:
+def test_programmatic_result_validator_accepts_declared_json_object() -> None:
+    tool = _tool(metadata=ToolMetadata(read_only=True, programmatic_read=_contract()))
+
+    validated = validate_programmatic_read_result(tool, '{"query":"café"}')
+
+    assert validated.tool_name == "lookup"
+    assert validated.result_shape == "json_object"
+    assert validated.byte_count == len('{"query":"café"}'.encode())
+    assert validated.value == {"query": "café"}
+
+
+@pytest.mark.parametrize(
+    ("result", "code"),
+    [
+        ([], "result_not_text"),
+        ("not json", "result_invalid_json"),
+        ('{"value":NaN}', "result_invalid_json"),
+        ("[]", "result_shape_mismatch"),
+        ("null", "result_shape_mismatch"),
+    ],
+)
+def test_programmatic_result_validator_rejects_wrong_shape(result: object, code: str) -> None:
+    tool = _tool(metadata=ToolMetadata(read_only=True, programmatic_read=_contract()))
+
+    with pytest.raises(ProgrammaticReadResultError) as exc_info:
+        validate_programmatic_read_result(tool, result)
+
+    assert exc_info.value.code == code
+
+
+@pytest.mark.parametrize("result", ["secret:not-json", "\ud800"])
+def test_programmatic_result_errors_do_not_retain_raw_exception_context(result: str) -> None:
+    tool = _tool(metadata=ToolMetadata(read_only=True, programmatic_read=_contract()))
+
+    with pytest.raises(ProgrammaticReadResultError) as exc_info:
+        validate_programmatic_read_result(tool, result)
+
+    error = exc_info.value
+    assert result not in str(error)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def test_programmatic_result_validator_enforces_utf8_byte_limit_without_leaking_result() -> None:
+    secret_result = '{"secret":"éé"}'
+    tool = _tool(
+        metadata=ToolMetadata(
+            read_only=True,
+            programmatic_read=ProgrammaticReadContract(
+                idempotent=True,
+                max_parallel_calls=1,
+                result_shape="json_object",
+                max_result_bytes=len(secret_result),
+            ),
+        )
+    )
+
+    with pytest.raises(ProgrammaticReadResultError) as exc_info:
+        validate_programmatic_read_result(tool, secret_result)
+
+    error = exc_info.value
+    assert error.code == "result_too_large"
+    assert error.details == (
+        f"actual_bytes={len(secret_result.encode('utf-8'))}",
+        f"max_result_bytes={len(secret_result)}",
+    )
+    assert secret_result not in str(error)
+
+
+def test_programmatic_result_validator_rejects_ineligible_tool_before_result() -> None:
+    secret_result = "do not include this"
+
+    with pytest.raises(ProgrammaticReadResultError) as exc_info:
+        validate_programmatic_read_result(_tool(), secret_result)
+
+    error = exc_info.value
+    assert error.code == "tool_not_eligible"
+    assert error.details == (
+        "programmatic_read_contract_missing",
+        "tool_not_declared_read_only",
+    )
+    assert secret_result not in str(error)
+
+
+def test_catalog_opts_in_only_web_search_for_programmatic_reads() -> None:
     tools = get_tools(mcp_manager=None)
 
-    assert filter_programmatic_read_tools(tools) == []
+    assert [tool.name for tool in filter_programmatic_read_tools(tools)] == ["web_search"]
     web_search = next(tool for tool in tools if tool.name == "web_search")
-    assert resolve_programmatic_read_tool(web_search).reasons == (
-        "programmatic_read_contract_missing",
+    decision = resolve_programmatic_read_tool(web_search)
+    assert decision.allowed is True
+    assert decision.contract == ProgrammaticReadContract(
+        idempotent=True,
+        max_parallel_calls=2,
+        result_shape="json_object",
+        max_result_bytes=64_000,
     )
+
+    validated = validate_programmatic_read_result(web_search, web_search.handler({}, {}))
+    assert isinstance(validated.value, dict)
+    assert validated.value["error"] == "query is required"

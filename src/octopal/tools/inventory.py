@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from octopal.tools.metadata import ToolMetadata
+from octopal.tools.metadata import ProgrammaticReadContract, ToolMetadata
 from octopal.tools.registry import ToolSpec
 
 _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
@@ -60,6 +60,12 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
     "web_search": ToolMetadata(
         category="web",
         read_only=True,
+        programmatic_read=ProgrammaticReadContract(
+            idempotent=True,
+            max_parallel_calls=2,
+            result_shape="json_object",
+            max_result_bytes=64_000,
+        ),
         profile_tags=("research", "minimal"),
         capabilities=("network_fetch", "search"),
     ),

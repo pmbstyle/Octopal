@@ -12,8 +12,11 @@ from octopal.tools.profiles import (
 )
 from octopal.tools.programmatic import (
     ProgrammaticReadDecision,
+    ProgrammaticReadResultError,
+    ValidatedProgrammaticReadResult,
     filter_programmatic_read_tools,
     resolve_programmatic_read_tool,
+    validate_programmatic_read_result,
 )
 from octopal.tools.registry import ToolSpec, filter_tools
 
@@ -21,6 +24,8 @@ __all__ = [
     "ToolMetadata",
     "ProgrammaticReadContract",
     "ProgrammaticReadDecision",
+    "ProgrammaticReadResultError",
+    "ValidatedProgrammaticReadResult",
     "ToolResolutionEntry",
     "ToolResolutionReport",
     "ToolProfile",
@@ -30,6 +35,7 @@ __all__ = [
     "resolve_tool_diagnostics",
     "filter_programmatic_read_tools",
     "resolve_programmatic_read_tool",
+    "validate_programmatic_read_result",
     "ToolSpec",
     "filter_tools",
     "get_tools",
