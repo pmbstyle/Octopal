@@ -453,6 +453,23 @@ npm install
 npm run build
 ```
 
+Replay a versioned worker eval suite without loading provider credentials or calling tools:
+
+```bash
+uv run python scripts/worker_bench.py \
+  --suite /path/to/suite.json \
+  --mode replay \
+  --replay-dir /path/to/replay-artifacts \
+  --baseline /path/to/baseline-result.json \
+  --out /path/to/latest-result.json
+```
+
+Without `--baseline`, the command exits non-zero for any failed trial. With a baseline, known
+failures are preserved and it exits non-zero only for outcome regressions, including new failed
+trials. Summaries include success/assertion rates, pass-at-k-style multi-trial rates, bounded metric
+distributions, and failure categories; grader evidence records structure and sizes rather than raw
+output values.
+
 GitHub releases use date-based versions in `src/octopal/_version.py` and tags like `vYYYY.MM.DD` or `vYYYY.MM.DD.N`.
 
 ## ⁉️ Troubleshooting

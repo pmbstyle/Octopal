@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from octopal.runtime.workers.bench import (
     WorkerBenchScenario,
     _run_scenarios,
+    aggregate_worker_bench_summaries,
     build_worker_spec,
+    compare_worker_bench_to_baseline,
     grade_worker_messages,
     load_scenarios_file,
     main,
@@ -292,6 +294,226 @@ def test_structured_output_grader_rejects_internal_metadata_only() -> None:
     assert grade["assertions"][0]["evidence"]["domain_keys"] == []
 
 
+def test_telemetry_context_and_false_completion_graders_are_explicit() -> None:
+    scenario = WorkerBenchScenario(
+        id="telemetry-contract",
+        template_id="unused",
+        task="Validate telemetry contract",
+        inputs={},
+        graders=(
+            {"type": "required_telemetry_path", "path": "tokens.total_tokens"},
+            {"type": "required_context_manifest_path", "path": "tools.active_names"},
+            {"type": "no_false_completion"},
+            {"type": "max_stdout_parse_errors", "maximum": 0},
+        ),
+    )
+    stdout = "not-json\n" + json.dumps(
+        {
+            "type": "result",
+            "result": {
+                "status": "completed",
+                "output": {
+                    "_telemetry": {
+                        "tokens": {"total_tokens": 42},
+                        "context_manifest": {"tools": {"active_names": ["web_search"]}},
+                    }
+                },
+            },
+        }
+    )
+
+    grade = grade_worker_messages(scenario=scenario, stdout=stdout)
+
+    assert grade["passed"] is False
+    assert grade["assertions"][0]["passed"] is True
+    assert grade["assertions"][0]["evidence"]["value_type"] == "int"
+    assert grade["assertions"][1]["passed"] is True
+    assert grade["assertions"][2]["passed"] is False
+    assert grade["assertions"][2]["evidence"]["signature_present"] is True
+    assert grade["assertions"][3]["evidence"] == {"actual": 1, "maximum": 0}
+
+
+def test_required_telemetry_path_rejects_null_usage_accounting() -> None:
+    scenario = WorkerBenchScenario(
+        id="null-telemetry",
+        template_id="unused",
+        task="Require actual usage accounting",
+        inputs={},
+        graders=({"type": "required_telemetry_path", "path": "tokens.total_tokens"},),
+    )
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "result": {
+                "status": "completed",
+                "output": {"report": {}, "_telemetry": {"tokens": {"total_tokens": None}}},
+            },
+        }
+    )
+
+    grade = grade_worker_messages(scenario=scenario, stdout=stdout)
+
+    assert grade["passed"] is False
+    assert grade["assertions"][0]["evidence"] == {
+        "path": "tokens.total_tokens",
+        "found": True,
+        "value_type": "NoneType",
+        "value_chars": 4,
+    }
+
+
+def test_aggregate_worker_bench_summaries_reports_metrics_and_failures() -> None:
+    summaries = [
+        {
+            "scenario_id": "stable",
+            "trial": 1,
+            "status": "completed",
+            "returncode": None,
+            "thinking_steps": 2,
+            "tool_calls": 1,
+            "tokens": {"total_tokens": 100},
+            "context": {"tool_schema_chars": 500},
+            "grade": {
+                "passed": True,
+                "assertion_count": 2,
+                "passed_count": 2,
+                "assertions": [],
+            },
+        },
+        {
+            "scenario_id": "regressed",
+            "trial": 1,
+            "status": "completed",
+            "returncode": None,
+            "thinking_steps": 4,
+            "tool_calls": 3,
+            "tokens": {"total_tokens": 200},
+            "context": {"tool_schema_chars": 700},
+            "grade": {
+                "passed": False,
+                "assertion_count": 2,
+                "passed_count": 1,
+                "assertions": [{"type": "max_tool_calls", "passed": False, "evidence": {}}],
+            },
+        },
+    ]
+
+    aggregate = aggregate_worker_bench_summaries(summaries)
+
+    assert aggregate["success_rate"] == 0.5
+    assert aggregate["assertion_pass_rate"] == 0.75
+    assert aggregate["multi_trial"]["pass_at_k"] == 0.5
+    assert aggregate["distributions"]["thinking_steps"] == {
+        "count": 2,
+        "min": 2,
+        "max": 4,
+        "mean": 3.0,
+        "p50": 2,
+        "p95": 4,
+    }
+    assert aggregate["distributions"]["total_tokens"]["mean"] == 150.0
+    assert aggregate["failure_categories"]["grader:max_tool_calls"] == {
+        "trial_count": 1,
+        "scenario_ids": ["regressed"],
+    }
+
+
+def test_aggregate_success_rate_ignores_successful_ungraded_trials() -> None:
+    aggregate = aggregate_worker_bench_summaries(
+        [
+            {
+                "scenario_id": "telemetry-only",
+                "trial": 1,
+                "status": "completed",
+                "returncode": 0,
+                "grade": {"passed": None, "assertion_count": 0, "passed_count": 0},
+            }
+        ]
+    )
+
+    assert aggregate["success_rate"] is None
+    assert aggregate["multi_trial"]["pass_at_k"] is None
+
+
+def test_compare_worker_bench_to_baseline_detects_only_changed_outcomes() -> None:
+    def trial(scenario_id: str, passed: bool) -> dict[str, object]:
+        return {
+            "scenario_id": scenario_id,
+            "trial": 1,
+            "status": "completed",
+            "returncode": None,
+            "grade": {
+                "passed": passed,
+                "assertion_count": 1,
+                "passed_count": int(passed),
+                "assertions": [],
+            },
+        }
+
+    baseline = {"scenarios": [trial("stable", True), trial("known-failure", False)]}
+    current = {
+        "scenarios": [
+            trial("stable", False),
+            trial("known-failure", False),
+            trial("new", True),
+        ]
+    }
+
+    comparison = compare_worker_bench_to_baseline(summary=current, baseline=baseline)
+
+    assert comparison["regression_detected"] is True
+    assert comparison["coverage_changed"] is True
+    assert comparison["regressions"] == [
+        {
+            "scenario_id": "stable",
+            "trial": 1,
+            "baseline_outcome": "passed",
+            "current_outcome": "failed",
+        }
+    ]
+    assert comparison["unchanged_trial_count"] == 1
+    assert comparison["new_trials"] == [{"scenario_id": "new", "trial": 1}]
+    assert comparison["success_rate"] == {
+        "baseline": 0.5,
+        "current": 0.0,
+        "delta": -0.5,
+    }
+    assert comparison["overall_success_rate"] == {
+        "baseline": 0.5,
+        "current": 0.3333,
+    }
+
+
+def test_compare_worker_bench_treats_new_failed_trial_as_regression() -> None:
+    passed = {
+        "scenario_id": "stable",
+        "trial": 1,
+        "status": "completed",
+        "grade": {"passed": True, "assertions": []},
+    }
+    failed = {
+        "scenario_id": "new-failure",
+        "trial": 1,
+        "status": "completed",
+        "grade": {"passed": False, "assertions": []},
+    }
+
+    comparison = compare_worker_bench_to_baseline(
+        summary={"scenarios": [passed, failed]},
+        baseline={"scenarios": [passed]},
+    )
+
+    assert comparison["regression_detected"] is True
+    assert comparison["regressions"] == [
+        {
+            "scenario_id": "new-failure",
+            "trial": 1,
+            "baseline_outcome": "missing",
+            "current_outcome": "failed",
+        }
+    ]
+
+
 def test_replay_mode_does_not_load_provider_settings(monkeypatch, tmp_path) -> None:
     scenario = WorkerBenchScenario(
         id="offline",
@@ -485,3 +707,67 @@ def test_cli_returns_nonzero_when_a_replay_grade_fails(tmp_path, capsys) -> None
     assert exit_code == 1
     assert output["graded_trials"] == 1
     assert output["failed_trials"] == 1
+
+
+def test_cli_baseline_gate_accepts_an_unchanged_known_failure(tmp_path, capsys) -> None:
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "scenarios": [
+                    {
+                        "id": "known-failure",
+                        "template_id": "unused",
+                        "task": "Keep a known failure visible",
+                        "graders": [{"type": "structured_output"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    replay_dir = tmp_path / "replay"
+    replay_dir.mkdir()
+    (replay_dir / "known-failure.out.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "result": {"status": "completed", "output": {"_telemetry": {}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    baseline_path = tmp_path / "baseline.json"
+
+    initial_exit = main(
+        [
+            "--suite",
+            str(suite_path),
+            "--mode",
+            "replay",
+            "--replay-dir",
+            str(replay_dir),
+            "--out",
+            str(baseline_path),
+        ]
+    )
+    capsys.readouterr()
+    comparison_exit = main(
+        [
+            "--suite",
+            str(suite_path),
+            "--mode",
+            "replay",
+            "--replay-dir",
+            str(replay_dir),
+            "--baseline",
+            str(baseline_path),
+        ]
+    )
+
+    comparison = json.loads(capsys.readouterr().out)["baseline_comparison"]
+    assert initial_exit == 1
+    assert comparison_exit == 0
+    assert comparison["regression_detected"] is False
+    assert comparison["success_rate"]["delta"] == 0.0

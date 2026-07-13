@@ -8,8 +8,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -28,9 +30,13 @@ class WorkerBenchScenario:
 
 _SUPPORTED_GRADER_TYPES = {
     "forbidden_tool",
+    "max_stdout_parse_errors",
     "max_thinking_steps",
     "max_tool_calls",
+    "no_false_completion",
+    "required_context_manifest_path",
     "required_output_path",
+    "required_telemetry_path",
     "required_tool",
     "structured_output",
     "terminal_status",
@@ -252,7 +258,7 @@ def grade_worker_messages(
     scenario: WorkerBenchScenario,
     stdout: str,
 ) -> dict[str, Any]:
-    messages, _parse_errors = parse_worker_jsonl(stdout)
+    messages, parse_errors = parse_worker_jsonl(stdout)
     result = next(
         (message.get("result") for message in messages if message.get("type") == "result"), None
     )
@@ -284,11 +290,28 @@ def grade_worker_messages(
             path = str(grader.get("path") or "")
             found, value = _resolve_json_path(output_obj, path)
             passed = found
+            evidence = _path_evidence(path=path, found=found, value=value)
+        elif grader_type == "required_telemetry_path":
+            path = str(grader.get("path") or "")
+            found, value = _resolve_json_path(telemetry_obj, path)
+            passed = found and value is not None
+            evidence = _path_evidence(path=path, found=found, value=value)
+        elif grader_type == "required_context_manifest_path":
+            manifest = telemetry_obj.get("context_manifest")
+            manifest_obj = manifest if isinstance(manifest, dict) else {}
+            path = str(grader.get("path") or "")
+            found, value = _resolve_json_path(manifest_obj, path)
+            passed = found and value is not None
+            evidence = _path_evidence(path=path, found=found, value=value)
+        elif grader_type == "no_false_completion":
+            actual_status = result_obj.get("status")
+            domain_keys = sorted(key for key in output_obj if not str(key).startswith("_"))
+            signature_present = actual_status == "completed" and not domain_keys
+            passed = not signature_present
             evidence = {
-                "path": path,
-                "found": found,
-                "value_type": type(value).__name__ if found else None,
-                "value_chars": _serialized_value_chars(value) if found else None,
+                "status": actual_status,
+                "domain_key_count": len(domain_keys),
+                "signature_present": signature_present,
             }
         elif grader_type == "required_tool":
             tool = str(grader.get("tool") or "")
@@ -307,6 +330,11 @@ def grade_worker_messages(
             maximum = int(grader["maximum"])
             actual = _int_or_none(result_obj.get("thinking_steps"))
             passed = actual is not None and actual <= maximum
+            evidence = {"actual": actual, "maximum": maximum}
+        elif grader_type == "max_stdout_parse_errors":
+            maximum = int(grader["maximum"])
+            actual = len(parse_errors)
+            passed = actual <= maximum
             evidence = {"actual": actual, "maximum": maximum}
         else:  # pragma: no cover - scenario validation rejects this before execution
             evidence = {"error": f"unsupported grader type: {grader_type}"}
@@ -402,6 +430,7 @@ def run_worker_bench(
         for item in summaries
         if item.get("grade", {}).get("passed") is True and not _trial_failed(item)
     )
+    aggregate = aggregate_worker_bench_summaries(summaries)
     return {
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
@@ -412,7 +441,180 @@ def run_worker_bench(
         "graded_trials": graded_trials,
         "passed_trials": passed_trials,
         "failed_trials": failed_trials,
+        "success_rate": aggregate["success_rate"],
+        "assertion_pass_rate": aggregate["assertion_pass_rate"],
+        "multi_trial": aggregate["multi_trial"],
+        "distributions": aggregate["distributions"],
+        "failure_categories": aggregate["failure_categories"],
         "scenarios": summaries,
+    }
+
+
+def aggregate_worker_bench_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    outcomes = [_trial_outcome(summary) for summary in summaries]
+    evaluated_trial_count = sum(1 for outcome in outcomes if outcome != "ungraded")
+    passed_trials = sum(1 for outcome in outcomes if outcome == "passed")
+    assertion_count = 0
+    passed_assertions = 0
+    scenario_outcomes: dict[str, list[str]] = defaultdict(list)
+    failure_categories: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"trial_count": 0, "scenario_ids": set()}
+    )
+
+    for summary in summaries:
+        scenario_id = str(summary.get("scenario_id") or "unknown")
+        outcome = _trial_outcome(summary)
+        scenario_outcomes[scenario_id].append(outcome)
+        grade = summary.get("grade")
+        if isinstance(grade, dict):
+            assertion_count += int(grade.get("assertion_count") or 0)
+            passed_assertions += int(grade.get("passed_count") or 0)
+        if outcome == "failed":
+            for category in _trial_failure_categories(summary):
+                failure_categories[category]["trial_count"] += 1
+                failure_categories[category]["scenario_ids"].add(scenario_id)
+
+    scenario_count = len(scenario_outcomes)
+    evaluated_scenario_count = sum(
+        1 for outcomes in scenario_outcomes.values() if any(item != "ungraded" for item in outcomes)
+    )
+    pass_at_k_count = sum(1 for outcomes in scenario_outcomes.values() if "passed" in outcomes)
+    pass_all_k_count = sum(
+        1 for outcomes in scenario_outcomes.values() if all(item == "passed" for item in outcomes)
+    )
+    trial_sizes = [len(outcomes) for outcomes in scenario_outcomes.values()]
+
+    metric_paths = {
+        "elapsed_ms": "elapsed_ms",
+        "thinking_steps": "thinking_steps",
+        "llm_calls": "llm_calls",
+        "tool_calls": "tool_calls",
+        "prompt_tokens": "tokens.prompt_tokens",
+        "completion_tokens": "tokens.completion_tokens",
+        "total_tokens": "tokens.total_tokens",
+        "llm_latency_ms": "latency_ms.llm_total",
+        "tool_latency_ms": "latency_ms.tool_total",
+        "system_prompt_chars": "context.system_prompt_chars",
+        "task_prompt_chars": "context.task_prompt_chars",
+        "tool_count": "context.tool_count",
+        "tool_schema_chars": "context.tool_schema_chars",
+        "llm_input_chars_peak": "context.llm_input_chars_peak",
+        "llm_input_chars_total": "context.llm_input_chars_total",
+        "tool_result_raw_chars_total": "context.tool_result_raw_chars_total",
+        "tool_result_rendered_chars_total": "context.tool_result_rendered_chars_total",
+        "tool_result_truncated_chars_total": "context.tool_result_truncated_chars_total",
+    }
+    distributions: dict[str, dict[str, int | float]] = {}
+    for name, path in metric_paths.items():
+        values = [
+            value
+            for summary in summaries
+            if (value := _numeric_path_value(summary, path)) is not None
+        ]
+        if values:
+            distributions[name] = _distribution(values)
+
+    return {
+        "success_rate": _rate(passed_trials, evaluated_trial_count),
+        "assertion_pass_rate": _rate(passed_assertions, assertion_count),
+        "multi_trial": {
+            "scenario_count": scenario_count,
+            "evaluated_scenario_count": evaluated_scenario_count,
+            "min_trials_per_scenario": min(trial_sizes) if trial_sizes else 0,
+            "max_trials_per_scenario": max(trial_sizes) if trial_sizes else 0,
+            "pass_at_k": _rate(pass_at_k_count, evaluated_scenario_count),
+            "pass_all_k": _rate(pass_all_k_count, evaluated_scenario_count),
+        },
+        "distributions": distributions,
+        "failure_categories": {
+            category: {
+                "trial_count": data["trial_count"],
+                "scenario_ids": sorted(data["scenario_ids"]),
+            }
+            for category, data in sorted(failure_categories.items())
+        },
+    }
+
+
+def compare_worker_bench_to_baseline(
+    *, summary: dict[str, Any], baseline: dict[str, Any]
+) -> dict[str, Any]:
+    current_trials = _summary_trial_index(summary, label="current summary")
+    baseline_trials = _summary_trial_index(baseline, label="baseline summary")
+    current_keys = set(current_trials)
+    baseline_keys = set(baseline_trials)
+    common_keys = current_keys & baseline_keys
+
+    regressions: list[dict[str, Any]] = []
+    improvements: list[dict[str, Any]] = []
+    changed: list[dict[str, Any]] = []
+    unchanged_count = 0
+    for key in sorted(common_keys):
+        baseline_outcome = _trial_outcome(baseline_trials[key])
+        current_outcome = _trial_outcome(current_trials[key])
+        if baseline_outcome == current_outcome:
+            unchanged_count += 1
+            continue
+        item = _outcome_change(
+            key=key,
+            baseline_outcome=baseline_outcome,
+            current_outcome=current_outcome,
+        )
+        changed.append(item)
+        if baseline_outcome == "passed" and current_outcome != "passed":
+            regressions.append(item)
+        elif baseline_outcome != "passed" and current_outcome == "passed":
+            improvements.append(item)
+
+    new_keys = current_keys - baseline_keys
+    for key in sorted(new_keys):
+        current_outcome = _trial_outcome(current_trials[key])
+        if current_outcome == "failed":
+            regressions.append(
+                _outcome_change(
+                    key=key,
+                    baseline_outcome="missing",
+                    current_outcome=current_outcome,
+                )
+            )
+
+    current_aggregate = aggregate_worker_bench_summaries(
+        [current_trials[key] for key in sorted(common_keys)]
+    )
+    baseline_aggregate = aggregate_worker_bench_summaries(
+        [baseline_trials[key] for key in sorted(common_keys)]
+    )
+    overall_current_aggregate = aggregate_worker_bench_summaries(list(current_trials.values()))
+    overall_baseline_aggregate = aggregate_worker_bench_summaries(list(baseline_trials.values()))
+    current_rate = current_aggregate["success_rate"]
+    baseline_rate = baseline_aggregate["success_rate"]
+    rate_delta = (
+        round(float(current_rate) - float(baseline_rate), 4)
+        if current_rate is not None and baseline_rate is not None
+        else None
+    )
+
+    return {
+        "regression_detected": bool(regressions),
+        "coverage_changed": current_keys != baseline_keys,
+        "common_trial_count": len(common_keys),
+        "unchanged_trial_count": unchanged_count,
+        "success_rate": {
+            "baseline": baseline_rate,
+            "current": current_rate,
+            "delta": rate_delta,
+        },
+        "overall_success_rate": {
+            "baseline": overall_baseline_aggregate["success_rate"],
+            "current": overall_current_aggregate["success_rate"],
+        },
+        "regressions": regressions,
+        "improvements": improvements,
+        "other_outcome_changes": [
+            item for item in changed if item not in regressions and item not in improvements
+        ],
+        "new_trials": [_trial_identity(key) for key in sorted(new_keys)],
+        "missing_trials": [_trial_identity(key) for key in sorted(baseline_keys - current_keys)],
     }
 
 
@@ -447,11 +649,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional directory to keep generated worker specs and JSONL output.",
     )
     parser.add_argument("--out", help="Optional path to write the JSON summary.")
+    parser.add_argument(
+        "--baseline",
+        help="Optional prior JSON summary to compare by scenario and trial outcome.",
+    )
     parser.add_argument("--timeout", type=int, default=300, help="Per-scenario timeout in seconds.")
     args = parser.parse_args(argv)
 
     try:
         scenarios = load_scenarios_file(Path(args.suite)) if args.suite else None
+        baseline = _read_json_object(Path(args.baseline)) if args.baseline else None
         summary = run_worker_bench(
             workspace_dir=Path(args.workspace),
             scenario_names=args.scenario,
@@ -462,6 +669,11 @@ def main(argv: list[str] | None = None) -> int:
             replay_dir=Path(args.replay_dir) if args.replay_dir else None,
             trials=args.trials,
         )
+        if baseline is not None:
+            summary["baseline_comparison"] = compare_worker_bench_to_baseline(
+                summary=summary,
+                baseline=baseline,
+            )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
     text = json.dumps(summary, ensure_ascii=False, indent=2)
@@ -470,6 +682,9 @@ def main(argv: list[str] | None = None) -> int:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(text + "\n", encoding="utf-8")
     sys.stdout.write(text + "\n")
+    comparison = summary.get("baseline_comparison")
+    if isinstance(comparison, dict):
+        return 1 if comparison.get("regression_detected") else 0
     return 1 if summary["failed_trials"] else 0
 
 
@@ -632,11 +847,19 @@ def _validate_graders(value: Any, *, scenario_id: str) -> list[dict[str, Any]]:
                 raise ValueError(
                     f"Scenario {scenario_id} terminal_status expected must contain strings"
                 )
-        elif grader_type == "required_output_path":
+        elif grader_type in {
+            "required_output_path",
+            "required_telemetry_path",
+            "required_context_manifest_path",
+        }:
             _required_text(raw.get("path"), field=f"scenario {scenario_id} grader path")
         elif grader_type in {"required_tool", "forbidden_tool"}:
             _required_text(raw.get("tool"), field=f"scenario {scenario_id} grader tool")
-        elif grader_type in {"max_tool_calls", "max_thinking_steps"}:
+        elif grader_type in {
+            "max_tool_calls",
+            "max_thinking_steps",
+            "max_stdout_parse_errors",
+        }:
             maximum = raw.get("maximum")
             if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 0:
                 raise ValueError(
@@ -672,6 +895,15 @@ def _resolve_json_path(payload: dict[str, Any], path: str) -> tuple[bool, Any]:
     return True, current
 
 
+def _path_evidence(*, path: str, found: bool, value: Any) -> dict[str, Any]:
+    return {
+        "path": path,
+        "found": found,
+        "value_type": type(value).__name__ if found else None,
+        "value_chars": _serialized_value_chars(value) if found else None,
+    }
+
+
 def _serialized_value_chars(value: Any) -> int:
     try:
         return len(json.dumps(value, ensure_ascii=False, default=str))
@@ -686,7 +918,8 @@ def _artifact_stem(scenario_id: str, trial: int, trials: int) -> str:
 
 
 def _trial_failed(summary: dict[str, Any]) -> bool:
-    grade_passed = summary.get("grade", {}).get("passed")
+    grade = summary.get("grade")
+    grade_passed = grade.get("passed") if isinstance(grade, dict) else None
     if grade_passed is False:
         return True
     returncode = summary.get("returncode")
@@ -696,6 +929,108 @@ def _trial_failed(summary: dict[str, Any]) -> bool:
     if status in {"missing_result", "timeout"}:
         return True
     return grade_passed is None and status == "failed"
+
+
+def _trial_outcome(summary: dict[str, Any]) -> str:
+    if _trial_failed(summary):
+        return "failed"
+    grade = summary.get("grade")
+    if isinstance(grade, dict) and grade.get("passed") is True:
+        return "passed"
+    return "ungraded"
+
+
+def _trial_failure_categories(summary: dict[str, Any]) -> set[str]:
+    categories: set[str] = set()
+    returncode = summary.get("returncode")
+    if returncode not in (None, 0):
+        categories.add("execution:nonzero_returncode")
+    status = str(summary.get("status") or "").strip().lower()
+    if status in {"missing_result", "timeout"}:
+        categories.add(f"execution:{status}")
+    grade = summary.get("grade")
+    if isinstance(grade, dict):
+        assertions = grade.get("assertions")
+        if isinstance(assertions, list):
+            for assertion in assertions:
+                if isinstance(assertion, dict) and assertion.get("passed") is False:
+                    grader_type = str(assertion.get("type") or "unknown")
+                    categories.add(f"grader:{grader_type}")
+    if not categories:
+        categories.add("execution:failed")
+    return categories
+
+
+def _numeric_path_value(payload: dict[str, Any], path: str) -> int | float | None:
+    found, value = _resolve_json_path(payload, path)
+    if not found or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    return None
+
+
+def _distribution(values: list[int | float]) -> dict[str, int | float]:
+    ordered = sorted(values)
+    return {
+        "count": len(ordered),
+        "min": ordered[0],
+        "max": ordered[-1],
+        "mean": round(sum(ordered) / len(ordered), 3),
+        "p50": _nearest_rank(ordered, 0.50),
+        "p95": _nearest_rank(ordered, 0.95),
+    }
+
+
+def _nearest_rank(values: list[int | float], percentile: float) -> int | float:
+    index = max(0, ceil(percentile * len(values)) - 1)
+    return values[index]
+
+
+def _rate(numerator: int, denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
+    return round(numerator / denominator, 4)
+
+
+def _summary_trial_index(
+    summary: dict[str, Any], *, label: str
+) -> dict[tuple[str, int], dict[str, Any]]:
+    raw_scenarios = summary.get("scenarios")
+    if not isinstance(raw_scenarios, list):
+        raise ValueError(f"{label} must contain a scenarios list")
+    indexed: dict[tuple[str, int], dict[str, Any]] = {}
+    for index, raw in enumerate(raw_scenarios):
+        if not isinstance(raw, dict):
+            raise ValueError(f"{label} scenario {index} must be an object")
+        scenario_id = _required_identifier(
+            raw.get("scenario_id"), field=f"{label} scenario {index} scenario_id"
+        )
+        trial = raw.get("trial", 1)
+        if isinstance(trial, bool) or not isinstance(trial, int) or trial <= 0:
+            raise ValueError(f"{label} scenario {scenario_id} trial must be a positive integer")
+        key = (scenario_id, trial)
+        if key in indexed:
+            raise ValueError(f"{label} contains duplicate trial {scenario_id}#{trial}")
+        indexed[key] = raw
+    return indexed
+
+
+def _outcome_change(
+    *, key: tuple[str, int], baseline_outcome: str, current_outcome: str
+) -> dict[str, Any]:
+    return {
+        **_trial_identity(key),
+        "baseline_outcome": baseline_outcome,
+        "current_outcome": current_outcome,
+    }
+
+
+def _trial_identity(key: tuple[str, int]) -> dict[str, Any]:
+    scenario_id, trial = key
+    return {"scenario_id": scenario_id, "trial": trial}
 
 
 def _str_list(value: Any) -> list[str]:
