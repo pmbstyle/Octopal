@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 from octopal.infrastructure.store.models import (
     AuditEvent,
+    ExecutionEpisodeRecord,
     IntentRecord,
     MemoryEntry,
     MemoryFactRecord,
@@ -45,6 +46,17 @@ class Store(Protocol):
     ) -> int: ...
 
     def list_workers(self) -> list[WorkerRecord]: ...
+
+    def add_execution_episode(self, record: ExecutionEpisodeRecord) -> None: ...
+
+    def get_execution_episode(self, episode_id: str) -> ExecutionEpisodeRecord | None: ...
+
+    def list_execution_episodes(
+        self,
+        *,
+        worker_run_id: str | None = None,
+        limit: int = 100,
+    ) -> list[ExecutionEpisodeRecord]: ...
 
     def upsert_worker_template(self, record: WorkerTemplateRecord) -> None: ...
 

@@ -12,6 +12,7 @@ from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.store.base import UNSET, Store
 from octopal.infrastructure.store.models import (
     AuditEvent,
+    ExecutionEpisodeRecord,
     IntentRecord,
     MemoryEntry,
     MemoryFactRecord,
@@ -136,6 +137,43 @@ class SQLiteStore(Store):
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS execution_episodes (
+                id TEXT PRIMARY KEY,
+                worker_run_id TEXT NOT NULL,
+                task_fingerprint TEXT NOT NULL,
+                environment_fingerprint TEXT NOT NULL,
+                capability_fingerprint TEXT NOT NULL,
+                result_fingerprint TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                trust_state TEXT NOT NULL,
+                correlation_id TEXT,
+                template_id TEXT,
+                model TEXT,
+                trajectory_refs_json TEXT NOT NULL,
+                result_metadata_json TEXT NOT NULL,
+                verification_json TEXT NOT NULL,
+                provenance_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_execution_episodes_worker_created
+                ON execution_episodes (worker_run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_execution_episodes_task_created
+                ON execution_episodes (task_fingerprint, created_at DESC);
+
+            CREATE TRIGGER IF NOT EXISTS execution_episodes_reject_update
+            BEFORE UPDATE ON execution_episodes
+            BEGIN
+                SELECT RAISE(ABORT, 'execution episodes are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS execution_episodes_reject_delete
+            BEFORE DELETE ON execution_episodes
+            BEGIN
+                SELECT RAISE(ABORT, 'execution episodes are immutable');
+            END;
 
             CREATE TABLE IF NOT EXISTS permits (
                 id TEXT PRIMARY KEY,
@@ -738,6 +776,68 @@ class SQLiteStore(Store):
             (safe_limit,),
         )
         return [self._row_to_worker(row) for row in cursor.fetchall()]
+
+    def add_execution_episode(self, record: ExecutionEpisodeRecord) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO execution_episodes (
+                id, worker_run_id, task_fingerprint, environment_fingerprint,
+                capability_fingerprint, result_fingerprint, status, source_kind,
+                trust_state, correlation_id, template_id, model, trajectory_refs_json,
+                result_metadata_json, verification_json, provenance_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.id,
+                record.worker_run_id,
+                record.task_fingerprint,
+                record.environment_fingerprint,
+                record.capability_fingerprint,
+                record.result_fingerprint,
+                record.status,
+                record.source_kind,
+                record.trust_state,
+                record.correlation_id,
+                record.template_id,
+                record.model,
+                _safe_json_dumps(record.trajectory_refs),
+                _safe_json_dumps(record.result_metadata),
+                _safe_json_dumps(record.verification),
+                _safe_json_dumps(record.provenance),
+                record.created_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def get_execution_episode(self, episode_id: str) -> ExecutionEpisodeRecord | None:
+        cursor = self._conn.execute("SELECT * FROM execution_episodes WHERE id = ?", (episode_id,))
+        row = cursor.fetchone()
+        return self._row_to_execution_episode(row) if row else None
+
+    def list_execution_episodes(
+        self,
+        *,
+        worker_run_id: str | None = None,
+        limit: int = 100,
+    ) -> list[ExecutionEpisodeRecord]:
+        safe_limit = max(1, int(limit))
+        if worker_run_id is None:
+            cursor = self._conn.execute(
+                "SELECT * FROM execution_episodes ORDER BY created_at DESC LIMIT ?",
+                (safe_limit,),
+            )
+        else:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM execution_episodes
+                WHERE worker_run_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (worker_run_id, safe_limit),
+            )
+        return [self._row_to_execution_episode(row) for row in cursor.fetchall()]
 
     def count_workers_created_since(self, since: datetime) -> int:
         cursor = self._conn.execute(
@@ -1727,6 +1827,27 @@ class SQLiteStore(Store):
             spawn_depth=int(_row_get(row, "spawn_depth", 0) or 0),
             template_id=_row_get(row, "template_id"),
             template_name=_row_get(row, "template_name"),
+        )
+
+    def _row_to_execution_episode(self, row: sqlite3.Row) -> ExecutionEpisodeRecord:
+        return ExecutionEpisodeRecord(
+            id=row["id"],
+            worker_run_id=row["worker_run_id"],
+            task_fingerprint=row["task_fingerprint"],
+            environment_fingerprint=row["environment_fingerprint"],
+            capability_fingerprint=row["capability_fingerprint"],
+            result_fingerprint=row["result_fingerprint"],
+            status=row["status"],
+            source_kind=row["source_kind"],
+            trust_state=row["trust_state"],
+            correlation_id=row["correlation_id"],
+            template_id=row["template_id"],
+            model=row["model"],
+            trajectory_refs=_loads_json(row["trajectory_refs_json"], {}),
+            result_metadata=_loads_json(row["result_metadata_json"], {}),
+            verification=_loads_json(row["verification_json"], {}),
+            provenance=_loads_json(row["provenance_json"], {}),
+            created_at=_parse_dt(row["created_at"]),
         )
 
     def _row_to_permit(self, row: sqlite3.Row) -> PermitRecord:

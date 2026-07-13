@@ -39,6 +39,7 @@ from octopal.infrastructure.store.base import Store
 from octopal.infrastructure.store.models import AuditEvent, WorkerRecord, WorkerTemplateRecord
 from octopal.runtime.housekeeping import remove_tree_with_retries
 from octopal.runtime.intents.types import ActionIntent
+from octopal.runtime.memory.episodes import build_worker_execution_episode
 from octopal.runtime.policy.engine import PolicyEngine
 from octopal.runtime.tool_errors import ToolBridgeError
 from octopal.runtime.workers.contracts import (
@@ -1756,18 +1757,25 @@ class WorkerRuntime:
                         data={"reason": "malformed_worker_result_payload"},
                     )
                 worker_status = "failed" if result.status == "failed" else "completed"
+                stored_output = _merge_existing_orchestration_plan_output(
+                    self.store,
+                    spec.id,
+                    result.output,
+                )
                 await asyncio.to_thread(self.store.update_worker_status, spec.id, worker_status)
                 await asyncio.to_thread(
                     self.store.update_worker_result,
                     spec.id,
                     summary=result.summary,
-                    output=_merge_existing_orchestration_plan_output(
-                        self.store,
-                        spec.id,
-                        result.output,
-                    ),
+                    output=stored_output,
                     error=_worker_result_error_text(result) if worker_status == "failed" else None,
                     tools_used=result.tools_used,
+                )
+                await self._record_execution_episode(
+                    spec=spec,
+                    result=result,
+                    stored_output=stored_output,
+                    worker_status=worker_status,
                 )
                 return result
             return None
@@ -1803,6 +1811,63 @@ class WorkerRuntime:
             self.store.update_worker_result, spec.id, error="Worker exited without result"
         )
         raise RuntimeError("Worker exited without result")
+
+    async def _record_execution_episode(
+        self,
+        *,
+        spec: WorkerSpec,
+        result: WorkerResult,
+        stored_output: dict[str, Any] | None,
+        worker_status: str,
+    ) -> None:
+        add_execution_episode = getattr(self.store, "add_execution_episode", None)
+        if not callable(add_execution_episode):
+            return
+        try:
+            episode = build_worker_execution_episode(
+                spec=spec,
+                result=result,
+                stored_output=stored_output,
+                status=worker_status,
+                launcher_kind=type(self.launcher).__name__,
+            )
+            await asyncio.to_thread(add_execution_episode, episode)
+        except Exception as exc:
+            logger.warning(
+                "Failed to record execution episode",
+                worker_id=spec.id,
+                error_type=type(exc).__name__,
+            )
+            try:
+                await self._append_audit(
+                    "execution_episode_record_failed",
+                    level="warning",
+                    correlation_id=spec.id,
+                    data={"error_type": type(exc).__name__},
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to audit execution episode recording failure",
+                    worker_id=spec.id,
+                    exc_info=True,
+                )
+            return
+        try:
+            await self._append_audit(
+                "execution_episode_recorded",
+                correlation_id=spec.id,
+                data={
+                    "episode_id": episode.id,
+                    "source_kind": episode.source_kind,
+                    "trust_state": episode.trust_state,
+                },
+            )
+        except Exception:
+            logger.warning(
+                "Failed to audit execution episode recording",
+                worker_id=spec.id,
+                exc_info=True,
+            )
 
     def _build_capabilities(self, permissions: list[str]) -> list[Any]:
         """Build capability objects from permission strings."""

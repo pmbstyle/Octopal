@@ -3,7 +3,36 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+ExecutionEpisodeSource = Literal[
+    "direct_user",
+    "assistant_inference",
+    "local_runtime_evidence",
+    "worker",
+    "connector",
+    "mcp",
+    "web",
+    "document",
+    "imported_canon",
+]
+ExecutionEpisodeTrustState = Literal[
+    "observed",
+    "quarantined_candidate",
+    "corroborated",
+    "trusted",
+    "superseded",
+    "deprecated",
+]
+
+_UNTRUSTED_EXECUTION_EPISODE_SOURCES = {
+    "assistant_inference",
+    "worker",
+    "connector",
+    "mcp",
+    "web",
+    "document",
+}
 
 
 class WorkerRecord(BaseModel):
@@ -26,6 +55,40 @@ class WorkerRecord(BaseModel):
     spawn_depth: int = 0
     template_id: str | None = None
     template_name: str | None = None
+
+
+class ExecutionEpisodeRecord(BaseModel):
+    """Immutable, metadata-only evidence index for one terminal execution."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    worker_run_id: str
+    task_fingerprint: str
+    environment_fingerprint: str
+    capability_fingerprint: str
+    result_fingerprint: str
+    status: Literal["completed", "failed", "stopped"]
+    source_kind: ExecutionEpisodeSource
+    trust_state: ExecutionEpisodeTrustState
+    correlation_id: str | None = None
+    template_id: str | None = None
+    model: str | None = None
+    trajectory_refs: dict[str, Any] = Field(default_factory=dict)
+    result_metadata: dict[str, Any] = Field(default_factory=dict)
+    verification: dict[str, Any] = Field(default_factory=dict)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def reject_external_trust_escalation(self) -> ExecutionEpisodeRecord:
+        if self.trust_state == "trusted" and self.source_kind in (
+            _UNTRUSTED_EXECUTION_EPISODE_SOURCES
+        ):
+            raise ValueError(
+                f"source_kind '{self.source_kind}' cannot directly create a trusted episode"
+            )
+        return self
 
 
 class IntentRecord(BaseModel):

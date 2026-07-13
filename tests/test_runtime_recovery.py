@@ -19,6 +19,7 @@ class _StoreStub:
         self.status_updates: list[str] = []
         self.result_errors: list[str] = []
         self.result_summaries: list[str] = []
+        self.execution_episodes = []
 
     def create_worker(self, record):
         return None
@@ -34,6 +35,9 @@ class _StoreStub:
 
     def append_audit(self, _event):
         return None
+
+    def add_execution_episode(self, episode):
+        self.execution_episodes.append(episode)
 
 
 class _PolicyStub:
@@ -303,6 +307,35 @@ def test_worker_failed_result_marks_store_failed(tmp_path: Path) -> None:
     assert store.status_updates == ["failed"]
     assert store.result_summaries == ["Worker failed: MCP schema mismatch"]
     assert store.result_errors == ["schema mismatch"]
+    assert len(store.execution_episodes) == 1
+    assert store.execution_episodes[0].status == "failed"
+    assert store.execution_episodes[0].trust_state == "observed"
+
+
+def test_episode_store_failure_does_not_fail_worker_result(tmp_path: Path) -> None:
+    class _FailingEpisodeStore(_StoreStub):
+        def add_execution_episode(self, episode):
+            raise RuntimeError("episode store unavailable")
+
+    store = _FailingEpisodeStore()
+    runtime = WorkerRuntime(
+        store=store,
+        policy=_PolicyStub(),
+        workspace_dir=tmp_path,
+        launcher=_LauncherStub(),
+        mcp_manager=None,
+        settings=Settings(),
+    )
+    process = _FakeProcess(pid=1)
+    process.stdout = _FakeReader(
+        [b'{"type":"result","result":{"summary":"Worker completed","output":{}}}\n']
+    )
+
+    result = asyncio.run(runtime._read_loop(_spec(), process))
+
+    assert result.status == "completed"
+    assert result.summary == "Worker completed"
+    assert store.status_updates == ["completed"]
 
 
 def test_stderr_loop_batches_traceback_into_single_log(tmp_path: Path) -> None:
