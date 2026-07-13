@@ -1869,7 +1869,7 @@ class WorkerRuntime:
             get_worker = getattr(self.store, "get_worker", None)
             if callable(get_worker):
                 stored_worker = await asyncio.to_thread(get_worker, spec.id)
-                if stored_worker is not None:
+                if stored_worker is not None and stored_worker.output is not None:
                     evidence_output = stored_worker.output
             episode = build_worker_execution_episode(
                 spec=spec,

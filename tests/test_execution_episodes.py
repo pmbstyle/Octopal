@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.infrastructure.config.settings import Settings
-from octopal.infrastructure.store.models import ExecutionEpisodeRecord
+from octopal.infrastructure.store.models import ExecutionEpisodeRecord, WorkerRecord
 from octopal.infrastructure.store.sqlite import SQLiteStore
 from octopal.runtime.memory.episode_evidence import (
     EpisodeEvidenceCipher,
@@ -311,6 +311,17 @@ def test_runtime_records_encrypted_evidence_only_when_key_is_configured(
     tmp_path: Path,
 ) -> None:
     store = _store(tmp_path)
+    now = datetime.now(UTC)
+    store.create_worker(
+        WorkerRecord(
+            id="worker-1",
+            status="completed",
+            task="Completed without a persisted output payload",
+            granted_caps=[],
+            created_at=now,
+            updated_at=now,
+        )
+    )
     settings = Settings(
         OCTOPAL_EPISODE_EVIDENCE_KEY=_encoded_key(),
         OCTOPAL_EPISODE_EVIDENCE_RETENTION_DAYS=5,
@@ -352,3 +363,4 @@ def test_settings_hide_episode_evidence_key_from_dumps() -> None:
 
     assert settings.episode_evidence_key == _encoded_key()
     assert "episode_evidence_key" not in settings.model_dump()
+    assert _encoded_key() not in repr(settings)

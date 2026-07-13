@@ -130,6 +130,7 @@ class Settings(BaseSettings):
         default=None,
         alias="OCTOPAL_EPISODE_EVIDENCE_KEY",
         exclude=True,
+        repr=False,
     )
     episode_evidence_retention_days: int = Field(
         30,
