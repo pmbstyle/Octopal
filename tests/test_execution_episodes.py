@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.store.models import AuditEvent, ExecutionEpisodeRecord, WorkerRecord
-from octopal.infrastructure.store.sqlite import SQLiteStore
+from octopal.infrastructure.store.sqlite import EvidenceSecurePurgeIncomplete, SQLiteStore
 from octopal.runtime.memory.episode_evidence import (
     EpisodeEvidenceCipher,
     build_encrypted_worker_episode_evidence,
@@ -219,6 +219,12 @@ def test_sqlite_episode_evidence_is_erasable_but_not_mutable(tmp_path: Path) -> 
     )
 
     store.add_execution_episode_bundle(episode, evidence)
+    database = tmp_path / "data" / "octopal.db"
+    wal = tmp_path / "data" / "octopal.db-wal"
+    persisted_bytes = database.read_bytes()
+    if wal.exists():
+        persisted_bytes += wal.read_bytes()
+    assert evidence.ciphertext in persisted_bytes
 
     assert store.get_execution_episode(episode.id) == episode
     assert store.get_execution_episode_evidence(episode.id) == evidence
@@ -232,6 +238,8 @@ def test_sqlite_episode_evidence_is_erasable_but_not_mutable(tmp_path: Path) -> 
     assert store.delete_execution_episode_evidence(episode.id) is True
     assert store.get_execution_episode_evidence(episode.id) is None
     assert store.get_execution_episode(episode.id) == episode
+    assert evidence.ciphertext not in database.read_bytes()
+    assert not wal.exists() or evidence.ciphertext not in wal.read_bytes()
 
 
 def test_sqlite_episode_evidence_erase_rolls_back_when_audit_write_fails(
@@ -259,6 +267,44 @@ def test_sqlite_episode_evidence_erase_rolls_back_when_audit_write_fails(
         store.delete_execution_episode_evidence_with_audit(episode.id, event)
 
     assert store.get_execution_episode_evidence(episode.id) == evidence
+
+
+def test_sqlite_episode_evidence_reports_blocked_wal_purge_and_allows_retry(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    episode = _episode()
+    cipher = EpisodeEvidenceCipher.from_encoded_key(_encoded_key())
+    evidence = cipher.encrypt(
+        episode_id=episode.id,
+        payload={"episode_id": episode.id, "raw": "sensitive"},
+        retention_days=30,
+    )
+    event = AuditEvent(
+        id="blocked-purge-audit",
+        ts=datetime.now(UTC),
+        level="info",
+        event_type="execution_episode_evidence_erased",
+        data={"episode_id": episode.id},
+    )
+    store.add_execution_episode_bundle(episode, evidence)
+    store._conn.execute("PRAGMA busy_timeout=1")  # noqa: SLF001 - keep blocked-checkpoint test fast
+    reader = sqlite3.connect(tmp_path / "data" / "octopal.db")
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM execution_episode_evidence").fetchone()
+
+    try:
+        with pytest.raises(EvidenceSecurePurgeIncomplete):
+            store.delete_execution_episode_evidence_with_audit(episode.id, event)
+    finally:
+        reader.close()
+
+    assert store.get_execution_episode_evidence(episode.id) is None
+    store.secure_purge_evidence_storage()
+    database = tmp_path / "data" / "octopal.db"
+    wal = tmp_path / "data" / "octopal.db-wal"
+    assert evidence.ciphertext not in database.read_bytes()
+    assert not wal.exists() or evidence.ciphertext not in wal.read_bytes()
 
 
 def test_sqlite_episode_evidence_bundle_is_atomic_and_cleanup_preserves_metadata(

@@ -15,7 +15,7 @@ from octopal.infrastructure.store.models import (
     ExecutionEpisodeEvidenceMetadata,
     ExecutionEpisodeRecord,
 )
-from octopal.infrastructure.store.sqlite import SQLiteStore
+from octopal.infrastructure.store.sqlite import EvidenceSecurePurgeIncomplete, SQLiteStore
 from octopal.runtime.memory.episode_evidence import EpisodeEvidenceCipher
 from octopal.utils import utc_now
 
@@ -102,6 +102,25 @@ def episodes_show(
                 f"Encrypted raw evidence is not available for episode: {episode_id}",
                 json_output,
             )
+        if metadata.expires_at <= utc_now():
+            try:
+                store.delete_execution_episode_evidence_with_audit(
+                    episode_id,
+                    _operator_audit_event("expired_erased", episode),
+                )
+            except EvidenceSecurePurgeIncomplete:
+                _fail_secure_purge_incomplete(json_output)
+            except Exception:
+                _fail(
+                    "evidence_expiry_cleanup_failed",
+                    "Expired evidence could not be safely erased.",
+                    json_output,
+                )
+            _fail(
+                "evidence_expired",
+                f"Encrypted raw evidence expired and was erased for episode: {episode_id}",
+                json_output,
+            )
         if not settings.episode_evidence_key:
             _fail(
                 "evidence_key_missing",
@@ -181,6 +200,8 @@ def episodes_erase_evidence(
             episode_id,
             _operator_audit_event("erased", episode),
         )
+    except EvidenceSecurePurgeIncomplete:
+        _fail_secure_purge_incomplete(json_output)
     except Exception:
         _fail(
             "evidence_erase_failed",
@@ -204,6 +225,23 @@ def episodes_erase_evidence(
     console.print(
         f"[green]Encrypted raw evidence erased for {episode_id}; episode metadata preserved.[/green]"
     )
+
+
+@episodes_app.command("purge-storage")
+def episodes_purge_storage(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Retry the secure WAL checkpoint without deleting any live evidence rows."""
+    store = SQLiteStore(load_settings())
+    try:
+        store.secure_purge_evidence_storage()
+    except EvidenceSecurePurgeIncomplete:
+        _fail_secure_purge_incomplete(json_output)
+    payload = {"secure_purge_complete": True, "live_evidence_deleted": False}
+    if json_output:
+        _emit_json(payload)
+        return
+    console.print("[green]SQLite evidence WAL checkpoint and truncation completed.[/green]")
 
 
 def _episode_list_payload(
@@ -258,3 +296,13 @@ def _fail(code: str, message: str, json_output: bool) -> None:
     else:
         console.print(f"[red]{message}[/red]")
     raise typer.Exit(code=1)
+
+
+def _fail_secure_purge_incomplete(json_output: bool) -> None:
+    _fail(
+        "evidence_secure_purge_incomplete",
+        "Evidence was logically deleted, but SQLite could not truncate stale WAL pages. "
+        "Stop other database readers and run `octopal episodes purge-storage` before treating "
+        "the privacy purge as complete.",
+        json_output,
+    )

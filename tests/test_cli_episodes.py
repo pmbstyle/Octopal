@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -21,7 +21,12 @@ def _encoded_key(byte: bytes = b"k") -> str:
     return base64.urlsafe_b64encode(byte * 32).decode("ascii")
 
 
-def _seed_episode(tmp_path: Path, monkeypatch) -> tuple[SQLiteStore, str]:
+def _seed_episode(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    expired: bool = False,
+) -> tuple[SQLiteStore, str]:
     state_dir = tmp_path / "data"
     workspace_dir = tmp_path / "workspace"
     (tmp_path / "config.json").write_text(
@@ -66,6 +71,8 @@ def _seed_episode(tmp_path: Path, monkeypatch) -> tuple[SQLiteStore, str]:
         payload={"episode_id": episode.id, "result": {"secret": _RAW_SECRET}},
         retention_days=30,
     )
+    if expired:
+        evidence = evidence.model_copy(update={"expires_at": now - timedelta(seconds=1)})
     store.add_execution_episode_bundle(episode, evidence)
     return store, episode.id
 
@@ -90,6 +97,14 @@ def test_episodes_list_and_default_show_never_load_raw_evidence(tmp_path, monkey
     assert "raw_evidence" not in show_payload
     assert _RAW_SECRET not in show_result.stdout
     assert store.get_execution_episode_evidence_metadata(episode_id) is not None
+
+    purge_result = runner.invoke(app, ["episodes", "purge-storage", "--json"])
+    assert purge_result.exit_code == 0
+    assert json.loads(purge_result.stdout) == {
+        "live_evidence_deleted": False,
+        "secure_purge_complete": True,
+    }
+    assert store.get_execution_episode_evidence(episode_id) is not None
 
 
 def test_episodes_show_requires_key_before_revealing_raw_evidence(tmp_path, monkeypatch) -> None:
@@ -122,6 +137,25 @@ def test_episodes_show_reveals_raw_evidence_only_with_explicit_flag(tmp_path, mo
     assert audit.event_type == "execution_episode_evidence_revealed"
     assert audit.data == {"episode_id": episode_id, "interface": "cli"}
     assert _RAW_SECRET not in audit.model_dump_json()
+
+
+def test_episodes_show_erases_expired_evidence_instead_of_revealing_it(
+    tmp_path, monkeypatch
+) -> None:
+    store, episode_id = _seed_episode(tmp_path, monkeypatch, expired=True)
+
+    result = runner.invoke(
+        app,
+        ["episodes", "show", episode_id, "--reveal-evidence", "--json"],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "evidence_expired"
+    assert _RAW_SECRET not in result.stdout
+    assert store.get_execution_episode_evidence(episode_id) is None
+    audit = store.list_audit(limit=1)[0]
+    assert audit.event_type == "execution_episode_evidence_expired_erased"
 
 
 def test_episodes_erase_evidence_requires_confirmation_and_preserves_metadata(

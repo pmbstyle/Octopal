@@ -416,10 +416,15 @@ uv run octopal episodes list
 uv run octopal episodes show <episode-id>
 uv run octopal episodes show <episode-id> --reveal-evidence
 uv run octopal episodes erase-evidence <episode-id>
+uv run octopal episodes purge-storage
 ```
 
 Episode list/show output is metadata-only unless `--reveal-evidence` is explicitly supplied.
-Erasing evidence preserves the immutable episode metadata and fingerprints.
+Expired evidence is refused and securely removed on access. Erasing evidence enables SQLite
+secure deletion and truncates the active WAL while preserving immutable episode metadata and
+fingerprints. If another database reader blocks truncation, stop it and use `purge-storage` to
+retry without deleting live evidence. External database copies and backups remain subject to
+their own retention policy.
 
 Worker execution episodes store metadata-only fingerprints by default. To also retain raw task,
 prompt, and result evidence, generate a dedicated 32-byte key and set

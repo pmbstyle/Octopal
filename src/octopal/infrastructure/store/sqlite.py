@@ -33,6 +33,10 @@ from octopal.runtime.workers.loader import get_worker_template as get_template_f
 from octopal.utils import utc_now
 
 
+class EvidenceSecurePurgeIncomplete(RuntimeError):
+    """The row was deleted, but SQLite could not purge stale WAL pages."""
+
+
 class LockedCursor:
     def __init__(self, cursor: sqlite3.Cursor, lock: threading.RLock) -> None:
         self._cursor = cursor
@@ -104,11 +108,13 @@ class SQLiteStore(Store):
         self._db_path = settings.state_dir / "octopal.db"
         self._workspace_dir = settings.workspace_dir
         self._lock = threading.RLock()
+        self._evidence_secure_purge_pending = False
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn = LockedConnection(conn, self._lock)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA foreign_keys=ON;")
+        self._conn.execute("PRAGMA secure_delete=ON;")
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -938,7 +944,11 @@ class SQLiteStore(Store):
             (episode_id,),
         )
         self._conn.commit()
-        return cursor.rowcount > 0
+        deleted = cursor.rowcount > 0
+        if deleted:
+            self._evidence_secure_purge_pending = True
+            self.secure_purge_evidence_storage()
+        return deleted
 
     def delete_execution_episode_evidence_with_audit(
         self,
@@ -956,6 +966,8 @@ class SQLiteStore(Store):
                     return False
                 self._insert_audit(event)
                 self._conn.commit()
+                self._evidence_secure_purge_pending = True
+                self.secure_purge_evidence_storage()
                 return True
             except Exception:
                 self._conn.rollback()
@@ -970,7 +982,22 @@ class SQLiteStore(Store):
             (now.isoformat(),),
         )
         self._conn.commit()
-        return cursor.rowcount
+        deleted = cursor.rowcount
+        if deleted > 0:
+            self._evidence_secure_purge_pending = True
+        if self._evidence_secure_purge_pending:
+            self.secure_purge_evidence_storage()
+        return deleted
+
+    def secure_purge_evidence_storage(self) -> None:
+        """Checkpoint and truncate WAL so securely deleted evidence pages are discarded."""
+        with self._lock:
+            row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if row is None or int(row[0]) != 0:
+                raise EvidenceSecurePurgeIncomplete(
+                    "SQLite WAL checkpoint was blocked after evidence deletion"
+                )
+            self._evidence_secure_purge_pending = False
 
     def count_workers_created_since(self, since: datetime) -> int:
         cursor = self._conn.execute(
