@@ -39,7 +39,7 @@
 - `uv run ruff check .`, `uv run black --check .`, and `uv run mypy` are the configured lint/format/type-check commands.
 - `npm install` and `npm run build` from `webapp/` build the dashboard bundle manually when needed.
 - `uv run python scripts/benchmark_web_backends.py --backends basic,markdown_new,webclaw,browser --webclaw-binary <path> --repeat 3 --output data/web-backend-benchmark.json` compares web extraction backends without starting an Octopal runtime.
-- `uv run python scripts/worker_bench.py --suite <suite.json> --mode replay --replay-dir <artifacts-dir> [--baseline <result.json>] --out <result.json>` grades saved worker JSONL offline; baseline mode exits non-zero only for outcome regressions.
+- `uv run python scripts/worker_bench.py --suite <suite.json> --mode replay --replay-dir <artifacts-dir> [--baseline <result.json>] --out <result.json>` grades saved worker JSONL offline; baseline mode exits non-zero only for outcome regressions. Live suites must explicitly declare provider/model, strict thinking and LLM-call caps, token/cost ceilings, and current model pricing.
 
 ## Coding Style & Naming Conventions
 

@@ -232,6 +232,10 @@ class CodexProvider:
     def provider_id(self) -> str:
         return "codex"
 
+    @property
+    def model_id(self) -> str:
+        return self._model
+
     async def complete(self, messages: list[Message | dict], **kwargs: object) -> str:
         result = await self._run_turn(messages, tools=None, on_partial=None)
         return result["content"]

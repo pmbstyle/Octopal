@@ -470,6 +470,16 @@ trials. Summaries include success/assertion rates, pass-at-k-style multi-trial r
 distributions, and failure categories; grader evidence records structure and sizes rather than raw
 output values.
 
+Live eval scenarios are disabled unless the suite explicitly sets `live_allowed`, `provider_id`,
+`model`, `max_thinking_steps` (currently capped at 6), and a `live_budget`. The budget must declare
+the exact provider-resolved `pricing_model`, `max_llm_calls` (also capped at 6), total-token and USD
+ceilings, and current input/output per-million-token rates. Budgeted workers use a conservative
+pre-call input ceiling, set a provider output-token cap, disable provider fallbacks/retries, and
+stop before tools or another model call if usage is missing or a limit is reached. The Codex
+subscription route is rejected for live evals because it does not currently return token usage.
+Initial safety caps are 50,000 tokens and USD 0.10 per run, and 100,000 tokens and USD 0.20 for the
+whole invocation.
+
 GitHub releases use date-based versions in `src/octopal/_version.py` and tags like `vYYYY.MM.DD` or `vYYYY.MM.DD.N`.
 
 ## ⁉️ Troubleshooting

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 from octopal.runtime.workers.bench import (
@@ -17,6 +18,30 @@ from octopal.runtime.workers.bench import (
     select_scenarios,
     summarize_worker_messages,
 )
+from octopal.runtime.workers.contracts import WorkerInferenceBudget, WorkerSpec
+
+
+def _budgeted_live_scenario(
+    *, scenario_id: str = "web_search_ranked_pricing"
+) -> WorkerBenchScenario:
+    model = "glm-test"
+    return WorkerBenchScenario(
+        id=scenario_id,
+        template_id="web_search_ranked",
+        task="Run a bounded live test",
+        inputs={},
+        provider_id="zai",
+        model=model,
+        max_thinking_steps=4,
+        inference_budget=WorkerInferenceBudget(
+            pricing_model="openai/glm-test",
+            max_llm_calls=4,
+            max_total_tokens=20_000,
+            max_cost_microusd=20_000,
+            input_cost_microusd_per_million_tokens=200_000,
+            completion_cost_microusd_per_million_tokens=1_000_000,
+        ),
+    )
 
 
 def test_select_scenarios_rejects_unknown_id() -> None:
@@ -54,6 +79,26 @@ def test_build_worker_spec_uses_template_contract() -> None:
     assert spec["effective_permissions"] == ["network"]
     assert spec["timeout_seconds"] == 180
     assert spec["max_thinking_steps"] == 6
+    assert spec["strict_thinking_budget"] is False
+
+
+def test_build_worker_spec_applies_strict_live_budget() -> None:
+    scenario = _budgeted_live_scenario(scenario_id="strict-live")
+
+    spec = build_worker_spec(
+        scenario=scenario,
+        template={"name": "Bounded worker", "max_thinking_steps": 12},
+        run_id="bench-strict-live",
+    )
+
+    assert spec["model"] == "glm-test"
+    assert spec["llm_config"] == {"provider_id": "zai", "model": "glm-test"}
+    assert spec["max_thinking_steps"] == 4
+    assert spec["strict_thinking_budget"] is True
+    assert spec["inference_budget"]["max_total_tokens"] == 20_000
+    assert spec["inference_budget"]["max_llm_calls"] == 4
+    assert spec["inference_budget"]["max_cost_microusd"] == 20_000
+    assert WorkerSpec.model_validate(spec).strict_thinking_budget is True
 
 
 def test_parse_worker_jsonl_skips_non_json_lines() -> None:
@@ -98,6 +143,16 @@ def test_summarize_worker_messages_extracts_telemetry() -> None:
                         "version": 1,
                         "tools": {"active_names": ["web_search"]},
                     },
+                    "inference_budget": {
+                        "max_llm_calls": 4,
+                        "max_total_tokens": 5000,
+                        "max_cost_microusd": 20000,
+                        "estimated_cost_microusd": 75,
+                        "accounting_complete": True,
+                        "provider_attempts": 2,
+                        "exhausted_reason": None,
+                        "last_request_max_tokens": 900,
+                    },
                 }
             },
         },
@@ -124,6 +179,10 @@ def test_summarize_worker_messages_extracts_telemetry() -> None:
     assert summary["context"]["tool_schema_chars"] == 500
     assert summary["context"]["tool_result_rendered_chars_by_tool"] == {"web_search": 700}
     assert summary["context_manifest"]["tools"]["active_names"] == ["web_search"]
+    assert summary["inference_budget"]["max_llm_calls"] == 4
+    assert summary["inference_budget"]["estimated_cost_microusd"] == 75
+    assert summary["inference_budget"]["accounting_complete"] is True
+    assert summary["inference_budget"]["provider_attempts"] == 2
     assert summary["message_count"] == 2
     assert summary["log_count"] == 1
 
@@ -201,6 +260,117 @@ def test_load_scenarios_file_defaults_external_scenarios_to_replay_only(tmp_path
     assert scenarios[0].id == "structured-result"
     assert scenarios[0].live_allowed is False
     assert scenarios[0].graders[1]["type"] == "structured_output"
+
+
+def test_load_scenarios_file_requires_complete_live_budget_contract(tmp_path) -> None:
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "scenarios": [
+                    {
+                        "id": "bounded-live",
+                        "template_id": "example",
+                        "task": "Run one bounded live trial",
+                        "provider_id": "zai",
+                        "model": "glm-test",
+                        "max_thinking_steps": 4,
+                        "live_allowed": True,
+                        "live_budget": {
+                            "pricing_model": "openai/glm-test",
+                            "max_llm_calls": 4,
+                            "max_total_tokens": 20000,
+                            "max_cost_usd": "0.02",
+                            "input_cost_per_million_tokens_usd": "0.20",
+                            "completion_cost_per_million_tokens_usd": "1.00",
+                        },
+                        "graders": [{"type": "terminal_status", "expected": "completed"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    scenario = load_scenarios_file(suite_path)[0]
+
+    assert scenario.live_allowed is True
+    assert scenario.provider_id == "zai"
+    assert scenario.model == "glm-test"
+    assert scenario.max_thinking_steps == 4
+    assert scenario.inference_budget is not None
+    assert scenario.inference_budget.max_cost_microusd == 20_000
+
+
+def test_load_scenarios_file_rejects_live_scenario_without_budget(tmp_path) -> None:
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "scenarios": [
+                    {
+                        "id": "unsafe-live",
+                        "template_id": "example",
+                        "task": "Run without a budget",
+                        "provider_id": "zai",
+                        "model": "glm-test",
+                        "max_thinking_steps": 4,
+                        "live_allowed": True,
+                        "graders": [{"type": "terminal_status", "expected": "completed"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        load_scenarios_file(suite_path)
+    except ValueError as exc:
+        assert "must declare live_budget" in str(exc)
+    else:
+        raise AssertionError("expected missing live budget rejection")
+
+
+def test_load_scenarios_file_rejects_unknown_live_provider(tmp_path) -> None:
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "scenarios": [
+                    {
+                        "id": "unknown-provider",
+                        "template_id": "example",
+                        "task": "Reject unknown provider",
+                        "provider_id": "not-registered",
+                        "model": "model-x",
+                        "max_thinking_steps": 2,
+                        "live_allowed": True,
+                        "live_budget": {
+                            "pricing_model": "provider/model-x",
+                            "max_llm_calls": 2,
+                            "max_total_tokens": 1000,
+                            "max_cost_usd": "0.01",
+                            "input_cost_per_million_tokens_usd": "1.00",
+                            "completion_cost_per_million_tokens_usd": "1.00",
+                        },
+                        "graders": [{"type": "terminal_status", "expected": "completed"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        load_scenarios_file(suite_path)
+    except ValueError as exc:
+        assert "provider_id must be one of" in str(exc)
+    else:
+        raise AssertionError("expected unknown live provider rejection")
 
 
 def test_load_scenarios_file_rejects_path_like_ids(tmp_path) -> None:
@@ -373,6 +543,7 @@ def test_aggregate_worker_bench_summaries_reports_metrics_and_failures() -> None
             "tool_calls": 1,
             "tokens": {"total_tokens": 100},
             "context": {"tool_schema_chars": 500},
+            "inference_budget": {"estimated_cost_microusd": 40},
             "grade": {
                 "passed": True,
                 "assertion_count": 2,
@@ -389,6 +560,7 @@ def test_aggregate_worker_bench_summaries_reports_metrics_and_failures() -> None
             "tool_calls": 3,
             "tokens": {"total_tokens": 200},
             "context": {"tool_schema_chars": 700},
+            "inference_budget": {"estimated_cost_microusd": 80},
             "grade": {
                 "passed": False,
                 "assertion_count": 2,
@@ -412,6 +584,7 @@ def test_aggregate_worker_bench_summaries_reports_metrics_and_failures() -> None
         "p95": 4,
     }
     assert aggregate["distributions"]["total_tokens"]["mean"] == 150.0
+    assert aggregate["distributions"]["estimated_cost_microusd"]["mean"] == 60.0
     assert aggregate["failure_categories"]["grader:max_tool_calls"] == {
         "trial_count": 1,
         "scenario_ids": ["regressed"],
@@ -594,6 +767,31 @@ def test_live_mode_caps_total_runs_across_scenarios(monkeypatch, tmp_path) -> No
         raise AssertionError("expected total live run cap error")
 
 
+def test_live_mode_caps_total_declared_token_budget(monkeypatch, tmp_path) -> None:
+    base = _budgeted_live_scenario()
+    assert base.inference_budget is not None
+    scenarios = [
+        replace(
+            base,
+            id=f"bounded-{index}",
+            inference_budget=base.inference_budget.model_copy(update={"max_total_tokens": 40_000}),
+        )
+        for index in range(3)
+    ]
+
+    def fail_if_loaded():
+        raise AssertionError("invocation budget validation must happen before loading settings")
+
+    monkeypatch.setattr("octopal.runtime.workers.bench.load_settings", fail_if_loaded)
+
+    try:
+        run_worker_bench(workspace_dir=tmp_path, scenarios=scenarios)
+    except ValueError as exc:
+        assert "token budgets exceed the invocation safety cap" in str(exc)
+    else:
+        raise AssertionError("expected invocation token budget cap error")
+
+
 def test_live_mode_rejects_replay_only_external_scenario(monkeypatch, tmp_path) -> None:
     scenario = WorkerBenchScenario(
         id="offline",
@@ -633,7 +831,10 @@ def test_live_summary_counts_ungraded_execution_failure(monkeypatch, tmp_path) -
         ],
     )
 
-    summary = run_worker_bench(workspace_dir=tmp_path)
+    summary = run_worker_bench(
+        workspace_dir=tmp_path,
+        scenarios=[_budgeted_live_scenario()],
+    )
 
     assert summary["graded_trials"] == 0
     assert summary["failed_trials"] == 1
@@ -655,7 +856,10 @@ def test_execution_failure_is_not_also_counted_as_passed(monkeypatch, tmp_path) 
         ],
     )
 
-    summary = run_worker_bench(workspace_dir=tmp_path)
+    summary = run_worker_bench(
+        workspace_dir=tmp_path,
+        scenarios=[_budgeted_live_scenario()],
+    )
 
     assert summary["graded_trials"] == 1
     assert summary["passed_trials"] == 0

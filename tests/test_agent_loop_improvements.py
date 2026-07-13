@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from octopal.runtime.tool_errors import ToolBridgeError
 from octopal.runtime.workers.agent_worker import (
@@ -11,6 +12,7 @@ from octopal.runtime.workers.agent_worker import (
     _classify_tool_error,
     _detect_orchestration_stall,
     _detect_tool_loop,
+    _effective_worker_max_steps,
     _execute_tool,
     _extract_error_text,
     _extract_mcp_identity,
@@ -22,13 +24,16 @@ from octopal.runtime.workers.agent_worker import (
     _maybe_wait_for_orchestration_poll_window,
     _meaningful_tool_history_size,
     _parse_tool_arguments,
+    _plan_inference_budget_request,
+    _record_worker_usage,
     _resolve_orchestration_poll_throttle_seconds,
     _resolve_tool_loop_thresholds,
     _result_has_error,
     _tool_progress_streak,
+    _validate_inference_budget_provider,
     execute_agent_task,
 )
-from octopal.runtime.workers.contracts import WorkerSpec
+from octopal.runtime.workers.contracts import WorkerInferenceBudget, WorkerSpec
 from octopal.runtime.workers.runtime import (
     _call_mcp_with_name_fallback,
     _extract_mcp_tool_identity,
@@ -57,12 +62,182 @@ def _dummy_worker() -> Worker:
     return Worker(spec=spec)
 
 
+def _budgeted_worker() -> Worker:
+    budget = WorkerInferenceBudget(
+        pricing_model="openai/glm-test",
+        max_llm_calls=4,
+        max_total_tokens=50_000,
+        max_cost_microusd=50_000,
+        input_cost_microusd_per_million_tokens=200_000,
+        completion_cost_microusd_per_million_tokens=1_000_000,
+    )
+    return Worker(
+        spec=_dummy_worker().spec.model_copy(
+            update={
+                "model": "glm-test",
+                "strict_thinking_budget": True,
+                "inference_budget": budget,
+            }
+        )
+    )
+
+
 def test_parse_tool_arguments_is_defensive() -> None:
     assert _parse_tool_arguments({"a": 1}) == {"a": 1}
     assert _parse_tool_arguments('{"a": 1}') == {"a": 1}
     assert _parse_tool_arguments("[1,2]") == {"_arg": [1, 2]}
     assert _parse_tool_arguments("{bad}") == {"_raw": "{bad}"}
     assert _parse_tool_arguments(None) == {}
+
+
+def test_strict_worker_budget_disables_step_auto_tuning() -> None:
+    worker = _budgeted_worker()
+    strict_spec = worker.spec.model_copy(
+        update={"available_tools": ["web_search"], "max_thinking_steps": 4}
+    )
+    adaptive_spec = strict_spec.model_copy(update={"strict_thinking_budget": False})
+
+    assert _effective_worker_max_steps(strict_spec) == 4
+    assert _effective_worker_max_steps(adaptive_spec) == 7
+
+
+def test_inference_budget_plans_output_cap_and_records_cost() -> None:
+    spec = _budgeted_worker().spec
+    telemetry = {
+        "tokens": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "inference_budget": {
+            "estimated_cost_microusd": 0,
+            "provider_attempts": 0,
+            "usage_accounted_calls": 0,
+            "request_input_token_ceiling_total": 0,
+            "exhausted_reason": None,
+        },
+    }
+
+    max_tokens, plan_error = _plan_inference_budget_request(
+        spec=spec,
+        telemetry=telemetry,
+        messages=[{"role": "user", "content": "bounded request"}],
+        tools=[],
+    )
+    usage_error = _record_worker_usage(
+        spec=spec,
+        telemetry=telemetry,
+        usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+    )
+
+    assert plan_error is None
+    assert isinstance(max_tokens, int) and max_tokens > 0
+    assert max_tokens < spec.inference_budget.max_total_tokens
+    assert usage_error is None
+    assert telemetry["tokens"] == {
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+    }
+    assert telemetry["inference_budget"]["estimated_cost_microusd"] == 40
+    assert telemetry["inference_budget"]["usage_accounted_calls"] == 1
+
+    telemetry["inference_budget"]["provider_attempts"] = 4
+    capped_tokens, capped_error = _plan_inference_budget_request(
+        spec=spec,
+        telemetry=telemetry,
+        messages=[{"role": "user", "content": "one call too many"}],
+        tools=[],
+    )
+    assert capped_tokens is None
+    assert capped_error == "inference_call_budget_exhausted"
+
+
+def test_budgeted_worker_fails_closed_when_usage_is_missing(monkeypatch, tmp_path: Path) -> None:
+    worker = _budgeted_worker()
+
+    class _Provider:
+        provider_id = "zai"
+        model_id = "openai/glm-test"
+
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
+    monkeypatch.setattr(
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
+        lambda settings, model=None, config=None: _Provider(),
+    )
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.get_tools", lambda: [])
+    seen_max_tokens: list[int | None] = []
+
+    async def _fake_call_llm(provider, messages, tools, **kwargs):
+        seen_max_tokens.append(kwargs.get("max_tokens"))
+        return {
+            "content": '{"type":"result","summary":"done","output":{"ok":true}}',
+            "usage": {},
+        }
+
+    async def _noop_log(level: str, message: str) -> None:
+        return None
+
+    monkeypatch.setattr(worker, "log", _noop_log)
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker._call_llm", _fake_call_llm)
+
+    result = asyncio.run(execute_agent_task(worker, tmp_path, tmp_path))
+
+    assert result.status == "failed"
+    assert result.thinking_steps == 0
+    assert result.output is not None
+    assert result.output["reason"] == "inference_usage_accounting_missing"
+    assert result.output["_telemetry"]["inference_budget"]["accounting_complete"] is False
+    assert result.output["_telemetry"]["inference_budget"]["provider_attempts"] == 1
+    assert len(seen_max_tokens) == 1
+    assert isinstance(seen_max_tokens[0], int)
+
+
+def test_budgeted_worker_counts_failed_provider_attempt_and_stops(
+    monkeypatch, tmp_path: Path
+) -> None:
+    worker = _budgeted_worker()
+
+    class _Provider:
+        provider_id = "zai"
+        model_id = "openai/glm-test"
+
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
+    monkeypatch.setattr(
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
+        lambda settings, model=None, config=None: _Provider(),
+    )
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.get_tools", lambda: [])
+
+    async def _fake_call_llm(provider, messages, tools, **kwargs):
+        raise RuntimeError("provider failed after accepting request")
+
+    async def _noop_log(level: str, message: str) -> None:
+        return None
+
+    monkeypatch.setattr(worker, "log", _noop_log)
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker._call_llm", _fake_call_llm)
+
+    result = asyncio.run(execute_agent_task(worker, tmp_path, tmp_path))
+
+    assert result.status == "failed"
+    assert result.output is not None
+    assert result.output["reason"] == "inference_usage_accounting_unavailable_after_error"
+    budget = result.output["_telemetry"]["inference_budget"]
+    assert budget["provider_attempts"] == 1
+    assert budget["usage_accounted_calls"] == 0
+    assert budget["accounting_complete"] is False
+
+
+def test_inference_budget_rejects_unsupported_or_mismatched_provider() -> None:
+    spec = _budgeted_worker().spec
+
+    codex = SimpleNamespace(provider_id="codex", model_id="glm-test")
+    wrong_model = SimpleNamespace(provider_id="zai", model_id="openai/other-model")
+
+    assert (
+        _validate_inference_budget_provider(spec, codex) == "inference_budget_provider_unsupported"
+    )
+    assert (
+        _validate_inference_budget_provider(spec, wrong_model)
+        == "inference_budget_pricing_model_mismatch"
+    )
 
 
 def test_extract_mcp_identity_prefers_explicit_metadata() -> None:

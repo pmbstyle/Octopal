@@ -11,11 +11,14 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from math import ceil
 from pathlib import Path
 from typing import Any
 
 from octopal.infrastructure.config.settings import load_settings
+from octopal.infrastructure.providers.catalog import list_registered_provider_ids
+from octopal.runtime.workers.contracts import WorkerInferenceBudget
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,10 @@ class WorkerBenchScenario:
     inputs: dict[str, Any]
     graders: tuple[dict[str, Any], ...] = ()
     live_allowed: bool = True
+    provider_id: str | None = None
+    model: str | None = None
+    max_thinking_steps: int | None = None
+    inference_budget: WorkerInferenceBudget | None = None
 
 
 _SUPPORTED_GRADER_TYPES = {
@@ -42,6 +49,10 @@ _SUPPORTED_GRADER_TYPES = {
     "terminal_status",
 }
 _MAX_LIVE_RUNS = 3
+_MAX_LIVE_RUN_TOTAL_TOKENS = 50_000
+_MAX_LIVE_RUN_COST_MICROUSD = 100_000
+_MAX_LIVE_INVOCATION_TOTAL_TOKENS = 100_000
+_MAX_LIVE_INVOCATION_COST_MICROUSD = 200_000
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -54,6 +65,7 @@ DEFAULT_SCENARIOS: tuple[WorkerBenchScenario, ...] = (
             "official or high-quality sources. Do not fetch full pages."
         ),
         inputs={"query": "OpenAI API pricing latest official", "max_results": 3},
+        live_allowed=False,
     ),
 )
 
@@ -106,6 +118,24 @@ def load_scenarios_file(path: Path) -> list[WorkerBenchScenario]:
         live_allowed = raw.get("live_allowed", False)
         if not isinstance(live_allowed, bool):
             raise ValueError(f"Scenario {scenario_id} live_allowed must be a boolean")
+        provider_id = _optional_text(raw.get("provider_id"))
+        model = _optional_text(raw.get("model"))
+        max_thinking_steps = _optional_positive_int(
+            raw.get("max_thinking_steps"),
+            field=f"scenario {scenario_id} max_thinking_steps",
+        )
+        inference_budget = _load_live_budget(
+            raw.get("live_budget"),
+            scenario_id=scenario_id,
+        )
+        if live_allowed:
+            _validate_live_scenario_contract(
+                scenario_id=scenario_id,
+                provider_id=provider_id,
+                model=model,
+                max_thinking_steps=max_thinking_steps,
+                inference_budget=inference_budget,
+            )
         scenarios.append(
             WorkerBenchScenario(
                 id=scenario_id,
@@ -116,6 +146,10 @@ def load_scenarios_file(path: Path) -> list[WorkerBenchScenario]:
                 inputs=dict(inputs),
                 graders=tuple(graders),
                 live_allowed=live_allowed,
+                provider_id=provider_id,
+                model=model,
+                max_thinking_steps=max_thinking_steps,
+                inference_budget=inference_budget,
             )
         )
     return scenarios
@@ -138,14 +172,26 @@ def build_worker_spec(
         "available_tools": available_tools,
         "granted_capabilities": [],
         "timeout_seconds": int(template.get("default_timeout_seconds") or 300),
-        "max_thinking_steps": int(template.get("max_thinking_steps") or 10),
+        "max_thinking_steps": (
+            scenario.max_thinking_steps
+            if scenario.max_thinking_steps is not None
+            else int(template.get("max_thinking_steps") or 10)
+        ),
+        "strict_thinking_budget": scenario.max_thinking_steps is not None,
         "run_id": run_id,
         "lifecycle": "ephemeral",
         "effective_permissions": _str_list(template.get("required_permissions")),
     }
-    model = str(template.get("model") or "").strip()
+    model = str(scenario.model or template.get("model") or "").strip()
     if model:
         spec["model"] = model
+    if scenario.provider_id:
+        spec["llm_config"] = {
+            "provider_id": scenario.provider_id,
+            "model": model or None,
+        }
+    if scenario.inference_budget is not None:
+        spec["inference_budget"] = scenario.inference_budget.model_dump(mode="json")
     return spec
 
 
@@ -207,6 +253,8 @@ def summarize_worker_messages(
     tokens: dict[str, Any] = raw_tokens if isinstance(raw_tokens, dict) else {}
     raw_manifest = telemetry.get("context_manifest")
     context_manifest: dict[str, Any] = raw_manifest if isinstance(raw_manifest, dict) else {}
+    raw_budget = telemetry.get("inference_budget")
+    budget: dict[str, Any] = raw_budget if isinstance(raw_budget, dict) else {}
 
     return {
         "scenario_id": scenario_id,
@@ -245,11 +293,27 @@ def summarize_worker_messages(
             or {},
         },
         "context_manifest": context_manifest,
+        "inference_budget": _summarize_inference_budget(budget),
         "message_count": len(messages),
         "log_count": len(logs),
         "instruction_request_count": len(instruction_requests),
         "stdout_parse_errors": len(parse_errors),
         "stderr_chars": len(stderr),
+    }
+
+
+def _summarize_inference_budget(budget: dict[str, Any]) -> dict[str, Any]:
+    if not budget:
+        return {}
+    return {
+        "max_llm_calls": _int_or_none(budget.get("max_llm_calls")),
+        "max_total_tokens": _int_or_none(budget.get("max_total_tokens")),
+        "max_cost_microusd": _int_or_none(budget.get("max_cost_microusd")),
+        "estimated_cost_microusd": _int_or_none(budget.get("estimated_cost_microusd")),
+        "accounting_complete": budget.get("accounting_complete"),
+        "provider_attempts": _int_or_none(budget.get("provider_attempts")),
+        "exhausted_reason": budget.get("exhausted_reason"),
+        "last_request_max_tokens": _int_or_none(budget.get("last_request_max_tokens")),
     }
 
 
@@ -384,6 +448,40 @@ def run_worker_bench(
             raise ValueError(
                 "live execution is disabled for scenario(s): " + ", ".join(sorted(blocked))
             )
+        for scenario in selected_scenarios:
+            _validate_live_scenario_contract(
+                scenario_id=scenario.id,
+                provider_id=scenario.provider_id,
+                model=scenario.model,
+                max_thinking_steps=scenario.max_thinking_steps,
+                inference_budget=scenario.inference_budget,
+            )
+        invocation_token_budget = (
+            sum(
+                scenario.inference_budget.max_total_tokens
+                for scenario in selected_scenarios
+                if scenario.inference_budget is not None
+            )
+            * trials
+        )
+        invocation_cost_budget = (
+            sum(
+                scenario.inference_budget.max_cost_microusd
+                for scenario in selected_scenarios
+                if scenario.inference_budget is not None
+            )
+            * trials
+        )
+        if invocation_token_budget > _MAX_LIVE_INVOCATION_TOTAL_TOKENS:
+            raise ValueError(
+                "live worker bench token budgets exceed the invocation safety cap of "
+                f"{_MAX_LIVE_INVOCATION_TOTAL_TOKENS}"
+            )
+        if invocation_cost_budget > _MAX_LIVE_INVOCATION_COST_MICROUSD:
+            raise ValueError(
+                "live worker bench cost budgets exceed the invocation safety cap of "
+                f"{_MAX_LIVE_INVOCATION_COST_MICROUSD} micro-USD"
+            )
     elif replay_dir is None:
         raise ValueError("replay_dir is required for replay mode")
 
@@ -503,6 +601,7 @@ def aggregate_worker_bench_summaries(summaries: list[dict[str, Any]]) -> dict[st
         "tool_result_raw_chars_total": "context.tool_result_raw_chars_total",
         "tool_result_rendered_chars_total": "context.tool_result_rendered_chars_total",
         "tool_result_truncated_chars_total": "context.tool_result_truncated_chars_total",
+        "estimated_cost_microusd": "inference_budget.estimated_cost_microusd",
     }
     distributions: dict[str, dict[str, int | float]] = {}
     for name, path in metric_paths.items():
@@ -867,6 +966,124 @@ def _validate_graders(value: Any, *, scenario_id: str) -> list[dict[str, Any]]:
                 )
         graders.append(dict(raw))
     return graders
+
+
+def _load_live_budget(value: Any, *, scenario_id: str) -> WorkerInferenceBudget | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"Scenario {scenario_id} live_budget must be an object")
+    pricing_model = _required_text(
+        value.get("pricing_model"), field=f"scenario {scenario_id} live_budget pricing_model"
+    )
+    max_total_tokens = _optional_positive_int(
+        value.get("max_total_tokens"),
+        field=f"scenario {scenario_id} live_budget max_total_tokens",
+    )
+    if max_total_tokens is None:
+        raise ValueError(f"Scenario {scenario_id} live_budget max_total_tokens is required")
+    max_llm_calls = _optional_positive_int(
+        value.get("max_llm_calls"),
+        field=f"scenario {scenario_id} live_budget max_llm_calls",
+    )
+    if max_llm_calls is None:
+        raise ValueError(f"Scenario {scenario_id} live_budget max_llm_calls is required")
+    if max_llm_calls > 6:
+        raise ValueError(
+            f"Scenario {scenario_id} live_budget max_llm_calls exceeds the safety cap of 6"
+        )
+    max_cost_microusd = _usd_to_microusd(
+        value.get("max_cost_usd"),
+        field=f"scenario {scenario_id} live_budget max_cost_usd",
+        allow_zero=False,
+    )
+    input_rate = _usd_to_microusd(
+        value.get("input_cost_per_million_tokens_usd"),
+        field=(f"scenario {scenario_id} live_budget input_cost_per_million_tokens_usd"),
+        allow_zero=True,
+    )
+    completion_rate = _usd_to_microusd(
+        value.get("completion_cost_per_million_tokens_usd"),
+        field=(f"scenario {scenario_id} live_budget completion_cost_per_million_tokens_usd"),
+        allow_zero=True,
+    )
+    if input_rate == 0 and completion_rate == 0:
+        raise ValueError(f"Scenario {scenario_id} live_budget must declare a non-zero token rate")
+    return WorkerInferenceBudget(
+        pricing_model=pricing_model,
+        max_llm_calls=max_llm_calls,
+        max_total_tokens=max_total_tokens,
+        max_cost_microusd=max_cost_microusd,
+        input_cost_microusd_per_million_tokens=input_rate,
+        completion_cost_microusd_per_million_tokens=completion_rate,
+    )
+
+
+def _validate_live_scenario_contract(
+    *,
+    scenario_id: str,
+    provider_id: str | None,
+    model: str | None,
+    max_thinking_steps: int | None,
+    inference_budget: WorkerInferenceBudget | None,
+) -> None:
+    if not provider_id:
+        raise ValueError(f"Live scenario {scenario_id} must declare an explicit provider_id")
+    if provider_id.strip().lower() == "codex":
+        raise ValueError(
+            f"Live scenario {scenario_id} cannot use codex because it lacks token accounting"
+        )
+    supported_provider_ids = set(list_registered_provider_ids(include_custom=False)) - {"codex"}
+    if provider_id.strip().lower() not in supported_provider_ids:
+        supported = ", ".join(sorted(supported_provider_ids))
+        raise ValueError(f"Live scenario {scenario_id} provider_id must be one of: {supported}")
+    if not model:
+        raise ValueError(f"Live scenario {scenario_id} must declare an explicit model")
+    if max_thinking_steps is None:
+        raise ValueError(
+            f"Live scenario {scenario_id} must declare max_thinking_steps between 1 and 6"
+        )
+    if max_thinking_steps > 6:
+        raise ValueError(
+            f"Live scenario {scenario_id} max_thinking_steps exceeds the initial safety cap of 6"
+        )
+    if inference_budget is None:
+        raise ValueError(f"Live scenario {scenario_id} must declare live_budget")
+    if inference_budget.max_total_tokens > _MAX_LIVE_RUN_TOTAL_TOKENS:
+        raise ValueError(
+            f"Live scenario {scenario_id} max_total_tokens exceeds the safety cap of "
+            f"{_MAX_LIVE_RUN_TOTAL_TOKENS}"
+        )
+    if inference_budget.max_cost_microusd > _MAX_LIVE_RUN_COST_MICROUSD:
+        raise ValueError(f"Live scenario {scenario_id} max_cost_usd exceeds the safety cap of 0.10")
+
+
+def _usd_to_microusd(value: Any, *, field: str, allow_zero: bool) -> int:
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"{field} is required")
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field} must be a decimal number") from exc
+    if not amount.is_finite() or amount < 0 or (not allow_zero and amount == 0):
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise ValueError(f"{field} must be a finite {qualifier} decimal number")
+    return int((amount * Decimal(1_000_000)).to_integral_value(rounding=ROUND_CEILING))
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_positive_int(value: Any, *, field: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return int(value)
 
 
 def _required_text(value: Any, *, field: str) -> str:

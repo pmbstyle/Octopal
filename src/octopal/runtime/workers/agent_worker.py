@@ -397,6 +397,7 @@ def _build_worker_context_manifest(
             "model": resolved_model,
             "provider_id": resolved_provider,
             "max_thinking_steps": spec.max_thinking_steps,
+            "strict_thinking_budget": spec.strict_thinking_budget,
             "spawn_depth": spec.spawn_depth,
         },
         "prompt_sections_chars": {name: len(content) for name, content in prompt_sections.items()},
@@ -1126,14 +1127,12 @@ Available tools:
         },
     ]
 
-    tools_used = []
+    tools_used: list[str] = []
     thinking_steps = 0
     empty_turns = 0
     tool_map = {t.name: t for t in filtered_tools}
     loop_start = asyncio.get_running_loop().time()
-    effective_max_steps = _auto_tune_max_steps(
-        spec.max_thinking_steps, spec.available_tools, spec.system_prompt
-    )
+    effective_max_steps = _effective_worker_max_steps(spec)
     telemetry: dict[str, Any] = {
         "max_thinking_steps_configured": spec.max_thinking_steps,
         "max_thinking_steps_effective": effective_max_steps,
@@ -1148,6 +1147,7 @@ Available tools:
         "empty_turns": 0,
         "paused_seconds": 0,
         "tokens": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "inference_budget": _build_inference_budget_telemetry(spec),
         "context_manifest": context_manifest,
         "context": {
             "system_prompt_chars": len(system_prompt),
@@ -1174,10 +1174,34 @@ Available tools:
     paused_seconds = 0.0
     malformed_result_turns = 0
 
+    budget_preflight_error = _validate_inference_budget_provider(spec, provider)
+    if budget_preflight_error is not None:
+        return _build_inference_budget_failure_result(
+            worker=worker,
+            telemetry=telemetry,
+            reason=budget_preflight_error,
+            thinking_steps=thinking_steps,
+            tools_used=tools_used,
+        )
+
     while thinking_steps < effective_max_steps:
         llm_start = time.perf_counter()
         force_structured_result = malformed_result_turns > 0
         llm_tools = [] if force_structured_result else filtered_tools
+        request_max_tokens, budget_plan_error = _plan_inference_budget_request(
+            spec=spec,
+            telemetry=telemetry,
+            messages=messages,
+            tools=llm_tools,
+        )
+        if budget_plan_error is not None:
+            return _build_inference_budget_failure_result(
+                worker=worker,
+                telemetry=telemetry,
+                reason=budget_plan_error,
+                thinking_steps=thinking_steps,
+                tools_used=tools_used,
+            )
         _record_worker_llm_context_snapshot(
             telemetry,
             messages=messages,
@@ -1189,6 +1213,12 @@ Available tools:
             tools_used,
             "fs_write",
         )
+        if spec.inference_budget is not None:
+            budget_telemetry = telemetry.get("inference_budget")
+            if isinstance(budget_telemetry, dict):
+                budget_telemetry["provider_attempts"] = (
+                    int(budget_telemetry.get("provider_attempts") or 0) + 1
+                )
         try:
             response = await _call_llm(
                 provider,
@@ -1196,9 +1226,22 @@ Available tools:
                 llm_tools,
                 tool_choice=_force_tool_choice("fs_write") if force_fs_write else "auto",
                 response_format_enabled=not force_fs_write,
+                max_tokens=request_max_tokens,
+                strict_single_attempt=spec.inference_budget is not None,
             )
         except Exception as exc:
             telemetry["llm_latency_ms_total"] += int((time.perf_counter() - llm_start) * 1000)
+            if spec.inference_budget is not None:
+                budget_telemetry = telemetry.get("inference_budget")
+                if isinstance(budget_telemetry, dict):
+                    budget_telemetry["accounting_complete"] = False
+                return _build_inference_budget_failure_result(
+                    worker=worker,
+                    telemetry=telemetry,
+                    reason="inference_usage_accounting_unavailable_after_error",
+                    thinking_steps=thinking_steps,
+                    tools_used=tools_used,
+                )
             error_text = str(exc)
             if _is_upstream_unavailable_error(error_text):
                 return _build_inference_unavailable_result(
@@ -1213,11 +1256,19 @@ Available tools:
         telemetry["llm_calls"] += 1
         telemetry["llm_latency_ms_total"] += int((time.perf_counter() - llm_start) * 1000)
         usage = response.get("usage") or {}
-        if isinstance(usage, dict):
-            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                value = usage.get(key)
-                if isinstance(value, int | float):
-                    telemetry["tokens"][key] += int(value)
+        budget_usage_error = _record_worker_usage(
+            spec=spec,
+            telemetry=telemetry,
+            usage=usage,
+        )
+        if budget_usage_error is not None:
+            return _build_inference_budget_failure_result(
+                worker=worker,
+                telemetry=telemetry,
+                reason=budget_usage_error,
+                thinking_steps=thinking_steps,
+                tools_used=tools_used,
+            )
         await worker.log("debug", f"LLM response: {response}")
 
         # Handle OpenAI-style tool_calls
@@ -1828,6 +1879,8 @@ async def _call_llm(
     *,
     tool_choice: object = "auto",
     response_format_enabled: bool = True,
+    max_tokens: int | None = None,
+    strict_single_attempt: bool = False,
 ) -> dict:
     """Call LLM with tools using the centralized provider."""
     # Build OpenAI-style tools format
@@ -1854,6 +1907,10 @@ async def _call_llm(
     request_kwargs: dict[str, Any] = {"tool_choice": tool_choice}
     if response_format is not None:
         request_kwargs["response_format"] = response_format
+    if max_tokens is not None:
+        request_kwargs["max_tokens"] = max_tokens
+    if strict_single_attempt:
+        request_kwargs["strict_single_attempt"] = True
     response = await provider.complete_with_tools(
         messages=messages,
         tools=openai_tools if openai_tools else [],
@@ -2300,6 +2357,263 @@ def _is_tool_retryable(tool_name: str, tool: Any) -> bool:
     }
 
 
+def _build_inference_budget_telemetry(spec: WorkerSpec) -> dict[str, Any]:
+    budget = spec.inference_budget
+    if budget is None:
+        return {}
+    return {
+        "pricing_model": budget.pricing_model,
+        "max_llm_calls": budget.max_llm_calls,
+        "max_total_tokens": budget.max_total_tokens,
+        "max_cost_microusd": budget.max_cost_microusd,
+        "estimated_cost_microusd": 0,
+        "accounting_complete": True,
+        "provider_attempts": 0,
+        "usage_accounted_calls": 0,
+        "request_input_token_ceiling_total": 0,
+        "last_request_input_token_ceiling": None,
+        "last_request_max_tokens": None,
+        "exhausted_reason": None,
+    }
+
+
+def _validate_inference_budget_provider(
+    spec: WorkerSpec, provider: InferenceProvider
+) -> str | None:
+    budget = spec.inference_budget
+    if budget is None:
+        return None
+    provider_id = str(getattr(provider, "provider_id", "") or "").strip().lower()
+    if not provider_id or provider_id == "codex":
+        return _mark_inference_budget_failure(
+            telemetry=None,
+            reason="inference_budget_provider_unsupported",
+        )
+    resolved_model = str(
+        getattr(provider, "model_id", "")
+        or (spec.llm_config.model if spec.llm_config else None)
+        or spec.model
+        or ""
+    ).strip()
+    if resolved_model != budget.pricing_model:
+        return _mark_inference_budget_failure(
+            telemetry=None,
+            reason="inference_budget_pricing_model_mismatch",
+        )
+    return None
+
+
+def _plan_inference_budget_request(
+    *,
+    spec: WorkerSpec,
+    telemetry: dict[str, Any],
+    messages: list[dict[str, Any]],
+    tools: list[Any],
+) -> tuple[int | None, str | None]:
+    budget = spec.inference_budget
+    if budget is None:
+        return None, None
+    budget_telemetry = telemetry.get("inference_budget")
+    if not isinstance(budget_telemetry, dict):
+        return None, "inference_budget_telemetry_missing"
+
+    provider_attempts = int(budget_telemetry.get("provider_attempts") or 0)
+    if provider_attempts >= budget.max_llm_calls:
+        reason = "inference_call_budget_exhausted"
+        _mark_inference_budget_failure(telemetry=telemetry, reason=reason)
+        return None, reason
+
+    input_token_ceiling = _request_input_token_ceiling(messages, tools)
+    current_total_tokens = int(telemetry.get("tokens", {}).get("total_tokens") or 0)
+    remaining_tokens = budget.max_total_tokens - current_total_tokens
+    max_completion_by_tokens = remaining_tokens - input_token_ceiling
+    if max_completion_by_tokens <= 0:
+        reason = "inference_token_budget_preflight_exhausted"
+        _mark_inference_budget_failure(telemetry=telemetry, reason=reason)
+        return None, reason
+
+    current_cost = int(budget_telemetry.get("estimated_cost_microusd") or 0)
+    remaining_cost = budget.max_cost_microusd - current_cost
+    input_cost_numerator = input_token_ceiling * budget.input_cost_microusd_per_million_tokens
+    if input_cost_numerator > remaining_cost * 1_000_000:
+        reason = "inference_cost_budget_preflight_exhausted"
+        _mark_inference_budget_failure(telemetry=telemetry, reason=reason)
+        return None, reason
+
+    max_completion_by_cost = max_completion_by_tokens
+    completion_rate = budget.completion_cost_microusd_per_million_tokens
+    if completion_rate > 0:
+        affordable_completion_numerator = remaining_cost * 1_000_000 - input_cost_numerator
+        max_completion_by_cost = affordable_completion_numerator // completion_rate
+    request_max_tokens = min(max_completion_by_tokens, max_completion_by_cost)
+    if request_max_tokens <= 0:
+        reason = "inference_cost_budget_preflight_exhausted"
+        _mark_inference_budget_failure(telemetry=telemetry, reason=reason)
+        return None, reason
+
+    budget_telemetry["request_input_token_ceiling_total"] = (
+        int(budget_telemetry.get("request_input_token_ceiling_total") or 0) + input_token_ceiling
+    )
+    budget_telemetry["last_request_input_token_ceiling"] = input_token_ceiling
+    budget_telemetry["last_request_max_tokens"] = int(request_max_tokens)
+    return int(request_max_tokens), None
+
+
+def _record_worker_usage(*, spec: WorkerSpec, telemetry: dict[str, Any], usage: Any) -> str | None:
+    budget = spec.inference_budget
+    tokens = telemetry.get("tokens")
+    if not isinstance(tokens, dict):
+        tokens = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        telemetry["tokens"] = tokens
+
+    parsed = {
+        key: _usage_token_count(usage.get(key)) if isinstance(usage, dict) else None
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+    }
+    if budget is None:
+        for key, value in parsed.items():
+            if value is not None:
+                tokens[key] = int(tokens.get(key) or 0) + value
+        return None
+
+    prompt_tokens = parsed["prompt_tokens"]
+    completion_tokens = parsed["completion_tokens"]
+    total_tokens = parsed["total_tokens"]
+    if (
+        prompt_tokens is None
+        or completion_tokens is None
+        or total_tokens is None
+        or total_tokens <= 0
+        or total_tokens < prompt_tokens + completion_tokens
+    ):
+        reason = "inference_usage_accounting_missing"
+        budget_telemetry = telemetry.get("inference_budget")
+        if isinstance(budget_telemetry, dict):
+            budget_telemetry["accounting_complete"] = False
+        _mark_inference_budget_failure(telemetry=telemetry, reason=reason)
+        return reason
+
+    tokens["prompt_tokens"] = int(tokens.get("prompt_tokens") or 0) + prompt_tokens
+    tokens["completion_tokens"] = int(tokens.get("completion_tokens") or 0) + completion_tokens
+    tokens["total_tokens"] = int(tokens.get("total_tokens") or 0) + total_tokens
+
+    budget_telemetry = telemetry.get("inference_budget")
+    if not isinstance(budget_telemetry, dict):
+        return "inference_budget_telemetry_missing"
+    call_cost_numerator = (
+        prompt_tokens * budget.input_cost_microusd_per_million_tokens
+        + completion_tokens * budget.completion_cost_microusd_per_million_tokens
+    )
+    call_cost_microusd = _ceil_div(call_cost_numerator, 1_000_000)
+    budget_telemetry["estimated_cost_microusd"] = (
+        int(budget_telemetry.get("estimated_cost_microusd") or 0) + call_cost_microusd
+    )
+    budget_telemetry["usage_accounted_calls"] = (
+        int(budget_telemetry.get("usage_accounted_calls") or 0) + 1
+    )
+
+    if int(tokens["total_tokens"]) > budget.max_total_tokens:
+        reason = "inference_token_budget_exceeded"
+        _mark_inference_budget_failure(telemetry=telemetry, reason=reason)
+        return reason
+    if int(budget_telemetry["estimated_cost_microusd"]) > budget.max_cost_microusd:
+        reason = "inference_cost_budget_exceeded"
+        _mark_inference_budget_failure(telemetry=telemetry, reason=reason)
+        return reason
+    return None
+
+
+def _request_input_token_ceiling(messages: list[dict[str, Any]], tools: list[Any]) -> int:
+    tool_payload = [
+        {
+            "name": str(getattr(tool, "name", "") or ""),
+            "description": str(getattr(tool, "description", "") or ""),
+            "parameters": getattr(tool, "parameters", {}),
+        }
+        for tool in tools
+    ]
+    payload = {"messages": messages, "tools": tool_payload}
+    serialized = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+    structural_overhead = 512 + 32 * (len(messages) + len(tools))
+    return max(1, len(serialized) + structural_overhead)
+
+
+def _usage_token_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if value < 0 or int(value) != value:
+        return None
+    return int(value)
+
+
+def _ceil_div(numerator: int, denominator: int) -> int:
+    if numerator <= 0:
+        return 0
+    return (numerator + denominator - 1) // denominator
+
+
+def _mark_inference_budget_failure(*, telemetry: dict[str, Any] | None, reason: str) -> str:
+    if telemetry is not None:
+        budget_telemetry = telemetry.get("inference_budget")
+        if isinstance(budget_telemetry, dict):
+            budget_telemetry["exhausted_reason"] = reason
+    return reason
+
+
+def _build_inference_budget_failure_result(
+    *,
+    worker: Worker,
+    telemetry: dict[str, Any],
+    reason: str,
+    thinking_steps: int,
+    tools_used: list[str],
+) -> WorkerResult:
+    _mark_inference_budget_failure(telemetry=telemetry, reason=reason)
+    summaries = {
+        "inference_budget_provider_unsupported": (
+            "Task was not started because this provider cannot enforce eval usage budgets."
+        ),
+        "inference_budget_pricing_model_mismatch": (
+            "Task was not started because the eval pricing model does not match the worker model."
+        ),
+        "inference_usage_accounting_missing": (
+            "Task stopped because the provider did not return complete token usage accounting."
+        ),
+        "inference_usage_accounting_unavailable_after_error": (
+            "Task stopped because a provider attempt failed without complete usage accounting."
+        ),
+        "inference_call_budget_exhausted": (
+            "Task stopped before the next model call because its call budget is exhausted."
+        ),
+        "inference_token_budget_preflight_exhausted": (
+            "Task stopped before the next model call because its token budget is exhausted."
+        ),
+        "inference_cost_budget_preflight_exhausted": (
+            "Task stopped before the next model call because its cost budget is exhausted."
+        ),
+        "inference_token_budget_exceeded": (
+            "Task stopped because the provider reported token usage above the run budget."
+        ),
+        "inference_cost_budget_exceeded": (
+            "Task stopped because estimated model cost exceeded the run budget."
+        ),
+    }
+    return WorkerResult(
+        status="failed",
+        summary=summaries.get(reason, "Task stopped because inference budget enforcement failed."),
+        output=_attach_telemetry(
+            {"degraded": True, "reason": reason},
+            telemetry,
+            status="failed",
+            thinking_steps=thinking_steps,
+            tools_used=tools_used,
+        ),
+        knowledge_proposals=worker.knowledge_proposals,
+        thinking_steps=thinking_steps,
+        tools_used=tools_used,
+    )
+
+
 def _auto_tune_max_steps(base_steps: int, available_tools: list[str], system_prompt: str) -> int:
     tuned = max(3, int(base_steps))
     tool_set = set(available_tools)
@@ -2313,6 +2627,16 @@ def _auto_tune_max_steps(base_steps: int, available_tools: list[str], system_pro
     if "writer" in system_prompt.lower() and len(tool_set) <= 2:
         tuned -= 2
     return max(3, min(_DEFAULT_MAX_STEP_CAP, tuned))
+
+
+def _effective_worker_max_steps(spec: WorkerSpec) -> int:
+    if spec.strict_thinking_budget:
+        return max(1, int(spec.max_thinking_steps))
+    return _auto_tune_max_steps(
+        spec.max_thinking_steps,
+        spec.available_tools,
+        spec.system_prompt,
+    )
 
 
 def _attach_telemetry(

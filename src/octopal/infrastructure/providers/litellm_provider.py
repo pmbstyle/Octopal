@@ -109,6 +109,10 @@ class LiteLLMProvider:
     def provider_id(self) -> str:
         return self._profile.provider_id
 
+    @property
+    def model_id(self) -> str:
+        return self._model
+
     def _shared_rate_limit_key(self) -> tuple[str, str, str]:
         return (
             self._profile.provider_id,
@@ -393,12 +397,15 @@ class LiteLLMProvider:
             logger.debug("LiteLLM payload (tools): %s", _truncate(payload_str))
 
         try:
+            strict_single_attempt = bool(kwargs.get("strict_single_attempt", False))
             request_kwargs = _build_request_kwargs(
                 kwargs,
                 temperature=float(kwargs.get("temperature", 0.3)),
                 timeout=self._settings.litellm_timeout,
-                fallbacks=self._fallbacks,
+                fallbacks=None if strict_single_attempt else self._fallbacks,
             )
+            if strict_single_attempt:
+                request_kwargs["num_retries"] = 0
             request_kwargs = _sanitize_request_kwargs_for_provider(
                 request_kwargs,
                 provider_id=self._profile.provider_id,
@@ -409,6 +416,7 @@ class LiteLLMProvider:
                     tools=normalized_tools,
                     tool_choice=tool_choice,
                     request_kwargs=request_kwargs,
+                    strict_single_attempt=strict_single_attempt,
                 )
             )
 
@@ -540,6 +548,7 @@ class LiteLLMProvider:
         tools: list[dict[str, Any]],
         tool_choice: object,
         request_kwargs: dict[str, object],
+        strict_single_attempt: bool = False,
     ) -> tuple[Any, str]:
         requested_response_format = request_kwargs.get("response_format")
         route_key = self._tool_response_format_key()
@@ -550,6 +559,8 @@ class LiteLLMProvider:
         candidates = _response_format_fallback_modes(
             requested_response_format, preferred_mode=preferred_mode
         )
+        if strict_single_attempt:
+            candidates = candidates[:1]
         last_exc: Exception | None = None
 
         for index, mode in enumerate(candidates):
@@ -561,12 +572,15 @@ class LiteLLMProvider:
                     messages=messages,
                     tools=tools,
                     tool_choice=attempt_tool_choice,
+                    _strict_single_attempt=strict_single_attempt,
                     **attempt_kwargs,
                 )
                 self._tool_response_format_modes[route_key] = mode
                 return response, mode
             except Exception as exc:
                 last_exc = exc
+                if strict_single_attempt:
+                    raise
                 if (
                     attempt_tool_choice != "auto"
                     and _is_tool_choice_required_unsupported_in_thinking_error(exc)
@@ -604,6 +618,12 @@ class LiteLLMProvider:
         )
 
     async def _acompletion_with_resilience(self, **kwargs: object) -> Any:
+        strict_single_attempt = bool(kwargs.pop("_strict_single_attempt", False))
+        if strict_single_attempt:
+            return await self._acompletion_guarded(
+                _allow_closed_client_retry=False,
+                **kwargs,
+            )
         attempt = 0
         while True:
             try:
@@ -629,6 +649,7 @@ class LiteLLMProvider:
                 attempt += 1
 
     async def _acompletion_guarded(self, **kwargs: object) -> Any:
+        allow_closed_client_retry = bool(kwargs.pop("_allow_closed_client_retry", True))
         async with self._semaphore:
             timeout_seconds = _coerce_timeout_seconds(kwargs.get("timeout"))
             try:
@@ -642,7 +663,7 @@ class LiteLLMProvider:
                     timeout_seconds=timeout_seconds,
                 )
             except Exception as exc:
-                if not _is_closed_client_error(exc):
+                if not allow_closed_client_retry or not _is_closed_client_error(exc):
                     raise
                 logger.warning(
                     "LiteLLM client was closed mid-request; retrying once with a fresh completion call"
