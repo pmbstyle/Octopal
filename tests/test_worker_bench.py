@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from octopal.runtime.workers.bench import (
     WorkerBenchScenario,
@@ -267,6 +268,30 @@ def test_grade_worker_messages_reports_assertion_evidence() -> None:
     assert "Evidence" not in json.dumps(grade)
 
 
+def test_structured_output_grader_rejects_internal_metadata_only() -> None:
+    scenario = WorkerBenchScenario(
+        id="internal-only",
+        template_id="unused",
+        task="Require domain output",
+        inputs={},
+        graders=({"type": "structured_output"},),
+    )
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "result": {
+                "status": "completed",
+                "output": {"_telemetry": {}, "_orchestration_plan": {"status": "pending"}},
+            },
+        }
+    )
+
+    grade = grade_worker_messages(scenario=scenario, stdout=stdout)
+
+    assert grade["passed"] is False
+    assert grade["assertions"][0]["evidence"]["domain_keys"] == []
+
+
 def test_replay_mode_does_not_load_provider_settings(monkeypatch, tmp_path) -> None:
     scenario = WorkerBenchScenario(
         id="offline",
@@ -368,6 +393,51 @@ def test_live_mode_rejects_replay_only_external_scenario(monkeypatch, tmp_path) 
         assert "live execution is disabled" in str(exc)
     else:
         raise AssertionError("expected live execution safety error")
+
+
+def test_live_summary_counts_ungraded_execution_failure(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "octopal.runtime.workers.bench.load_settings", lambda: SimpleNamespace(config_obj=None)
+    )
+    monkeypatch.setattr(
+        "octopal.runtime.workers.bench._run_scenarios",
+        lambda **_kwargs: [
+            {
+                "scenario_id": "web_search_ranked_pricing",
+                "status": "missing_result",
+                "returncode": 2,
+                "grade": {"passed": None},
+            }
+        ],
+    )
+
+    summary = run_worker_bench(workspace_dir=tmp_path)
+
+    assert summary["graded_trials"] == 0
+    assert summary["failed_trials"] == 1
+
+
+def test_execution_failure_is_not_also_counted_as_passed(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "octopal.runtime.workers.bench.load_settings", lambda: SimpleNamespace(config_obj=None)
+    )
+    monkeypatch.setattr(
+        "octopal.runtime.workers.bench._run_scenarios",
+        lambda **_kwargs: [
+            {
+                "scenario_id": "web_search_ranked_pricing",
+                "status": "completed",
+                "returncode": 2,
+                "grade": {"passed": True},
+            }
+        ],
+    )
+
+    summary = run_worker_bench(workspace_dir=tmp_path)
+
+    assert summary["graded_trials"] == 1
+    assert summary["passed_trials"] == 0
+    assert summary["failed_trials"] == 1
 
 
 def test_cli_returns_nonzero_when_a_replay_grade_fails(tmp_path, capsys) -> None:

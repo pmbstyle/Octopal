@@ -183,6 +183,8 @@ def test_runtime_recovers_after_transient_failure(tmp_path: Path) -> None:
     assert launcher.calls == 2
     assert isinstance(result.output, dict)
     assert result.output["_recovery"]["recovered"] is True
+    assert len(store.execution_episodes) == 1
+    assert store.execution_episodes[0].status == "completed"
 
 
 def test_runtime_fails_after_recovery_exhausted(tmp_path: Path) -> None:
@@ -211,6 +213,35 @@ def test_runtime_fails_after_recovery_exhausted(tmp_path: Path) -> None:
     except RuntimeError as exc:
         assert "after recovery attempts" in str(exc)
     assert launcher.calls == 2
+    assert len(store.execution_episodes) == 1
+    assert store.execution_episodes[0].status == "failed"
+
+
+def test_runtime_records_timeout_episode(tmp_path: Path) -> None:
+    store = _StoreStub()
+    runtime = WorkerRuntime(
+        store=store,
+        policy=_PolicyStub(),
+        workspace_dir=tmp_path,
+        launcher=_LauncherStub(),
+        mcp_manager=None,
+        settings=Settings(),
+    )
+
+    async def fake_read_loop(spec, process, approval_requester=None):
+        raise TimeoutError
+
+    runtime._read_loop = fake_read_loop  # type: ignore[method-assign]
+
+    try:
+        asyncio.run(runtime.run(_spec()))
+        raise AssertionError("Expected RuntimeError")
+    except RuntimeError as exc:
+        assert "timed out after recovery attempts" in str(exc)
+
+    assert len(store.execution_episodes) == 1
+    assert store.execution_episodes[0].status == "failed"
+    assert store.execution_episodes[0].verification["terminal_status"] == "failed"
 
 
 def test_worker_mcp_call_restores_configured_session(tmp_path: Path) -> None:
@@ -307,9 +338,7 @@ def test_worker_failed_result_marks_store_failed(tmp_path: Path) -> None:
     assert store.status_updates == ["failed"]
     assert store.result_summaries == ["Worker failed: MCP schema mismatch"]
     assert store.result_errors == ["schema mismatch"]
-    assert len(store.execution_episodes) == 1
-    assert store.execution_episodes[0].status == "failed"
-    assert store.execution_episodes[0].trust_state == "observed"
+    assert store.execution_episodes == []
 
 
 def test_episode_store_failure_does_not_fail_worker_result(tmp_path: Path) -> None:
@@ -326,16 +355,18 @@ def test_episode_store_failure_does_not_fail_worker_result(tmp_path: Path) -> No
         mcp_manager=None,
         settings=Settings(),
     )
-    process = _FakeProcess(pid=1)
-    process.stdout = _FakeReader(
-        [b'{"type":"result","result":{"summary":"Worker completed","output":{}}}\n']
-    )
 
-    result = asyncio.run(runtime._read_loop(_spec(), process))
+    async def fake_read_loop(spec, process, approval_requester=None):
+        return WorkerResult(status="completed", summary="Worker completed", output={})
+
+    runtime._read_loop = fake_read_loop  # type: ignore[method-assign]
+
+    result = asyncio.run(runtime.run(_spec()))
 
     assert result.status == "completed"
     assert result.summary == "Worker completed"
-    assert store.status_updates == ["completed"]
+    assert store.status_updates == ["running"]
+    assert "failed" not in store.status_updates
 
 
 def test_stderr_loop_batches_traceback_into_single_log(tmp_path: Path) -> None:
@@ -498,6 +529,8 @@ def test_stop_worker_blocks_recovery_restart(tmp_path: Path) -> None:
     assert "stopped" in store.status_updates
     assert store.result_summaries[-1] == "Worker stopped."
     assert store.result_errors[-1] == "Worker stop requested."
+    assert len(store.execution_episodes) == 1
+    assert store.execution_episodes[0].status == "stopped"
 
 
 def test_wait_for_worker_exit_terminates_stuck_process(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from octopal.infrastructure.config.models import LLMConfig
 from octopal.runtime.workers.agent_worker import (
     _build_worker_completion_protocol_prompt,
     _build_worker_context_manifest,
@@ -217,6 +218,7 @@ def test_worker_context_manifest_records_selection_without_prompt_content() -> N
         run_id="run-1",
         effective_permissions=["network"],
         allowed_paths=["reports"],
+        llm_config=LLMConfig(provider_id="openrouter", model="resolved-model"),
     )
 
     manifest = _build_worker_context_manifest(
@@ -227,6 +229,8 @@ def test_worker_context_manifest_records_selection_without_prompt_content() -> N
 
     assert manifest["version"] == 1
     assert manifest["task"]["run_id"] == "run-1"
+    assert manifest["task"]["model"] == "resolved-model"
+    assert manifest["task"]["provider_id"] == "openrouter"
     assert manifest["tools"]["active_names"] == ["web_fetch"]
     assert manifest["tools"]["unavailable_requested_names"] == ["missing_tool"]
     assert manifest["tools"]["schema_chars_by_tool"]["web_fetch"] > 0

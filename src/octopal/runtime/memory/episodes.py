@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, Literal
 
 from octopal import __version__
 from octopal.infrastructure.store.models import ExecutionEpisodeRecord
@@ -15,17 +15,17 @@ def build_worker_execution_episode(
     spec: WorkerSpec,
     result: WorkerResult,
     stored_output: dict[str, Any] | None,
-    status: str,
+    status: Literal["completed", "failed", "stopped"],
     launcher_kind: str,
 ) -> ExecutionEpisodeRecord:
     """Build a content-addressed evidence index without copying task or output values."""
 
-    terminal_status = "failed" if status == "failed" else "completed"
+    terminal_status = status
     result_payload = result.model_dump(mode="json")
     result_payload["output"] = stored_output
     result_fingerprint = _fingerprint(result_payload)
     output_keys = _keys(stored_output)
-    domain_output_keys = [key for key in output_keys if key != "_telemetry"]
+    domain_output_keys = [key for key in output_keys if not key.startswith("_")]
     telemetry = stored_output.get("_telemetry") if isinstance(stored_output, dict) else None
     explicit_verification = (
         stored_output.get("verification") if isinstance(stored_output, dict) else None

@@ -128,3 +128,36 @@ def test_worker_episode_contains_fingerprints_not_secret_values() -> None:
     assert episode.verification["explicit_verification_key_count"] == 2
     assert len(episode.verification["explicit_verification_keys_fingerprint"]) == 64
     assert episode.provenance["content_policy"] == "metadata_only_v1"
+
+
+def test_internal_output_does_not_count_as_structured_domain_output() -> None:
+    result = WorkerResult(
+        summary="Coordinator stopped without a domain result",
+        output={"_telemetry": {}, "_orchestration_plan": {"status": "pending"}},
+    )
+
+    episode = build_worker_execution_episode(
+        spec=_spec("not-secret"),
+        result=result,
+        stored_output=result.output,
+        status="completed",
+        launcher_kind="TestLauncher",
+    )
+
+    assert episode.verification["structured_output_present"] is False
+    assert episode.verification["domain_output_key_count"] == 0
+
+
+def test_stopped_episode_preserves_terminal_status() -> None:
+    result = WorkerResult(status="failed", summary="Worker stopped", output={"stopped": True})
+
+    episode = build_worker_execution_episode(
+        spec=_spec("not-secret"),
+        result=result,
+        stored_output=result.output,
+        status="stopped",
+        launcher_kind="TestLauncher",
+    )
+
+    assert episode.status == "stopped"
+    assert episode.verification["terminal_status"] == "stopped"

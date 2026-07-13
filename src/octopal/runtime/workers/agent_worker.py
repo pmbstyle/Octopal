@@ -386,13 +386,16 @@ def _build_worker_context_manifest(
     ]
     requested_tool_names = [str(name).strip() for name in spec.available_tools if str(name).strip()]
     active_name_set = set(active_tool_names)
+    resolved_model = (spec.llm_config.model if spec.llm_config else None) or spec.model
+    resolved_provider = spec.llm_config.provider_id if spec.llm_config else None
     return {
         "version": 1,
         "scope": "worker_run",
         "task": {
             "template_id": spec.template_id,
             "run_id": spec.run_id or spec.id,
-            "model": spec.model,
+            "model": resolved_model,
+            "provider_id": resolved_provider,
             "max_thinking_steps": spec.max_thinking_steps,
             "spawn_depth": spec.spawn_depth,
         },

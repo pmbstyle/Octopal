@@ -277,7 +277,7 @@ def grade_worker_messages(
             passed = actual in expected_values
             evidence = {"actual": actual, "expected": expected_values}
         elif grader_type == "structured_output":
-            domain_keys = sorted(key for key in output_obj if key != "_telemetry")
+            domain_keys = sorted(key for key in output_obj if not str(key).startswith("_"))
             passed = bool(domain_keys)
             evidence = {"domain_keys": domain_keys}
         elif grader_type == "required_output_path":
@@ -396,8 +396,12 @@ def run_worker_bench(
 
     finished_at = datetime.now(UTC)
     graded_trials = sum(1 for item in summaries if item.get("grade", {}).get("passed") is not None)
-    passed_trials = sum(1 for item in summaries if item.get("grade", {}).get("passed") is True)
-    failed_trials = sum(1 for item in summaries if item.get("grade", {}).get("passed") is False)
+    failed_trials = sum(1 for item in summaries if _trial_failed(item))
+    passed_trials = sum(
+        1
+        for item in summaries
+        if item.get("grade", {}).get("passed") is True and not _trial_failed(item)
+    )
     return {
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
@@ -679,6 +683,19 @@ def _artifact_stem(scenario_id: str, trial: int, trials: int) -> str:
     if trials == 1:
         return scenario_id
     return f"{scenario_id}.trial-{trial}"
+
+
+def _trial_failed(summary: dict[str, Any]) -> bool:
+    grade_passed = summary.get("grade", {}).get("passed")
+    if grade_passed is False:
+        return True
+    returncode = summary.get("returncode")
+    if returncode not in (None, 0):
+        return True
+    status = str(summary.get("status") or "").strip().lower()
+    if status in {"missing_result", "timeout"}:
+        return True
+    return grade_passed is None and status == "failed"
 
 
 def _str_list(value: Any) -> list[str]:

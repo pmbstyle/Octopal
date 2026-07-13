@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -675,6 +675,12 @@ class WorkerRuntime:
                 }
             if str(result.status).strip().lower() == "failed":
                 worker_trace_status = "error"
+            await self._record_execution_episode(
+                spec=spec,
+                result=result,
+                stored_output=result.output,
+                worker_status="failed" if result.status == "failed" else "completed",
+            )
             worker_trace_output = {
                 "status": result.status,
                 "summary_preview": safe_preview(result.summary, limit=240),
@@ -699,6 +705,15 @@ class WorkerRuntime:
                 summary="Worker stopped.",
                 error="Worker stop requested.",
             )
+            stopped_result = WorkerResult(
+                status="failed", summary="Worker stopped.", output={"stopped": True}
+            )
+            await self._record_execution_episode(
+                spec=spec,
+                result=stopped_result,
+                stored_output=stopped_result.output,
+                worker_status="stopped",
+            )
             await self._append_audit(
                 "worker_stopped",
                 level="warning",
@@ -720,15 +735,23 @@ class WorkerRuntime:
                 "recovery_attempts": attempts,
                 "recovered": attempts > 1,
             }
-            return WorkerResult(
-                status="failed", summary="Worker stopped.", output={"stopped": True}
-            )
+            return stopped_result
         except TimeoutError:
             await asyncio.to_thread(self.store.update_worker_status, spec.id, "failed")
             await asyncio.to_thread(
                 self.store.update_worker_result,
                 spec.id,
                 error=f"Worker timed out after recovery attempts ({attempts}/{max_attempts})",
+            )
+            await self._record_execution_episode(
+                spec=spec,
+                result=WorkerResult(
+                    status="failed",
+                    summary="Worker timed out after recovery attempts.",
+                    output={"reason": "timeout"},
+                ),
+                stored_output={"reason": "timeout"},
+                worker_status="failed",
             )
             await self._append_audit(
                 "worker_failed",
@@ -748,6 +771,16 @@ class WorkerRuntime:
                 self.store.update_worker_result,
                 spec.id,
                 error=f"Worker failed after recovery attempts: {exc}",
+            )
+            await self._record_execution_episode(
+                spec=spec,
+                result=WorkerResult(
+                    status="failed",
+                    summary="Worker failed after recovery attempts.",
+                    output={"reason": "exception", "error_type": type(exc).__name__},
+                ),
+                stored_output={"reason": "exception", "error_type": type(exc).__name__},
+                worker_status="failed",
             )
             await self._append_audit(
                 "worker_failed",
@@ -1771,12 +1804,6 @@ class WorkerRuntime:
                     error=_worker_result_error_text(result) if worker_status == "failed" else None,
                     tools_used=result.tools_used,
                 )
-                await self._record_execution_episode(
-                    spec=spec,
-                    result=result,
-                    stored_output=stored_output,
-                    worker_status=worker_status,
-                )
                 return result
             return None
 
@@ -1818,16 +1845,22 @@ class WorkerRuntime:
         spec: WorkerSpec,
         result: WorkerResult,
         stored_output: dict[str, Any] | None,
-        worker_status: str,
+        worker_status: Literal["completed", "failed", "stopped"],
     ) -> None:
         add_execution_episode = getattr(self.store, "add_execution_episode", None)
         if not callable(add_execution_episode):
             return
         try:
+            evidence_output = stored_output
+            get_worker = getattr(self.store, "get_worker", None)
+            if callable(get_worker):
+                stored_worker = await asyncio.to_thread(get_worker, spec.id)
+                if stored_worker is not None:
+                    evidence_output = stored_worker.output
             episode = build_worker_execution_episode(
                 spec=spec,
                 result=result,
-                stored_output=stored_output,
+                stored_output=evidence_output,
                 status=worker_status,
                 launcher_kind=type(self.launcher).__name__,
             )
