@@ -409,6 +409,18 @@ uv run octopal memory stats
 uv run octopal memory cleanup --dry-run
 ```
 
+Execution evidence inspection:
+
+```bash
+uv run octopal episodes list
+uv run octopal episodes show <episode-id>
+uv run octopal episodes show <episode-id> --reveal-evidence
+uv run octopal episodes erase-evidence <episode-id>
+```
+
+Episode list/show output is metadata-only unless `--reveal-evidence` is explicitly supplied.
+Erasing evidence preserves the immutable episode metadata and fingerprints.
+
 Worker execution episodes store metadata-only fingerprints by default. To also retain raw task,
 prompt, and result evidence, generate a dedicated 32-byte key and set
 `OCTOPAL_EPISODE_EVIDENCE_KEY` to its URL-safe base64 value. Raw evidence is encrypted with

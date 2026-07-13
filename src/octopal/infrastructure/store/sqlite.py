@@ -12,6 +12,7 @@ from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.store.base import UNSET, Store
 from octopal.infrastructure.store.models import (
     AuditEvent,
+    ExecutionEpisodeEvidenceMetadata,
     ExecutionEpisodeEvidenceRecord,
     ExecutionEpisodeRecord,
     IntentRecord,
@@ -909,6 +910,28 @@ class SQLiteStore(Store):
         row = cursor.fetchone()
         return self._row_to_execution_episode_evidence(row) if row else None
 
+    def get_execution_episode_evidence_metadata(
+        self, episode_id: str
+    ) -> ExecutionEpisodeEvidenceMetadata | None:
+        cursor = self._conn.execute(
+            """
+            SELECT episode_id, algorithm, key_id, created_at, expires_at
+            FROM execution_episode_evidence
+            WHERE episode_id = ?
+            """,
+            (episode_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return ExecutionEpisodeEvidenceMetadata(
+            episode_id=row["episode_id"],
+            algorithm=row["algorithm"],
+            key_id=row["key_id"],
+            created_at=_parse_dt(row["created_at"]),
+            expires_at=_parse_dt(row["expires_at"]),
+        )
+
     def delete_execution_episode_evidence(self, episode_id: str) -> bool:
         cursor = self._conn.execute(
             "DELETE FROM execution_episode_evidence WHERE episode_id = ?",
@@ -916,6 +939,27 @@ class SQLiteStore(Store):
         )
         self._conn.commit()
         return cursor.rowcount > 0
+
+    def delete_execution_episode_evidence_with_audit(
+        self,
+        episode_id: str,
+        event: AuditEvent,
+    ) -> bool:
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "DELETE FROM execution_episode_evidence WHERE episode_id = ?",
+                    (episode_id,),
+                )
+                if cursor.rowcount <= 0:
+                    self._conn.rollback()
+                    return False
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def cleanup_expired_execution_episode_evidence(self, now: datetime) -> int:
         cursor = self._conn.execute(
@@ -1012,6 +1056,10 @@ class SQLiteStore(Store):
         return record
 
     def append_audit(self, event: AuditEvent) -> None:
+        self._insert_audit(event)
+        self._conn.commit()
+
+    def _insert_audit(self, event: AuditEvent) -> None:
         self._conn.execute(
             """
             INSERT INTO audit_events (id, ts, correlation_id, level, event_type, data_json)
@@ -1026,7 +1074,6 @@ class SQLiteStore(Store):
                 json.dumps(event.data),
             ),
         )
-        self._conn.commit()
 
     def list_audit(self, limit: int = 100) -> list[AuditEvent]:
         cursor = self._conn.execute(

@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 from octopal.infrastructure.store.models import (
     AuditEvent,
+    ExecutionEpisodeEvidenceMetadata,
     ExecutionEpisodeEvidenceRecord,
     ExecutionEpisodeRecord,
     IntentRecord,
@@ -69,7 +70,17 @@ class Store(Protocol):
         self, episode_id: str
     ) -> ExecutionEpisodeEvidenceRecord | None: ...
 
+    def get_execution_episode_evidence_metadata(
+        self, episode_id: str
+    ) -> ExecutionEpisodeEvidenceMetadata | None: ...
+
     def delete_execution_episode_evidence(self, episode_id: str) -> bool: ...
+
+    def delete_execution_episode_evidence_with_audit(
+        self,
+        episode_id: str,
+        event: AuditEvent,
+    ) -> bool: ...
 
     def cleanup_expired_execution_episode_evidence(self, now: datetime) -> int: ...
 

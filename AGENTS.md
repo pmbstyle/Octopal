@@ -27,6 +27,7 @@
 - `uv run octopal dashboard --once` prints one dashboard snapshot; `uv run octopal dashboard --watch` runs the live terminal dashboard; `uv run octopal dashboard --json` emits a machine-readable snapshot; `--compact` and `--last <N>` tune terminal output.
 - `uv run octopal workers list` shows registered workers, their current status, and the current task when available.
 - `uv run octopal audit list [--limit <N>]` lists recent audit events, and `uv run octopal audit show <event-id>` prints one audit event in detail.
+- `uv run octopal episodes list [--worker-run-id <id>] [--limit <N>] [--json]` and `uv run octopal episodes show <episode-id> [--json]` inspect metadata-only execution evidence. `--reveal-evidence` explicitly decrypts raw content, and `uv run octopal episodes erase-evidence <episode-id> [--yes]` permanently deletes only the encrypted raw payload.
 - `uv run octopal connector status [--json]` checks connector authorization/readiness after connector setup flows; `uv run octopal connector auth <name>` and `uv run octopal connector disconnect <name> [--forget-credentials]` handle CLI-based connector auth maintenance.
 - `uv run octopal sync-worker-templates --overwrite` refreshes default worker templates into `workspace/workers`.
 - `uv run octopal memory stats` and `uv run octopal memory cleanup [--keep-days <days>] [--keep-count <count>] [--dry-run]` cover common memory maintenance flows.

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.infrastructure.config.settings import Settings
-from octopal.infrastructure.store.models import ExecutionEpisodeRecord, WorkerRecord
+from octopal.infrastructure.store.models import AuditEvent, ExecutionEpisodeRecord, WorkerRecord
 from octopal.infrastructure.store.sqlite import SQLiteStore
 from octopal.runtime.memory.episode_evidence import (
     EpisodeEvidenceCipher,
@@ -232,6 +232,33 @@ def test_sqlite_episode_evidence_is_erasable_but_not_mutable(tmp_path: Path) -> 
     assert store.delete_execution_episode_evidence(episode.id) is True
     assert store.get_execution_episode_evidence(episode.id) is None
     assert store.get_execution_episode(episode.id) == episode
+
+
+def test_sqlite_episode_evidence_erase_rolls_back_when_audit_write_fails(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    episode = _episode()
+    cipher = EpisodeEvidenceCipher.from_encoded_key(_encoded_key())
+    evidence = cipher.encrypt(
+        episode_id=episode.id,
+        payload={"episode_id": episode.id, "raw": "sensitive"},
+        retention_days=30,
+    )
+    event = AuditEvent(
+        id="duplicate-audit-id",
+        ts=datetime.now(UTC),
+        level="info",
+        event_type="execution_episode_evidence_erased",
+        data={"episode_id": episode.id},
+    )
+    store.add_execution_episode_bundle(episode, evidence)
+    store.append_audit(event)
+
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+        store.delete_execution_episode_evidence_with_audit(episode.id, event)
+
+    assert store.get_execution_episode_evidence(episode.id) == evidence
 
 
 def test_sqlite_episode_evidence_bundle_is_atomic_and_cleanup_preserves_metadata(

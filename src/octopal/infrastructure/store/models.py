@@ -105,6 +105,18 @@ class ExecutionEpisodeEvidenceRecord(BaseModel):
     expires_at: datetime
 
 
+class ExecutionEpisodeEvidenceMetadata(BaseModel):
+    """Non-secret envelope fields for operator inspection without loading ciphertext."""
+
+    model_config = ConfigDict(frozen=True)
+
+    episode_id: str
+    algorithm: Literal["AES-256-GCM"]
+    key_id: str = Field(min_length=16, max_length=64)
+    created_at: datetime
+    expires_at: datetime
+
+
 class IntentRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 

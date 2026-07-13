@@ -29,6 +29,7 @@ from rich.table import Table
 from octopal.browser.managed import read_managed_web_status
 from octopal.channels import normalize_user_channel, user_channel_label
 from octopal.cli.branding import print_banner
+from octopal.cli.episodes import episodes_app
 from octopal.infrastructure.config.settings import (
     Settings,
     config_write_path,
@@ -2731,6 +2732,7 @@ def skill_remove(
 
 app.add_typer(workers_app, name="workers")
 app.add_typer(audit_app, name="audit")
+app.add_typer(episodes_app, name="episodes")
 app.add_typer(memory_app, name="memory")
 app.add_typer(config_app, name="config")
 app.add_typer(connector_app, name="connector")
