@@ -66,6 +66,7 @@ def _budgeted_worker() -> Worker:
     budget = WorkerInferenceBudget(
         pricing_model="openai/glm-test",
         max_llm_calls=4,
+        max_tool_calls=2,
         max_total_tokens=50_000,
         max_cost_microusd=50_000,
         input_cost_microusd_per_million_tokens=200_000,
@@ -223,6 +224,112 @@ def test_budgeted_worker_counts_failed_provider_attempt_and_stops(
     assert budget["provider_attempts"] == 1
     assert budget["usage_accounted_calls"] == 0
     assert budget["accounting_complete"] is False
+
+
+def test_budgeted_worker_denies_excess_parallel_tools_and_still_completes(
+    monkeypatch, tmp_path: Path
+) -> None:
+    worker = _budgeted_worker()
+    assert worker.spec.inference_budget is not None
+    worker.spec = worker.spec.model_copy(
+        update={
+            "available_tools": ["web_search"],
+            "inference_budget": worker.spec.inference_budget.model_copy(
+                update={"max_llm_calls": 2, "max_tool_calls": 1}
+            ),
+        }
+    )
+
+    class _Provider:
+        provider_id = "zai"
+        model_id = "openai/glm-test"
+
+    executed_queries: list[str] = []
+
+    async def _search(args, _ctx):
+        executed_queries.append(str(args.get("query") or ""))
+        return {"ok": True, "results": [{"url": "https://example.com"}]}
+
+    search_tool = ToolSpec(
+        name="web_search",
+        description="Search",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        permission="network",
+        handler=_search,
+        is_async=True,
+    )
+    responses = iter(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"first"}',
+                        },
+                    },
+                    {
+                        "id": "call-2",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"second"}',
+                        },
+                    },
+                    {
+                        "id": "call-3",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"third"}',
+                        },
+                    },
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+            },
+            {
+                "content": (
+                    '{"type":"result","summary":"done",'
+                    '"output":{"results":[{"url":"https://example.com"}]}}'
+                ),
+                "usage": {"prompt_tokens": 130, "completion_tokens": 30, "total_tokens": 160},
+            },
+        ]
+    )
+    exposed_tool_counts: list[int] = []
+
+    async def _fake_call_llm(_provider, _messages, tools, **_kwargs):
+        exposed_tool_counts.append(len(tools))
+        return next(responses)
+
+    async def _noop_log(_level: str, _message: str) -> None:
+        return None
+
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
+    monkeypatch.setattr(
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
+        lambda settings, model=None, config=None: _Provider(),
+    )
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.get_tools", lambda: [search_tool])
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker._call_llm", _fake_call_llm)
+    monkeypatch.setattr(worker, "log", _noop_log)
+
+    result = asyncio.run(execute_agent_task(worker, tmp_path, tmp_path))
+
+    assert result.status == "completed"
+    assert result.tools_used == ["web_search"]
+    assert executed_queries == ["first"]
+    assert exposed_tool_counts == [2, 0]
+    assert result.output is not None
+    telemetry = result.output["_telemetry"]
+    assert telemetry["tool_calls"] == 1
+    assert telemetry["tool_budget_denials"] == 2
+    assert telemetry["inference_budget"]["tool_calls_denied"] == 2
+    assert telemetry["inference_budget"]["max_tool_calls"] == 1
 
 
 def test_inference_budget_rejects_unsupported_or_mismatched_provider() -> None:

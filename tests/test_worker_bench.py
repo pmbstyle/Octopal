@@ -43,6 +43,7 @@ def _budgeted_live_scenario(
         inference_budget=WorkerInferenceBudget(
             pricing_model="openai/glm-test",
             max_llm_calls=4,
+            max_tool_calls=2,
             max_total_tokens=20_000,
             max_cost_microusd=20_000,
             input_cost_microusd_per_million_tokens=200_000,
@@ -135,6 +136,7 @@ def test_build_worker_spec_applies_strict_live_budget() -> None:
     assert spec["strict_thinking_budget"] is True
     assert spec["inference_budget"]["max_total_tokens"] == 20_000
     assert spec["inference_budget"]["max_llm_calls"] == 4
+    assert spec["inference_budget"]["max_tool_calls"] == 2
     assert spec["inference_budget"]["max_cost_microusd"] == 20_000
     assert WorkerSpec.model_validate(spec).strict_thinking_budget is True
 
@@ -183,6 +185,7 @@ def test_summarize_worker_messages_extracts_telemetry() -> None:
                     },
                     "inference_budget": {
                         "max_llm_calls": 4,
+                        "max_tool_calls": 2,
                         "max_total_tokens": 5000,
                         "max_cost_microusd": 20000,
                         "estimated_cost_microusd": 75,
@@ -218,6 +221,7 @@ def test_summarize_worker_messages_extracts_telemetry() -> None:
     assert summary["context"]["tool_result_rendered_chars_by_tool"] == {"web_search": 700}
     assert summary["context_manifest"]["tools"]["active_names"] == ["web_search"]
     assert summary["inference_budget"]["max_llm_calls"] == 4
+    assert summary["inference_budget"]["max_tool_calls"] == 2
     assert summary["inference_budget"]["estimated_cost_microusd"] == 75
     assert summary["inference_budget"]["accounting_complete"] is True
     assert summary["inference_budget"]["provider_attempts"] == 2
@@ -318,6 +322,7 @@ def test_load_scenarios_file_requires_complete_live_budget_contract(tmp_path) ->
                         "live_budget": {
                             "pricing_model": "openai/glm-test",
                             "max_llm_calls": 4,
+                            "max_tool_calls": 2,
                             "max_total_tokens": 20000,
                             "max_cost_usd": "0.02",
                             "input_cost_per_million_tokens_usd": "0.20",
@@ -338,6 +343,7 @@ def test_load_scenarios_file_requires_complete_live_budget_contract(tmp_path) ->
     assert scenario.model == "glm-test"
     assert scenario.max_thinking_steps == 4
     assert scenario.inference_budget is not None
+    assert scenario.inference_budget.max_tool_calls == 2
     assert scenario.inference_budget.max_cost_microusd == 20_000
 
 
@@ -390,6 +396,7 @@ def test_load_scenarios_file_rejects_unknown_live_provider(tmp_path) -> None:
                         "live_budget": {
                             "pricing_model": "provider/model-x",
                             "max_llm_calls": 2,
+                            "max_tool_calls": 1,
                             "max_total_tokens": 1000,
                             "max_cost_usd": "0.01",
                             "input_cost_per_million_tokens_usd": "1.00",

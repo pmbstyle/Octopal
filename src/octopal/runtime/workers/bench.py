@@ -336,11 +336,13 @@ def _summarize_inference_budget(budget: dict[str, Any]) -> dict[str, Any]:
         return {}
     return {
         "max_llm_calls": _int_or_none(budget.get("max_llm_calls")),
+        "max_tool_calls": _int_or_none(budget.get("max_tool_calls")),
         "max_total_tokens": _int_or_none(budget.get("max_total_tokens")),
         "max_cost_microusd": _int_or_none(budget.get("max_cost_microusd")),
         "estimated_cost_microusd": _int_or_none(budget.get("estimated_cost_microusd")),
         "accounting_complete": budget.get("accounting_complete"),
         "provider_attempts": _int_or_none(budget.get("provider_attempts")),
+        "tool_calls_denied": _int_or_none(budget.get("tool_calls_denied")),
         "exhausted_reason": budget.get("exhausted_reason"),
         "last_request_max_tokens": _int_or_none(budget.get("last_request_max_tokens")),
     }
@@ -1311,6 +1313,16 @@ def _load_live_budget(value: Any, *, scenario_id: str) -> WorkerInferenceBudget 
         raise ValueError(
             f"Scenario {scenario_id} live_budget max_llm_calls exceeds the safety cap of 6"
         )
+    max_tool_calls = _optional_positive_int(
+        value.get("max_tool_calls"),
+        field=f"scenario {scenario_id} live_budget max_tool_calls",
+    )
+    if max_tool_calls is None:
+        raise ValueError(f"Scenario {scenario_id} live_budget max_tool_calls is required")
+    if max_tool_calls > 6:
+        raise ValueError(
+            f"Scenario {scenario_id} live_budget max_tool_calls exceeds the safety cap of 6"
+        )
     max_cost_microusd = _usd_to_microusd(
         value.get("max_cost_usd"),
         field=f"scenario {scenario_id} live_budget max_cost_usd",
@@ -1331,6 +1343,7 @@ def _load_live_budget(value: Any, *, scenario_id: str) -> WorkerInferenceBudget 
     return WorkerInferenceBudget(
         pricing_model=pricing_model,
         max_llm_calls=max_llm_calls,
+        max_tool_calls=max_tool_calls,
         max_total_tokens=max_total_tokens,
         max_cost_microusd=max_cost_microusd,
         input_cost_microusd_per_million_tokens=input_rate,

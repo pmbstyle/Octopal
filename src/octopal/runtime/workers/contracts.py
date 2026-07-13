@@ -57,6 +57,7 @@ class WorkerInferenceBudget(BaseModel):
 
     pricing_model: str = Field(min_length=1)
     max_llm_calls: int = Field(gt=0)
+    max_tool_calls: int = Field(gt=0)
     max_total_tokens: int = Field(gt=0)
     max_cost_microusd: int = Field(gt=0)
     input_cost_microusd_per_million_tokens: int = Field(ge=0)
@@ -115,6 +116,8 @@ class WorkerSpec(BaseModel):
             raise ValueError("budgeted max_thinking_steps must be between 1 and 6")
         if self.inference_budget.max_llm_calls > 6:
             raise ValueError("budgeted max_llm_calls must not exceed 6")
+        if self.inference_budget.max_tool_calls > 6:
+            raise ValueError("budgeted max_tool_calls must not exceed 6")
         return self
 
 

@@ -1139,6 +1139,7 @@ Available tools:
         "llm_calls": 0,
         "llm_latency_ms_total": 0,
         "tool_calls": 0,
+        "tool_budget_denials": 0,
         "tool_latency_ms_total": 0,
         "tool_retries": 0,
         "tool_timeouts": 0,
@@ -1187,7 +1188,8 @@ Available tools:
     while thinking_steps < effective_max_steps:
         llm_start = time.perf_counter()
         force_structured_result = malformed_result_turns > 0
-        llm_tools = [] if force_structured_result else filtered_tools
+        tool_budget_exhausted = _worker_tool_budget_exhausted(spec, telemetry)
+        llm_tools = [] if force_structured_result or tool_budget_exhausted else filtered_tools
         request_max_tokens, budget_plan_error = _plan_inference_budget_request(
             spec=spec,
             telemetry=telemetry,
@@ -1290,17 +1292,23 @@ Available tools:
                 tool_input = _parse_tool_arguments(function.get("arguments", "{}"))
                 tool_call_id = tool_call.get("id", "") or ""
 
-                await worker.log("info", f"Using tool: {tool_name}")
-
-                poll_window = await _maybe_wait_for_orchestration_poll_window(
-                    worker,
-                    tool_call_history,
-                    tool_name=tool_name,
-                    tool_input=tool_input,
-                )
-                step_exempt = bool(poll_window.get("step_exempt"))
-
                 normalized_tool_name = str(tool_name or "").strip()
+                tool_budget_denied = _worker_tool_budget_exhausted(spec, telemetry)
+                if tool_budget_denied:
+                    poll_window: dict[str, Any] = {
+                        "args_hash": f"budget-denied:{tool_call_id or telemetry['tool_budget_denials']}"
+                    }
+                    step_exempt = True
+                else:
+                    await worker.log("info", f"Using tool: {tool_name}")
+                    poll_window = await _maybe_wait_for_orchestration_poll_window(
+                        worker,
+                        tool_call_history,
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                    )
+                    step_exempt = bool(poll_window.get("step_exempt"))
+
                 joined_worker_id = ""
                 joined_result: dict[str, Any] | None = None
                 if normalized_tool_name == "get_worker_result":
@@ -1308,7 +1316,30 @@ Available tools:
                     if joined_worker_id:
                         joined_result = joined_child_results_by_id.get(joined_worker_id)
 
-                if joined_result is not None and joined_worker_id:
+                if tool_budget_denied:
+                    tool_result = {
+                        "ok": False,
+                        "error": "tool_call_budget_exhausted",
+                        "detail": "The live worker tool-call budget is exhausted.",
+                    }
+                    tool_meta = {
+                        "retries": 0,
+                        "timed_out": False,
+                        "had_error": True,
+                        "error_type": "budget",
+                        "guardrail": True,
+                    }
+                    telemetry["tool_budget_denials"] += 1
+                    budget_telemetry = telemetry.get("inference_budget")
+                    if isinstance(budget_telemetry, dict):
+                        budget_telemetry["tool_calls_denied"] = (
+                            int(budget_telemetry.get("tool_calls_denied") or 0) + 1
+                        )
+                    await worker.log(
+                        "warning",
+                        f"Skipping tool beyond live budget: {normalized_tool_name or '<unknown>'}",
+                    )
+                elif joined_result is not None and joined_worker_id:
                     tool_result = _build_joined_child_guardrail_result(
                         worker_id=joined_worker_id,
                         joined_result=joined_result,
@@ -1364,7 +1395,8 @@ Available tools:
                         telemetry["tool_errors"] += 1
                     else:
                         successful_tool_calls += 1
-                tools_used.append(tool_name)
+                if not tool_budget_denied:
+                    tools_used.append(tool_name)
                 args_hash = str(
                     poll_window.get("args_hash")
                     or _hash_tool_call(str(tool_name or ""), tool_input)
@@ -1396,7 +1428,7 @@ Available tools:
                     global_breaker_threshold=tool_loop_thresholds["global_breaker"],
                     global_breaker_count=_meaningful_tool_history_size(tool_call_history),
                 )
-                if loop_state is None:
+                if loop_state is None and not tool_budget_denied:
                     loop_state = _detect_orchestration_stall(
                         tool_call_history,
                         tool_name=tool_name,
@@ -2364,17 +2396,26 @@ def _build_inference_budget_telemetry(spec: WorkerSpec) -> dict[str, Any]:
     return {
         "pricing_model": budget.pricing_model,
         "max_llm_calls": budget.max_llm_calls,
+        "max_tool_calls": budget.max_tool_calls,
         "max_total_tokens": budget.max_total_tokens,
         "max_cost_microusd": budget.max_cost_microusd,
         "estimated_cost_microusd": 0,
         "accounting_complete": True,
         "provider_attempts": 0,
+        "tool_calls_denied": 0,
         "usage_accounted_calls": 0,
         "request_input_token_ceiling_total": 0,
         "last_request_input_token_ceiling": None,
         "last_request_max_tokens": None,
         "exhausted_reason": None,
     }
+
+
+def _worker_tool_budget_exhausted(spec: WorkerSpec, telemetry: dict[str, Any]) -> bool:
+    budget = spec.inference_budget
+    if budget is None:
+        return False
+    return int(telemetry.get("tool_calls") or 0) >= budget.max_tool_calls
 
 
 def _validate_inference_budget_provider(

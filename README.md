@@ -472,8 +472,8 @@ output values.
 
 Live eval scenarios are disabled unless the suite explicitly sets `live_allowed`, `provider_id`,
 `model`, `max_thinking_steps` (currently capped at 6), and a `live_budget`. The budget must declare
-the exact provider-resolved `pricing_model`, `max_llm_calls` (also capped at 6), total-token and USD
-ceilings, and current input/output per-million-token rates. Budgeted workers use a conservative
+the exact provider-resolved `pricing_model`, `max_llm_calls`, `max_tool_calls` (both capped at 6),
+total-token and USD ceilings, and current input/output per-million-token rates. Budgeted workers use a conservative
 pre-call input ceiling, set a provider output-token cap, disable provider fallbacks/retries, and
 stop before tools or another model call if usage is missing or a limit is reached. The Codex
 subscription route is rejected for live evals because it does not currently return token usage.
@@ -488,6 +488,9 @@ printing secret values. Each execution uses temporary workspace, state, browser-
 sanitized config directories. Connector, channel, A2A, observability, and PinchTab credentials are
 not copied, and the worker subprocess receives a minimal environment instead of inheriting all host
 variables. A persistent `--artifacts-dir` is accepted only when it is empty.
+Once `max_tool_calls` is reached, additional calls returned in the same parallel tool batch are not
+executed. They receive structured budget-denied tool results, and subsequent model turns receive no
+tool schemas so the worker can still synthesize a bounded final result.
 
 The MiniMax LiteLLM route uses the provider's OpenAI-compatible base URL
 `https://api.minimax.io/v1`. Existing MiniMax profiles ending in `/anthropic` or
