@@ -409,32 +409,6 @@ uv run octopal memory stats
 uv run octopal memory cleanup --dry-run
 ```
 
-Execution evidence inspection:
-
-```bash
-uv run octopal episodes list
-uv run octopal episodes show <episode-id>
-uv run octopal episodes show <episode-id> --reveal-evidence
-uv run octopal episodes erase-evidence <episode-id>
-uv run octopal episodes purge-storage
-```
-
-Episode list/show output is metadata-only unless `--reveal-evidence` is explicitly supplied.
-Expired evidence is refused and securely removed on access. Erasing evidence enables SQLite
-secure deletion and truncates the active WAL while preserving immutable episode metadata and
-fingerprints. If another database reader blocks truncation, stop it and use `purge-storage` to
-retry without deleting live evidence. External database copies and backups remain subject to
-their own retention policy.
-
-Worker execution episodes store metadata-only fingerprints by default. To also retain raw task,
-prompt, and result evidence, generate a dedicated 32-byte key and set
-`OCTOPAL_EPISODE_EVIDENCE_KEY` to its URL-safe base64 value. Raw evidence is encrypted with
-AES-256-GCM before it reaches SQLite; the runtime LLM credential is not copied automatically.
-Task, prompt, tool, and result content can still contain secrets, so treat the evidence key as
-sensitive. Set `OCTOPAL_EPISODE_EVIDENCE_RETENTION_DAYS` to control automatic ciphertext deletion
-(default: 30). Keep the key outside the repository and back it up securely: losing it makes
-retained evidence unrecoverable.
-
 ## 💻 Development
 
 ```bash
@@ -451,59 +425,6 @@ Build the dashboard manually:
 cd webapp
 npm install
 npm run build
-```
-
-Replay a versioned worker eval suite without loading provider credentials or calling tools:
-
-```bash
-uv run python scripts/worker_bench.py \
-  --suite /path/to/suite.json \
-  --mode replay \
-  --replay-dir /path/to/replay-artifacts \
-  --baseline /path/to/baseline-result.json \
-  --out /path/to/latest-result.json
-```
-
-Without `--baseline`, the command exits non-zero for any failed trial. With a baseline, known
-failures are preserved and it exits non-zero only for outcome regressions, including new failed
-trials. Summaries include success/assertion rates, pass-at-k-style multi-trial rates, bounded metric
-distributions, and failure categories; grader evidence records structure and sizes rather than raw
-output values.
-
-Live eval scenarios are disabled unless the suite explicitly sets `live_allowed`, `provider_id`,
-`model`, `max_thinking_steps` (currently capped at 6), and a `live_budget`. The budget must declare
-the exact provider-resolved `pricing_model`, `max_llm_calls`, `max_tool_calls` (both capped at 6),
-total-token and USD ceilings, and current input/output per-million-token rates. Budgeted workers use a conservative
-pre-call input ceiling, set a provider output-token cap, disable provider fallbacks/retries, and
-stop before tools or another model call if usage is missing or a limit is reached. The Codex
-subscription route is rejected for live evals because it does not currently return token usage.
-Initial safety caps are 50,000 tokens and USD 0.10 per run, and 100,000 tokens and USD 0.20 for the
-whole invocation.
-
-Live mode also requires an explicit `--config`; it never falls back to the normal runtime config.
-Before execution, run the same command with `--preflight-only`. Preflight resolves the selected
-templates against tool metadata and rejects unknown, non-core, guarded, dangerous, or not explicitly
-read-only tools. It also verifies provider/model/pricing identity and credential presence without
-printing secret values. Each execution uses temporary workspace, state, browser-profile, home, and
-sanitized config directories. Connector, channel, A2A, observability, and PinchTab credentials are
-not copied, and the worker subprocess receives a minimal environment instead of inheriting all host
-variables. A persistent `--artifacts-dir` is accepted only when it is empty.
-Once `max_tool_calls` is reached, additional calls returned in the same parallel tool batch are not
-executed. They receive structured budget-denied tool results, and subsequent model turns receive no
-tool schemas so the worker can still synthesize a bounded final result.
-
-The MiniMax LiteLLM route uses the provider's OpenAI-compatible base URL
-`https://api.minimax.io/v1`. Existing MiniMax profiles ending in `/anthropic` or
-`/anthropic/v1` are normalized to `/v1`; the LiteLLM `minimax/…` route otherwise appends an
-OpenAI chat-completions path to the Anthropic base and receives a 404.
-
-```bash
-uv run python scripts/worker_bench.py \
-  --suite /path/to/live-suite.json \
-  --workspace workspace_templates \
-  --mode live \
-  --config /path/to/dedicated-test-config.json \
-  --preflight-only
 ```
 
 GitHub releases use date-based versions in `src/octopal/_version.py` and tags like `vYYYY.MM.DD` or `vYYYY.MM.DD.N`.
