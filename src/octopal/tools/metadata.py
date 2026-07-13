@@ -42,14 +42,20 @@ class ProgrammaticReadContract:
     max_result_bytes: int
 
     def __post_init__(self) -> None:
+        if type(self.idempotent) is not bool:
+            raise ValueError("idempotent must be a boolean")
         if self.result_shape not in _PROGRAMMATIC_RESULT_SHAPES:
             raise ValueError(f"unsupported result_shape: {self.result_shape!r}")
-        if not 1 <= self.max_parallel_calls <= PROGRAMMATIC_READ_MAX_PARALLEL_CALLS:
+        if type(self.max_parallel_calls) is not int or not (
+            1 <= self.max_parallel_calls <= PROGRAMMATIC_READ_MAX_PARALLEL_CALLS
+        ):
             raise ValueError(
                 "max_parallel_calls must be between 1 and "
                 f"{PROGRAMMATIC_READ_MAX_PARALLEL_CALLS}"
             )
-        if not 1 <= self.max_result_bytes <= PROGRAMMATIC_READ_MAX_RESULT_BYTES:
+        if type(self.max_result_bytes) is not int or not (
+            1 <= self.max_result_bytes <= PROGRAMMATIC_READ_MAX_RESULT_BYTES
+        ):
             raise ValueError(
                 "max_result_bytes must be between 1 and " f"{PROGRAMMATIC_READ_MAX_RESULT_BYTES}"
             )

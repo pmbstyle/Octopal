@@ -18,6 +18,14 @@ from octopal.tools.programmatic import (
     resolve_programmatic_read_tool,
     validate_programmatic_read_result,
 )
+from octopal.tools.programmatic_execution import (
+    ProgrammaticReadBatchError,
+    ProgrammaticReadBatchLimits,
+    ProgrammaticReadBatchResult,
+    ProgrammaticReadCall,
+    ProgrammaticReadCallResult,
+    execute_programmatic_read_batch,
+)
 from octopal.tools.registry import ToolSpec, filter_tools
 
 __all__ = [
@@ -26,6 +34,11 @@ __all__ = [
     "ProgrammaticReadDecision",
     "ProgrammaticReadResultError",
     "ValidatedProgrammaticReadResult",
+    "ProgrammaticReadBatchError",
+    "ProgrammaticReadBatchLimits",
+    "ProgrammaticReadBatchResult",
+    "ProgrammaticReadCall",
+    "ProgrammaticReadCallResult",
     "ToolResolutionEntry",
     "ToolResolutionReport",
     "ToolProfile",
@@ -36,6 +49,7 @@ __all__ = [
     "filter_programmatic_read_tools",
     "resolve_programmatic_read_tool",
     "validate_programmatic_read_result",
+    "execute_programmatic_read_batch",
     "ToolSpec",
     "filter_tools",
     "get_tools",

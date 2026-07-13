@@ -59,6 +59,14 @@ def test_programmatic_contract_rejects_unbounded_values() -> None:
             max_result_bytes=1_000_001,
         )
 
+    with pytest.raises(ValueError, match="max_parallel_calls"):
+        ProgrammaticReadContract(
+            idempotent=True,
+            max_parallel_calls=1.5,  # type: ignore[arg-type]
+            result_shape="text",
+            max_result_bytes=1,
+        )
+
 
 def test_programmatic_contract_rejects_unknown_result_shape() -> None:
     invalid_shape: ProgrammaticResultShape = "bytes"  # type: ignore[assignment]
@@ -230,7 +238,8 @@ def test_programmatic_result_validator_rejects_ineligible_tool_before_result() -
     assert secret_result not in str(error)
 
 
-def test_catalog_opts_in_only_web_search_for_programmatic_reads() -> None:
+@pytest.mark.asyncio
+async def test_catalog_opts_in_only_web_search_for_programmatic_reads() -> None:
     tools = get_tools(mcp_manager=None)
 
     assert [tool.name for tool in filter_programmatic_read_tools(tools)] == ["web_search"]
@@ -244,6 +253,6 @@ def test_catalog_opts_in_only_web_search_for_programmatic_reads() -> None:
         max_result_bytes=64_000,
     )
 
-    validated = validate_programmatic_read_result(web_search, web_search.handler({}, {}))
+    validated = validate_programmatic_read_result(web_search, await web_search.handler({}, {}))
     assert isinstance(validated.value, dict)
     assert validated.value["error"] == "query is required"

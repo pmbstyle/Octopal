@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import octopal.tools.web.fetch as fetch_mod
 import octopal.tools.web.search as search_mod
 
@@ -100,6 +102,99 @@ def test_web_search_can_use_firecrawl_provider(monkeypatch) -> None:
     assert payload["source"] == "firecrawl_search"
     assert payload["provider"] == "firecrawl"
     assert payload["results"][0]["title"] == "Firecrawl result"
+
+
+@pytest.mark.asyncio
+async def test_async_web_search_uses_cancellable_brave_client(monkeypatch) -> None:
+    class _ResponseStub:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "web": {
+                    "results": [
+                        {
+                            "title": "Async Brave",
+                            "url": "https://example.com/async",
+                            "description": "Async result",
+                        }
+                    ]
+                }
+            }
+
+    class _AsyncClientStub:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return _ResponseStub()
+
+    monkeypatch.setenv("BRAVE_API_KEY", "test-key")
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "octopal.tools.web.providers.brave_provider.httpx.AsyncClient", _AsyncClientStub
+    )
+
+    payload = json.loads(await search_mod.web_search_async({"query": "Octopal"}))
+
+    assert payload["ok"] is True
+    assert payload["provider"] == "brave"
+    assert payload["results"][0]["title"] == "Async Brave"
+
+
+@pytest.mark.asyncio
+async def test_async_web_search_uses_cancellable_firecrawl_client(monkeypatch) -> None:
+    class _ResponseStub:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "data": {
+                    "web": [
+                        {
+                            "title": "Async Firecrawl",
+                            "url": "https://example.com/async-firecrawl",
+                            "description": "Async result",
+                        }
+                    ]
+                }
+            }
+
+    class _AsyncClientStub:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return _ResponseStub()
+
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+    monkeypatch.setattr(
+        "octopal.tools.web.providers.firecrawl_provider.httpx.AsyncClient",
+        _AsyncClientStub,
+    )
+
+    payload = json.loads(
+        await search_mod.web_search_async({"query": "Octopal", "provider": "firecrawl"})
+    )
+
+    assert payload["ok"] is True
+    assert payload["provider"] == "firecrawl"
+    assert payload["results"][0]["title"] == "Async Firecrawl"
 
 
 def test_web_search_auto_falls_back_to_firecrawl_when_brave_missing(monkeypatch) -> None:

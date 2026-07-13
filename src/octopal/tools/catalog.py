@@ -62,7 +62,7 @@ from octopal.tools.registry import ToolSpec
 from octopal.tools.skills.management import get_registered_skill_tools, get_skill_management_tools
 from octopal.tools.web.fetch import markdown_new_fetch, web_fetch
 from octopal.tools.web.plan import fetch_plan_tool
-from octopal.tools.web.search import web_search
+from octopal.tools.web.search import web_search_async
 from octopal.tools.workers.management import get_worker_tools
 from octopal.utils import utc_now
 
@@ -1060,7 +1060,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             permission="network",
-            handler=lambda args, ctx: web_search(args),
+            handler=web_search_async,
             is_async=True,
         ),
         ToolSpec(
