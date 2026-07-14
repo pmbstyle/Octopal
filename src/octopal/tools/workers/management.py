@@ -9,6 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 from octopal.runtime.plans import PlanRunService
 from octopal.runtime.worker_result_payloads import (
     SYNTHESIZE_WORKER_OUTPUT_CONTEXT_BUDGET,
@@ -83,6 +84,17 @@ def _infer_allowed_paths_from_task(task: str) -> list[str] | None:
 def _worker_context_spec(ctx: dict[str, object]) -> Any | None:
     worker = ctx.get("worker")
     return getattr(worker, "spec", None)
+
+
+def _memory_influence_ids_from_context(ctx: dict[str, object]) -> list[str]:
+    direct = ctx.get("memory_influence_ids")
+    if isinstance(direct, (list, tuple)):
+        return require_complete_memory_influence_ids(direct)
+    spec = _worker_context_spec(ctx)
+    values = getattr(spec, "memory_influence_ids", None)
+    if not isinstance(values, (list, tuple)):
+        return []
+    return require_complete_memory_influence_ids(values)
 
 
 def _worker_context_id(ctx: dict[str, object]) -> str:
@@ -1390,6 +1402,7 @@ async def _start_worker_common(
         spawn_depth=(child_ctx["spawn_depth"] + 1) if child_ctx else 0,
         allowed_paths=allowed_paths,
         programmatic_read_call_budget=programmatic_read_call_budget,
+        memory_influence_ids=_memory_influence_ids_from_context(ctx),
     )
     status = str(launch.get("status", "started"))
     launched_worker_id = launch.get("worker_id")
@@ -1795,6 +1808,7 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
                 root_task_id=child_ctx["root_task_id"] if child_ctx else None,
                 spawn_depth=(child_ctx["spawn_depth"] + 1) if child_ctx else 0,
                 programmatic_read_call_budget=programmatic_read_call_budget,
+                memory_influence_ids=_memory_influence_ids_from_context(ctx),
                 allowed_paths=(
                     item.get("allowed_paths")
                     if "allowed_paths" in item

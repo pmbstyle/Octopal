@@ -398,6 +398,7 @@ class WorkerRuntime:
             effective_permissions=granted_permission_names,
             allowed_paths=task_request.allowed_paths,
             programmatic_read_call_budget=task_request.programmatic_read_call_budget,
+            memory_influence_ids=task_request.memory_influence_ids,
         )
 
         # Run worker
@@ -1691,6 +1692,7 @@ class WorkerRuntime:
                             payload_hash=action_intent.payload_hash,
                             risk=action_intent.risk,
                             requires_approval=action_intent.requires_approval,
+                            memory_influence_ids=spec.memory_influence_ids,
                             status="pending",
                             created_at=utc_now(),
                         ),

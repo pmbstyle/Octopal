@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from octopal.infrastructure.config.models import LLMConfig
+from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 
 
 class WorkerTemplate(BaseModel):
@@ -49,6 +50,14 @@ class TaskRequest(BaseModel):
     spawn_depth: int = 0
     allowed_paths: list[str] | None = None  # Restricted workspace paths the worker can access
     programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
+    memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
+
+    @field_validator("memory_influence_ids", mode="before")
+    @classmethod
+    def validate_memory_influence_ids(cls, value: object) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        return require_complete_memory_influence_ids(value)
 
 
 class WorkerInferenceBudget(BaseModel):
@@ -107,6 +116,14 @@ class WorkerSpec(BaseModel):
     effective_permissions: list[str] = Field(default_factory=list)
     allowed_paths: list[str] | None = None
     programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
+    memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
+
+    @field_validator("memory_influence_ids", mode="before")
+    @classmethod
+    def validate_memory_influence_ids(cls, value: object) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        return require_complete_memory_influence_ids(value)
 
     @model_validator(mode="after")
     def validate_inference_budget(self) -> Self:

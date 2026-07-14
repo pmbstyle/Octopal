@@ -197,6 +197,22 @@ class FactsService:
         memory_facets: list[str] | None = None,
         limit: int = 3,
     ) -> list[str]:
+        return [
+            _format_fact(record)
+            for record in self.get_relevant_fact_records(
+                query,
+                memory_facets=memory_facets,
+                limit=limit,
+            )
+        ]
+
+    def get_relevant_fact_records(
+        self,
+        query: str,
+        *,
+        memory_facets: list[str] | None = None,
+        limit: int = 3,
+    ) -> list[MemoryFactRecord]:
         tokens = _tokenize(query)
         if not tokens:
             return []
@@ -237,7 +253,7 @@ class FactsService:
             )
 
         scored.sort(key=lambda item: item[0], reverse=True)
-        return [_format_fact(record) for _, record in scored[:limit]]
+        return [record for _, record in scored[:limit]]
 
     def _parse_canon_facts(self, filename: str, content: str) -> list[MemoryFactRecord]:
         if filename not in _SUPPORTED_CANON_FACT_FILES:

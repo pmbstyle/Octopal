@@ -417,7 +417,7 @@ def _build_worker_context_manifest(
             "allowed_path_count": len(spec.allowed_paths or []),
         },
         "memory": {
-            "selected_ids": [],
+            "selected_ids": spec.memory_influence_ids,
             "recipe_ids": [],
             "provenance_summary": {},
         },

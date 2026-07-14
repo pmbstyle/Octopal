@@ -141,6 +141,20 @@ class MemoryService:
         exclude_chat_id: int | None = None,
         memory_facets: list[str] | None = None,
     ) -> list[str]:
+        entries = await self.get_context_entries_by_facets(
+            query,
+            exclude_chat_id=exclude_chat_id,
+            memory_facets=memory_facets,
+        )
+        return [f"{entry.role}: {entry.content}" for entry in entries]
+
+    async def get_context_entries_by_facets(
+        self,
+        query: str,
+        *,
+        exclude_chat_id: int | None = None,
+        memory_facets: list[str] | None = None,
+    ) -> list[MemoryEntry]:
         if self.embeddings is None:
             return []
         trimmed = query.strip()
@@ -188,8 +202,8 @@ class MemoryService:
             if score >= self.min_score:
                 scored.append((score, entry))
         scored.sort(key=lambda item: item[0], reverse=True)
-        top = scored[: self.top_k]
-        return [f"{entry.role}: {entry.content}" for _, entry in top]
+        top = scored[: max(0, min(self.top_k, 20))]
+        return [entry for _, entry in top]
 
     async def get_recent_history(
         self,
@@ -198,6 +212,20 @@ class MemoryService:
         *,
         conversation_scope: str | None = None,
     ) -> list[tuple[str, str, str]]:
+        entries = await self.get_recent_history_entries(
+            chat_id,
+            limit=limit,
+            conversation_scope=conversation_scope,
+        )
+        return [(entry.role, entry.content, entry.created_at.isoformat()) for entry in entries]
+
+    async def get_recent_history_entries(
+        self,
+        chat_id: int,
+        limit: int = 6,
+        *,
+        conversation_scope: str | None = None,
+    ) -> list[MemoryEntry]:
         fetch_limit = max(limit * 5, 50)
         if conversation_scope:
             owner_fetch_limit = max(fetch_limit * 4, 200)
@@ -223,7 +251,7 @@ class MemoryService:
             )
         entries = [entry for entry in entries if _is_conversational_history_entry(entry)][:limit]
         entries.reverse()
-        return [(entry.role, entry.content, entry.created_at.isoformat()) for entry in entries]
+        return entries
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:

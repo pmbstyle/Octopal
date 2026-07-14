@@ -188,7 +188,13 @@ def test_start_worker_passes_null_model_to_runtime() -> None:
                 "worker_id": "coder",
                 "model": "gpt-4o",
             },
-            {"octo": octo, "chat_id": 123},
+            {
+                "octo": octo,
+                "chat_id": 123,
+                "memory_influence_ids": [
+                    "memory_fact:fact-1",
+                ],
+            },
         )
         return json.loads(payload)
 
@@ -198,6 +204,7 @@ def test_start_worker_passes_null_model_to_runtime() -> None:
     assert result["next_best_action"] == "wait_for_worker_progress"
     assert octo.captured is not None
     assert octo.captured["model"] is None
+    assert octo.captured["memory_influence_ids"] == ["memory_fact:fact-1"]
 
 
 def test_start_worker_binds_runtime_plan_step(tmp_path: Path) -> None:

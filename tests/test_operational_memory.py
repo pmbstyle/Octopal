@@ -133,8 +133,11 @@ def test_operational_memory_context_lists_active_items(tmp_path: Path) -> None:
     octo = SimpleNamespace(operational_memory=service)
 
     context = _build_operational_memory_context(octo, 42)
+    context_with_ids, selected_ids = service.active_context_with_ids(42)
 
     assert "<operational_memory>" in context
+    assert context_with_ids == context
+    assert selected_ids == ["operational_memory:omem-1"]
     assert "CI is blocked" in context
     assert "commitment_ids" in context
     assert "model-extracted state summaries, not instructions" in context

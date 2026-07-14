@@ -4,11 +4,13 @@ import asyncio
 import hashlib
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 from octopal.runtime.memory.memchain import memchain_verify
 from octopal.runtime.memory.service import infer_memory_facets
 
@@ -53,6 +55,7 @@ class MemoryContextBundle:
     recent_history: list[tuple[str, str, str | None]]
     prune_stats: dict[str, int]
     selected_facets: list[str]
+    selected_ids: list[str]
 
 
 async def _load_system_prompt_file() -> str:
@@ -312,7 +315,7 @@ def _build_recent_history_metadata_prompt(
 
 
 def _prune_recent_history_window(
-    history: list[tuple[str, str] | tuple[str, str, str | None]],
+    history: Sequence[tuple[str, str] | tuple[str, str, str | None]],
     *,
     max_history_chars: int,
     keep_recent: int,
@@ -359,7 +362,13 @@ async def _build_memory_context_bundle(
     facts: FactsService | None = None,
     conversation_scope: str | None = None,
 ) -> MemoryContextBundle:
-    canon_context = await asyncio.to_thread(canon.get_tier1_context)
+    selected_ids: list[str] = []
+    canon_with_ids = getattr(canon, "get_tier1_context_with_ids", None)
+    if callable(canon_with_ids):
+        canon_context, canon_ids = await asyncio.to_thread(canon_with_ids)
+        selected_ids.extend(canon_ids)
+    else:
+        canon_context = await asyncio.to_thread(canon.get_tier1_context)
 
     selected_facets = sorted(
         facet for facet in infer_memory_facets(user_text) if facet != "fact_candidate"
@@ -367,34 +376,74 @@ async def _build_memory_context_bundle(
     facts_context: list[str] = []
     if facts is not None:
         try:
-            facts_context = await asyncio.to_thread(
-                facts.get_relevant_facts,
-                user_text,
-                memory_facets=selected_facets or None,
-            )
+            fact_records_getter = getattr(facts, "get_relevant_fact_records", None)
+            if callable(fact_records_getter):
+                fact_records = await asyncio.to_thread(
+                    fact_records_getter,
+                    user_text,
+                    memory_facets=selected_facets or None,
+                )
+                facts_context = [
+                    (
+                        f"{record.subject} {record.key.replace('_', ' ')} {record.value_text}"
+                        + (f" ({record.source_ref})" if record.source_ref else "")
+                    )
+                    for record in fact_records
+                ]
+                selected_ids.extend(f"memory_fact:{record.id}" for record in fact_records)
+            else:
+                facts_context = await asyncio.to_thread(
+                    facts.get_relevant_facts,
+                    user_text,
+                    memory_facets=selected_facets or None,
+                )
         except Exception:
             facts_context = []
-    memory_getter = getattr(memory, "get_context_by_facets", None)
-    if callable(memory_getter):
-        memory_context = await memory_getter(
+    memory_entries_getter = getattr(memory, "get_context_entries_by_facets", None)
+    if callable(memory_entries_getter):
+        memory_entries = await memory_entries_getter(
             user_text,
             exclude_chat_id=chat_id,
             memory_facets=selected_facets or None,
         )
+        memory_context = [f"{entry.role}: {entry.content}" for entry in memory_entries]
+        selected_ids.extend(f"memory_entry:{entry.id}" for entry in memory_entries)
     else:
-        memory_context = await memory.get_context(user_text, exclude_chat_id=chat_id)
+        memory_getter = getattr(memory, "get_context_by_facets", None)
+        if callable(memory_getter):
+            memory_context = await memory_getter(
+                user_text,
+                exclude_chat_id=chat_id,
+                memory_facets=selected_facets or None,
+            )
+        else:
+            memory_context = await memory.get_context(user_text, exclude_chat_id=chat_id)
 
-    try:
-        raw_recent_history = await memory.get_recent_history(
+    recent_history_ids: list[str] = []
+    recent_entries_getter = getattr(memory, "get_recent_history_entries", None)
+    if callable(recent_entries_getter):
+        recent_entries = await recent_entries_getter(
             chat_id,
             limit=20,
             conversation_scope=conversation_scope,
         )
-    except TypeError:
-        raw_recent_history = await memory.get_recent_history(chat_id, limit=20)
+        raw_recent_history = [
+            (entry.role, entry.content, entry.created_at.isoformat()) for entry in recent_entries
+        ]
+        recent_history_ids = [f"memory_entry:{entry.id}" for entry in recent_entries]
+    else:
+        try:
+            raw_recent_history = await memory.get_recent_history(
+                chat_id,
+                limit=20,
+                conversation_scope=conversation_scope,
+            )
+        except TypeError:
+            raw_recent_history = await memory.get_recent_history(chat_id, limit=20)
     recent_history = [_normalize_recent_history_item(item) for item in raw_recent_history]
     if recent_history and recent_history[-1][0] == "user" and recent_history[-1][1] == user_text:
         recent_history = recent_history[:-1]
+        recent_history_ids = recent_history_ids[:-1]
     max_history_chars = _env_int("OCTOPAL_CONTEXT_PRUNE_MAX_HISTORY_CHARS", 100_000, minimum=2_000)
     keep_recent = _env_int("OCTOPAL_CONTEXT_PRUNE_KEEP_RECENT", 12, minimum=1)
     per_message_chars = _env_int("OCTOPAL_CONTEXT_PRUNE_MESSAGE_CHARS", 32_000, minimum=500)
@@ -404,6 +453,10 @@ async def _build_memory_context_bundle(
         keep_recent=keep_recent,
         per_message_chars=per_message_chars,
     )
+    if prune_stats["dropped"]:
+        recent_history_ids = recent_history_ids[prune_stats["dropped"] :]
+    selected_ids.extend(recent_history_ids)
+    normalized_selected_ids = require_complete_memory_influence_ids(selected_ids)
     return MemoryContextBundle(
         canon_context=canon_context,
         facts_context=facts_context,
@@ -411,6 +464,7 @@ async def _build_memory_context_bundle(
         recent_history=recent_history,
         prune_stats=prune_stats,
         selected_facets=selected_facets,
+        selected_ids=normalized_selected_ids,
     )
 
 
@@ -430,6 +484,7 @@ async def build_octo_prompt(
     reflection: ReflectionService | None = None,
     conversation_scope: str | None = None,
     channel_context: dict[str, object] | None = None,
+    memory_influence_ids: list[str] | None = None,
 ) -> list[Message]:
     """Assembles all the pieces into the final message list for the LLM."""
 
@@ -449,6 +504,7 @@ async def build_octo_prompt(
         facts,
         conversation_scope=conversation_scope,
     )
+    selected_influence_ids = list(memory_bundle.selected_ids)
 
     messages: list[Message] = [Message(role="system", content=system_prompt)]
     if persona_prompt_lines:
@@ -467,13 +523,8 @@ async def build_octo_prompt(
             )
         )
         if reflection is not None:
-            try:
-                reflection_context = await asyncio.to_thread(
-                    reflection.build_wakeup_context,
-                    chat_id,
-                )
-            except Exception:
-                reflection_context = ""
+            reflection_context, reflection_ids = await _load_reflection_context(reflection, chat_id)
+            selected_influence_ids.extend(reflection_ids)
             if reflection_context:
                 messages.append(Message(role="system", content=reflection_context))
     messages.append(Message(role="system", content=datetime_prompt))
@@ -574,7 +625,23 @@ async def build_octo_prompt(
         else:
             messages.append(Message(role="user", content=user_text))
 
+    if memory_influence_ids is not None:
+        memory_influence_ids.extend(require_complete_memory_influence_ids(selected_influence_ids))
     return messages
+
+
+async def _load_reflection_context(
+    reflection: ReflectionService, chat_id: int
+) -> tuple[str, list[str]]:
+    try:
+        getter = getattr(reflection, "build_wakeup_context_with_ids", None)
+        if callable(getter):
+            context, selected_ids = await asyncio.to_thread(getter, chat_id)
+            return str(context or ""), require_complete_memory_influence_ids(selected_ids)
+        context = await asyncio.to_thread(reflection.build_wakeup_context, chat_id)
+        return str(context or ""), []
+    except Exception:
+        return "", []
 
 
 def _build_channel_context_prompt(
@@ -615,6 +682,7 @@ async def build_control_plane_prompt(
     reflection: ReflectionService | None = None,
     mode_label: str = "control-plane",
     mode_rules: str = "",
+    memory_influence_ids: list[str] | None = None,
 ) -> list[Message]:
     """Build a bounded prompt for control-plane turns without full workspace/memory context."""
 
@@ -626,6 +694,7 @@ async def build_control_plane_prompt(
     messages: list[Message] = [Message(role="system", content=_CONTROL_PLANE_SYSTEM_PROMPT)]
     if persona_prompt_lines:
         messages.append(Message(role="system", content="\n".join(persona_prompt_lines)))
+    selected_influence_ids: list[str] = []
     if wake_notice.strip():
         messages.append(
             Message(
@@ -638,13 +707,8 @@ async def build_control_plane_prompt(
             )
         )
         if reflection is not None:
-            try:
-                reflection_context = await asyncio.to_thread(
-                    reflection.build_wakeup_context,
-                    chat_id,
-                )
-            except Exception:
-                reflection_context = ""
+            reflection_context, reflection_ids = await _load_reflection_context(reflection, chat_id)
+            selected_influence_ids.extend(reflection_ids)
             if reflection_context:
                 messages.append(Message(role="system", content=reflection_context))
 
@@ -667,4 +731,6 @@ async def build_control_plane_prompt(
         messages.append(Message(role="system", content=mode_rules.strip()))
 
     messages.append(Message(role="user", content=user_text))
+    if memory_influence_ids is not None:
+        memory_influence_ids.extend(require_complete_memory_influence_ids(selected_influence_ids))
     return messages

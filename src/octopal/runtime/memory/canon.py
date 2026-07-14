@@ -362,33 +362,53 @@ class CanonService:
 
     def get_tier1_context(self) -> str:
         """Returns the high-priority canonical context (decisions and failures)."""
-        decisions = self.read_canon("decisions.md").strip()
-        failures = self.read_canon("failures.md").strip()
+        context, _ = self.get_tier1_context_with_ids()
+        return context
+
+    def get_tier1_context_with_ids(self) -> tuple[str, list[str]]:
+        """Return tier-one canon and the trusted event ids represented in it."""
+
+        rebuilt = self._compact_from_events()
+        raw_decisions = rebuilt.content_by_filename.get("decisions.md", "")
+        raw_failures = rebuilt.content_by_filename.get("failures.md", "")
+        decisions = raw_decisions.strip()
+        failures = raw_failures.strip()
+        decisions_offset = len(raw_decisions) - len(raw_decisions.lstrip())
+        failures_offset = len(raw_failures) - len(raw_failures.lstrip())
 
         context_parts = []
+        selected_ids: list[str] = []
         if decisions and len(decisions) > len("# Decisions"):
-            # Simple truncation for now - keep last N chars but try to align with lines
-            if len(decisions) > 2000:
-                # Find a newline to cut safely
-                cut_idx = len(decisions) - 2000
-                safe_cut = decisions.find("\n", cut_idx)
-                if safe_cut != -1:
-                    decisions = "...(older decisions omitted)\n" + decisions[safe_cut + 1 :]
-                else:
-                    decisions = "...(older decisions omitted)\n" + decisions[-2000:]
-            context_parts.append(f"<canon_decisions>\n{decisions}\n</canon_decisions>")
+            rendered, visible_start = _bound_canon_context_window(
+                decisions,
+                rebuilt.provenance_by_filename.get("decisions.md", []),
+                content_offset=decisions_offset,
+            )
+            context_parts.append(f"<canon_decisions>\n{rendered}\n</canon_decisions>")
+            selected_ids.extend(
+                _visible_canon_event_ids(
+                    rebuilt.provenance_by_filename.get("decisions.md", []),
+                    visible_start=decisions_offset + visible_start,
+                    visible_end=decisions_offset + len(decisions),
+                )
+            )
 
         if failures and len(failures) > len("# Failures"):
-            if len(failures) > 2000:
-                cut_idx = len(failures) - 2000
-                safe_cut = failures.find("\n", cut_idx)
-                if safe_cut != -1:
-                    failures = "...(older failures omitted)\n" + failures[safe_cut + 1 :]
-                else:
-                    failures = "...(older failures omitted)\n" + failures[-2000:]
-            context_parts.append(f"<canon_failures>\n{failures}\n</canon_failures>")
+            rendered, visible_start = _bound_canon_context_window(
+                failures,
+                rebuilt.provenance_by_filename.get("failures.md", []),
+                content_offset=failures_offset,
+            )
+            context_parts.append(f"<canon_failures>\n{rendered}\n</canon_failures>")
+            selected_ids.extend(
+                _visible_canon_event_ids(
+                    rebuilt.provenance_by_filename.get("failures.md", []),
+                    visible_start=failures_offset + visible_start,
+                    visible_end=failures_offset + len(failures),
+                )
+            )
 
-        return "\n\n".join(context_parts)
+        return "\n\n".join(context_parts), list(dict.fromkeys(selected_ids))
 
     def list_files(self) -> list[str]:
         return sorted(p.name for p in self.canon_dir.glob("*.md"))
@@ -536,7 +556,7 @@ class CanonService:
             state: dict[str, str] = {}
             provenance: dict[str, list[dict[str, Any]]] = {}
             known_filenames: set[str] = set(_DEFAULT_CANON_CONTENT)
-            trusted_writes: list[tuple[int, dict[str, Any]]] = []
+            trusted_writes: list[tuple[int, dict[str, Any], str]] = []
             for position, entry in enumerate(events):
                 event_type = str(entry.get("event_type") or "write")
                 if event_type != "write":
@@ -546,6 +566,8 @@ class CanonService:
                     continue
                 known_filenames.add(filename)
                 event_id = str(entry.get("event_id") or "").strip()
+                if not event_id and _is_legacy_trusted_write(entry):
+                    event_id = _legacy_canon_event_id(entry, position)
                 trust_state = effective_states.get(
                     event_id,
                     "trusted" if _is_legacy_trusted_write(entry) else "observed",
@@ -553,21 +575,20 @@ class CanonService:
                 if trust_state != "trusted":
                     continue
                 activation_position = activation_positions.get(event_id, position)
-                trusted_writes.append((activation_position, entry))
+                trusted_writes.append((activation_position, entry, event_id))
 
             trusted_writes.sort(key=lambda item: item[0])
-            for _activation_position, entry in trusted_writes:
+            for _activation_position, entry, event_id in trusted_writes:
                 filename = _event_filename(entry)
                 if filename is None:
                     continue
-                event_id = str(entry.get("event_id") or "").strip()
                 mode = str(entry.get("mode", "append"))
                 if mode not in {"append", "overwrite"}:
                     continue
                 content = str(entry.get("content", ""))
                 source_kind = str(entry.get("source_kind") or "imported_canon")
                 source_ref = _optional_string(entry.get("source_ref"))
-                event_provenance = {
+                event_provenance: dict[str, Any] = {
                     "event_id": event_id or None,
                     "source_kind": (
                         source_kind if source_kind in _MEMORY_ORIGINS else "imported_canon"
@@ -578,12 +599,16 @@ class CanonService:
 
                 if mode == "overwrite":
                     state[filename] = content
+                    event_provenance["start_char"] = 0
+                    event_provenance["end_char"] = len(content)
                     provenance[filename] = [event_provenance]
                     continue
 
                 current = state.get(filename, "")
                 if current and not current.endswith("\n"):
                     current += "\n"
+                event_provenance["start_char"] = len(current)
+                event_provenance["end_char"] = len(current) + len(content)
                 state[filename] = current + content
                 provenance.setdefault(filename, []).append(event_provenance)
 
@@ -623,6 +648,68 @@ class CanonService:
                 current = None
             if current != expected:
                 path.write_text(expected, encoding="utf-8")
+
+
+def _truncate_canon_context(content: str, *, max_chars: int = 2000) -> tuple[str, int]:
+    if len(content) <= max_chars:
+        return content, 0
+    cut_idx = len(content) - max_chars
+    safe_cut = content.find("\n", cut_idx)
+    if safe_cut != -1:
+        return "...(older entries omitted)\n" + content[safe_cut + 1 :], safe_cut + 1
+    return "...(older entries omitted)\n" + content[-max_chars:], len(content) - max_chars
+
+
+def _bound_canon_context_window(
+    content: str,
+    provenance: list[dict[str, Any]],
+    *,
+    content_offset: int,
+    max_events: int = 32,
+) -> tuple[str, int]:
+    rendered, visible_start = _truncate_canon_context(content)
+    absolute_start = content_offset + visible_start
+    absolute_end = content_offset + len(content)
+    visible_events = [
+        event
+        for event in provenance
+        if _canon_event_overlaps(event, visible_start=absolute_start, visible_end=absolute_end)
+    ]
+    if len(visible_events) <= max_events:
+        return rendered, visible_start
+    retained_start = int(visible_events[-max_events]["start_char"])
+    bounded_start = max(absolute_start, retained_start)
+    relative_start = max(0, bounded_start - content_offset)
+    return "...(older entries omitted)\n" + content[relative_start:], relative_start
+
+
+def _visible_canon_event_ids(
+    provenance: list[dict[str, Any]],
+    *,
+    visible_start: int,
+    visible_end: int,
+) -> list[str]:
+    selected: list[str] = []
+    for event in provenance:
+        event_id = str(event.get("event_id") or "").strip()
+        if event_id and _canon_event_overlaps(
+            event, visible_start=visible_start, visible_end=visible_end
+        ):
+            selected.append(f"canon_event:{event_id}")
+    return selected
+
+
+def _canon_event_overlaps(event: dict[str, Any], *, visible_start: int, visible_end: int) -> bool:
+    start = event.get("start_char")
+    end = event.get("end_char")
+    return bool(
+        isinstance(start, int)
+        and not isinstance(start, bool)
+        and isinstance(end, int)
+        and not isinstance(end, bool)
+        and end > visible_start
+        and start < visible_end
+    )
 
 
 def _normalize_memory_origin(value: object) -> MemoryOrigin:
@@ -674,6 +761,17 @@ def _is_legacy_trusted_write(entry: dict[str, Any]) -> bool:
         and "source_kind" not in entry
         and "trust_state" not in entry
     )
+
+
+def _legacy_canon_event_id(entry: dict[str, Any], position: int) -> str:
+    payload = json.dumps(
+        {"position": position, "event": entry},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return "legacy_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _parse_event_ts(value: object) -> datetime | None:

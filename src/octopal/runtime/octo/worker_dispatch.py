@@ -119,6 +119,7 @@ class OctoWorkerDispatchMixin:
         allowed_paths: list[str] | None = None,
         required_tool_calls: list[str] | None = None,
         programmatic_read_call_budget: int = 0,
+        memory_influence_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         trace_sink = self.trace_sink
         parent_trace_ctx = get_current_trace_context()
@@ -325,6 +326,7 @@ class OctoWorkerDispatchMixin:
                 spawn_depth=effective_spawn_depth,
                 allowed_paths=effective_allowed_paths,
                 programmatic_read_call_budget=programmatic_read_call_budget,
+                memory_influence_ids=memory_influence_ids or [],
             )
             self.register_worker_correlation(run_id, correlation_id)
             self.register_worker_chat(run_id, chat_id)

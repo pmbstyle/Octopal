@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+MemoryInfluenceId = Annotated[
+    str,
+    StringConstraints(
+        pattern=(
+            r"^(?:canon_event|memory_fact|memory_entry|octo_diary|operational_memory):"
+            r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$"
+        )
+    ),
+]
 
 MemoryOrigin = Literal[
     "direct_user",
@@ -127,6 +137,7 @@ class IntentRecord(BaseModel):
     payload_hash: str
     risk: str
     requires_approval: bool
+    memory_influence_ids: list[MemoryInfluenceId] = Field(default_factory=list, max_length=128)
     status: str
     created_at: datetime
 

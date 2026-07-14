@@ -174,7 +174,11 @@ async def _handle_octo_tool_call(
                 )
                 if approval_payload is not None:
                     tool_trace_status = "error"
-                    tool_trace_metadata["approval_required"] = True
+                    approval_type = str(approval_payload.get("type") or "approval_required")
+                    tool_trace_metadata["approval_required"] = approval_type in {
+                        "approval_required",
+                        "approval_denied",
+                    }
                     tool_trace_output = {
                         "result_preview": safe_preview(approval_payload, limit=240),
                         "result_size": len(str(approval_payload)),
@@ -182,7 +186,11 @@ async def _handle_octo_tool_call(
                     return approval_payload, {
                         "timed_out": False,
                         "had_error": True,
-                        "error_type": "approval_required",
+                        "error_type": (
+                            "approval_required"
+                            if approval_type in {"approval_required", "approval_denied"}
+                            else approval_type
+                        ),
                     }
                 try:
                     if spec.is_async:

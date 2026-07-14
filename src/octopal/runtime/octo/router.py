@@ -15,6 +15,7 @@ from octopal.infrastructure.observability.base import (
 )
 from octopal.infrastructure.observability.helpers import summarize_exception
 from octopal.infrastructure.providers.base import InferenceProvider, Message
+from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 from octopal.runtime.memory.service import MemoryService
 from octopal.runtime.octo import route_completion as _route_completion
 from octopal.runtime.octo import route_context as _route_context
@@ -63,6 +64,9 @@ _expand_active_tool_specs_from_catalog_result = (
 _shrink_tool_specs_for_retry = _tool_selection._shrink_tool_specs_for_retry
 _build_a2a_route_context = _route_context._build_a2a_route_context
 _build_operational_memory_context = _route_context._build_operational_memory_context
+_build_operational_memory_context_with_ids = (
+    _route_context._build_operational_memory_context_with_ids
+)
 _build_proactive_tick_input = _route_context._build_proactive_tick_input
 _build_runtime_plan_context = _route_context._build_runtime_plan_context
 _build_runtime_plan_guidance = _route_context._build_runtime_plan_guidance
@@ -336,6 +340,7 @@ async def route_or_reply(
             octo_tools,
             ctx.get("tool_resolution_report"),
         )
+        memory_influence_ids: list[str] = []
         messages = await build_octo_prompt(
             store=octo.store,
             memory=memory,
@@ -352,9 +357,14 @@ async def route_or_reply(
             reflection=getattr(octo, "reflection", None),
             conversation_scope=conversation_scope,
             channel_context=channel_context,
+            memory_influence_ids=memory_influence_ids,
         )
         runtime_plan_context = _build_runtime_plan_context(octo, chat_id)
-        operational_memory_context = _build_operational_memory_context(octo, chat_id)
+        operational_memory_context, operational_memory_ids = (
+            _build_operational_memory_context_with_ids(octo, chat_id)
+        )
+        memory_influence_ids.extend(operational_memory_ids)
+        ctx["memory_influence_ids"] = require_complete_memory_influence_ids(memory_influence_ids)
         messages.append(Message(role="system", content=_build_runtime_plan_guidance()))
         a2a_context = _build_a2a_route_context(octo)
         if a2a_context:
@@ -461,6 +471,18 @@ async def route_or_reply(
             reset_trace_context(routing_trace_token)
 
 
+async def _build_control_plane_prompt_with_memory_context(
+    *, ctx: dict[str, object], **kwargs: Any
+) -> list[Message]:
+    memory_influence_ids: list[str] = []
+    messages = await build_control_plane_prompt(
+        **kwargs,
+        memory_influence_ids=memory_influence_ids,
+    )
+    ctx["memory_influence_ids"] = require_complete_memory_influence_ids(memory_influence_ids)
+    return messages
+
+
 async def route_heartbeat(
     octo: Any,
     chat_id: int,
@@ -495,7 +517,8 @@ async def route_heartbeat(
             octo_tools,
             ctx.get("tool_resolution_report"),
         )
-        messages = await build_control_plane_prompt(
+        messages = await _build_control_plane_prompt_with_memory_context(
+            ctx=ctx,
             user_text=user_text,
             chat_id=chat_id,
             tool_policy_summary=tool_policy_summary,
@@ -554,7 +577,8 @@ async def route_internal_maintenance(
             octo_tools,
             ctx.get("tool_resolution_report"),
         )
-        messages = await build_control_plane_prompt(
+        messages = await _build_control_plane_prompt_with_memory_context(
+            ctx=ctx,
             user_text=user_text,
             chat_id=chat_id,
             tool_policy_summary=tool_policy_summary,
@@ -612,7 +636,8 @@ async def route_scheduler_tick(
             ctx.get("tool_resolution_report"),
         )
         scheduler_tick_text = _build_scheduler_tick_input(octo, max_tasks=max_tasks)
-        messages = await build_control_plane_prompt(
+        messages = await _build_control_plane_prompt_with_memory_context(
+            ctx=ctx,
             user_text=scheduler_tick_text,
             chat_id=chat_id,
             tool_policy_summary=tool_policy_summary,
@@ -678,7 +703,8 @@ async def route_proactive_tick(
             chat_id=chat_id,
             reason=reason,
         )
-        messages = await build_control_plane_prompt(
+        messages = await _build_control_plane_prompt_with_memory_context(
+            ctx=ctx,
             user_text=proactive_tick_text,
             chat_id=chat_id,
             tool_policy_summary=tool_policy_summary,
@@ -768,7 +794,8 @@ async def route_scheduled_octo_control(
             ctx.get("tool_resolution_report"),
         )
         scheduled_task_text = _build_scheduled_octo_control_input(task)
-        messages = await build_control_plane_prompt(
+        messages = await _build_control_plane_prompt_with_memory_context(
+            ctx=ctx,
             user_text=scheduled_task_text,
             chat_id=chat_id,
             tool_policy_summary=tool_policy_summary,

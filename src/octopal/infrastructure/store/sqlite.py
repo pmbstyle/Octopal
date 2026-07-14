@@ -146,6 +146,7 @@ class SQLiteStore(Store):
                 payload_hash TEXT NOT NULL,
                 risk TEXT NOT NULL,
                 requires_approval INTEGER NOT NULL,
+                memory_influence_ids_json TEXT NOT NULL DEFAULT '[]',
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
@@ -534,6 +535,13 @@ class SQLiteStore(Store):
         try:
             self._conn.execute(
                 "ALTER TABLE permits ADD COLUMN intent_type TEXT NOT NULL DEFAULT ''"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE intents ADD COLUMN memory_influence_ids_json TEXT NOT NULL DEFAULT '[]'"
             )
             self._conn.commit()
         except sqlite3.OperationalError:
@@ -1118,8 +1126,8 @@ class SQLiteStore(Store):
     def save_intent(self, record: IntentRecord) -> None:
         self._conn.execute(
             """
-            INSERT INTO intents (id, worker_id, type, payload_json, payload_hash, risk, requires_approval, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO intents (id, worker_id, type, payload_json, payload_hash, risk, requires_approval, memory_influence_ids_json, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.id,
@@ -1129,6 +1137,7 @@ class SQLiteStore(Store):
                 record.payload_hash,
                 record.risk,
                 1 if record.requires_approval else 0,
+                json.dumps(record.memory_influence_ids),
                 record.status,
                 record.created_at.isoformat(),
             ),

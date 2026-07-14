@@ -285,6 +285,7 @@ def test_worker_context_manifest_records_selection_without_prompt_content() -> N
         run_id="run-1",
         effective_permissions=["network"],
         allowed_paths=["reports"],
+        memory_influence_ids=["memory_fact:fact-1", "memory_entry:entry-2"],
         llm_config=LLMConfig(provider_id="openrouter", model="resolved-model"),
     )
 
@@ -303,5 +304,9 @@ def test_worker_context_manifest_records_selection_without_prompt_content() -> N
     assert manifest["tools"]["schema_chars_by_tool"]["web_fetch"] > 0
     assert manifest["prompt_sections_chars"]["task"] == len(spec.task)
     assert manifest["policy"]["allowed_path_count"] == 1
+    assert manifest["memory"]["selected_ids"] == [
+        "memory_fact:fact-1",
+        "memory_entry:entry-2",
+    ]
     assert "Secret task text" not in str(manifest)
     assert "secret input" not in str(manifest)
