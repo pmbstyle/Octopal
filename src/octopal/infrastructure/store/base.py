@@ -18,6 +18,7 @@ from octopal.infrastructure.store.models import (
     PlanEventRecord,
     PlanRunRecord,
     PlanStepRecord,
+    ProceduralRecipeRecord,
     WorkerRecord,
     WorkerTemplateRecord,
 )
@@ -65,6 +66,26 @@ class Store(Protocol):
         worker_run_id: str | None = None,
         limit: int = 100,
     ) -> list[ExecutionEpisodeRecord]: ...
+
+    def add_procedural_recipe_with_audit(
+        self, record: ProceduralRecipeRecord, event: AuditEvent
+    ) -> bool: ...
+
+    def get_procedural_recipe(self, recipe_id: str) -> ProceduralRecipeRecord | None: ...
+
+    def list_procedural_recipes(
+        self, *, status: str | None = None, limit: int = 100
+    ) -> list[ProceduralRecipeRecord]: ...
+
+    def transition_procedural_recipe_with_audit(
+        self,
+        recipe_id: str,
+        *,
+        expected_statuses: list[str],
+        new_status: str,
+        updated_at: datetime,
+        event: AuditEvent,
+    ) -> bool: ...
 
     def get_execution_episode_evidence(
         self, episode_id: str

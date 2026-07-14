@@ -31,6 +31,7 @@ from octopal.channels import normalize_user_channel, user_channel_label
 from octopal.cli.branding import print_banner
 from octopal.cli.episodes import episodes_app
 from octopal.cli.memory_proposals import memory_proposals_app
+from octopal.cli.memory_recipes import memory_recipes_app
 from octopal.infrastructure.config.settings import (
     Settings,
     config_write_path,
@@ -2735,6 +2736,7 @@ app.add_typer(workers_app, name="workers")
 app.add_typer(audit_app, name="audit")
 app.add_typer(episodes_app, name="episodes")
 memory_app.add_typer(memory_proposals_app, name="proposals")
+memory_app.add_typer(memory_recipes_app, name="recipes")
 app.add_typer(memory_app, name="memory")
 app.add_typer(config_app, name="config")
 app.add_typer(connector_app, name="connector")

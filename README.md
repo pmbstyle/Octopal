@@ -411,6 +411,11 @@ uv run octopal memory proposals list
 uv run octopal memory proposals show <proposal-id>
 uv run octopal memory proposals promote <proposal-id> --yes
 uv run octopal memory proposals deprecate <proposal-id> --yes
+uv run octopal memory recipes propose <definition.json>
+uv run octopal memory recipes list
+uv run octopal memory recipes show <recipe-id>
+uv run octopal memory recipes promote <recipe-id> --yes
+uv run octopal memory recipes deprecate <recipe-id> --yes
 ```
 
 ## 💻 Development

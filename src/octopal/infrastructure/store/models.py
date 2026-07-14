@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -36,6 +37,8 @@ MemoryTrustState = Literal[
 ]
 ExecutionEpisodeSource = MemoryOrigin
 ExecutionEpisodeTrustState = MemoryTrustState
+ProceduralRecipeStatus = Literal["candidate", "active", "deprecated"]
+RecipeText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 
 _UNTRUSTED_MEMORY_ORIGINS = {
     "assistant_inference",
@@ -125,6 +128,40 @@ class ExecutionEpisodeEvidenceMetadata(BaseModel):
     key_id: str = Field(min_length=16, max_length=64)
     created_at: datetime
     expires_at: datetime
+
+
+class ProceduralRecipeRecord(BaseModel):
+    """Operator-promoted procedural memory linked to immutable execution episodes."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(pattern=r"^recipe_[a-f0-9]{64}$")
+    intent_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    definition_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    applicability_conditions: list[RecipeText] = Field(default_factory=list, max_length=16)
+    required_capabilities: list[RecipeText] = Field(default_factory=list, max_length=32)
+    required_permissions: list[RecipeText] = Field(default_factory=list, max_length=32)
+    strategy_steps: list[RecipeText] = Field(min_length=1, max_length=20)
+    verification_contract: dict[str, Any]
+    known_failures: list[RecipeText] = Field(default_factory=list, max_length=16)
+    invalidating_conditions: list[RecipeText] = Field(default_factory=list, max_length=16)
+    source_episode_ids: list[str] = Field(min_length=1, max_length=16)
+    success_count: int = Field(ge=1)
+    failure_count: int = Field(default=0, ge=0)
+    status: ProceduralRecipeStatus
+    last_validated_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+    @model_validator(mode="after")
+    def validate_recipe_payload(self) -> ProceduralRecipeRecord:
+        if len(set(self.source_episode_ids)) != len(self.source_episode_ids):
+            raise ValueError("source episode ids must be unique")
+        if not self.verification_contract:
+            raise ValueError("verification contract must not be empty")
+        if len(json.dumps(self.verification_contract, ensure_ascii=False, default=str)) > 8000:
+            raise ValueError("verification contract exceeds 8000 characters")
+        return self
 
 
 class IntentRecord(BaseModel):

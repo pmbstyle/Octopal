@@ -25,6 +25,7 @@ from octopal.infrastructure.store.models import (
     PlanEventRecord,
     PlanRunRecord,
     PlanStepRecord,
+    ProceduralRecipeRecord,
     WorkerRecord,
     WorkerTemplateRecord,
 )
@@ -175,6 +176,57 @@ class SQLiteStore(Store):
                 ON execution_episodes (worker_run_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS ix_execution_episodes_task_created
                 ON execution_episodes (task_fingerprint, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS procedural_recipes (
+                id TEXT PRIMARY KEY,
+                intent_fingerprint TEXT NOT NULL,
+                definition_fingerprint TEXT NOT NULL,
+                applicability_conditions_json TEXT NOT NULL,
+                required_capabilities_json TEXT NOT NULL,
+                required_permissions_json TEXT NOT NULL,
+                strategy_steps_json TEXT NOT NULL,
+                verification_contract_json TEXT NOT NULL,
+                known_failures_json TEXT NOT NULL,
+                invalidating_conditions_json TEXT NOT NULL,
+                source_episode_ids_json TEXT NOT NULL,
+                success_count INTEGER NOT NULL,
+                failure_count INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                last_validated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_procedural_recipes_intent_status
+                ON procedural_recipes (intent_fingerprint, status, updated_at DESC);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_procedural_recipes_active_intent
+                ON procedural_recipes (intent_fingerprint)
+                WHERE status = 'active';
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipes_definition_immutable
+            BEFORE UPDATE ON procedural_recipes
+            WHEN NEW.id != OLD.id
+              OR NEW.intent_fingerprint != OLD.intent_fingerprint
+              OR NEW.definition_fingerprint != OLD.definition_fingerprint
+              OR NEW.applicability_conditions_json != OLD.applicability_conditions_json
+              OR NEW.required_capabilities_json != OLD.required_capabilities_json
+              OR NEW.required_permissions_json != OLD.required_permissions_json
+              OR NEW.strategy_steps_json != OLD.strategy_steps_json
+              OR NEW.verification_contract_json != OLD.verification_contract_json
+              OR NEW.known_failures_json != OLD.known_failures_json
+              OR NEW.invalidating_conditions_json != OLD.invalidating_conditions_json
+              OR NEW.source_episode_ids_json != OLD.source_episode_ids_json
+              OR NEW.created_at != OLD.created_at
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipe definition is immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipes_no_delete
+            BEFORE DELETE ON procedural_recipes
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipes cannot be deleted');
+            END;
 
             CREATE TRIGGER IF NOT EXISTS execution_episodes_reject_update
             BEFORE UPDATE ON execution_episodes
@@ -1016,6 +1068,118 @@ class SQLiteStore(Store):
                 (worker_run_id, safe_limit),
             )
         return [self._row_to_execution_episode(row) for row in cursor.fetchall()]
+
+    def add_procedural_recipe_with_audit(
+        self, record: ProceduralRecipeRecord, event: AuditEvent
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO procedural_recipes (
+                        id, intent_fingerprint, definition_fingerprint,
+                        applicability_conditions_json, required_capabilities_json,
+                        required_permissions_json, strategy_steps_json,
+                        verification_contract_json, known_failures_json,
+                        invalidating_conditions_json, source_episode_ids_json,
+                        success_count, failure_count, status, last_validated_at,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.intent_fingerprint,
+                        record.definition_fingerprint,
+                        _safe_json_dumps(record.applicability_conditions),
+                        _safe_json_dumps(record.required_capabilities),
+                        _safe_json_dumps(record.required_permissions),
+                        _safe_json_dumps(record.strategy_steps),
+                        _safe_json_dumps(record.verification_contract),
+                        _safe_json_dumps(record.known_failures),
+                        _safe_json_dumps(record.invalidating_conditions),
+                        _safe_json_dumps(record.source_episode_ids),
+                        record.success_count,
+                        record.failure_count,
+                        record.status,
+                        record.last_validated_at.isoformat(),
+                        record.created_at.isoformat(),
+                        record.updated_at.isoformat(),
+                    ),
+                )
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                if "procedural_recipes.id" in str(exc):
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_procedural_recipe(self, recipe_id: str) -> ProceduralRecipeRecord | None:
+        cursor = self._conn.execute("SELECT * FROM procedural_recipes WHERE id = ?", (recipe_id,))
+        row = cursor.fetchone()
+        return self._row_to_procedural_recipe(row) if row else None
+
+    def list_procedural_recipes(
+        self, *, status: str | None = None, limit: int = 100
+    ) -> list[ProceduralRecipeRecord]:
+        safe_limit = max(1, min(int(limit), 1000))
+        if status is None:
+            cursor = self._conn.execute(
+                "SELECT * FROM procedural_recipes ORDER BY updated_at DESC LIMIT ?",
+                (safe_limit,),
+            )
+        else:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM procedural_recipes
+                WHERE status = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (status, safe_limit),
+            )
+        return [self._row_to_procedural_recipe(row) for row in cursor.fetchall()]
+
+    def transition_procedural_recipe_with_audit(
+        self,
+        recipe_id: str,
+        *,
+        expected_statuses: list[str],
+        new_status: str,
+        updated_at: datetime,
+        event: AuditEvent,
+    ) -> bool:
+        if not expected_statuses:
+            return False
+        placeholders = ",".join("?" for _ in expected_statuses)
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    f"""
+                    UPDATE procedural_recipes
+                    SET status = ?, updated_at = ?
+                    WHERE id = ? AND status IN ({placeholders})
+                    """,
+                    (new_status, updated_at.isoformat(), recipe_id, *expected_statuses),
+                )
+                if cursor.rowcount != 1:
+                    self._conn.rollback()
+                    return False
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                if "procedural_recipes.intent_fingerprint" in str(exc):
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def get_execution_episode_evidence(
         self, episode_id: str
@@ -2134,6 +2298,27 @@ class SQLiteStore(Store):
             verification=_loads_json(row["verification_json"], {}),
             provenance=_loads_json(row["provenance_json"], {}),
             created_at=_parse_dt(row["created_at"]),
+        )
+
+    def _row_to_procedural_recipe(self, row: sqlite3.Row) -> ProceduralRecipeRecord:
+        return ProceduralRecipeRecord(
+            id=row["id"],
+            intent_fingerprint=row["intent_fingerprint"],
+            definition_fingerprint=row["definition_fingerprint"],
+            applicability_conditions=_loads_json(row["applicability_conditions_json"], []),
+            required_capabilities=_loads_json(row["required_capabilities_json"], []),
+            required_permissions=_loads_json(row["required_permissions_json"], []),
+            strategy_steps=_loads_json(row["strategy_steps_json"], []),
+            verification_contract=_loads_json(row["verification_contract_json"], {}),
+            known_failures=_loads_json(row["known_failures_json"], []),
+            invalidating_conditions=_loads_json(row["invalidating_conditions_json"], []),
+            source_episode_ids=_loads_json(row["source_episode_ids_json"], []),
+            success_count=int(row["success_count"]),
+            failure_count=int(row["failure_count"]),
+            status=row["status"],
+            last_validated_at=_parse_dt(row["last_validated_at"]),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
         )
 
     def _row_to_execution_episode_evidence(
