@@ -147,6 +147,7 @@ class Store(Protocol):
         key: str | None = None,
         source_kind: str | None = None,
         source_ref: str | None = None,
+        trust_states: list[str] | None = None,
     ) -> list[MemoryFactRecord]: ...
 
     def invalidate_memory_fact(

@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-ExecutionEpisodeSource = Literal[
+MemoryOrigin = Literal[
     "direct_user",
     "assistant_inference",
     "local_runtime_evidence",
@@ -16,7 +16,7 @@ ExecutionEpisodeSource = Literal[
     "document",
     "imported_canon",
 ]
-ExecutionEpisodeTrustState = Literal[
+MemoryTrustState = Literal[
     "observed",
     "quarantined_candidate",
     "corroborated",
@@ -24,8 +24,10 @@ ExecutionEpisodeTrustState = Literal[
     "superseded",
     "deprecated",
 ]
+ExecutionEpisodeSource = MemoryOrigin
+ExecutionEpisodeTrustState = MemoryTrustState
 
-_UNTRUSTED_EXECUTION_EPISODE_SOURCES = {
+_UNTRUSTED_MEMORY_ORIGINS = {
     "assistant_inference",
     "worker",
     "connector",
@@ -82,9 +84,7 @@ class ExecutionEpisodeRecord(BaseModel):
 
     @model_validator(mode="after")
     def reject_external_trust_escalation(self) -> ExecutionEpisodeRecord:
-        if self.trust_state == "trusted" and self.source_kind in (
-            _UNTRUSTED_EXECUTION_EPISODE_SOURCES
-        ):
+        if self.trust_state == "trusted" and self.source_kind in _UNTRUSTED_MEMORY_ORIGINS:
             raise ValueError(
                 f"source_kind '{self.source_kind}' cannot directly create a trusted episode"
             )
@@ -199,13 +199,22 @@ class MemoryFactRecord(BaseModel):
     fact_type: str
     confidence: float
     status: str
+    trust_state: MemoryTrustState
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     facets: list[str] = Field(default_factory=list)
-    source_kind: str | None = None
+    source_kind: MemoryOrigin
     source_ref: str | None = None
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="after")
+    def reject_external_trust_escalation(self) -> MemoryFactRecord:
+        if self.trust_state == "trusted" and self.source_kind in _UNTRUSTED_MEMORY_ORIGINS:
+            raise ValueError(
+                f"source_kind '{self.source_kind}' cannot directly create a trusted memory fact"
+            )
+        return self
 
 
 class MemoryFactSourceRecord(BaseModel):

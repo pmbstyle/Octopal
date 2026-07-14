@@ -267,6 +267,7 @@ class SQLiteStore(Store):
                 fact_type TEXT NOT NULL,
                 confidence REAL NOT NULL,
                 status TEXT NOT NULL,
+                trust_state TEXT NOT NULL,
                 valid_from TEXT,
                 valid_to TEXT,
                 facets_json TEXT NOT NULL,
@@ -451,6 +452,7 @@ class SQLiteStore(Store):
                     fact_type TEXT NOT NULL,
                     confidence REAL NOT NULL,
                     status TEXT NOT NULL,
+                    trust_state TEXT NOT NULL,
                     valid_from TEXT,
                     valid_to TEXT,
                     facets_json TEXT NOT NULL,
@@ -668,6 +670,107 @@ class SQLiteStore(Store):
             self._conn.commit()
         except sqlite3.OperationalError:
             pass
+
+        self._ensure_memory_fact_trust_schema()
+
+    def _ensure_memory_fact_trust_schema(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(memory_facts)").fetchall()
+        }
+        trust_column_added = "trust_state" not in columns
+        if trust_column_added:
+            self._conn.execute(
+                "ALTER TABLE memory_facts ADD COLUMN trust_state TEXT NOT NULL "
+                "DEFAULT 'quarantined_candidate'"
+            )
+
+        allowed_origins = {
+            "direct_user",
+            "assistant_inference",
+            "local_runtime_evidence",
+            "worker",
+            "connector",
+            "mcp",
+            "web",
+            "document",
+            "imported_canon",
+        }
+        origin_placeholders = ", ".join("?" for _ in allowed_origins)
+        legacy_rows = self._conn.execute(
+            "SELECT id, source_kind, source_ref FROM memory_facts "
+            f"WHERE source_kind IS NULL OR source_kind NOT IN ({origin_placeholders})",
+            tuple(sorted(allowed_origins)),
+        ).fetchall()
+        migrated_origins: dict[str, str] = {}
+        for row in legacy_rows:
+            source_kind = str(row["source_kind"] or "").strip()
+            if source_kind == "canon":
+                migrated_origins[str(row["id"])] = "imported_canon"
+                continue
+            if source_kind in allowed_origins:
+                continue
+
+            origin = "assistant_inference"
+            if source_kind == "memory" and row["source_ref"]:
+                memory_row = self._conn.execute(
+                    "SELECT role, metadata_json FROM memory_entries WHERE uuid = ?",
+                    (row["source_ref"],),
+                ).fetchone()
+                if memory_row is not None:
+                    metadata = _loads_json(memory_row["metadata_json"], {})
+                    explicit = str(metadata.get("memory_origin") or "").strip().lower()
+                    if explicit in allowed_origins:
+                        origin = explicit
+                    elif metadata.get("worker_result"):
+                        origin = "worker"
+                    elif metadata.get("mcp_long_task"):
+                        origin = "mcp"
+                    elif memory_row["role"] == "user":
+                        origin = "direct_user"
+                    elif memory_row["role"] == "system":
+                        origin = "local_runtime_evidence"
+            migrated_origins[str(row["id"])] = origin
+
+        for fact_id, origin in migrated_origins.items():
+            self._conn.execute(
+                "UPDATE memory_facts SET source_kind = ? WHERE id = ?",
+                (origin, fact_id),
+            )
+
+        if trust_column_added:
+            rows = self._conn.execute("SELECT id, status, source_kind FROM memory_facts").fetchall()
+            quarantined_origins = {
+                "assistant_inference",
+                "worker",
+                "connector",
+                "mcp",
+                "web",
+                "document",
+            }
+            for row in rows:
+                status = str(row["status"] or "").strip().lower()
+                source_kind = str(row["source_kind"] or "").strip()
+                if status == "superseded":
+                    trust_state = "superseded"
+                elif status in {"deprecated", "invalidated"}:
+                    trust_state = "deprecated"
+                elif status == "active" and source_kind == "imported_canon":
+                    trust_state = "trusted"
+                elif source_kind in quarantined_origins:
+                    trust_state = "quarantined_candidate"
+                else:
+                    trust_state = "observed"
+                self._conn.execute(
+                    "UPDATE memory_facts SET trust_state = ? WHERE id = ?",
+                    (trust_state, row["id"]),
+                )
+
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_memory_facts_owner_trust_status "
+            "ON memory_facts (owner_id, trust_state, status, updated_at DESC)"
+        )
+        self._conn.commit()
 
     def create_worker(self, record: WorkerRecord) -> None:
         self._conn.execute(
@@ -1312,10 +1415,10 @@ class SQLiteStore(Store):
             """
             INSERT OR REPLACE INTO memory_facts (
                 id, owner_id, subject, key, value_text, value_json, fact_type, confidence,
-                status, valid_from, valid_to, facets_json, source_kind, source_ref,
-                created_at, updated_at
+                status, trust_state, valid_from, valid_to, facets_json, source_kind,
+                source_ref, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.id,
@@ -1327,6 +1430,7 @@ class SQLiteStore(Store):
                 record.fact_type,
                 float(record.confidence),
                 record.status,
+                record.trust_state,
                 record.valid_from.isoformat() if record.valid_from else None,
                 record.valid_to.isoformat() if record.valid_to else None,
                 json.dumps(record.facets),
@@ -1348,6 +1452,7 @@ class SQLiteStore(Store):
         key: str | None = None,
         source_kind: str | None = None,
         source_ref: str | None = None,
+        trust_states: list[str] | None = None,
     ) -> list[MemoryFactRecord]:
         query = ["SELECT * FROM memory_facts WHERE owner_id = ?"]
         params: list[Any] = [owner_id]
@@ -1366,6 +1471,10 @@ class SQLiteStore(Store):
         if source_ref is not None:
             query.append("AND source_ref = ?")
             params.append(source_ref)
+        if trust_states:
+            placeholders = ", ".join("?" for _ in trust_states)
+            query.append(f"AND trust_state IN ({placeholders})")
+            params.extend(trust_states)
         query.append("ORDER BY updated_at DESC LIMIT ?")
         params.append(limit)
         cursor = self._conn.execute(" ".join(query), tuple(params))
@@ -1374,13 +1483,18 @@ class SQLiteStore(Store):
     def invalidate_memory_fact(
         self, fact_id: str, valid_to: datetime, status: str = "invalidated"
     ) -> None:
+        trust_state = {
+            "superseded": "superseded",
+            "deprecated": "deprecated",
+            "invalidated": "deprecated",
+        }.get(status)
         self._conn.execute(
             """
             UPDATE memory_facts
-            SET status = ?, valid_to = ?, updated_at = ?
+            SET status = ?, trust_state = COALESCE(?, trust_state), valid_to = ?, updated_at = ?
             WHERE id = ?
             """,
-            (status, valid_to.isoformat(), utc_now().isoformat(), fact_id),
+            (status, trust_state, valid_to.isoformat(), utc_now().isoformat(), fact_id),
         )
         self._conn.commit()
 
@@ -2077,6 +2191,7 @@ class SQLiteStore(Store):
             fact_type=row["fact_type"],
             confidence=float(row["confidence"]),
             status=row["status"],
+            trust_state=row["trust_state"],
             valid_from=_parse_dt(row["valid_from"]) if row["valid_from"] else None,
             valid_to=_parse_dt(row["valid_to"]) if row["valid_to"] else None,
             facets=_loads_json(row["facets_json"], []),

@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from typing import cast
 
 from octopal.infrastructure.store.base import Store
 from octopal.infrastructure.store.models import (
     MemoryEntry,
     MemoryFactRecord,
     MemoryFactSourceRecord,
+    MemoryOrigin,
 )
 from octopal.runtime.memory.service import infer_memory_facets
 from octopal.utils import utc_now
@@ -29,6 +31,26 @@ _LOW_SIGNAL_SUBJECTS = {
     "here",
     "there",
 }
+_MEMORY_ORIGINS = {
+    "direct_user",
+    "assistant_inference",
+    "local_runtime_evidence",
+    "worker",
+    "connector",
+    "mcp",
+    "web",
+    "document",
+    "imported_canon",
+}
+_QUARANTINED_ORIGINS = {
+    "assistant_inference",
+    "worker",
+    "connector",
+    "mcp",
+    "web",
+    "document",
+}
+_RETRIEVABLE_TRUST_STATES = ["corroborated", "trusted"]
 
 
 @dataclass
@@ -47,10 +69,11 @@ class FactsService:
             extracted = _extract_assertion(entry.content)
             if extracted is None:
                 return None
-            subject = subject or extracted["subject"]
-            value_text = value_text or extracted["value_text"]
+            subject = subject or cast(str, extracted["subject"])
+            value_text = value_text or cast(str, extracted["value_text"])
 
         now = utc_now()
+        source_kind = _memory_origin(entry)
         record = MemoryFactRecord(
             id=_fact_id(self.owner_id, "memory", entry.id, subject, "is", value_text, "candidate"),
             owner_id=self.owner_id,
@@ -61,10 +84,13 @@ class FactsService:
             fact_type="assertion",
             confidence=float(metadata.get("confidence", 0.5) or 0.5),
             status="candidate",
+            trust_state=(
+                "quarantined_candidate" if source_kind in _QUARANTINED_ORIGINS else "observed"
+            ),
             valid_from=entry.created_at,
             valid_to=None,
             facets=sorted(set(_clean_facets(metadata.get("memory_facets")))),
-            source_kind="memory",
+            source_kind=source_kind,
             source_ref=entry.id,
             created_at=entry.created_at,
             updated_at=now,
@@ -75,7 +101,7 @@ class FactsService:
                 fact_id=record.id,
                 memory_entry_uuid=entry.id,
                 canon_filename=None,
-                source_note="memory_candidate",
+                source_note=f"memory_candidate:{source_kind}",
                 created_at=now,
             )
         )
@@ -88,7 +114,7 @@ class FactsService:
             self.owner_id,
             limit=500,
             status="active",
-            source_kind="canon",
+            source_kind="imported_canon",
             source_ref=filename,
         )
 
@@ -121,7 +147,7 @@ class FactsService:
             self.owner_id,
             limit=500,
             status="active",
-            source_kind="canon",
+            source_kind="imported_canon",
         )
         now = utc_now()
         pruned = 0
@@ -147,6 +173,7 @@ class FactsService:
             self.owner_id,
             limit=max(limit * 12, 50),
             status="active",
+            trust_states=_RETRIEVABLE_TRUST_STATES,
         )
         if not active:
             return []
@@ -207,23 +234,24 @@ class FactsService:
                     self.owner_id,
                     "canon",
                     filename,
-                    assertion["subject"],
+                    cast(str, assertion["subject"]),
                     "is_not" if assertion["negated"] else "is",
-                    assertion["value_text"],
+                    cast(str, assertion["value_text"]),
                     "active",
                 ),
                 owner_id=self.owner_id,
-                subject=assertion["subject"],
+                subject=cast(str, assertion["subject"]),
                 key="is_not" if assertion["negated"] else "is",
-                value_text=assertion["value_text"],
+                value_text=cast(str, assertion["value_text"]),
                 value_json=None,
                 fact_type=filename.replace(".md", ""),
                 confidence=0.95,
                 status="active",
+                trust_state="trusted",
                 valid_from=now,
                 valid_to=None,
                 facets=sorted(facets),
-                source_kind="canon",
+                source_kind="imported_canon",
                 source_ref=filename,
                 created_at=now,
                 updated_at=now,
@@ -291,6 +319,22 @@ def _clean_facets(value: object) -> list[str]:
         if text:
             result.append(text)
     return result
+
+
+def _memory_origin(entry: MemoryEntry) -> MemoryOrigin:
+    metadata = entry.metadata or {}
+    explicit = str(metadata.get("memory_origin") or "").strip().lower()
+    if explicit in _MEMORY_ORIGINS:
+        return cast(MemoryOrigin, explicit)
+    if metadata.get("worker_result"):
+        return "worker"
+    if metadata.get("mcp_long_task"):
+        return "mcp"
+    if entry.role == "user":
+        return "direct_user"
+    if entry.role == "assistant":
+        return "assistant_inference"
+    return "local_runtime_evidence"
 
 
 def _tokenize(value: str) -> set[str]:
