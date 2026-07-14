@@ -357,3 +357,49 @@ def test_sqlite_migrates_legacy_fact_origins_and_trust_states(tmp_path: Path) ->
         reopened.list_memory_facts("default", source_ref="entry-missing", limit=10)[0].trust_state
         == "quarantined_candidate"
     )
+
+
+def test_promoted_canon_fact_retains_source_event_provenance(tmp_path: Path) -> None:
+    store = SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
+    facts = FactsService(store=store, owner_id="default")
+    canon = CanonService(
+        workspace_dir=tmp_path / "workspace",
+        store=store,
+        embeddings=None,
+        facts=facts,
+    )
+
+    async def scenario() -> str:
+        result = await canon.write_canon(
+            "facts",
+            "Deployment target is production.\n",
+            source_kind="worker",
+            source_ref="worker-run-2",
+        )
+        proposal_id = result.removeprefix("Quarantined canon proposal: ")
+        assert facts.get_relevant_facts("deployment target") == []
+        await canon.promote_proposal(proposal_id)
+        return proposal_id
+
+    proposal_id = asyncio.run(scenario())
+    rows = store.list_memory_facts(
+        "default",
+        status="active",
+        source_kind="imported_canon",
+        source_ref="facts.md",
+        limit=20,
+    )
+    assert len(rows) == 1
+    assert rows[0].trust_state == "trusted"
+    sources = store.list_memory_fact_sources(rows[0].id)
+    assert [source.source_note for source in sources] == [f"canon_event:{proposal_id}:worker"]
+
+    asyncio.run(canon.deprecate_proposal(proposal_id))
+    superseded = store.list_memory_facts(
+        "default",
+        source_kind="imported_canon",
+        source_ref="facts.md",
+        limit=20,
+    )
+    assert len(superseded) == 1
+    assert superseded[0].trust_state == "superseded"

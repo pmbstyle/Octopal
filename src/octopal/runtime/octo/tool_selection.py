@@ -277,6 +277,7 @@ def _get_octo_tools(
         "correlation_id": correlation_id,
         "chat_turn_epoch": _chat_turn_epoch_for_context(octo, chat_id, correlation_id),
         "mcp_manager": getattr(octo, "mcp_manager", None),
+        "memory_origin": "assistant_inference",
     }
     mcp_manager = ctx["mcp_manager"]
     policy_steps = [
@@ -345,6 +346,7 @@ def _get_worker_followup_tools(
         "chat_id": chat_id,
         "correlation_id": correlation_id,
         "chat_turn_epoch": _chat_turn_epoch_for_context(octo, chat_id, correlation_id),
+        "memory_origin": "worker",
     }
     policy_steps = [
         ToolPolicyPipelineStep(

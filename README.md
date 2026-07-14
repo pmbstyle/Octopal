@@ -407,6 +407,10 @@ Memory maintenance:
 ```bash
 uv run octopal memory stats
 uv run octopal memory cleanup --dry-run
+uv run octopal memory proposals list
+uv run octopal memory proposals show <proposal-id>
+uv run octopal memory proposals promote <proposal-id> --yes
+uv run octopal memory proposals deprecate <proposal-id> --yes
 ```
 
 ## 💻 Development

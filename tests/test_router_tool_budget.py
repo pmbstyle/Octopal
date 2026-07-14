@@ -101,6 +101,7 @@ def test_get_octo_tools_uses_small_core_and_defers_mcp_tools(monkeypatch) -> Non
     names = {spec.name for spec in tool_specs}
     all_names = {spec.name for spec in ctx["all_tool_specs"]}
 
+    assert ctx["memory_origin"] == "assistant_inference"
     assert "tool_catalog_search" in names
     assert _RUNTIME_PLAN_TOOL_NAMES.issubset(names)
     assert "start_worker" in names
@@ -624,6 +625,7 @@ def test_worker_followup_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -
 
     assert calls == [None]
     assert ctx["mcp_refresh_attempted"] is False
+    assert ctx["memory_origin"] == "worker"
     assert {tool.name for tool in tools} == {
         "manage_canon",
         "get_worker_output_path",

@@ -479,7 +479,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
         ),
         ToolSpec(
             name="manage_canon",
-            description="Manage canonical memory files (facts.md, decisions.md, failures.md). Only the Octo can use this.",
+            description="Read canonical memory or submit quarantined proposals for facts.md, decisions.md, and failures.md. Writes require later operator promotion.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -494,7 +494,8 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     },
                     "content": {
                         "type": "string",
-                        "description": "Content to write. Required for write.",
+                        "description": "Bounded untrusted proposal content. Required for write.",
+                        "maxLength": 16000,
                     },
                     "mode": {
                         "type": "string",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 from octopal.infrastructure.store.base import Store
 from octopal.infrastructure.store.models import (
@@ -107,8 +107,15 @@ class FactsService:
         )
         return record
 
-    def sync_verified_facts_from_canon(self, filename: str, content: str) -> dict[str, int]:
+    def sync_verified_facts_from_canon(
+        self,
+        filename: str,
+        content: str,
+        *,
+        provenance: list[dict[str, Any]] | None = None,
+    ) -> dict[str, int]:
         parsed = self._parse_canon_facts(filename, content)
+        provenance_by_fact = self._canon_provenance_by_fact(filename, provenance or [])
         parsed_by_id = {record.id: record for record in parsed}
         existing_active = self.store.list_memory_facts(
             self.owner_id,
@@ -120,7 +127,6 @@ class FactsService:
 
         superseded = 0
         now = utc_now()
-        existing_ids = {record.id for record in existing_active}
         for existing in existing_active:
             if existing.id in parsed_by_id:
                 continue
@@ -129,18 +135,44 @@ class FactsService:
 
         for record in parsed:
             self.store.upsert_memory_fact(record)
-            if record.id not in existing_ids:
+            source_notes = provenance_by_fact.get(_fact_identity(record)) or ["canon_verified"]
+            for source_note in source_notes:
                 self.store.add_memory_fact_source(
                     MemoryFactSourceRecord(
                         fact_id=record.id,
                         memory_entry_uuid=None,
                         canon_filename=filename,
-                        source_note="canon_verified",
+                        source_note=source_note,
                         created_at=now,
                     )
                 )
 
         return {"active": len(parsed), "superseded": superseded}
+
+    def _canon_provenance_by_fact(
+        self,
+        filename: str,
+        provenance: list[dict[str, Any]],
+    ) -> dict[tuple[str, str, str], list[str]]:
+        result: dict[tuple[str, str, str], list[str]] = {}
+        for event in provenance:
+            content = event.get("content")
+            if not isinstance(content, str) or not content:
+                continue
+            event_id = str(event.get("event_id") or "").strip()
+            source_kind = str(event.get("source_kind") or "imported_canon").strip()
+            source_ref = str(event.get("source_ref") or "").strip()
+            if event_id:
+                note = f"canon_event:{event_id}:{source_kind}"
+            elif source_ref:
+                note = f"canon_import:{source_kind}:{source_ref[:120]}"
+            else:
+                note = f"canon_import:{source_kind}"
+            for record in self._parse_canon_facts(filename, content):
+                notes = result.setdefault(_fact_identity(record), [])
+                if note not in notes:
+                    notes.append(note)
+        return result
 
     def prune_unsupported_canon_facts(self) -> int:
         active = self.store.list_memory_facts(
@@ -263,6 +295,10 @@ class FactsService:
 def _format_fact(record: MemoryFactRecord) -> str:
     source = f" ({record.source_ref})" if record.source_ref else ""
     return f"{record.subject} {record.key.replace('_', ' ')} {record.value_text}{source}"
+
+
+def _fact_identity(record: MemoryFactRecord) -> tuple[str, str, str]:
+    return (record.subject, record.key, record.value_text)
 
 
 def _fact_id(

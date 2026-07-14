@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from octopal.infrastructure.store.models import MemoryEntry
 from octopal.infrastructure.store.sqlite import SQLiteStore
@@ -29,6 +32,22 @@ class _NoopStore:
 
     def list_canon_embeddings(self, filename: str | None = None):
         return []
+
+
+class _StaleEmbeddingStore(_NoopStore):
+    def list_canon_embeddings(self, filename: str | None = None):
+        return [
+            {
+                "filename": "facts.md",
+                "content": "Deprecated fact is unsafe.",
+                "vector": [1.0, 0.0],
+            }
+        ]
+
+
+class _EmbeddingProvider:
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0] for _text in texts]
 
 
 def _make_entry(role: str, content: str, *, owner_id: str, chat_id: int) -> MemoryEntry:
@@ -259,3 +278,145 @@ def test_canon_event_log_and_compaction(tmp_path: Path) -> None:
 
     asyncio.run(scenario())
     assert (canon.canon_dir / "events.jsonl").exists()
+
+
+def test_external_canon_proposal_requires_promotion_and_can_be_rolled_back(
+    tmp_path: Path,
+) -> None:
+    canon = CanonService(
+        workspace_dir=tmp_path / "workspace",
+        store=_NoopStore(),
+        embeddings=None,
+    )
+
+    async def scenario() -> None:
+        assert await canon.write_canon("facts", "BASE\n", "overwrite") == "Success"
+        result = await canon.write_canon(
+            "facts",
+            "EXTERNAL\n",
+            "overwrite",
+            source_kind="worker",
+            source_ref="worker-run-1",
+        )
+        proposal_id = result.removeprefix("Quarantined canon proposal: ")
+
+        assert canon.read_canon("facts") == "BASE\n"
+        candidate = canon.get_proposal(proposal_id)
+        assert candidate is not None
+        assert candidate.source_kind == "worker"
+        assert candidate.source_ref == "worker-run-1"
+        assert candidate.trust_state == "quarantined_candidate"
+
+        (canon.canon_dir / "facts.md").write_text("FORGED\n", encoding="utf-8")
+        assert canon.read_canon("facts") == "BASE\n"
+
+        promoted = await canon.promote_proposal(proposal_id)
+        assert promoted.trust_state == "trusted"
+        assert canon.read_canon("facts") == "EXTERNAL\n"
+
+        deprecated = await canon.deprecate_proposal(proposal_id)
+        assert deprecated.trust_state == "deprecated"
+        assert canon.read_canon("facts") == "BASE\n"
+
+    asyncio.run(scenario())
+
+    events = [json.loads(line) for line in canon.events_file.read_text().splitlines()]
+    transitions = [item for item in events if item.get("event_type") == "trust_transition"]
+    assert [item["trust_state"] for item in transitions] == ["trusted", "deprecated"]
+    assert all("content" not in item for item in transitions)
+
+
+def test_canon_rejects_invalid_or_repeated_trust_transitions(tmp_path: Path) -> None:
+    canon = CanonService(
+        workspace_dir=tmp_path / "workspace",
+        store=_NoopStore(),
+        embeddings=None,
+    )
+
+    async def scenario() -> None:
+        result = await canon.write_canon(
+            "decisions",
+            "Candidate\n",
+            source_kind="web",
+            source_ref="https://example.test",
+        )
+        proposal_id = result.removeprefix("Quarantined canon proposal: ")
+        await canon.promote_proposal(proposal_id)
+
+        with pytest.raises(ValueError, match="cannot be promoted from trusted"):
+            await canon.promote_proposal(proposal_id)
+        with pytest.raises(ValueError, match="not found"):
+            await canon.promote_proposal("canon_00000000000000000000000000000000")
+
+        await canon.deprecate_proposal(proposal_id)
+        with pytest.raises(ValueError, match="already deprecated"):
+            await canon.deprecate_proposal(proposal_id)
+
+    asyncio.run(scenario())
+
+
+def test_canon_read_fails_closed_when_event_ledger_is_corrupt(tmp_path: Path) -> None:
+    canon = CanonService(
+        workspace_dir=tmp_path / "workspace",
+        store=_NoopStore(),
+        embeddings=None,
+    )
+    forged = {
+        "event_id": "canon_forged",
+        "event_type": "write",
+        "ts": utc_now().isoformat(),
+        "filename": "facts.md",
+        "mode": "overwrite",
+        "content": "FORGED is trusted.\n",
+        "source_kind": "web",
+        "trust_state": "trusted",
+    }
+    canon.events_file.write_text(
+        "not-json\n" + json.dumps(forged) + "\n",
+        encoding="utf-8",
+    )
+    (canon.canon_dir / "facts.md").write_text(
+        "FORGED is trusted.\n",
+        encoding="utf-8",
+    )
+
+    assert canon.read_canon("facts") == "# Facts\n\n"
+
+
+def test_canon_promotion_applies_at_transition_time_not_original_write_time(
+    tmp_path: Path,
+) -> None:
+    canon = CanonService(
+        workspace_dir=tmp_path / "workspace",
+        store=_NoopStore(),
+        embeddings=None,
+    )
+
+    async def scenario() -> None:
+        result = await canon.write_canon(
+            "facts",
+            "PROMOTED\n",
+            "append",
+            source_kind="document",
+            source_ref="document-1",
+        )
+        proposal_id = result.removeprefix("Quarantined canon proposal: ")
+        await canon.write_canon("facts", "LATER\n", "overwrite")
+
+        await canon.promote_proposal(proposal_id)
+        assert canon.read_canon("facts") == "LATER\nPROMOTED\n"
+
+        await canon.deprecate_proposal(proposal_id)
+        assert canon.read_canon("facts") == "LATER\n"
+
+    asyncio.run(scenario())
+
+
+def test_canon_search_excludes_stale_embeddings_after_trust_replay(tmp_path: Path) -> None:
+    canon = CanonService(
+        workspace_dir=tmp_path / "workspace",
+        store=_StaleEmbeddingStore(),
+        embeddings=_EmbeddingProvider(),
+    )
+
+    assert asyncio.run(canon.search_canon("deprecated fact")) == []
