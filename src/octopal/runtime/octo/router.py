@@ -275,8 +275,17 @@ async def route_or_reply(
             }
         )
         resolution_report = ctx.get("tool_resolution_report")
-        available_count = len(getattr(resolution_report, "available_tools", ()) or ())
-        deferred_count = max(0, available_count - len(octo_tools))
+        selection_manifest = ctx.get("tool_selection_manifest")
+        available_count = (
+            int(selection_manifest["available_tool_count"])
+            if isinstance(selection_manifest, dict)
+            else len(getattr(resolution_report, "available_tools", ()) or ())
+        )
+        deferred_count = (
+            int(selection_manifest["initial_deferred_tool_count"])
+            if isinstance(selection_manifest, dict)
+            else max(0, available_count - len(octo_tools))
+        )
         logger.info(
             "Octo tools fetched",
             route_mode=route_mode_value,
@@ -285,6 +294,17 @@ async def route_or_reply(
             deferred_tool_count=deferred_count,
         )
         if routing_trace_ctx is not None and trace_sink is not None:
+            selection_metadata = (
+                {
+                    "selection_mode": selection_manifest.get("mode"),
+                    "available_schema_chars": selection_manifest.get("available_schema_chars"),
+                    "initial_schema_chars": selection_manifest.get("initial_schema_chars"),
+                    "schema_chars_saved": selection_manifest.get("schema_chars_saved"),
+                    "forced_activations": selection_manifest.get("forced_activations"),
+                }
+                if isinstance(selection_manifest, dict)
+                else {}
+            )
             await trace_sink.annotate(
                 routing_trace_ctx,
                 name="octo.routing.tools",
@@ -293,6 +313,7 @@ async def route_or_reply(
                     "active_tool_count": len(octo_tools),
                     "available_tool_count": available_count,
                     "deferred_tool_count": deferred_count,
+                    **selection_metadata,
                 },
             )
         tool_policy_summary = _build_octo_tool_policy_summary(
@@ -1016,6 +1037,29 @@ async def _complete_route_with_tools(
                         )
                         tools = [spec.to_openai_tool() for spec in active_tool_specs]
                         if expanded_names:
+                            selection_manifest = ctx.get("tool_selection_manifest")
+                            expansions = (
+                                selection_manifest.get("expansions")
+                                if isinstance(selection_manifest, dict)
+                                else None
+                            )
+                            expansion_event = (
+                                expansions[-1]
+                                if isinstance(expansions, list)
+                                and expansions
+                                and isinstance(expansions[-1], dict)
+                                else None
+                            )
+                            if (
+                                expansion_event is not None
+                                and trace_ctx is not None
+                                and trace_sink is not None
+                            ):
+                                await trace_sink.annotate(
+                                    trace_ctx,
+                                    name="octo.routing.tools.expanded",
+                                    metadata=expansion_event,
+                                )
                             messages.append(
                                 Message(
                                     role="system",

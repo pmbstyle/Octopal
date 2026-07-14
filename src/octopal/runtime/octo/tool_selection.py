@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ _DEFAULT_MAX_TOOL_COUNT = 64
 _MIN_TOOL_COUNT_ON_OVERFLOW = 12
 _CATALOG_TOOL_EXPANSION_LIMIT = 12
 _CATALOG_MCP_TOOL_EXPANSION_LIMIT = 1
+_CATALOG_RESULT_INSPECTION_LIMIT = 50
 _DEFAULT_INITIAL_OCTO_TOOL_COUNT = 42
 
 _MANDATORY_OCTO_TOOL_NAMES = {
@@ -299,12 +301,26 @@ def _get_octo_tools(
         all_tools,
     )
     tool_specs = _select_initial_octo_tool_specs(tool_specs)
+    initial_names = {_tool_name(spec) for spec in tool_specs}
+    forced_activations: list[dict[str, str]] = []
     if _a2a_interop_enabled(octo):
         tool_specs = _ensure_named_tools(tool_specs, all_tools, _A2A_TOOL_NAMES)
+        forced_activations = [
+            {"tool_name": _tool_name(spec), "reason": "a2a_interop_enabled"}
+            for spec in tool_specs
+            if _tool_name(spec) not in initial_names
+        ]
     ctx["active_tool_specs"] = tool_specs
     ctx["tool_resolution_report"] = resolution_report
     ctx["all_tool_specs"] = all_tools
-    deferred_count = max(0, len(resolution_report.available_tools) - len(tool_specs))
+    selection_manifest = _build_tool_selection_manifest(
+        available_tool_specs=list(resolution_report.available_tools),
+        active_tool_specs=tool_specs,
+        deferred_enabled=_env_flag("OCTOPAL_OCTO_DEFER_TOOL_LOADING", True),
+        forced_activations=forced_activations,
+    )
+    ctx["tool_selection_manifest"] = selection_manifest
+    deferred_count = int(selection_manifest["initial_deferred_tool_count"])
     if deferred_count:
         logger.info(
             "Octo deferred tool loading active",
@@ -587,6 +603,63 @@ def _select_initial_octo_tool_specs(tool_specs: list[ToolSpec]) -> list[ToolSpec
     return _budget_tool_specs(selected, max_count=initial_limit)
 
 
+def _build_tool_selection_manifest(
+    *,
+    available_tool_specs: list[ToolSpec],
+    active_tool_specs: list[ToolSpec],
+    deferred_enabled: bool,
+    forced_activations: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    effective_available = _merge_tool_specs_by_name(available_tool_specs, active_tool_specs)
+    available_schema_chars = _tool_schema_chars(effective_available)
+    active_schema_chars = _tool_schema_chars(active_tool_specs)
+    deferred_count = max(0, len(effective_available) - len(active_tool_specs))
+    return {
+        "version": 1,
+        "scope": "route",
+        "mode": "deferred" if deferred_enabled and deferred_count > 0 else "eager",
+        "available_tool_count": len(effective_available),
+        "initial_active_tool_count": len(active_tool_specs),
+        "current_active_tool_count": len(active_tool_specs),
+        "initial_deferred_tool_count": deferred_count,
+        "current_deferred_tool_count": deferred_count,
+        "available_schema_chars": available_schema_chars,
+        "initial_schema_chars": active_schema_chars,
+        "current_schema_chars": active_schema_chars,
+        "schema_chars_saved": max(0, available_schema_chars - active_schema_chars),
+        "forced_activations": list(forced_activations or []),
+        "expansions": [],
+        "rejected_expansions": [],
+    }
+
+
+def _merge_tool_specs_by_name(*groups: list[ToolSpec]) -> list[ToolSpec]:
+    merged: dict[str, ToolSpec] = {}
+    for group in groups:
+        for spec in group:
+            merged.setdefault(_tool_name(spec), spec)
+    return list(merged.values())
+
+
+def _tool_schema_chars(tool_specs: list[ToolSpec]) -> int:
+    try:
+        return len(
+            json.dumps(
+                [spec.to_openai_tool() for spec in tool_specs],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        )
+    except Exception:
+        return 0
+
+
+def _tool_name(spec: ToolSpec) -> str:
+    return str(getattr(spec, "name", "") or "").strip()
+
+
 def _shrink_tool_specs_for_retry(tool_specs: list[ToolSpec]) -> list[ToolSpec]:
     if len(tool_specs) <= _MIN_TOOL_COUNT_ON_OVERFLOW:
         return tool_specs
@@ -613,14 +686,23 @@ def _expand_active_tool_specs_from_catalog_result(
         return active_tool_specs, []
     query = _normalize_catalog_query(payload.get("query")) if isinstance(payload, dict) else ""
 
-    all_specs = list(ctx.get("all_tool_specs") or [])
+    raw_all_specs = ctx.get("all_tool_specs")
+    all_specs = list(raw_all_specs) if isinstance(raw_all_specs, (list, tuple)) else []
     by_name = {str(getattr(spec, "name", "") or ""): spec for spec in all_specs}
     selected = list(active_tool_specs)
     selected_names = {str(getattr(spec, "name", "") or "") for spec in selected}
+    resolution_report = ctx.get("tool_resolution_report")
+    eligible_names = set(selected_names)
+    if resolution_report is not None and hasattr(resolution_report, "available_tools"):
+        eligible_names.update(
+            {_tool_name(spec) for spec in getattr(resolution_report, "available_tools", ()) or ()}
+        )
+    schema_chars_before = _tool_schema_chars(selected)
 
     expanded_names: list[str] = []
+    activated: list[dict[str, Any]] = []
     mcp_added = 0
-    for item in results:
+    for item in results[:_CATALOG_RESULT_INSPECTION_LIMIT]:
         if len(expanded_names) >= _CATALOG_TOOL_EXPANSION_LIMIT:
             break
         if not isinstance(item, dict):
@@ -633,6 +715,13 @@ def _expand_active_tool_specs_from_catalog_result(
         spec = by_name.get(name)
         if spec is None:
             continue
+        if name not in eligible_names:
+            _record_rejected_tool_expansion(
+                ctx,
+                tool_name=name,
+                reason="not_in_resolution_set",
+            )
+            continue
         is_mcp = _is_mcp_catalog_item(item, spec)
         if is_mcp:
             if mcp_added >= _CATALOG_MCP_TOOL_EXPANSION_LIMIT:
@@ -644,10 +733,80 @@ def _expand_active_tool_specs_from_catalog_result(
         selected.append(spec)
         selected_names.add(name)
         expanded_names.append(name)
+        score = item.get("score")
+        activated.append(
+            {
+                "tool_name": name,
+                "reason": "catalog_exact_mcp_match" if is_mcp else "catalog_match",
+                "score": (
+                    int(score) if isinstance(score, int) and not isinstance(score, bool) else None
+                ),
+            }
+        )
 
     if expanded_names:
         ctx["active_tool_specs"] = selected
+        _record_tool_selection_expansion(
+            ctx,
+            query=query,
+            activated=activated,
+            active_tool_specs=selected,
+            schema_chars_before=schema_chars_before,
+        )
     return selected, expanded_names
+
+
+def _record_tool_selection_expansion(
+    ctx: dict[str, object],
+    *,
+    query: str,
+    activated: list[dict[str, Any]],
+    active_tool_specs: list[ToolSpec],
+    schema_chars_before: int,
+) -> None:
+    manifest = ctx.get("tool_selection_manifest")
+    if not isinstance(manifest, dict):
+        return
+    schema_chars_after = _tool_schema_chars(active_tool_specs)
+    event = {
+        "source": "tool_catalog_search",
+        "query_fingerprint": _catalog_query_fingerprint(query),
+        "activated": activated,
+        "active_tool_count_before": max(0, len(active_tool_specs) - len(activated)),
+        "active_tool_count_after": len(active_tool_specs),
+        "schema_chars_before": schema_chars_before,
+        "schema_chars_after": schema_chars_after,
+    }
+    expansions = manifest.setdefault("expansions", [])
+    if isinstance(expansions, list):
+        expansions.append(event)
+    raw_available_count = manifest.get("available_tool_count")
+    available_count = (
+        raw_available_count
+        if isinstance(raw_available_count, int) and not isinstance(raw_available_count, bool)
+        else len(active_tool_specs)
+    )
+    manifest["current_active_tool_count"] = len(active_tool_specs)
+    manifest["current_deferred_tool_count"] = max(0, available_count - len(active_tool_specs))
+    manifest["current_schema_chars"] = schema_chars_after
+
+
+def _record_rejected_tool_expansion(ctx: dict[str, object], *, tool_name: str, reason: str) -> None:
+    manifest = ctx.get("tool_selection_manifest")
+    if not isinstance(manifest, dict):
+        return
+    rejected = manifest.setdefault("rejected_expansions", [])
+    if not isinstance(rejected, list):
+        return
+    item = {"tool_name": tool_name, "reason": reason}
+    if item not in rejected:
+        rejected.append(item)
+
+
+def _catalog_query_fingerprint(query: str) -> str | None:
+    if not query:
+        return None
+    return hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
 
 
 def _normalize_catalog_query(value: Any) -> str:
