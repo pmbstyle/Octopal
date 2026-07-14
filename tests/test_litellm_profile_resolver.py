@@ -103,6 +103,19 @@ def test_resolver_migrates_legacy_minimax_anthropic_base_to_openai_route() -> No
     assert profile.api_base == "https://api.minimax.io/v1"
 
 
+def test_resolver_preserves_custom_minimax_anthropic_proxy_base() -> None:
+    settings = _base_settings(
+        litellm_provider_id="minimax",
+        litellm_model="MiniMax-M3",
+        litellm_api_key="mini-key",
+        litellm_api_base="https://proxy.example/anthropic/v1",
+    )
+
+    profile = resolve_litellm_profile(settings)
+
+    assert profile.api_base == "https://proxy.example/anthropic/v1"
+
+
 def test_worker_override_does_not_inherit_octo_unified_api_key_for_other_provider() -> None:
     settings = _base_settings(
         litellm_provider_id="zai",

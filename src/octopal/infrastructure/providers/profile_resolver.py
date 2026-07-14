@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.infrastructure.config.settings import Settings
@@ -160,7 +161,12 @@ def _normalize_provider_api_base(provider_id: str, api_base: str | None) -> str 
     if not normalized:
         return None
     if provider_id == "minimax":
-        for legacy_suffix in ("/anthropic/v1", "/anthropic"):
-            if normalized.endswith(legacy_suffix):
-                return normalized[: -len(legacy_suffix)] + "/v1"
+        try:
+            parsed = urlsplit(normalized)
+        except ValueError:
+            return normalized
+        if parsed.scheme == "https" and parsed.netloc.lower() == "api.minimax.io":
+            for legacy_suffix in ("/anthropic/v1", "/anthropic"):
+                if normalized.endswith(legacy_suffix):
+                    return normalized[: -len(legacy_suffix)] + "/v1"
     return normalized
