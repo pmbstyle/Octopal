@@ -36,13 +36,56 @@ def _tool(name: str, *, handler, is_async: bool = False) -> ToolSpec:
 @pytest.mark.asyncio
 async def test_handle_octo_tool_call_reports_unknown_tool() -> None:
     result, meta = await _handle_octo_tool_call(
-        {"function": {"name": "missing_tool", "arguments": "{}"}},
+        {"function": {"name": "missing_tool", "arguments": "{"}},
         [],
         {},
     )
 
     assert result == {"error": "Unknown tool: missing_tool"}
     assert meta["had_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_octo_tool_call_rejects_and_measures_malformed_arguments() -> None:
+    calls: list[dict] = []
+    tool = _tool("web_search", handler=lambda args, _ctx: calls.append(args) or {"ok": True})
+    ctx: dict[str, object] = {}
+
+    valid_result, valid_meta = await _handle_octo_tool_call(
+        {"function": {"name": "web_search", "arguments": '{"query":"octopal"}'}},
+        [tool],
+        ctx,
+    )
+    invalid_json_result, invalid_json_meta = await _handle_octo_tool_call(
+        {"function": {"name": "web_search", "arguments": '{"query":'}},
+        [tool],
+        ctx,
+    )
+    non_object_result, non_object_meta = await _handle_octo_tool_call(
+        {"function": {"name": "web_search", "arguments": '["octopal"]'}},
+        [tool],
+        ctx,
+    )
+
+    assert valid_result == {"ok": True}
+    assert valid_meta["had_error"] is False
+    assert calls == [{"query": "octopal"}]
+    assert invalid_json_result["type"] == "invalid_tool_arguments"
+    assert invalid_json_meta["argument_error"] == "invalid_json"
+    assert non_object_result["type"] == "invalid_tool_arguments"
+    assert non_object_meta["argument_error"] == "non_object"
+    assert ctx["tool_call_quality"] == {
+        "version": 1,
+        "total_calls": 3,
+        "malformed_argument_calls": 2,
+        "malformed_argument_rate": 2 / 3,
+        "by_tool": {
+            "web_search": {
+                "total_calls": 3,
+                "malformed_argument_calls": 2,
+            }
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -260,6 +303,14 @@ def test_default_octo_tool_policy_blocks_test_run() -> None:
             "blocked_by_deny:octo.direct_exec_denylist"
         )
         assert meta["error_type"] == "policy_block"
+
+        malformed_result, malformed_meta = await _handle_octo_tool_call(
+            {"function": {"name": "test_run", "arguments": "{"}},
+            tool_specs,
+            ctx,
+        )
+        assert malformed_result["type"] == "policy_block"
+        assert malformed_meta["error_type"] == "policy_block"
 
     asyncio.run(scenario())
 

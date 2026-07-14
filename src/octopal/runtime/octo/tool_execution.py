@@ -81,10 +81,15 @@ async def _handle_octo_tool_call(
     function = call.get("function") or {}
     name = function.get("name")
     args_raw = function.get("arguments", "{}")
+    argument_error: str | None = None
     try:
         args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
     except Exception:
         args = {}
+        argument_error = "invalid_json"
+    if not isinstance(args, dict):
+        args = {}
+        argument_error = "non_object"
 
     trace_sink = getattr(ctx.get("octo"), "trace_sink", None)
     parent_trace_ctx = get_current_trace_context()
@@ -97,7 +102,10 @@ async def _handle_octo_tool_call(
         "tool_name": str(name or ""),
         "args_hash": hash_payload(args),
         "args_preview": safe_preview(args, limit=240),
+        "arguments_valid": argument_error is None,
     }
+    if argument_error is not None:
+        tool_trace_metadata["argument_error"] = argument_error
     if trace_sink is not None and parent_trace_ctx is not None:
         tool_trace_ctx = await trace_sink.start_span(
             parent_trace_ctx,
@@ -125,6 +133,30 @@ async def _handle_octo_tool_call(
                 "timed_out": False,
                 "had_error": True,
                 "error_type": "stale_chat_turn_epoch",
+            }
+        _record_tool_call_quality(
+            ctx,
+            tool_name=str(name or ""),
+            argument_error=argument_error,
+        )
+        if argument_error is not None and any(spec.name == name for spec in tools):
+            tool_trace_status = "error"
+            tool_trace_metadata["error_type"] = "invalid_tool_arguments"
+            invalid_payload = {
+                "type": "invalid_tool_arguments",
+                "tool": str(name or ""),
+                "message": "Tool arguments must be a valid JSON object.",
+                "hint": "Retry with arguments that match the active tool schema.",
+            }
+            tool_trace_output = {
+                "result_preview": safe_preview(invalid_payload, limit=240),
+                "result_size": len(str(invalid_payload)),
+            }
+            return invalid_payload, {
+                "timed_out": False,
+                "had_error": True,
+                "error_type": "invalid_tool_arguments",
+                "argument_error": argument_error,
             }
         if emit_tool_use_event is not None:
             await emit_tool_use_event(
@@ -244,6 +276,47 @@ async def _handle_octo_tool_call(
             )
         if tool_trace_token is not None:
             reset_trace_context(tool_trace_token)
+
+
+def _record_tool_call_quality(
+    ctx: dict[str, object],
+    *,
+    tool_name: str,
+    argument_error: str | None,
+) -> None:
+    state = ctx.get("tool_call_quality")
+    if not isinstance(state, dict):
+        state = {
+            "version": 1,
+            "total_calls": 0,
+            "malformed_argument_calls": 0,
+            "malformed_argument_rate": 0.0,
+            "by_tool": {},
+        }
+        ctx["tool_call_quality"] = state
+
+    total_calls = int(state.get("total_calls", 0) or 0) + 1
+    invalid_calls = int(state.get("malformed_argument_calls", 0) or 0)
+    if argument_error is not None:
+        invalid_calls += 1
+    state["total_calls"] = total_calls
+    state["malformed_argument_calls"] = invalid_calls
+    state["malformed_argument_rate"] = invalid_calls / total_calls
+
+    by_tool = state.get("by_tool")
+    if not isinstance(by_tool, dict):
+        by_tool = {}
+        state["by_tool"] = by_tool
+    normalized_name = tool_name.strip() or "<missing>"
+    tool_state = by_tool.get(normalized_name)
+    if not isinstance(tool_state, dict):
+        tool_state = {"total_calls": 0, "malformed_argument_calls": 0}
+        by_tool[normalized_name] = tool_state
+    tool_state["total_calls"] = int(tool_state.get("total_calls", 0) or 0) + 1
+    if argument_error is not None:
+        tool_state["malformed_argument_calls"] = (
+            int(tool_state.get("malformed_argument_calls", 0) or 0) + 1
+        )
 
 
 def _record_octo_tool_call(

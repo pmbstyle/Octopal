@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -155,6 +156,61 @@ def test_get_octo_tools_keeps_self_lifecycle_tools_with_profile(monkeypatch) -> 
     assert "octo_check_update" in names
     assert "octo_update_self" in names
     assert _RUNTIME_PLAN_TOOL_NAMES.issubset(names)
+
+
+def test_tool_selection_manifest_counts_usage_examples_in_schema_budget() -> None:
+    example_tool = ToolSpec(
+        name="fs_read",
+        description="Read a workspace file.",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        permission="filesystem_read",
+        handler=lambda _args, _ctx: "",
+        usage_examples=(
+            {"path": "reports/latest.md"},
+            {"path": "memory/handoff.json"},
+        ),
+        usage_example_evidence="eval:filesystem-path-ambiguity-v1",
+    )
+
+    manifest = _build_tool_selection_manifest(
+        available_tool_specs=[example_tool],
+        active_tool_specs=[example_tool],
+        deferred_enabled=True,
+    )
+    base_manifest = _build_tool_selection_manifest(
+        available_tool_specs=[
+            replace(example_tool, usage_examples=(), usage_example_evidence=None)
+        ],
+        active_tool_specs=[replace(example_tool, usage_examples=(), usage_example_evidence=None)],
+        deferred_enabled=True,
+    )
+
+    assert manifest["available_usage_example_tool_count"] == 1
+    assert manifest["available_usage_example_count"] == 2
+    assert manifest["available_usage_example_schema_chars"] == (
+        manifest["available_schema_chars"] - base_manifest["available_schema_chars"]
+    )
+    assert manifest["available_usage_example_evidence"] == [
+        {"tool_name": "fs_read", "evidence": "eval:filesystem-path-ambiguity-v1"}
+    ]
+    assert manifest["initial_usage_example_tool_count"] == 1
+    assert manifest["initial_usage_example_count"] == 2
+    assert manifest["initial_usage_example_schema_chars"] == (
+        manifest["initial_schema_chars"] - base_manifest["initial_schema_chars"]
+    )
+    assert (
+        manifest["current_usage_example_schema_chars"]
+        == manifest["initial_usage_example_schema_chars"]
+    )
+    assert manifest["current_usage_example_evidence"] == [
+        {"tool_name": "fs_read", "evidence": "eval:filesystem-path-ambiguity-v1"}
+    ]
+    assert manifest["available_schema_chars"] == manifest["initial_schema_chars"]
 
 
 def test_get_octo_tools_keeps_runtime_plan_tools_under_tiny_budget(monkeypatch) -> None:
@@ -1671,6 +1727,8 @@ def test_catalog_result_expands_active_tool_specs() -> None:
         parameters={"type": "object", "properties": {}},
         permission="self_control",
         handler=lambda args, ctx: {"ok": True},
+        usage_examples=({"detail": "summary"},),
+        usage_example_evidence="eval:hidden-tool-argument-ambiguity-v1",
     )
 
     manifest = _build_tool_selection_manifest(
@@ -1708,6 +1766,12 @@ def test_catalog_result_expands_active_tool_specs() -> None:
     assert event["activated"] == [
         {"tool_name": "hidden_tool", "reason": "catalog_match", "score": 80}
     ]
+    assert event["usage_example_count_activated"] == 1
+    assert event["usage_example_schema_chars_activated"] > 0
+    assert event["usage_example_evidence_activated"] == [
+        {"tool_name": "hidden_tool", "evidence": "eval:hidden-tool-argument-ambiguity-v1"}
+    ]
+    assert manifest["current_usage_example_count"] == 1
 
 
 def test_catalog_result_cannot_expand_tool_outside_resolution_set() -> None:

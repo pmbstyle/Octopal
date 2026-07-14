@@ -228,6 +228,7 @@ async def route_or_reply(
     routing_trace_started_ms = now_ms()
     routing_trace_status = "ok"
     routing_trace_output: dict[str, Any] | None = None
+    ctx: dict[str, object] | None = None
     route_mode_value = (
         route_mode.value
         if isinstance(route_mode, RouteMode)
@@ -300,6 +301,21 @@ async def route_or_reply(
                     "available_schema_chars": selection_manifest.get("available_schema_chars"),
                     "initial_schema_chars": selection_manifest.get("initial_schema_chars"),
                     "schema_chars_saved": selection_manifest.get("schema_chars_saved"),
+                    "available_usage_example_count": selection_manifest.get(
+                        "available_usage_example_count"
+                    ),
+                    "available_usage_example_schema_chars": selection_manifest.get(
+                        "available_usage_example_schema_chars"
+                    ),
+                    "initial_usage_example_count": selection_manifest.get(
+                        "initial_usage_example_count"
+                    ),
+                    "initial_usage_example_schema_chars": selection_manifest.get(
+                        "initial_usage_example_schema_chars"
+                    ),
+                    "initial_usage_example_evidence": selection_manifest.get(
+                        "initial_usage_example_evidence"
+                    ),
                     "forced_activations": selection_manifest.get("forced_activations"),
                 }
                 if isinstance(selection_manifest, dict)
@@ -431,6 +447,9 @@ async def route_or_reply(
             await octo.set_typing(chat_id, False)
         if routing_trace_ctx is not None and trace_sink is not None:
             finish_meta = dict(routing_trace_metadata)
+            tool_call_quality = ctx.get("tool_call_quality") if isinstance(ctx, dict) else None
+            if isinstance(tool_call_quality, dict):
+                finish_meta["tool_call_quality"] = tool_call_quality
             finish_meta["duration_ms"] = round(now_ms() - routing_trace_started_ms, 2)
             await trace_sink.finish_span(
                 routing_trace_ctx,

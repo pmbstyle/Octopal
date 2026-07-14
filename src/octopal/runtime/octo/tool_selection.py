@@ -5,6 +5,7 @@ import json
 import os
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -613,6 +614,8 @@ def _build_tool_selection_manifest(
     effective_available = _merge_tool_specs_by_name(available_tool_specs, active_tool_specs)
     available_schema_chars = _tool_schema_chars(effective_available)
     active_schema_chars = _tool_schema_chars(active_tool_specs)
+    available_example_stats = _tool_usage_example_stats(effective_available)
+    active_example_stats = _tool_usage_example_stats(active_tool_specs)
     deferred_count = max(0, len(effective_available) - len(active_tool_specs))
     return {
         "version": 1,
@@ -627,6 +630,18 @@ def _build_tool_selection_manifest(
         "initial_schema_chars": active_schema_chars,
         "current_schema_chars": active_schema_chars,
         "schema_chars_saved": max(0, available_schema_chars - active_schema_chars),
+        "available_usage_example_tool_count": available_example_stats["tool_count"],
+        "available_usage_example_count": available_example_stats["example_count"],
+        "available_usage_example_schema_chars": available_example_stats["schema_chars"],
+        "available_usage_example_evidence": _tool_usage_example_evidence(effective_available),
+        "initial_usage_example_tool_count": active_example_stats["tool_count"],
+        "initial_usage_example_count": active_example_stats["example_count"],
+        "initial_usage_example_schema_chars": active_example_stats["schema_chars"],
+        "initial_usage_example_evidence": _tool_usage_example_evidence(active_tool_specs),
+        "current_usage_example_tool_count": active_example_stats["tool_count"],
+        "current_usage_example_count": active_example_stats["example_count"],
+        "current_usage_example_schema_chars": active_example_stats["schema_chars"],
+        "current_usage_example_evidence": _tool_usage_example_evidence(active_tool_specs),
         "forced_activations": list(forced_activations or []),
         "expansions": [],
         "rejected_expansions": [],
@@ -654,6 +669,37 @@ def _tool_schema_chars(tool_specs: list[ToolSpec]) -> int:
         )
     except Exception:
         return 0
+
+
+def _tool_usage_example_stats(tool_specs: list[ToolSpec]) -> dict[str, int]:
+    example_specs = [spec for spec in tool_specs if spec.usage_examples]
+    specs_without_examples = [
+        (
+            replace(spec, usage_examples=(), usage_example_evidence=None)
+            if spec.usage_examples
+            else spec
+        )
+        for spec in tool_specs
+    ]
+    return {
+        "tool_count": len(example_specs),
+        "example_count": sum(len(spec.usage_examples) for spec in example_specs),
+        "schema_chars": max(
+            0,
+            _tool_schema_chars(tool_specs) - _tool_schema_chars(specs_without_examples),
+        ),
+    }
+
+
+def _tool_usage_example_evidence(tool_specs: list[ToolSpec]) -> list[dict[str, str]]:
+    return [
+        {
+            "tool_name": _tool_name(spec),
+            "evidence": str(spec.usage_example_evidence or ""),
+        }
+        for spec in tool_specs
+        if spec.usage_examples
+    ]
 
 
 def _tool_name(spec: ToolSpec) -> str:
@@ -768,6 +814,11 @@ def _record_tool_selection_expansion(
     if not isinstance(manifest, dict):
         return
     schema_chars_after = _tool_schema_chars(active_tool_specs)
+    activated_names = {
+        str(item.get("tool_name") or "") for item in activated if isinstance(item, dict)
+    }
+    activated_specs = [spec for spec in active_tool_specs if _tool_name(spec) in activated_names]
+    activated_example_stats = _tool_usage_example_stats(activated_specs)
     event = {
         "source": "tool_catalog_search",
         "query_fingerprint": _catalog_query_fingerprint(query),
@@ -776,6 +827,9 @@ def _record_tool_selection_expansion(
         "active_tool_count_after": len(active_tool_specs),
         "schema_chars_before": schema_chars_before,
         "schema_chars_after": schema_chars_after,
+        "usage_example_count_activated": activated_example_stats["example_count"],
+        "usage_example_schema_chars_activated": activated_example_stats["schema_chars"],
+        "usage_example_evidence_activated": _tool_usage_example_evidence(activated_specs),
     }
     expansions = manifest.setdefault("expansions", [])
     if isinstance(expansions, list):
@@ -789,6 +843,11 @@ def _record_tool_selection_expansion(
     manifest["current_active_tool_count"] = len(active_tool_specs)
     manifest["current_deferred_tool_count"] = max(0, available_count - len(active_tool_specs))
     manifest["current_schema_chars"] = schema_chars_after
+    current_example_stats = _tool_usage_example_stats(active_tool_specs)
+    manifest["current_usage_example_tool_count"] = current_example_stats["tool_count"]
+    manifest["current_usage_example_count"] = current_example_stats["example_count"]
+    manifest["current_usage_example_schema_chars"] = current_example_stats["schema_chars"]
+    manifest["current_usage_example_evidence"] = _tool_usage_example_evidence(active_tool_specs)
 
 
 def _record_rejected_tool_expansion(ctx: dict[str, object], *, tool_name: str, reason: str) -> None:
