@@ -427,6 +427,13 @@ npm install
 npm run build
 ```
 
+Run a preflight-only tool-call argument benchmark without executing any tools or making a model
+request:
+
+```bash
+uv run python scripts/tool_call_bench.py --suite <suite.json> --config <test-config.json> --preflight-only
+```
+
 GitHub releases use date-based versions in `src/octopal/_version.py` and tags like `vYYYY.MM.DD` or `vYYYY.MM.DD.N`.
 
 ## ⁉️ Troubleshooting

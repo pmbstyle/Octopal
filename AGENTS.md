@@ -41,6 +41,7 @@
 - `uv run python scripts/benchmark_web_backends.py --backends basic,markdown_new,webclaw,browser --webclaw-binary <path> --repeat 3 --output data/web-backend-benchmark.json` compares web extraction backends without starting an Octopal runtime.
 - `uv run python scripts/worker_bench.py --suite <suite.json> --workspace workspace_templates --mode live --config <test-config.json> --preflight-only` validates provider budgets, read-only tools, credentials, and per-run isolation without making provider or tool calls. Remove `--preflight-only` only for a manually approved bounded live run.
 - `uv run python scripts/worker_bench.py --suite <suite.json> --mode replay --replay-dir <artifacts-dir> [--baseline <result.json>] --out <result.json>` grades saved worker JSONL offline; baseline mode exits non-zero only for outcome regressions. Live suites must explicitly declare provider/model, strict thinking, LLM-call and tool-call caps, token/cost ceilings, and current model pricing.
+- `uv run python scripts/tool_call_bench.py --suite <suite.json> --config <test-config.json> --preflight-only [--out <result.json>]` validates a zero-execution tool-argument benchmark. Remove `--preflight-only` only for a bounded live run; suites are capped at three single-attempt model calls and artifacts retain no prompts or arguments.
 
 ## Coding Style & Naming Conventions
 
