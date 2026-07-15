@@ -13,7 +13,13 @@ from pydantic import ValidationError
 
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.infrastructure.config.settings import Settings
-from octopal.infrastructure.store.models import AuditEvent, ExecutionEpisodeRecord, WorkerRecord
+from octopal.infrastructure.store.models import (
+    AuditEvent,
+    ExecutionEpisodeRecord,
+    ProceduralRecipeContext,
+    WorkerRecord,
+    procedural_recipe_definition_fingerprint,
+)
 from octopal.infrastructure.store.sqlite import EvidenceSecurePurgeIncomplete, SQLiteStore
 from octopal.runtime.memory.episode_evidence import (
     EpisodeEvidenceCipher,
@@ -143,6 +149,40 @@ def test_worker_episode_contains_fingerprints_not_secret_values() -> None:
     assert episode.verification["explicit_verification_key_count"] == 2
     assert len(episode.verification["explicit_verification_keys_fingerprint"]) == 64
     assert episode.provenance["content_policy"] == "metadata_only_v1"
+
+
+def test_worker_episode_records_recipe_id_without_recipe_instructions() -> None:
+    definition = {
+        "applicability_conditions": [],
+        "required_capabilities": [],
+        "required_permissions": [],
+        "strategy_steps": ["Sensitive strategy text must stay out of metadata."],
+        "verification_contract": {"required_checks": ["pytest"]},
+        "known_failures": [],
+        "invalidating_conditions": [],
+    }
+    recipe = ProceduralRecipeContext(
+        id=f"recipe_{'a' * 64}",
+        evaluation_id=f"recipe_eval_{'b' * 64}",
+        definition_fingerprint=procedural_recipe_definition_fingerprint(definition),
+        **definition,
+    )
+    spec = _spec("task-secret").model_copy(update={"procedural_recipes": [recipe]})
+    result = WorkerResult(
+        summary="done",
+        output={"report": "ok", "verification": {"passed": True}},
+    )
+
+    episode = build_worker_execution_episode(
+        spec=spec,
+        result=result,
+        stored_output=result.output,
+        status="completed",
+        launcher_kind="TestLauncher",
+    )
+
+    assert episode.provenance["procedural_recipe_ids"] == [recipe.id]
+    assert "Sensitive strategy text" not in episode.model_dump_json()
 
 
 def test_internal_output_does_not_count_as_structured_domain_output() -> None:

@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 from octopal.infrastructure.config.models import LLMConfig, OctopalConfig
 from octopal.infrastructure.config.settings import Settings
-from octopal.infrastructure.store.models import WorkerRecord, WorkerTemplateRecord
+from octopal.infrastructure.store.models import (
+    ProceduralRecipeContext,
+    WorkerRecord,
+    WorkerTemplateRecord,
+    procedural_recipe_definition_fingerprint,
+)
 from octopal.runtime.workers.contracts import Capability, TaskRequest, WorkerResult, WorkerSpec
 from octopal.runtime.workers.runtime import (
     WorkerRuntime,
@@ -75,6 +80,78 @@ def test_runtime_blocks_user_communication_tools_for_workers(tmp_path: Path) -> 
     assert "octo_restart_self" not in spec.available_tools
     assert "octo_check_update" not in spec.available_tools
     assert "octo_update_self" not in spec.available_tools
+
+
+def test_runtime_attaches_only_resolver_selected_recipe_context(
+    tmp_path: Path, monkeypatch
+) -> None:
+    template = WorkerTemplateRecord(
+        id="worker",
+        name="Worker",
+        description="Test worker",
+        system_prompt="Do work",
+        available_tools=["fs_read"],
+        required_permissions=["filesystem_read"],
+        max_thinking_steps=3,
+        default_timeout_seconds=30,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    definition = {
+        "applicability_conditions": [],
+        "required_capabilities": [],
+        "required_permissions": [],
+        "strategy_steps": ["Inspect first."],
+        "verification_contract": {"required_checks": ["structured_output"]},
+        "known_failures": [],
+        "invalidating_conditions": [],
+    }
+    recipe = ProceduralRecipeContext(
+        id=f"recipe_{'a' * 64}",
+        evaluation_id=f"recipe_eval_{'b' * 64}",
+        definition_fingerprint=procedural_recipe_definition_fingerprint(definition),
+        **definition,
+    )
+
+    class _Store:
+        def get_worker_template(self, worker_id: str):
+            return template
+
+    class _Policy:
+        def grant_capabilities(self, capabilities):
+            return capabilities
+
+    resolution: dict[str, object] = {}
+
+    def _resolve(_self, **kwargs):
+        resolution.update(kwargs)
+        return [recipe]
+
+    monkeypatch.setattr(
+        "octopal.runtime.workers.runtime.ProceduralRecipeService.resolve_for_worker",
+        _resolve,
+    )
+    runtime = WorkerRuntime(
+        store=_Store(),
+        policy=_Policy(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        mcp_manager=None,
+        settings=Settings(),
+    )
+    captured: dict[str, object] = {}
+
+    async def _fake_run(spec, approval_requester=None):
+        captured["spec"] = spec
+        return WorkerResult(summary="ok")
+
+    runtime.run = _fake_run  # type: ignore[method-assign]
+    asyncio.run(runtime.run_task(TaskRequest(worker_id="worker", task="hello")))
+
+    spec = captured["spec"]
+    assert spec.procedural_recipes == [recipe]
+    assert resolution["task"] == "hello"
+    assert resolution["effective_permissions"] == ["filesystem_read"]
 
 
 def test_runtime_uses_task_max_thinking_steps_override(tmp_path: Path) -> None:

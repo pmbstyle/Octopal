@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -39,6 +41,7 @@ ExecutionEpisodeSource = MemoryOrigin
 ExecutionEpisodeTrustState = MemoryTrustState
 ProceduralRecipeStatus = Literal["candidate", "active", "deprecated"]
 RecipeText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+ProceduralRecipeId = Annotated[str, StringConstraints(pattern=r"^recipe_[a-f0-9]{64}$")]
 
 _UNTRUSTED_MEMORY_ORIGINS = {
     "assistant_inference",
@@ -48,6 +51,27 @@ _UNTRUSTED_MEMORY_ORIGINS = {
     "web",
     "document",
 }
+_PROCEDURAL_RECIPE_DEFINITION_FIELDS = (
+    "applicability_conditions",
+    "required_capabilities",
+    "required_permissions",
+    "strategy_steps",
+    "verification_contract",
+    "known_failures",
+    "invalidating_conditions",
+)
+
+
+def procedural_recipe_definition_fingerprint(value: Mapping[str, Any]) -> str:
+    payload = {field: value.get(field) for field in _PROCEDURAL_RECIPE_DEFINITION_FIELDS}
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class WorkerRecord(BaseModel):
@@ -135,7 +159,7 @@ class ProceduralRecipeRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    id: str = Field(pattern=r"^recipe_[a-f0-9]{64}$")
+    id: ProceduralRecipeId
     intent_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
     definition_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
     applicability_conditions: list[RecipeText] = Field(default_factory=list, max_length=16)
@@ -161,7 +185,59 @@ class ProceduralRecipeRecord(BaseModel):
             raise ValueError("verification contract must not be empty")
         if len(json.dumps(self.verification_contract, ensure_ascii=False, default=str)) > 8000:
             raise ValueError("verification contract exceeds 8000 characters")
+        if self.definition_fingerprint != procedural_recipe_definition_fingerprint(
+            self.model_dump(mode="json")
+        ):
+            raise ValueError("procedural recipe definition fingerprint does not match")
         return self
+
+
+class ProceduralRecipeContext(BaseModel):
+    """Bounded advisory recipe context passed to one isolated worker run."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: ProceduralRecipeId
+    evaluation_id: str | None = Field(default=None, pattern=r"^recipe_eval_[a-f0-9]{64}$")
+    definition_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    applicability_conditions: list[RecipeText] = Field(default_factory=list, max_length=16)
+    required_capabilities: list[RecipeText] = Field(default_factory=list, max_length=32)
+    required_permissions: list[RecipeText] = Field(default_factory=list, max_length=32)
+    strategy_steps: list[RecipeText] = Field(min_length=1, max_length=20)
+    verification_contract: dict[str, Any]
+    known_failures: list[RecipeText] = Field(default_factory=list, max_length=16)
+    invalidating_conditions: list[RecipeText] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def validate_context_payload(self) -> ProceduralRecipeContext:
+        if not self.verification_contract:
+            raise ValueError("verification contract must not be empty")
+        if len(json.dumps(self.model_dump(mode="json"), ensure_ascii=False)) > 16_000:
+            raise ValueError("procedural recipe context exceeds 16000 characters")
+        if self.definition_fingerprint != procedural_recipe_definition_fingerprint(
+            self.model_dump(mode="json")
+        ):
+            raise ValueError("procedural recipe definition fingerprint does not match")
+        return self
+
+
+class ProceduralRecipeEvaluationRecord(BaseModel):
+    """Immutable metadata-only comparison of baseline and recipe benchmark results."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(pattern=r"^recipe_eval_[a-f0-9]{64}$")
+    recipe_id: ProceduralRecipeId
+    baseline_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    candidate_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    scenario_set_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    common_trial_count: int = Field(ge=2)
+    baseline_success_rate: float = Field(ge=0, le=1)
+    candidate_success_rate: float = Field(ge=0, le=1)
+    regression_count: int = Field(ge=0)
+    improvement_count: int = Field(ge=0)
+    passed: bool
+    created_at: datetime
 
 
 class IntentRecord(BaseModel):
@@ -175,6 +251,7 @@ class IntentRecord(BaseModel):
     risk: str
     requires_approval: bool
     memory_influence_ids: list[MemoryInfluenceId] = Field(default_factory=list, max_length=128)
+    procedural_recipe_ids: list[ProceduralRecipeId] = Field(default_factory=list, max_length=8)
     status: str
     created_at: datetime
 

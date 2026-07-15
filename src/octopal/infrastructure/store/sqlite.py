@@ -25,6 +25,7 @@ from octopal.infrastructure.store.models import (
     PlanEventRecord,
     PlanRunRecord,
     PlanStepRecord,
+    ProceduralRecipeEvaluationRecord,
     ProceduralRecipeRecord,
     WorkerRecord,
     WorkerTemplateRecord,
@@ -148,6 +149,7 @@ class SQLiteStore(Store):
                 risk TEXT NOT NULL,
                 requires_approval INTEGER NOT NULL,
                 memory_influence_ids_json TEXT NOT NULL DEFAULT '[]',
+                procedural_recipe_ids_json TEXT NOT NULL DEFAULT '[]',
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
@@ -226,6 +228,59 @@ class SQLiteStore(Store):
             BEFORE DELETE ON procedural_recipes
             BEGIN
                 SELECT RAISE(ABORT, 'procedural recipes cannot be deleted');
+            END;
+
+            CREATE TABLE IF NOT EXISTS procedural_recipe_evaluations (
+                id TEXT PRIMARY KEY,
+                recipe_id TEXT NOT NULL,
+                baseline_fingerprint TEXT NOT NULL,
+                candidate_fingerprint TEXT NOT NULL,
+                scenario_set_fingerprint TEXT NOT NULL,
+                common_trial_count INTEGER NOT NULL,
+                baseline_success_rate REAL NOT NULL,
+                candidate_success_rate REAL NOT NULL,
+                regression_count INTEGER NOT NULL,
+                improvement_count INTEGER NOT NULL,
+                passed INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(recipe_id) REFERENCES procedural_recipes(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_procedural_recipe_evaluations_recipe_created
+                ON procedural_recipe_evaluations (recipe_id, created_at DESC);
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipe_evaluations_immutable
+            BEFORE UPDATE ON procedural_recipe_evaluations
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipe evaluations are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipe_evaluations_no_delete
+            BEFORE DELETE ON procedural_recipe_evaluations
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipe evaluations cannot be deleted');
+            END;
+
+            CREATE TABLE IF NOT EXISTS procedural_recipe_outcomes (
+                recipe_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
+                succeeded INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (recipe_id, episode_id),
+                FOREIGN KEY(recipe_id) REFERENCES procedural_recipes(id),
+                FOREIGN KEY(episode_id) REFERENCES execution_episodes(id)
+            );
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipe_outcomes_immutable
+            BEFORE UPDATE ON procedural_recipe_outcomes
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipe outcomes are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipe_outcomes_no_delete
+            BEFORE DELETE ON procedural_recipe_outcomes
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipe outcomes cannot be deleted');
             END;
 
             CREATE TRIGGER IF NOT EXISTS execution_episodes_reject_update
@@ -594,6 +649,13 @@ class SQLiteStore(Store):
         try:
             self._conn.execute(
                 "ALTER TABLE intents ADD COLUMN memory_influence_ids_json TEXT NOT NULL DEFAULT '[]'"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE intents ADD COLUMN procedural_recipe_ids_json TEXT NOT NULL DEFAULT '[]'"
             )
             self._conn.commit()
         except sqlite3.OperationalError:
@@ -1069,6 +1131,36 @@ class SQLiteStore(Store):
             )
         return [self._row_to_execution_episode(row) for row in cursor.fetchall()]
 
+    def list_execution_episodes_for_task(
+        self,
+        task_fingerprint: str,
+        *,
+        capability_fingerprint: str | None = None,
+        limit: int = 16,
+    ) -> list[ExecutionEpisodeRecord]:
+        safe_limit = max(1, min(int(limit), 16))
+        if capability_fingerprint is None:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM execution_episodes
+                WHERE task_fingerprint = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (task_fingerprint, safe_limit),
+            )
+        else:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM execution_episodes
+                WHERE task_fingerprint = ? AND capability_fingerprint = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (task_fingerprint, capability_fingerprint, safe_limit),
+            )
+        return [self._row_to_execution_episode(row) for row in cursor.fetchall()]
+
     def add_procedural_recipe_with_audit(
         self, record: ProceduralRecipeRecord, event: AuditEvent
     ) -> bool:
@@ -1175,6 +1267,128 @@ class SQLiteStore(Store):
             except sqlite3.IntegrityError as exc:
                 self._conn.rollback()
                 if "procedural_recipes.intent_fingerprint" in str(exc):
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def add_procedural_recipe_evaluation_with_audit(
+        self, record: ProceduralRecipeEvaluationRecord, event: AuditEvent
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO procedural_recipe_evaluations (
+                        id, recipe_id, baseline_fingerprint, candidate_fingerprint,
+                        scenario_set_fingerprint, common_trial_count,
+                        baseline_success_rate, candidate_success_rate,
+                        regression_count, improvement_count, passed, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.recipe_id,
+                        record.baseline_fingerprint,
+                        record.candidate_fingerprint,
+                        record.scenario_set_fingerprint,
+                        record.common_trial_count,
+                        record.baseline_success_rate,
+                        record.candidate_success_rate,
+                        record.regression_count,
+                        record.improvement_count,
+                        1 if record.passed else 0,
+                        record.created_at.isoformat(),
+                    ),
+                )
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                if "procedural_recipe_evaluations.id" in str(exc):
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_latest_procedural_recipe_evaluation(
+        self, recipe_id: str
+    ) -> ProceduralRecipeEvaluationRecord | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM procedural_recipe_evaluations
+            WHERE recipe_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (recipe_id,),
+        ).fetchone()
+        return self._row_to_procedural_recipe_evaluation(row) if row else None
+
+    def get_procedural_recipe_evaluation(
+        self, evaluation_id: str
+    ) -> ProceduralRecipeEvaluationRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM procedural_recipe_evaluations WHERE id = ?",
+            (evaluation_id,),
+        ).fetchone()
+        return self._row_to_procedural_recipe_evaluation(row) if row else None
+
+    def record_procedural_recipe_outcome_with_audit(
+        self,
+        recipe_id: str,
+        *,
+        episode_id: str,
+        succeeded: bool,
+        validated_at: datetime,
+        event: AuditEvent,
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO procedural_recipe_outcomes (
+                        recipe_id, episode_id, succeeded, created_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        recipe_id,
+                        episode_id,
+                        1 if succeeded else 0,
+                        validated_at.isoformat(),
+                    ),
+                )
+                cursor = self._conn.execute(
+                    """
+                    UPDATE procedural_recipes
+                    SET success_count = success_count + ?,
+                        failure_count = failure_count + ?,
+                        last_validated_at = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        1 if succeeded else 0,
+                        0 if succeeded else 1,
+                        validated_at.isoformat(),
+                        validated_at.isoformat(),
+                        recipe_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    self._conn.rollback()
+                    raise ValueError("procedural recipe not found")
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                if "procedural_recipe_outcomes.recipe_id" in str(
+                    exc
+                ) and "procedural_recipe_outcomes.episode_id" in str(exc):
                     return False
                 raise
             except Exception:
@@ -1290,8 +1504,11 @@ class SQLiteStore(Store):
     def save_intent(self, record: IntentRecord) -> None:
         self._conn.execute(
             """
-            INSERT INTO intents (id, worker_id, type, payload_json, payload_hash, risk, requires_approval, memory_influence_ids_json, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO intents (
+                id, worker_id, type, payload_json, payload_hash, risk,
+                requires_approval, memory_influence_ids_json,
+                procedural_recipe_ids_json, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.id,
@@ -1302,6 +1519,7 @@ class SQLiteStore(Store):
                 record.risk,
                 1 if record.requires_approval else 0,
                 json.dumps(record.memory_influence_ids),
+                json.dumps(record.procedural_recipe_ids),
                 record.status,
                 record.created_at.isoformat(),
             ),
@@ -2319,6 +2537,24 @@ class SQLiteStore(Store):
             last_validated_at=_parse_dt(row["last_validated_at"]),
             created_at=_parse_dt(row["created_at"]),
             updated_at=_parse_dt(row["updated_at"]),
+        )
+
+    def _row_to_procedural_recipe_evaluation(
+        self, row: sqlite3.Row
+    ) -> ProceduralRecipeEvaluationRecord:
+        return ProceduralRecipeEvaluationRecord(
+            id=row["id"],
+            recipe_id=row["recipe_id"],
+            baseline_fingerprint=row["baseline_fingerprint"],
+            candidate_fingerprint=row["candidate_fingerprint"],
+            scenario_set_fingerprint=row["scenario_set_fingerprint"],
+            common_trial_count=int(row["common_trial_count"]),
+            baseline_success_rate=float(row["baseline_success_rate"]),
+            candidate_success_rate=float(row["candidate_success_rate"]),
+            regression_count=int(row["regression_count"]),
+            improvement_count=int(row["improvement_count"]),
+            passed=bool(row["passed"]),
+            created_at=_parse_dt(row["created_at"]),
         )
 
     def _row_to_execution_episode_evidence(

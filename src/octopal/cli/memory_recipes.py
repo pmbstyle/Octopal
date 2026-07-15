@@ -16,6 +16,7 @@ from octopal.infrastructure.store.sqlite import SQLiteStore
 from octopal.runtime.memory.recipes import (
     ProceduralRecipeCandidate,
     ProceduralRecipeService,
+    recipe_evaluation_payload,
     recipe_metadata_payload,
 )
 
@@ -29,12 +30,17 @@ console = Console()
 @memory_recipes_app.command("propose")
 def recipes_propose(
     definition_file: Path,
+    include_matching: bool = typer.Option(
+        False,
+        "--include-matching",
+        help="Add verified episodes with the same task and capability fingerprints.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Create an inactive recipe candidate from a bounded JSON definition."""
     definition = _load_definition(definition_file, json_output)
     try:
-        record = _load_service().create_candidate(definition)
+        record = _load_service().create_candidate(definition, include_matching=include_matching)
     except (ValueError, RuntimeError) as exc:
         _fail("recipe_candidate_rejected", str(exc), json_output)
     payload = recipe_metadata_payload(record)
@@ -83,12 +89,70 @@ def recipes_show(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Show one recipe definition and its immutable source episode ids."""
-    record = _get_or_fail(_load_service(), recipe_id, json_output)
+    service = _load_service()
+    record = _get_or_fail(service, recipe_id, json_output)
     payload = record.model_dump(mode="json")
+    evaluation = service.latest_evaluation(record.id)
+    result = {
+        "recipe": payload,
+        "latest_evaluation": (
+            recipe_evaluation_payload(evaluation) if evaluation is not None else None
+        ),
+    }
     if json_output:
-        _emit_json({"recipe": payload})
+        _emit_json(result)
         return
-    console.print_json(json.dumps({"recipe": payload}, ensure_ascii=False))
+    console.print_json(json.dumps(result, ensure_ascii=False))
+
+
+@memory_recipes_app.command("context")
+def recipes_context(
+    recipe_id: str,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Export bounded candidate context for a controlled worker benchmark suite."""
+    service = _load_service()
+    _get_or_fail(service, recipe_id, json_output)
+    try:
+        context = service.context_for_evaluation(recipe_id)
+    except (ValueError, RuntimeError) as exc:
+        _fail("recipe_context_rejected", str(exc), json_output)
+    payload = context.model_dump(mode="json")
+    if json_output:
+        _emit_json({"procedural_recipes": [payload]})
+        return
+    console.print_json(json.dumps({"procedural_recipes": [payload]}, ensure_ascii=False))
+
+
+@memory_recipes_app.command("evaluate")
+def recipes_evaluate(
+    recipe_id: str,
+    baseline_result: Path,
+    candidate_result: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Record an offline held-out baseline/candidate benchmark comparison."""
+    service = _load_service()
+    _get_or_fail(service, recipe_id, json_output)
+    baseline = _load_result_file(baseline_result, json_output)
+    candidate = _load_result_file(candidate_result, json_output)
+    try:
+        evaluation = service.evaluate(
+            recipe_id,
+            baseline=baseline,
+            candidate=candidate,
+        )
+    except (ValueError, RuntimeError) as exc:
+        _fail("recipe_evaluation_rejected", str(exc), json_output)
+    payload = recipe_evaluation_payload(evaluation)
+    if json_output:
+        _emit_json({"evaluation": payload})
+        return
+    color = "green" if evaluation.passed else "red"
+    console.print(
+        f"[{color}]Evaluation {evaluation.id}: "
+        f"{'passed' if evaluation.passed else 'failed'}.[/{color}]"
+    )
 
 
 @memory_recipes_app.command("promote")
@@ -139,6 +203,19 @@ def _load_definition(path: Path, json_output: bool) -> ProceduralRecipeCandidate
         )
     except (OSError, UnicodeError, json.JSONDecodeError, ValidationError, ValueError):
         _fail("invalid_recipe_definition", "Recipe definition is invalid.", json_output)
+
+
+def _load_result_file(path: Path, json_output: bool) -> dict[str, Any]:
+    try:
+        raw = path.read_bytes()
+        if len(raw) > 4_000_000:
+            raise ValueError("benchmark result exceeds 4000000 bytes")
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("benchmark result must be a JSON object")
+        return cast(dict[str, Any], payload)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        _fail("invalid_benchmark_result", "Benchmark result is invalid.", json_output)
 
 
 def _load_service() -> ProceduralRecipeService:

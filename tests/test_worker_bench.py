@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from octopal.infrastructure.config.models import OctopalConfig
+from octopal.infrastructure.store.models import procedural_recipe_definition_fingerprint
 from octopal.runtime.workers.bench import (
     WorkerBenchIsolation,
     WorkerBenchScenario,
@@ -302,6 +303,53 @@ def test_load_scenarios_file_defaults_external_scenarios_to_replay_only(tmp_path
     assert scenarios[0].id == "structured-result"
     assert scenarios[0].live_allowed is False
     assert scenarios[0].graders[1]["type"] == "structured_output"
+
+
+def test_worker_bench_suite_can_carry_one_bounded_recipe_context(tmp_path) -> None:
+    recipe = {
+        "id": f"recipe_{'a' * 64}",
+        "applicability_conditions": ["The fixture is local."],
+        "required_capabilities": [],
+        "required_permissions": [],
+        "strategy_steps": ["Inspect the fixture."],
+        "verification_contract": {"required_checks": ["structured_output"]},
+        "known_failures": [],
+        "invalidating_conditions": [],
+    }
+    recipe["definition_fingerprint"] = procedural_recipe_definition_fingerprint(recipe)
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "scenarios": [
+                    {
+                        "id": "recipe-held-out",
+                        "template_id": "example",
+                        "task": "Return a structured result",
+                        "inputs": {},
+                        "procedural_recipes": [recipe],
+                        "graders": [{"type": "structured_output"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    scenario = load_scenarios_file(suite_path)[0]
+    spec = build_worker_spec(
+        scenario=scenario,
+        template={
+            "system_prompt": "Work carefully.",
+            "available_tools": [],
+            "required_permissions": [],
+        },
+        run_id="recipe-run",
+    )
+
+    assert scenario.procedural_recipes[0].id == recipe["id"]
+    assert spec["procedural_recipes"][0]["strategy_steps"] == ["Inspect the fixture."]
 
 
 def test_load_scenarios_file_requires_complete_live_budget_contract(tmp_path) -> None:

@@ -16,6 +16,8 @@ from math import ceil
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from octopal.infrastructure.config.models import (
     BrowserRuntimeConfig,
     LiteLLMRuntimeConfig,
@@ -28,6 +30,7 @@ from octopal.infrastructure.providers.catalog import (
     get_provider_catalog_entry,
     list_registered_provider_ids,
 )
+from octopal.infrastructure.store.models import ProceduralRecipeContext
 from octopal.runtime.workers.contracts import WorkerInferenceBudget
 from octopal.tools.catalog import get_tools
 
@@ -44,6 +47,7 @@ class WorkerBenchScenario:
     model: str | None = None
     max_thinking_steps: int | None = None
     inference_budget: WorkerInferenceBudget | None = None
+    procedural_recipes: tuple[ProceduralRecipeContext, ...] = ()
 
 
 _SUPPORTED_GRADER_TYPES = {
@@ -157,6 +161,19 @@ def load_scenarios_file(path: Path) -> list[WorkerBenchScenario]:
             raw.get("live_budget"),
             scenario_id=scenario_id,
         )
+        raw_recipes = raw.get("procedural_recipes", [])
+        if not isinstance(raw_recipes, list) or len(raw_recipes) > 1:
+            raise ValueError(
+                f"Scenario {scenario_id} procedural_recipes must contain at most one recipe"
+            )
+        try:
+            procedural_recipes = tuple(
+                ProceduralRecipeContext.model_validate(item) for item in raw_recipes
+            )
+        except (ValidationError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Scenario {scenario_id} contains invalid procedural recipe context"
+            ) from exc
         if live_allowed:
             _validate_live_scenario_contract(
                 scenario_id=scenario_id,
@@ -179,6 +196,7 @@ def load_scenarios_file(path: Path) -> list[WorkerBenchScenario]:
                 model=model,
                 max_thinking_steps=max_thinking_steps,
                 inference_budget=inference_budget,
+                procedural_recipes=procedural_recipes,
             )
         )
     return scenarios
@@ -210,6 +228,9 @@ def build_worker_spec(
         "run_id": run_id,
         "lifecycle": "ephemeral",
         "effective_permissions": _str_list(template.get("required_permissions")),
+        "procedural_recipes": [
+            recipe.model_dump(mode="json") for recipe in scenario.procedural_recipes
+        ],
     }
     model = str(scenario.model or template.get("model") or "").strip()
     if model:

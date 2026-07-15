@@ -54,17 +54,15 @@ def build_worker_execution_episode(
     return ExecutionEpisodeRecord(
         id=episode_id,
         worker_run_id=spec.id,
-        task_fingerprint=_fingerprint({"task": spec.task, "inputs": spec.inputs}),
+        task_fingerprint=worker_task_fingerprint(spec.task, spec.inputs),
         environment_fingerprint=_fingerprint(
             {"launcher_kind": launcher_kind, "lifecycle": spec.lifecycle}
         ),
-        capability_fingerprint=_fingerprint(
-            {
-                "granted_capabilities": spec.granted_capabilities,
-                "effective_permissions": spec.effective_permissions,
-                "available_tools": spec.available_tools,
-                "mcp_tools": mcp_tool_refs,
-            }
+        capability_fingerprint=worker_capability_fingerprint(
+            granted_capabilities=spec.granted_capabilities,
+            effective_permissions=spec.effective_permissions,
+            available_tools=spec.available_tools,
+            mcp_tools=mcp_tool_refs,
         ),
         result_fingerprint=result_fingerprint,
         status=terminal_status,
@@ -114,6 +112,7 @@ def build_worker_execution_episode(
                 else "metadata_only_v1"
             ),
             "evidence_storage": evidence_storage,
+            "procedural_recipe_ids": [recipe.id for recipe in spec.procedural_recipes],
         },
         created_at=utc_now(),
     )
@@ -128,6 +127,35 @@ def _fingerprint(value: Any) -> str:
         default=str,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def worker_task_fingerprint(task: str, inputs: dict[str, Any]) -> str:
+    return _fingerprint({"task": task, "inputs": inputs})
+
+
+def worker_capability_fingerprint(
+    *,
+    granted_capabilities: list[dict[str, Any]],
+    effective_permissions: list[str],
+    available_tools: list[str],
+    mcp_tools: list[dict[str, Any]],
+) -> str:
+    mcp_tool_refs = [
+        {
+            "server_id": str(tool.get("server_id") or ""),
+            "name": str(tool.get("name") or ""),
+        }
+        for tool in mcp_tools
+        if isinstance(tool, dict)
+    ]
+    return _fingerprint(
+        {
+            "granted_capabilities": granted_capabilities,
+            "effective_permissions": effective_permissions,
+            "available_tools": available_tools,
+            "mcp_tools": mcp_tool_refs,
+        }
+    )
 
 
 def _keys(value: Any) -> list[str]:

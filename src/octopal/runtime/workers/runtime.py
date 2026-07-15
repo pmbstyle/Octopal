@@ -44,6 +44,7 @@ from octopal.runtime.memory.episode_evidence import (
     build_encrypted_worker_episode_evidence,
 )
 from octopal.runtime.memory.episodes import build_worker_execution_episode
+from octopal.runtime.memory.recipes import ProceduralRecipeService
 from octopal.runtime.policy.engine import PolicyEngine
 from octopal.runtime.tool_errors import ToolBridgeError
 from octopal.runtime.workers.contracts import (
@@ -371,6 +372,24 @@ class WorkerRuntime:
         # Resolve worker LLM configuration
         llm_config = self._resolve_worker_llm_config(template, task_request)
 
+        granted_payload = [c.model_dump() for c in granted]
+        procedural_recipes = []
+        try:
+            procedural_recipes = await asyncio.to_thread(
+                ProceduralRecipeService(self.store).resolve_for_worker,
+                task=task_request.task,
+                inputs=task_request.inputs,
+                granted_capabilities=granted_payload,
+                effective_permissions=granted_permission_names,
+                available_tools=requested_tool_names,
+                mcp_tools=mcp_tools_data,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Procedural recipe resolution failed closed",
+                error_type=type(exc).__name__,
+            )
+
         # Create worker spec
         worker_id = task_request.run_id or str(uuid.uuid4())
         spec = WorkerSpec(
@@ -385,7 +404,7 @@ class WorkerRuntime:
             mcp_tools=mcp_tools_data,
             model=template.model,
             llm_config=llm_config,
-            granted_capabilities=[c.model_dump() for c in granted],
+            granted_capabilities=granted_payload,
             timeout_seconds=task_request.timeout_seconds or template.default_timeout_seconds,
             max_thinking_steps=task_request.max_thinking_steps or template.max_thinking_steps,
             run_id=task_request.run_id or worker_id,
@@ -399,6 +418,7 @@ class WorkerRuntime:
             allowed_paths=task_request.allowed_paths,
             programmatic_read_call_budget=task_request.programmatic_read_call_budget,
             memory_influence_ids=task_request.memory_influence_ids,
+            procedural_recipes=procedural_recipes,
         )
 
         # Run worker
@@ -527,6 +547,7 @@ class WorkerRuntime:
             "lineage_id": spec.lineage_id,
             "parent_worker_id": spec.parent_worker_id,
             "spawn_depth": spec.spawn_depth,
+            "procedural_recipe_count": len(spec.procedural_recipes),
         }
         if trace_sink is not None and parent_trace_ctx is not None:
             worker_trace_ctx = await trace_sink.start_span(
@@ -1693,6 +1714,7 @@ class WorkerRuntime:
                             risk=action_intent.risk,
                             requires_approval=action_intent.requires_approval,
                             memory_influence_ids=spec.memory_influence_ids,
+                            procedural_recipe_ids=[recipe.id for recipe in spec.procedural_recipes],
                             status="pending",
                             created_at=utc_now(),
                         ),
@@ -1996,6 +2018,20 @@ class WorkerRuntime:
                 worker_id=spec.id,
                 exc_info=True,
             )
+        for recipe in spec.procedural_recipes:
+            try:
+                await asyncio.to_thread(
+                    ProceduralRecipeService(self.store).record_outcome,
+                    recipe.id,
+                    episode,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to record procedural recipe outcome",
+                    worker_id=spec.id,
+                    recipe_id=recipe.id,
+                    error_type=type(exc).__name__,
+                )
 
     def _build_capabilities(self, permissions: list[str]) -> list[Any]:
         """Build capability objects from permission strings."""

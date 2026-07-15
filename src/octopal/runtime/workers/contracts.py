@@ -6,6 +6,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from octopal.infrastructure.config.models import LLMConfig
+from octopal.infrastructure.store.models import ProceduralRecipeContext
 from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 
 
@@ -117,6 +118,7 @@ class WorkerSpec(BaseModel):
     allowed_paths: list[str] | None = None
     programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
     memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
+    procedural_recipes: list[ProceduralRecipeContext] = Field(default_factory=list, max_length=1)
 
     @field_validator("memory_influence_ids", mode="before")
     @classmethod

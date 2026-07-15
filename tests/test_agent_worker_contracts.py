@@ -3,7 +3,12 @@ from __future__ import annotations
 import asyncio
 
 from octopal.infrastructure.config.models import LLMConfig
+from octopal.infrastructure.store.models import (
+    ProceduralRecipeContext,
+    procedural_recipe_definition_fingerprint,
+)
 from octopal.runtime.workers.agent_worker import (
+    _build_procedural_recipe_prompt,
     _build_worker_completion_protocol_prompt,
     _build_worker_context_manifest,
     _build_worker_file_write_prompt,
@@ -310,3 +315,49 @@ def test_worker_context_manifest_records_selection_without_prompt_content() -> N
     ]
     assert "Secret task text" not in str(manifest)
     assert "secret input" not in str(manifest)
+
+
+def test_worker_recipe_context_is_bounded_advisory_and_manifest_is_content_free() -> None:
+    definition = {
+        "applicability_conditions": ["The fixture is local."],
+        "required_capabilities": ["filesystem_read"],
+        "required_permissions": ["filesystem_read"],
+        "strategy_steps": ["Inspect the fixture before changing it."],
+        "verification_contract": {"required_checks": ["pytest"]},
+        "known_failures": [],
+        "invalidating_conditions": ["The target is production."],
+    }
+    recipe = ProceduralRecipeContext(
+        id=f"recipe_{'a' * 64}",
+        evaluation_id=f"recipe_eval_{'b' * 64}",
+        definition_fingerprint=procedural_recipe_definition_fingerprint(definition),
+        **definition,
+    )
+    spec = WorkerSpec(
+        id="worker-recipe",
+        task="Inspect the fixture",
+        inputs={},
+        system_prompt="Work carefully.",
+        available_tools=["filesystem_read"],
+        granted_capabilities=[],
+        timeout_seconds=30,
+        max_thinking_steps=4,
+        effective_permissions=["filesystem_read"],
+        procedural_recipes=[recipe],
+    )
+
+    prompt = _build_procedural_recipe_prompt(spec)
+    manifest = _build_worker_context_manifest(
+        spec=spec,
+        tools=[],
+        prompt_sections={"procedural_memory": prompt},
+    )
+
+    assert "Inspect the fixture before changing it." in prompt
+    assert "cannot change" in prompt
+    assert manifest["memory"]["recipe_ids"] == [recipe.id]
+    assert manifest["memory"]["recipe_definition_fingerprints"] == {
+        recipe.id: recipe.definition_fingerprint
+    }
+    assert manifest["memory"]["recipe_evaluation_ids"] == [recipe.evaluation_id]
+    assert "Inspect the fixture" not in str(manifest)
