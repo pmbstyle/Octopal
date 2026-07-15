@@ -16,6 +16,7 @@ from octopal.infrastructure.store.models import (
     ExecutionEpisodeEvidenceRecord,
     ExecutionEpisodeRecord,
     IntentRecord,
+    MCPTaskRecord,
     MemoryEntry,
     MemoryFactRecord,
     MemoryFactSourceRecord,
@@ -335,6 +336,42 @@ class SQLiteStore(Store):
                 data_json TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS mcp_tasks (
+                id TEXT PRIMARY KEY,
+                server_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                protocol TEXT NOT NULL,
+                remote_status TEXT NOT NULL,
+                runtime_status TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                auth_context_id TEXT NOT NULL,
+                correlation_id TEXT,
+                trace_id TEXT,
+                span_id TEXT,
+                worker_run_id TEXT,
+                chat_id INTEGER,
+                chat_turn_id TEXT,
+                plan_run_id TEXT,
+                plan_step_id TEXT,
+                status_message TEXT,
+                ttl_ms INTEGER,
+                poll_interval_ms INTEGER,
+                input_requests_json TEXT NOT NULL,
+                responded_input_keys_json TEXT NOT NULL DEFAULT '[]',
+                result_json TEXT,
+                error_json TEXT,
+                remote_created_at TEXT NOT NULL,
+                remote_updated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(server_id, task_id, auth_context_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_mcp_tasks_recovery
+                ON mcp_tasks (server_id, auth_context_id, remote_status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_mcp_tasks_worker
+                ON mcp_tasks (worker_run_id, updated_at DESC);
+
             CREATE TABLE IF NOT EXISTS memory_entries (
                 id INTEGER PRIMARY KEY,
                 uuid TEXT NOT NULL UNIQUE,
@@ -642,6 +679,14 @@ class SQLiteStore(Store):
         try:
             self._conn.execute(
                 "ALTER TABLE permits ADD COLUMN intent_type TEXT NOT NULL DEFAULT ''"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE mcp_tasks ADD COLUMN "
+                "responded_input_keys_json TEXT NOT NULL DEFAULT '[]'"
             )
             self._conn.commit()
         except sqlite3.OperationalError:
@@ -1579,6 +1624,92 @@ class SQLiteStore(Store):
     def append_audit(self, event: AuditEvent) -> None:
         self._insert_audit(event)
         self._conn.commit()
+
+    def upsert_mcp_task(self, record: MCPTaskRecord) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO mcp_tasks (
+                id, server_id, task_id, protocol, remote_status, runtime_status,
+                tool_name, auth_context_id, correlation_id, trace_id, span_id,
+                worker_run_id, chat_id, chat_turn_id, plan_run_id, plan_step_id,
+                status_message, ttl_ms, poll_interval_ms, input_requests_json,
+                responded_input_keys_json, result_json, error_json, remote_created_at,
+                remote_updated_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                remote_status = excluded.remote_status,
+                runtime_status = excluded.runtime_status,
+                status_message = excluded.status_message,
+                ttl_ms = excluded.ttl_ms,
+                poll_interval_ms = excluded.poll_interval_ms,
+                input_requests_json = excluded.input_requests_json,
+                responded_input_keys_json = excluded.responded_input_keys_json,
+                result_json = excluded.result_json,
+                error_json = excluded.error_json,
+                remote_updated_at = excluded.remote_updated_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                record.id,
+                record.server_id,
+                record.task_id,
+                record.protocol,
+                record.remote_status,
+                record.runtime_status,
+                record.tool_name,
+                record.auth_context_id,
+                record.correlation_id,
+                record.trace_id,
+                record.span_id,
+                record.worker_run_id,
+                record.chat_id,
+                record.chat_turn_id,
+                record.plan_run_id,
+                record.plan_step_id,
+                record.status_message,
+                record.ttl_ms,
+                record.poll_interval_ms,
+                json.dumps(record.input_requests),
+                json.dumps(record.responded_input_keys),
+                json.dumps(record.result) if record.result is not None else None,
+                json.dumps(record.error) if record.error is not None else None,
+                record.remote_created_at.isoformat(),
+                record.remote_updated_at.isoformat(),
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def get_mcp_task(self, task_record_id: str) -> MCPTaskRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM mcp_tasks WHERE id = ?",
+            (task_record_id,),
+        ).fetchone()
+        return self._row_to_mcp_task(row) if row else None
+
+    def list_recoverable_mcp_tasks(
+        self,
+        *,
+        server_id: str | None = None,
+        auth_context_id: str | None = None,
+        limit: int = 100,
+    ) -> list[MCPTaskRecord]:
+        clauses = ["runtime_status IN ('running', 'awaiting_instruction')"]
+        params: list[Any] = []
+        if server_id is not None:
+            clauses.append("server_id = ?")
+            params.append(server_id)
+        if auth_context_id is not None:
+            clauses.append("auth_context_id = ?")
+            params.append(auth_context_id)
+        params.append(max(1, min(int(limit), 1000)))
+        rows = self._conn.execute(
+            f"SELECT * FROM mcp_tasks WHERE {' AND '.join(clauses)} "
+            "ORDER BY updated_at ASC LIMIT ?",
+            tuple(params),
+        ).fetchall()
+        return [self._row_to_mcp_task(row) for row in rows]
 
     def _insert_audit(self, event: AuditEvent) -> None:
         self._conn.execute(
@@ -2591,6 +2722,40 @@ class SQLiteStore(Store):
             level=row["level"],
             event_type=row["event_type"],
             data=_loads_json(row["data_json"]),
+        )
+
+    def _row_to_mcp_task(self, row: sqlite3.Row) -> MCPTaskRecord:
+        return MCPTaskRecord(
+            id=row["id"],
+            server_id=row["server_id"],
+            task_id=row["task_id"],
+            protocol=row["protocol"],
+            remote_status=row["remote_status"],
+            runtime_status=row["runtime_status"],
+            tool_name=row["tool_name"],
+            auth_context_id=row["auth_context_id"],
+            correlation_id=_row_get(row, "correlation_id"),
+            trace_id=_row_get(row, "trace_id"),
+            span_id=_row_get(row, "span_id"),
+            worker_run_id=_row_get(row, "worker_run_id"),
+            chat_id=_row_get(row, "chat_id"),
+            chat_turn_id=_row_get(row, "chat_turn_id"),
+            plan_run_id=_row_get(row, "plan_run_id"),
+            plan_step_id=_row_get(row, "plan_step_id"),
+            status_message=_row_get(row, "status_message"),
+            ttl_ms=_row_get(row, "ttl_ms"),
+            poll_interval_ms=_row_get(row, "poll_interval_ms"),
+            input_requests=_loads_json(row["input_requests_json"], {}),
+            responded_input_keys=_loads_json(
+                _row_get(row, "responded_input_keys_json"),
+                [],
+            ),
+            result=_loads_json(_row_get(row, "result_json")),
+            error=_loads_json(_row_get(row, "error_json")),
+            remote_created_at=_parse_dt(row["remote_created_at"]),
+            remote_updated_at=_parse_dt(row["remote_updated_at"]),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
         )
 
     def _row_to_memory(self, row: sqlite3.Row) -> MemoryEntry:

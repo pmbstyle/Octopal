@@ -7,7 +7,13 @@ from types import SimpleNamespace
 
 from octopal.infrastructure.config.models import LLMConfig, OctopalConfig
 from octopal.infrastructure.config.settings import Settings
+from octopal.infrastructure.observability import (
+    TraceContext,
+    bind_trace_context,
+    reset_trace_context,
+)
 from octopal.infrastructure.store.models import (
+    PlanStepRecord,
     ProceduralRecipeContext,
     WorkerRecord,
     WorkerTemplateRecord,
@@ -1202,3 +1208,60 @@ def test_runtime_mcp_bridge_guard_allows_remote_tool_name_match() -> None:
     )
 
     assert error is None
+
+
+def test_runtime_binds_native_mcp_task_to_trace_turn_and_plan(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    plan_step = PlanStepRecord(
+        run_id="plan-1",
+        step_id="step-2",
+        seq=2,
+        kind="worker",
+        title="Run MCP task",
+        status="in_progress",
+        worker_run_id="worker-1",
+        created_at=now,
+        updated_at=now,
+    )
+
+    class _Store:
+        def get_plan_step_by_worker_run_id(self, worker_run_id: str, *, chat_id=None):
+            assert worker_run_id == "worker-1"
+            assert chat_id == 42
+            return plan_step
+
+    runtime = WorkerRuntime(
+        store=_Store(),
+        policy=object(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        mcp_manager=None,
+        settings=Settings(),
+        octo=SimpleNamespace(
+            get_worker_chat_id=lambda _worker_id: 42,
+            current_chat_turn_epoch=lambda _chat_id: 7,
+        ),
+    )
+    trace = TraceContext(
+        trace_id="trace-1",
+        root_trace_id="root-1",
+        session_id="session-1",
+        span_id="span-1",
+        worker_run_id="worker-1",
+    )
+    token = bind_trace_context(trace)
+    try:
+        context = asyncio.run(
+            runtime._build_mcp_task_context(SimpleNamespace(id="worker-1", correlation_id="corr-1"))
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert context.correlation_id == "corr-1"
+    assert context.trace_id == "trace-1"
+    assert context.span_id == "span-1"
+    assert context.worker_run_id == "worker-1"
+    assert context.chat_id == 42
+    assert context.chat_turn_id == "42:7"
+    assert context.plan_run_id == "plan-1"
+    assert context.plan_step_id == "step-2"

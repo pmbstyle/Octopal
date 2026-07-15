@@ -292,7 +292,12 @@ def test_worker_mcp_call_restores_configured_session(tmp_path: Path) -> None:
             return {"demo": "connected"}
 
         async def call_tool(
-            self, server_id: str, tool_name: str, args: dict, allow_name_fallback: bool = False
+            self,
+            server_id: str,
+            tool_name: str,
+            args: dict,
+            allow_name_fallback: bool = False,
+            task_context=None,
         ):
             class _Result:
                 content = ["ok"]

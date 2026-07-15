@@ -9,6 +9,7 @@ from octopal.infrastructure.store.models import (
     ExecutionEpisodeEvidenceRecord,
     ExecutionEpisodeRecord,
     IntentRecord,
+    MCPTaskRecord,
     MemoryEntry,
     MemoryFactRecord,
     MemoryFactSourceRecord,
@@ -157,6 +158,18 @@ class Store(Protocol):
     def get_permit(self, permit_id: str, now: datetime) -> PermitRecord | None: ...
 
     def append_audit(self, event: AuditEvent) -> None: ...
+
+    def upsert_mcp_task(self, record: MCPTaskRecord) -> None: ...
+
+    def get_mcp_task(self, task_record_id: str) -> MCPTaskRecord | None: ...
+
+    def list_recoverable_mcp_tasks(
+        self,
+        *,
+        server_id: str | None = None,
+        auth_context_id: str | None = None,
+        limit: int = 100,
+    ) -> list[MCPTaskRecord]: ...
 
     def list_audit(self, limit: int = 100) -> list[AuditEvent]: ...
 

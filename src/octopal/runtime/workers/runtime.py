@@ -27,6 +27,7 @@ import structlog
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.mcp.manager import MCPManager
+from octopal.infrastructure.mcp.tasks import MCPTaskContext
 from octopal.infrastructure.observability.base import (
     TraceSink,
     bind_trace_context,
@@ -1104,6 +1105,41 @@ class WorkerRuntime:
             logger.debug("Failed to resolve worker chat id", worker_id=worker_id, exc_info=True)
             return 0
 
+    async def _build_mcp_task_context(self, spec: WorkerSpec) -> MCPTaskContext:
+        chat_id = self._resolve_octo_chat_id(spec.id)
+        plan_step = None
+        plan_resolver = getattr(self.store, "get_plan_step_by_worker_run_id", None)
+        if callable(plan_resolver):
+            plan_step = await asyncio.to_thread(
+                plan_resolver,
+                spec.id,
+                chat_id=chat_id or None,
+            )
+        chat_turn_id: str | None = None
+        if chat_id and self.octo is not None:
+            turn_resolver = getattr(self.octo, "current_chat_turn_epoch", None)
+            if callable(turn_resolver):
+                try:
+                    chat_turn_id = f"{chat_id}:{int(turn_resolver(chat_id))}"
+                except Exception:
+                    logger.debug(
+                        "Failed to resolve MCP task chat turn",
+                        worker_id=spec.id,
+                        chat_id=chat_id,
+                        exc_info=True,
+                    )
+        trace_context = get_current_trace_context()
+        return MCPTaskContext(
+            correlation_id=spec.correlation_id or spec.id,
+            trace_id=trace_context.trace_id if trace_context is not None else None,
+            span_id=trace_context.span_id if trace_context is not None else None,
+            worker_run_id=spec.id,
+            chat_id=chat_id or None,
+            chat_turn_id=chat_turn_id,
+            plan_run_id=plan_step.run_id if plan_step is not None else None,
+            plan_step_id=plan_step.step_id if plan_step is not None else None,
+        )
+
     async def _read_loop_with_active_timeout(
         self,
         spec: WorkerSpec,
@@ -1639,7 +1675,8 @@ class WorkerRuntime:
                     )
                     return None
 
-                session = self.mcp_manager.sessions.get(server_id)
+                server_key = str(server_id)
+                session = self.mcp_manager.sessions.get(server_key)
                 if not session:
                     try:
                         await self.mcp_manager.ensure_configured_servers_connected([str(server_id)])
@@ -1651,7 +1688,7 @@ class WorkerRuntime:
                             tool=mcp_tool_name,
                             exc_info=True,
                         )
-                    session = self.mcp_manager.sessions.get(server_id)
+                    session = self.mcp_manager.sessions.get(server_key)
                 if not session:
                     await self._write_to_worker(
                         process,
@@ -1671,6 +1708,7 @@ class WorkerRuntime:
                         str(mcp_tool_name),
                         args,
                         allow_name_fallback=True,
+                        task_context=await self._build_mcp_task_context(spec),
                     )
                     # Convert MCP content objects to something serializable
                     content = [

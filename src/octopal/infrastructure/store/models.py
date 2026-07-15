@@ -40,6 +40,21 @@ MemoryTrustState = Literal[
 ExecutionEpisodeSource = MemoryOrigin
 ExecutionEpisodeTrustState = MemoryTrustState
 ProceduralRecipeStatus = Literal["candidate", "active", "deprecated"]
+MCPTaskProtocol = Literal["extension", "legacy"]
+MCPTaskRemoteStatus = Literal[
+    "working",
+    "input_required",
+    "completed",
+    "failed",
+    "cancelled",
+]
+MCPTaskRuntimeStatus = Literal[
+    "running",
+    "awaiting_instruction",
+    "completed",
+    "failed",
+    "stopped",
+]
 RecipeText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 ProceduralRecipeId = Annotated[str, StringConstraints(pattern=r"^recipe_[a-f0-9]{64}$")]
 
@@ -299,6 +314,40 @@ class AuditEvent(BaseModel):
     level: Literal["debug", "info", "warning", "error", "critical"]
     event_type: str
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+class MCPTaskRecord(BaseModel):
+    """Durable client-side handle for one native MCP task."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    server_id: str
+    task_id: str = Field(repr=False)
+    protocol: MCPTaskProtocol
+    remote_status: MCPTaskRemoteStatus
+    runtime_status: MCPTaskRuntimeStatus
+    tool_name: str
+    auth_context_id: str
+    correlation_id: str | None = None
+    trace_id: str | None = None
+    span_id: str | None = None
+    worker_run_id: str | None = None
+    chat_id: int | None = None
+    chat_turn_id: str | None = None
+    plan_run_id: str | None = None
+    plan_step_id: str | None = None
+    status_message: str | None = None
+    ttl_ms: int | None = None
+    poll_interval_ms: int | None = None
+    input_requests: dict[str, Any] = Field(default_factory=dict)
+    responded_input_keys: list[str] = Field(default_factory=list)
+    result: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
+    remote_created_at: datetime
+    remote_updated_at: datetime
+    created_at: datetime
+    updated_at: datetime
 
 
 class MemoryEntry(BaseModel):
