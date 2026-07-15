@@ -113,6 +113,10 @@ def build_worker_execution_episode(
             ),
             "evidence_storage": evidence_storage,
             "procedural_recipe_ids": [recipe.id for recipe in spec.procedural_recipes],
+            "adaptation_ids": [adaptation.id for adaptation in spec.adaptations],
+            "adaptation_artifact_fingerprints": {
+                adaptation.id: adaptation.artifact_fingerprint for adaptation in spec.adaptations
+            },
         },
         created_at=utc_now(),
     )

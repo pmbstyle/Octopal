@@ -4,6 +4,9 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from octopal.infrastructure.store.models import (
+    AdaptationCandidateRecord,
+    AdaptationEvaluationRecord,
+    AdaptationFailureClusterRecord,
     AuditEvent,
     ExecutionEpisodeEvidenceMetadata,
     ExecutionEpisodeEvidenceRecord,
@@ -76,6 +79,51 @@ class Store(Protocol):
         capability_fingerprint: str | None = None,
         limit: int = 16,
     ) -> list[ExecutionEpisodeRecord]: ...
+
+    def add_adaptation_failure_cluster_with_audit(
+        self, record: AdaptationFailureClusterRecord, event: AuditEvent
+    ) -> bool: ...
+
+    def get_adaptation_failure_cluster(
+        self, cluster_id: str
+    ) -> AdaptationFailureClusterRecord | None: ...
+
+    def add_adaptation_candidate_with_audit(
+        self, record: AdaptationCandidateRecord, event: AuditEvent
+    ) -> bool: ...
+
+    def get_adaptation_candidate(self, candidate_id: str) -> AdaptationCandidateRecord | None: ...
+
+    def list_adaptation_candidates(
+        self,
+        *,
+        kind: str | None = None,
+        target: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[AdaptationCandidateRecord]: ...
+
+    def add_adaptation_evaluation_with_audit(
+        self, record: AdaptationEvaluationRecord, event: AuditEvent
+    ) -> bool: ...
+
+    def get_adaptation_evaluation(
+        self, evaluation_id: str
+    ) -> AdaptationEvaluationRecord | None: ...
+
+    def get_latest_adaptation_evaluation(
+        self, candidate_id: str
+    ) -> AdaptationEvaluationRecord | None: ...
+
+    def activate_adaptation_candidate_with_audit(
+        self,
+        candidate_id: str,
+        *,
+        expected_statuses: list[str],
+        evaluation_id: str,
+        updated_at: datetime,
+        event: AuditEvent,
+    ) -> bool: ...
 
     def add_procedural_recipe_with_audit(
         self, record: ProceduralRecipeRecord, event: AuditEvent

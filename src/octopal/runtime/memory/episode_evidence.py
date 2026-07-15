@@ -123,6 +123,7 @@ def build_encrypted_worker_episode_evidence(
             "granted_capabilities": spec.granted_capabilities,
             "effective_permissions": spec.effective_permissions,
             "allowed_paths": spec.allowed_paths,
+            "adaptations": [item.model_dump(mode="json") for item in spec.adaptations],
             "provider_id": llm_config.provider_id if llm_config else None,
             "model": (llm_config.model if llm_config else None) or spec.model,
             "launcher_lifecycle": spec.lifecycle,

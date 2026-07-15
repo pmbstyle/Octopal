@@ -4,8 +4,15 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from octopal.infrastructure.config.models import OctopalConfig
-from octopal.infrastructure.store.models import procedural_recipe_definition_fingerprint
+from octopal.infrastructure.store.models import (
+    AdaptationContext,
+    adaptation_artifact_fingerprint,
+    procedural_recipe_definition_fingerprint,
+)
+from octopal.runtime.memory.episodes import worker_task_fingerprint
 from octopal.runtime.workers.bench import (
     WorkerBenchIsolation,
     WorkerBenchScenario,
@@ -820,6 +827,85 @@ def test_replay_mode_does_not_load_provider_settings(monkeypatch, tmp_path) -> N
     assert summary["scenarios"][0]["grade"]["passed"] is True
     assert summary["scenarios"][0]["returncode"] is None
     assert summary["scenarios"][0]["elapsed_ms"] is None
+    assert summary["scenarios"][0]["context_manifest"]["task"][
+        "task_fingerprint"
+    ] == worker_task_fingerprint("Replay only", {})
+
+
+def test_replay_early_failure_keeps_metadata_only_task_identity(tmp_path) -> None:
+    scenario = WorkerBenchScenario(
+        id="offline-failure",
+        template_id="unused",
+        task="Replay an early failure",
+        inputs={"fixture": "safe"},
+        graders=({"type": "terminal_status", "expected": "completed"},),
+        live_allowed=False,
+    )
+    replay_dir = tmp_path / "replay"
+    replay_dir.mkdir()
+    (replay_dir / "offline-failure.out.jsonl").write_text(
+        json.dumps({"type": "log", "level": "error", "message": "stopped early"}),
+        encoding="utf-8",
+    )
+
+    summary = run_worker_bench(
+        workspace_dir=tmp_path / "unused-workspace",
+        scenarios=[scenario],
+        execution_mode="replay",
+        replay_dir=replay_dir,
+    )["scenarios"][0]
+
+    assert summary["status"] == "missing_result"
+    assert summary["context_manifest"] == {
+        "task": {
+            "template_id": "unused",
+            "model": None,
+            "task_fingerprint": worker_task_fingerprint(
+                "Replay an early failure", {"fixture": "safe"}
+            ),
+        },
+        "adaptation": {"count": 0},
+    }
+    assert "Replay an early failure" not in json.dumps(summary["context_manifest"])
+
+
+def test_replay_candidate_requires_recorded_adaptation_provenance(tmp_path) -> None:
+    change = {"append_instruction": "Check the result."}
+    context = AdaptationContext(
+        id="adapt_" + "a" * 64,
+        kind="prompt",
+        target="worker:unused",
+        artifact_fingerprint=adaptation_artifact_fingerprint("prompt", "worker:unused", change),
+        change=change,
+    )
+    scenario = WorkerBenchScenario(
+        id="candidate",
+        template_id="unused",
+        task="Replay candidate",
+        inputs={},
+        graders=({"type": "terminal_status", "expected": "completed"},),
+        live_allowed=False,
+        adaptations=(context,),
+    )
+    replay_dir = tmp_path / "replay"
+    replay_dir.mkdir()
+    (replay_dir / "candidate.out.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "result": {"status": "completed", "summary": "old baseline output"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="exact adaptation provenance"):
+        run_worker_bench(
+            workspace_dir=tmp_path / "unused-workspace",
+            scenarios=[scenario],
+            execution_mode="replay",
+            replay_dir=replay_dir,
+        )
 
 
 def test_live_preflight_accepts_only_declared_read_only_tools(tmp_path) -> None:

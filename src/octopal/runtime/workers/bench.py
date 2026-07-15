@@ -30,7 +30,8 @@ from octopal.infrastructure.providers.catalog import (
     get_provider_catalog_entry,
     list_registered_provider_ids,
 )
-from octopal.infrastructure.store.models import ProceduralRecipeContext
+from octopal.infrastructure.store.models import AdaptationContext, ProceduralRecipeContext
+from octopal.runtime.memory.episodes import worker_task_fingerprint
 from octopal.runtime.workers.contracts import WorkerInferenceBudget
 from octopal.tools.catalog import get_tools
 
@@ -48,6 +49,7 @@ class WorkerBenchScenario:
     max_thinking_steps: int | None = None
     inference_budget: WorkerInferenceBudget | None = None
     procedural_recipes: tuple[ProceduralRecipeContext, ...] = ()
+    adaptations: tuple[AdaptationContext, ...] = ()
 
 
 _SUPPORTED_GRADER_TYPES = {
@@ -174,6 +176,21 @@ def load_scenarios_file(path: Path) -> list[WorkerBenchScenario]:
             raise ValueError(
                 f"Scenario {scenario_id} contains invalid procedural recipe context"
             ) from exc
+        raw_adaptations = raw.get("adaptations", [])
+        if not isinstance(raw_adaptations, list) or len(raw_adaptations) > 1:
+            raise ValueError(f"Scenario {scenario_id} adaptations must contain at most one item")
+        try:
+            adaptations = tuple(AdaptationContext.model_validate(item) for item in raw_adaptations)
+        except (ValidationError, TypeError, ValueError) as exc:
+            raise ValueError(f"Scenario {scenario_id} contains invalid adaptation context") from exc
+        if adaptations:
+            _validate_scenario_adaptation(
+                scenario_id=scenario_id,
+                template_id=str(raw.get("template_id") or ""),
+                adaptation=adaptations[0],
+                max_thinking_steps=max_thinking_steps,
+                procedural_recipes=procedural_recipes,
+            )
         if live_allowed:
             _validate_live_scenario_contract(
                 scenario_id=scenario_id,
@@ -197,6 +214,7 @@ def load_scenarios_file(path: Path) -> list[WorkerBenchScenario]:
                 max_thinking_steps=max_thinking_steps,
                 inference_budget=inference_budget,
                 procedural_recipes=procedural_recipes,
+                adaptations=adaptations,
             )
         )
     return scenarios
@@ -209,28 +227,45 @@ def build_worker_spec(
     run_id: str,
 ) -> dict[str, Any]:
     available_tools = _str_list(template.get("available_tools"))
+    system_prompt = str(template.get("system_prompt") or "")
+    max_thinking_steps = (
+        scenario.max_thinking_steps
+        if scenario.max_thinking_steps is not None
+        else int(template.get("max_thinking_steps") or 10)
+    )
+    procedural_recipes = list(scenario.procedural_recipes)
+    if scenario.adaptations:
+        adaptation = scenario.adaptations[0]
+        if adaptation.kind == "tool_description" and adaptation.target.partition(":")[
+            2
+        ].strip().lower() not in {name.strip().lower() for name in available_tools}:
+            raise ValueError("tool-description adaptation target is not available to the worker")
+        if adaptation.kind == "routing":
+            max_thinking_steps = int(adaptation.change["max_thinking_steps"])
+        elif adaptation.kind == "recipe":
+            procedural_recipes = [
+                ProceduralRecipeContext.model_validate(adaptation.change["procedural_recipe"])
+            ]
     spec: dict[str, Any] = {
         "id": run_id,
         "template_id": scenario.template_id,
         "template_name": template.get("name") or scenario.template_id,
         "task": scenario.task,
         "inputs": scenario.inputs,
-        "system_prompt": str(template.get("system_prompt") or ""),
+        "system_prompt": system_prompt,
         "available_tools": available_tools,
         "granted_capabilities": [],
         "timeout_seconds": int(template.get("default_timeout_seconds") or 300),
-        "max_thinking_steps": (
-            scenario.max_thinking_steps
-            if scenario.max_thinking_steps is not None
-            else int(template.get("max_thinking_steps") or 10)
+        "max_thinking_steps": max_thinking_steps,
+        "strict_thinking_budget": (
+            scenario.max_thinking_steps is not None
+            or bool(scenario.adaptations and scenario.adaptations[0].kind == "routing")
         ),
-        "strict_thinking_budget": scenario.max_thinking_steps is not None,
         "run_id": run_id,
-        "lifecycle": "ephemeral",
+        "lifecycle": "benchmark" if scenario.adaptations else "ephemeral",
         "effective_permissions": _str_list(template.get("required_permissions")),
-        "procedural_recipes": [
-            recipe.model_dump(mode="json") for recipe in scenario.procedural_recipes
-        ],
+        "procedural_recipes": [recipe.model_dump(mode="json") for recipe in procedural_recipes],
+        "adaptations": [item.model_dump(mode="json") for item in scenario.adaptations],
     }
     model = str(scenario.model or template.get("model") or "").strip()
     if model:
@@ -952,6 +987,12 @@ def _run_scenarios(
                     "timeout_seconds": timeout_seconds,
                     "grade": grade_worker_messages(scenario=scenario, stdout=stdout),
                 }
+            summary["context_manifest"] = _bench_scenario_manifest(
+                summary.get("context_manifest"),
+                scenario=scenario,
+                resolved_model=str(spec.get("model") or "").strip() or None,
+                configured_run=True,
+            )
             summary["execution_mode"] = "live"
             summary["trial"] = trial
             if include_artifacts:
@@ -985,6 +1026,12 @@ def _replay_scenarios(
                 stdout=stdout,
                 stderr=stderr,
             )
+            summary["context_manifest"] = _bench_scenario_manifest(
+                summary.get("context_manifest"),
+                scenario=scenario,
+                resolved_model=scenario.model,
+                configured_run=False,
+            )
             summary.update(
                 {
                     "execution_mode": "replay",
@@ -998,6 +1045,53 @@ def _replay_scenarios(
             )
             summaries.append(summary)
     return summaries
+
+
+def _bench_scenario_manifest(
+    value: Any,
+    *,
+    scenario: WorkerBenchScenario,
+    resolved_model: str | None,
+    configured_run: bool,
+) -> dict[str, Any]:
+    """Bind a result, including an early failure, to its configured bench task."""
+
+    manifest = dict(value) if isinstance(value, dict) else {}
+    task = dict(manifest.get("task")) if isinstance(manifest.get("task"), dict) else {}
+    expected_task_fingerprint = worker_task_fingerprint(scenario.task, scenario.inputs)
+    if not configured_run:
+        recorded_template = str(task.get("template_id") or "").strip()
+        recorded_fingerprint = str(task.get("task_fingerprint") or "").strip().lower()
+        if recorded_template and recorded_template != scenario.template_id:
+            raise ValueError("replay evidence template does not match its scenario")
+        if recorded_fingerprint and recorded_fingerprint != expected_task_fingerprint:
+            raise ValueError("replay evidence task does not match its scenario")
+    task.update(
+        {
+            "template_id": scenario.template_id,
+            "model": (
+                task.get("model") if not configured_run and task.get("model") else resolved_model
+            ),
+            "task_fingerprint": expected_task_fingerprint,
+        }
+    )
+    manifest["task"] = task
+    recorded_adaptation = manifest.get("adaptation")
+    if scenario.adaptations:
+        adaptation = scenario.adaptations[0]
+        expected_adaptation = {
+            "count": 1,
+            "id": adaptation.id,
+            "kind": adaptation.kind,
+            "target": adaptation.target,
+            "artifact_fingerprint": adaptation.artifact_fingerprint,
+        }
+        if not configured_run and recorded_adaptation != expected_adaptation:
+            raise ValueError("replay evidence is missing exact adaptation provenance")
+        manifest["adaptation"] = expected_adaptation
+    elif configured_run or not isinstance(recorded_adaptation, dict):
+        manifest["adaptation"] = {"count": 0}
+    return manifest
 
 
 def preflight_worker_bench(
@@ -1308,6 +1402,29 @@ def _validate_graders(value: Any, *, scenario_id: str) -> list[dict[str, Any]]:
                 )
         graders.append(dict(raw))
     return graders
+
+
+def _validate_scenario_adaptation(
+    *,
+    scenario_id: str,
+    template_id: str,
+    adaptation: AdaptationContext,
+    max_thinking_steps: int | None,
+    procedural_recipes: tuple[ProceduralRecipeContext, ...],
+) -> None:
+    target_type, _, target_name = adaptation.target.partition(":")
+    if adaptation.kind in {"prompt", "routing", "recipe"} and (
+        target_type != "worker" or target_name != template_id
+    ):
+        raise ValueError(f"Scenario {scenario_id} adaptation must target worker:{template_id}")
+    if adaptation.kind == "routing" and max_thinking_steps is not None:
+        raise ValueError(
+            f"Scenario {scenario_id} cannot combine routing adaptation with max_thinking_steps"
+        )
+    if adaptation.kind == "recipe" and procedural_recipes:
+        raise ValueError(
+            f"Scenario {scenario_id} cannot combine recipe adaptation with procedural_recipes"
+        )
 
 
 def _load_live_budget(value: Any, *, scenario_id: str) -> WorkerInferenceBudget | None:

@@ -6,7 +6,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from octopal.infrastructure.config.models import LLMConfig
-from octopal.infrastructure.store.models import ProceduralRecipeContext
+from octopal.infrastructure.store.models import AdaptationContext, ProceduralRecipeContext
 from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 
 
@@ -119,6 +119,7 @@ class WorkerSpec(BaseModel):
     programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
     memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
     procedural_recipes: list[ProceduralRecipeContext] = Field(default_factory=list, max_length=1)
+    adaptations: list[AdaptationContext] = Field(default_factory=list, max_length=1)
 
     @field_validator("memory_influence_ids", mode="before")
     @classmethod
@@ -129,6 +130,8 @@ class WorkerSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_inference_budget(self) -> Self:
+        if self.adaptations and self.lifecycle != "benchmark":
+            raise ValueError("adaptation contexts are restricted to benchmark lifecycle")
         if self.inference_budget is None:
             return self
         if not self.strict_thinking_budget:

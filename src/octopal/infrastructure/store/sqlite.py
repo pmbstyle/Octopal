@@ -11,6 +11,9 @@ from typing import Any
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.store.base import UNSET, Store
 from octopal.infrastructure.store.models import (
+    AdaptationCandidateRecord,
+    AdaptationEvaluationRecord,
+    AdaptationFailureClusterRecord,
     AuditEvent,
     ExecutionEpisodeEvidenceMetadata,
     ExecutionEpisodeEvidenceRecord,
@@ -179,6 +182,119 @@ class SQLiteStore(Store):
                 ON execution_episodes (worker_run_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS ix_execution_episodes_task_created
                 ON execution_episodes (task_fingerprint, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS adaptation_failure_clusters (
+                id TEXT PRIMARY KEY,
+                signature TEXT NOT NULL,
+                source_summary_fingerprint TEXT NOT NULL,
+                failure_categories_json TEXT NOT NULL,
+                scenario_ids_json TEXT NOT NULL,
+                task_fingerprints_json TEXT NOT NULL,
+                trial_refs_json TEXT NOT NULL,
+                trial_count INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_adaptation_failure_clusters_signature
+                ON adaptation_failure_clusters (signature, created_at DESC);
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_failure_clusters_immutable
+            BEFORE UPDATE ON adaptation_failure_clusters
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation failure clusters are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_failure_clusters_no_delete
+            BEFORE DELETE ON adaptation_failure_clusters
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation failure clusters cannot be deleted');
+            END;
+
+            CREATE TABLE IF NOT EXISTS adaptation_candidates (
+                id TEXT PRIMARY KEY,
+                family_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                target TEXT NOT NULL,
+                artifact_fingerprint TEXT NOT NULL,
+                definition_fingerprint TEXT NOT NULL UNIQUE,
+                hypothesis TEXT NOT NULL,
+                change_json TEXT NOT NULL,
+                source_cluster_ids_json TEXT NOT NULL,
+                parent_id TEXT,
+                status TEXT NOT NULL,
+                evaluation_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(family_id, version),
+                FOREIGN KEY(parent_id) REFERENCES adaptation_candidates(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_adaptation_candidates_family_version
+                ON adaptation_candidates (family_id, version DESC);
+            CREATE INDEX IF NOT EXISTS ix_adaptation_candidates_status_updated
+                ON adaptation_candidates (status, updated_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_adaptation_candidates_active_family
+                ON adaptation_candidates (family_id)
+                WHERE status = 'active';
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_candidates_definition_immutable
+            BEFORE UPDATE ON adaptation_candidates
+            WHEN NEW.id != OLD.id
+              OR NEW.family_id != OLD.family_id
+              OR NEW.version != OLD.version
+              OR NEW.kind != OLD.kind
+              OR NEW.target != OLD.target
+              OR NEW.artifact_fingerprint != OLD.artifact_fingerprint
+              OR NEW.definition_fingerprint != OLD.definition_fingerprint
+              OR NEW.hypothesis != OLD.hypothesis
+              OR NEW.change_json != OLD.change_json
+              OR NEW.source_cluster_ids_json != OLD.source_cluster_ids_json
+              OR COALESCE(NEW.parent_id, '') != COALESCE(OLD.parent_id, '')
+              OR NEW.created_at != OLD.created_at
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation candidate definition is immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_candidates_no_delete
+            BEFORE DELETE ON adaptation_candidates
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation candidates cannot be deleted');
+            END;
+
+            CREATE TABLE IF NOT EXISTS adaptation_evaluations (
+                id TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL,
+                baseline_fingerprint TEXT NOT NULL,
+                candidate_fingerprint TEXT NOT NULL,
+                scenario_set_fingerprint TEXT NOT NULL,
+                common_trial_count INTEGER NOT NULL,
+                distinct_scenario_count INTEGER NOT NULL,
+                baseline_success_rate REAL NOT NULL,
+                candidate_success_rate REAL NOT NULL,
+                success_rate_delta REAL NOT NULL,
+                regression_count INTEGER NOT NULL,
+                improvement_count INTEGER NOT NULL,
+                held_out INTEGER NOT NULL,
+                passed INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(candidate_id) REFERENCES adaptation_candidates(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_adaptation_evaluations_candidate_created
+                ON adaptation_evaluations (candidate_id, created_at DESC);
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_evaluations_immutable
+            BEFORE UPDATE ON adaptation_evaluations
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation evaluations are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_evaluations_no_delete
+            BEFORE DELETE ON adaptation_evaluations
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation evaluations cannot be deleted');
+            END;
 
             CREATE TABLE IF NOT EXISTS procedural_recipes (
                 id TEXT PRIMARY KEY,
@@ -1205,6 +1321,251 @@ class SQLiteStore(Store):
                 (task_fingerprint, capability_fingerprint, safe_limit),
             )
         return [self._row_to_execution_episode(row) for row in cursor.fetchall()]
+
+    def add_adaptation_failure_cluster_with_audit(
+        self, record: AdaptationFailureClusterRecord, event: AuditEvent
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO adaptation_failure_clusters (
+                        id, signature, source_summary_fingerprint,
+                        failure_categories_json, scenario_ids_json,
+                        task_fingerprints_json, trial_refs_json, trial_count, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.signature,
+                        record.source_summary_fingerprint,
+                        _safe_json_dumps(record.failure_categories),
+                        _safe_json_dumps(record.scenario_ids),
+                        _safe_json_dumps(record.task_fingerprints),
+                        _safe_json_dumps(record.trial_refs),
+                        record.trial_count,
+                        record.created_at.isoformat(),
+                    ),
+                )
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                if self.get_adaptation_failure_cluster(record.id) is not None:
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_adaptation_failure_cluster(
+        self, cluster_id: str
+    ) -> AdaptationFailureClusterRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM adaptation_failure_clusters WHERE id = ?",
+            (cluster_id,),
+        ).fetchone()
+        return self._row_to_adaptation_failure_cluster(row) if row else None
+
+    def add_adaptation_candidate_with_audit(
+        self, record: AdaptationCandidateRecord, event: AuditEvent
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO adaptation_candidates (
+                        id, family_id, version, kind, target, artifact_fingerprint,
+                        definition_fingerprint, hypothesis, change_json,
+                        source_cluster_ids_json, parent_id, status, evaluation_id,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.family_id,
+                        record.version,
+                        record.kind,
+                        record.target,
+                        record.artifact_fingerprint,
+                        record.definition_fingerprint,
+                        record.hypothesis,
+                        _safe_json_dumps(record.change),
+                        _safe_json_dumps(record.source_cluster_ids),
+                        record.parent_id,
+                        record.status,
+                        record.evaluation_id,
+                        record.created_at.isoformat(),
+                        record.updated_at.isoformat(),
+                    ),
+                )
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                return False
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_adaptation_candidate(self, candidate_id: str) -> AdaptationCandidateRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM adaptation_candidates WHERE id = ?",
+            (candidate_id,),
+        ).fetchone()
+        return self._row_to_adaptation_candidate(row) if row else None
+
+    def list_adaptation_candidates(
+        self,
+        *,
+        kind: str | None = None,
+        target: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[AdaptationCandidateRecord]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        for column, value in (("kind", kind), ("target", target), ("status", status)):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        query = "SELECT * FROM adaptation_candidates"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC, version DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 1000)))
+        rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [self._row_to_adaptation_candidate(row) for row in rows]
+
+    def add_adaptation_evaluation_with_audit(
+        self, record: AdaptationEvaluationRecord, event: AuditEvent
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO adaptation_evaluations (
+                        id, candidate_id, baseline_fingerprint, candidate_fingerprint,
+                        scenario_set_fingerprint, common_trial_count,
+                        distinct_scenario_count, baseline_success_rate,
+                        candidate_success_rate, success_rate_delta, regression_count,
+                        improvement_count, held_out, passed, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.candidate_id,
+                        record.baseline_fingerprint,
+                        record.candidate_fingerprint,
+                        record.scenario_set_fingerprint,
+                        record.common_trial_count,
+                        record.distinct_scenario_count,
+                        record.baseline_success_rate,
+                        record.candidate_success_rate,
+                        record.success_rate_delta,
+                        record.regression_count,
+                        record.improvement_count,
+                        int(record.held_out),
+                        int(record.passed),
+                        record.created_at.isoformat(),
+                    ),
+                )
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                if self.get_adaptation_evaluation(record.id) is not None:
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_adaptation_evaluation(self, evaluation_id: str) -> AdaptationEvaluationRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM adaptation_evaluations WHERE id = ?",
+            (evaluation_id,),
+        ).fetchone()
+        return self._row_to_adaptation_evaluation(row) if row else None
+
+    def get_latest_adaptation_evaluation(
+        self, candidate_id: str
+    ) -> AdaptationEvaluationRecord | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM adaptation_evaluations
+            WHERE candidate_id = ?
+            ORDER BY created_at DESC, id DESC LIMIT 1
+            """,
+            (candidate_id,),
+        ).fetchone()
+        return self._row_to_adaptation_evaluation(row) if row else None
+
+    def activate_adaptation_candidate_with_audit(
+        self,
+        candidate_id: str,
+        *,
+        expected_statuses: list[str],
+        evaluation_id: str,
+        updated_at: datetime,
+        event: AuditEvent,
+    ) -> bool:
+        if not expected_statuses:
+            return False
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                candidate = self._conn.execute(
+                    "SELECT * FROM adaptation_candidates WHERE id = ?",
+                    (candidate_id,),
+                ).fetchone()
+                if candidate is None or candidate["status"] not in expected_statuses:
+                    self._conn.rollback()
+                    return False
+                evaluation = self._conn.execute(
+                    """
+                    SELECT id FROM adaptation_evaluations
+                    WHERE id = ? AND candidate_id = ? AND passed = 1
+                    """,
+                    (evaluation_id, candidate_id),
+                ).fetchone()
+                if evaluation is None:
+                    self._conn.rollback()
+                    return False
+                self._conn.execute(
+                    """
+                    UPDATE adaptation_candidates
+                    SET status = 'retired', updated_at = ?
+                    WHERE family_id = ? AND status = 'active' AND id != ?
+                    """,
+                    (updated_at.isoformat(), candidate["family_id"], candidate_id),
+                )
+                placeholders = ", ".join("?" for _item in expected_statuses)
+                cursor = self._conn.execute(
+                    f"""
+                    UPDATE adaptation_candidates
+                    SET status = 'active', evaluation_id = ?, updated_at = ?
+                    WHERE id = ? AND status IN ({placeholders})
+                    """,
+                    (
+                        evaluation_id,
+                        updated_at.isoformat(),
+                        candidate_id,
+                        *expected_statuses,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    self._conn.rollback()
+                    return False
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def add_procedural_recipe_with_audit(
         self, record: ProceduralRecipeRecord, event: AuditEvent
@@ -2646,6 +3007,59 @@ class SQLiteStore(Store):
             result_metadata=_loads_json(row["result_metadata_json"], {}),
             verification=_loads_json(row["verification_json"], {}),
             provenance=_loads_json(row["provenance_json"], {}),
+            created_at=_parse_dt(row["created_at"]),
+        )
+
+    def _row_to_adaptation_failure_cluster(
+        self, row: sqlite3.Row
+    ) -> AdaptationFailureClusterRecord:
+        return AdaptationFailureClusterRecord(
+            id=row["id"],
+            signature=row["signature"],
+            source_summary_fingerprint=row["source_summary_fingerprint"],
+            failure_categories=_loads_json(row["failure_categories_json"], []),
+            scenario_ids=_loads_json(row["scenario_ids_json"], []),
+            task_fingerprints=_loads_json(row["task_fingerprints_json"], []),
+            trial_refs=_loads_json(row["trial_refs_json"], []),
+            trial_count=int(row["trial_count"]),
+            created_at=_parse_dt(row["created_at"]),
+        )
+
+    def _row_to_adaptation_candidate(self, row: sqlite3.Row) -> AdaptationCandidateRecord:
+        return AdaptationCandidateRecord(
+            id=row["id"],
+            family_id=row["family_id"],
+            version=int(row["version"]),
+            kind=row["kind"],
+            target=row["target"],
+            artifact_fingerprint=row["artifact_fingerprint"],
+            definition_fingerprint=row["definition_fingerprint"],
+            hypothesis=row["hypothesis"],
+            change=_loads_json(row["change_json"], {}),
+            source_cluster_ids=_loads_json(row["source_cluster_ids_json"], []),
+            parent_id=row["parent_id"],
+            status=row["status"],
+            evaluation_id=row["evaluation_id"],
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
+        )
+
+    def _row_to_adaptation_evaluation(self, row: sqlite3.Row) -> AdaptationEvaluationRecord:
+        return AdaptationEvaluationRecord(
+            id=row["id"],
+            candidate_id=row["candidate_id"],
+            baseline_fingerprint=row["baseline_fingerprint"],
+            candidate_fingerprint=row["candidate_fingerprint"],
+            scenario_set_fingerprint=row["scenario_set_fingerprint"],
+            common_trial_count=int(row["common_trial_count"]),
+            distinct_scenario_count=int(row["distinct_scenario_count"]),
+            baseline_success_rate=float(row["baseline_success_rate"]),
+            candidate_success_rate=float(row["candidate_success_rate"]),
+            success_rate_delta=float(row["success_rate_delta"]),
+            regression_count=int(row["regression_count"]),
+            improvement_count=int(row["improvement_count"]),
+            held_out=bool(row["held_out"]),
+            passed=bool(row["passed"]),
             created_at=_parse_dt(row["created_at"]),
         )
 
