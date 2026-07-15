@@ -67,5 +67,5 @@ def test_configure_llm_resets_base_url_to_provider_preset_when_switching(monkeyp
     _configure_llm(config, "Worker (Default)", llm)
 
     assert llm.provider_id == "minimax"
-    assert captured_defaults["base_url"] == "https://api.minimax.io/anthropic/v1"
-    assert llm.api_base == "https://api.minimax.io/anthropic/v1"
+    assert captured_defaults["base_url"] == "https://api.minimax.io/v1"
+    assert llm.api_base == "https://api.minimax.io/v1"

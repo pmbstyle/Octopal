@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import shlex
 import uuid
@@ -9,14 +10,17 @@ from typing import Any
 import structlog
 
 from octopal.infrastructure.observability.helpers import hash_payload
+from octopal.infrastructure.store.models import IntentRecord
 from octopal.runtime.capability_outcomes import (
     CAPABILITY_OUTCOME_KEY,
     CapabilityOutcomeKind,
     capability_outcome,
 )
 from octopal.runtime.intents.types import ActionIntent
+from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 from octopal.tools.diagnostics import ToolResolutionReport
 from octopal.tools.registry import ToolSpec
+from octopal.utils import utc_now
 
 logger = structlog.get_logger(__name__)
 _COMPUTER_USE_MUTATING_ACTIONS = {"click", "type", "key", "scroll"}
@@ -60,9 +64,12 @@ async def _maybe_request_octo_tool_approval(
         requires_approval=True,
         worker_id="octo",
     )
+    if not await _persist_octo_sensitive_intent(ctx, intent):
+        return _memory_provenance_failure(spec.name)
 
     requester = _resolve_octo_approval_requester(ctx)
     if requester is None:
+        await _update_octo_intent_status(ctx, intent.id, "requires_approval")
         return {
             "type": "approval_required",
             "tool": spec.name,
@@ -82,6 +89,7 @@ async def _maybe_request_octo_tool_approval(
         approved = await requester(intent)
     except Exception as exc:
         logger.exception("Octo exec approval requester failed")
+        await _update_octo_intent_status(ctx, intent.id, "approval_failed")
         return {
             "type": "approval_required",
             "tool": spec.name,
@@ -97,7 +105,9 @@ async def _maybe_request_octo_tool_approval(
             ),
         }
     if approved:
+        await _update_octo_intent_status(ctx, intent.id, "approved")
         return None
+    await _update_octo_intent_status(ctx, intent.id, "denied")
     return {
         "type": "approval_denied",
         "tool": spec.name,
@@ -148,9 +158,12 @@ async def _maybe_request_computer_use_approval(
         requires_approval=True,
         worker_id="octo",
     )
+    if not await _persist_octo_sensitive_intent(ctx, intent):
+        return _memory_provenance_failure(spec.name)
 
     requester = _resolve_octo_approval_requester(ctx)
     if requester is None:
+        await _update_octo_intent_status(ctx, intent.id, "requires_approval")
         return {
             "type": "approval_required",
             "tool": spec.name,
@@ -170,6 +183,7 @@ async def _maybe_request_computer_use_approval(
         approved = await requester(intent)
     except Exception as exc:
         logger.exception("Octo computer_use approval requester failed")
+        await _update_octo_intent_status(ctx, intent.id, "approval_failed")
         return {
             "type": "approval_required",
             "tool": spec.name,
@@ -185,7 +199,9 @@ async def _maybe_request_computer_use_approval(
             ),
         }
     if approved:
+        await _update_octo_intent_status(ctx, intent.id, "approved")
         return None
+    await _update_octo_intent_status(ctx, intent.id, "denied")
     return {
         "type": "approval_denied",
         "tool": spec.name,
@@ -199,6 +215,72 @@ async def _maybe_request_computer_use_approval(
             ),
             tool=spec.name,
             policy_reason="user_denied_approval",
+        ),
+    }
+
+
+async def _persist_octo_sensitive_intent(ctx: dict[str, object], intent: ActionIntent) -> bool:
+    octo = ctx.get("octo")
+    store = getattr(octo, "store", None)
+    save_intent = getattr(store, "save_intent", None)
+    if not callable(save_intent):
+        return True
+    raw_influence_ids = ctx.get("memory_influence_ids")
+    try:
+        influence_ids = (
+            require_complete_memory_influence_ids(raw_influence_ids)
+            if isinstance(raw_influence_ids, (list, tuple))
+            else []
+        )
+    except ValueError:
+        logger.error("Blocked Octo sensitive intent with invalid memory provenance")
+        return False
+    try:
+        await asyncio.to_thread(
+            save_intent,
+            IntentRecord(
+                id=intent.id,
+                worker_id=intent.worker_id,
+                type=intent.type,
+                payload=intent.payload,
+                payload_hash=intent.payload_hash,
+                risk=intent.risk,
+                requires_approval=intent.requires_approval,
+                memory_influence_ids=influence_ids,
+                status="pending",
+                created_at=utc_now(),
+            ),
+        )
+    except Exception:
+        logger.exception("Failed to persist Octo sensitive intent provenance")
+        return False
+    return True
+
+
+async def _update_octo_intent_status(ctx: dict[str, object], intent_id: str, status: str) -> None:
+    store = getattr(ctx.get("octo"), "store", None)
+    update_status = getattr(store, "update_intent_status", None)
+    if not callable(update_status):
+        return
+    try:
+        await asyncio.to_thread(update_status, intent_id, status)
+    except Exception:
+        logger.exception("Failed to update Octo sensitive intent status", intent_id=intent_id)
+
+
+def _memory_provenance_failure(tool_name: str) -> dict[str, Any]:
+    reason = "sensitive intent provenance could not be persisted"
+    return {
+        "type": "policy_denied",
+        "tool": tool_name,
+        "reason": reason,
+        "message": "Sensitive action was blocked because its memory provenance could not be recorded.",
+        CAPABILITY_OUTCOME_KEY: capability_outcome(
+            "policy_denied",
+            reason=reason,
+            next_action="Retry only after durable intent storage is healthy.",
+            tool=tool_name,
+            policy_reason="memory_provenance_persistence_failed",
         ),
     }
 

@@ -62,7 +62,7 @@ from octopal.tools.registry import ToolSpec
 from octopal.tools.skills.management import get_registered_skill_tools, get_skill_management_tools
 from octopal.tools.web.fetch import markdown_new_fetch, web_fetch
 from octopal.tools.web.plan import fetch_plan_tool
-from octopal.tools.web.search import web_search
+from octopal.tools.web.search import web_search_async
 from octopal.tools.workers.management import get_worker_tools
 from octopal.utils import utc_now
 
@@ -479,7 +479,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
         ),
         ToolSpec(
             name="manage_canon",
-            description="Manage canonical memory files (facts.md, decisions.md, failures.md). Only the Octo can use this.",
+            description="Read canonical memory or submit quarantined proposals for facts.md, decisions.md, and failures.md. Writes require later operator promotion.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -494,7 +494,8 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     },
                     "content": {
                         "type": "string",
-                        "description": "Content to write. Required for write.",
+                        "description": "Bounded untrusted proposal content. Required for write.",
+                        "maxLength": 16000,
                     },
                     "mode": {
                         "type": "string",
@@ -1060,7 +1061,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             permission="network",
-            handler=lambda args, ctx: web_search(args),
+            handler=web_search_async,
             is_async=True,
         ),
         ToolSpec(

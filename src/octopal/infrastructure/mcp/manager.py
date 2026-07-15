@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 import time
+import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
@@ -12,13 +15,33 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 from mcp import ClientSession, StdioServerParameters
+from mcp import types as mcp_types
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 
+from octopal.infrastructure.mcp.tasks import (
+    MCP_TASK_TERMINAL_STATUSES,
+    MCPTaskContext,
+    MCPTaskState,
+    RawMCPRequest,
+    RawMCPResult,
+    build_task_record,
+    client_capability_meta,
+    extension_declared,
+    legacy_tasks_declared,
+    parse_task_state,
+    task_expired,
+    task_poll_seconds,
+    task_ref,
+    task_status_result,
+)
+from octopal.infrastructure.store.models import AuditEvent, MCPTaskProtocol, MCPTaskRecord
 from octopal.runtime.tool_errors import MCPToolCallError
+from octopal.utils import utc_now
 
 if TYPE_CHECKING:
+    from octopal.infrastructure.store.base import Store
     from octopal.tools.registry import ToolSpec
 
 
@@ -45,6 +68,8 @@ _MCP_DEFAULT_TIMEOUT_SECONDS = 120.0
 _MCP_SLOW_TIMEOUT_SECONDS = 300.0
 _MCP_RECONNECT_BASE_SECONDS = 2.0
 _MCP_RECONNECT_MAX_SECONDS = 60.0
+_MCP_TASK_MAX_TTL_MS = 600_000
+_MCP_TASK_RECOVERY_BUDGET_SECONDS = 300.0
 _MCP_RETRYABLE_CLASSIFICATIONS = {
     "timeout",
     "rate_limited",
@@ -74,8 +99,9 @@ def _extract_mcp_server_configs(config_data: Any) -> Any:
 
 
 class MCPManager:
-    def __init__(self, workspace_dir: Path):
+    def __init__(self, workspace_dir: Path, *, store: Store | None = None):
         self.workspace_dir = workspace_dir
+        self.store = store
         self.sessions: dict[str, ClientSession] = {}
         # Stores the background task that keeps the session alive
         self._tasks: dict[str, asyncio.Task] = {}
@@ -83,6 +109,17 @@ class MCPManager:
         self._stop_events: dict[str, asyncio.Event] = {}
         self._tools: dict[str, list[ToolSpec]] = {}
         self._tool_schemas: dict[tuple[str, str], dict[str, Any]] = {}
+        self._tool_task_support: dict[tuple[str, str], str] = {}
+        self._task_protocols: dict[str, MCPTaskProtocol | None] = {}
+        self._task_recovery_tasks: dict[str, asyncio.Task[None]] = {}
+        self._task_metrics: dict[str, int] = {
+            "created": 0,
+            "recovered": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "input_required": 0,
+        }
         self._server_configs: dict[str, MCPServerConfig] = {}
         self._tool_failure_state: dict[tuple[str, str], dict[str, Any]] = {}
         self._reconnect_tasks: dict[str, asyncio.Task] = {}
@@ -133,10 +170,11 @@ class MCPManager:
             for server_id, cfg in server_configs.items():
                 if not isinstance(cfg, dict):
                     continue
+                server_id = str(server_id)
                 existing = loaded.get(server_id) or self._server_configs.get(server_id)
                 loaded[server_id] = MCPServerConfig(
                     id=server_id,
-                    name=cfg.get("name", server_id),
+                    name=str(cfg.get("name") or server_id),
                     command=cfg.get("command"),
                     args=cfg.get("args", []),
                     env=cfg.get("env", {}),
@@ -150,7 +188,7 @@ class MCPManager:
         self._configs_loaded = True
         return dict(self._server_configs)
 
-    async def load_and_connect_all(self):
+    async def load_and_connect_all(self) -> None:
         if not any(path.exists() for path in self._config_paths()):
             return
         try:
@@ -287,7 +325,7 @@ class MCPManager:
 
     async def _run_server_lifecycle(
         self, config: MCPServerConfig, ready_event: asyncio.Event, stop_event: asyncio.Event
-    ):
+    ) -> None:
         """Manages the lifetime of a single MCP server connection."""
         from contextlib import AsyncExitStack
 
@@ -334,12 +372,23 @@ class MCPManager:
             logger.info("Initializing MCP session", server_id=config.id)
             session = await exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
 
-            await session.initialize()
+            initialize_result = await session.initialize()
             self.sessions[config.id] = session
 
             # Fetch tools
             logger.info("Fetching tools from MCP server", server_id=config.id)
             mcp_tools_list = await session.list_tools()
+            task_protocol = await self._negotiate_task_protocol(
+                session,
+                initialize_result,
+            )
+            if task_protocol == "extension" and selected_transport == "streamable-http":
+                logger.warning(
+                    "MCP Tasks extension disabled because transport routing headers are unavailable",
+                    server_id=config.id,
+                )
+                task_protocol = None
+            self._task_protocols[config.id] = task_protocol
 
             specs = []
             from octopal.tools.registry import ToolSpec
@@ -352,6 +401,10 @@ class MCPManager:
                 mcp_tool_name = f"mcp_{safe_id}_{safe_tool_name}"
                 full_schema = tool.inputSchema if isinstance(tool.inputSchema, dict) else {}
                 self._tool_schemas[(config.id, mcp_tool_name)] = full_schema
+                task_support = str(
+                    getattr(getattr(tool, "execution", None), "taskSupport", None) or "forbidden"
+                )
+                self._tool_task_support[(config.id, tool.name)] = task_support
 
                 spec = ToolSpec(
                     name=mcp_tool_name,
@@ -367,8 +420,13 @@ class MCPManager:
 
             self._tools[config.id] = specs
             logger.info(
-                "MCP server connected and tools ready", server_id=config.id, tool_count=len(specs)
+                "MCP server connected and tools ready",
+                server_id=config.id,
+                tool_count=len(specs),
+                task_protocol=self._task_protocols.get(config.id) or "none",
             )
+
+            await self._schedule_task_recovery(config.id)
 
             # Signal that we are ready
             ready_event.set()
@@ -395,6 +453,9 @@ class MCPManager:
             self._tools.pop(config.id, None)
             for schema_key in [key for key in self._tool_schemas if key[0] == config.id]:
                 self._tool_schemas.pop(schema_key, None)
+            for support_key in [key for key in self._tool_task_support if key[0] == config.id]:
+                self._tool_task_support.pop(support_key, None)
+            self._task_protocols.pop(config.id, None)
             self._tasks.pop(config.id, None)
             self._stop_events.pop(config.id, None)
 
@@ -417,6 +478,7 @@ class MCPManager:
         args: dict[str, Any],
         *,
         allow_name_fallback: bool = False,
+        task_context: MCPTaskContext | None = None,
     ) -> Any:
         session = self.sessions.get(server_id)
         if not session:
@@ -451,8 +513,15 @@ class MCPManager:
 
             try:
                 result = await asyncio.wait_for(
-                    session.call_tool(candidate_name, arguments=args),
-                    timeout=timeout_seconds,
+                    self._call_tool_once(
+                        session,
+                        server_id=server_id,
+                        tool_name=candidate_name,
+                        args=args,
+                        timeout_seconds=timeout_seconds,
+                        task_context=task_context or MCPTaskContext(),
+                    ),
+                    timeout=timeout_seconds + 0.25,
                 )
                 self._tool_failure_state.pop(state_key, None)
                 if index > 0:
@@ -468,6 +537,8 @@ class MCPManager:
                     f"MCP call timed out after {int(timeout_seconds)}s for '{candidate_name}' on '{server_id}'."
                 )
                 exc_to_classify: Exception = last_exc
+            except MCPToolCallError:
+                raise
             except Exception as exc:
                 last_exc = exc
                 exc_to_classify = exc
@@ -520,7 +591,531 @@ class MCPManager:
             raise last_exc
         raise RuntimeError(f"MCP call failed for '{tool_name}' on '{server_id}'")
 
-    def _generate_handler(self, server_id: str, tool_name: str):
+    async def _negotiate_task_protocol(
+        self,
+        session: ClientSession,
+        initialize_result: Any,
+    ) -> MCPTaskProtocol | None:
+        if self.store is None:
+            return None
+        capabilities = getattr(initialize_result, "capabilities", None)
+        protocol_version = str(getattr(initialize_result, "protocolVersion", "") or "")
+        if protocol_version >= "2026-06-30":
+            if extension_declared(capabilities):
+                return "extension"
+            try:
+                discover = await session.send_request(
+                    RawMCPRequest(
+                        method="server/discover",
+                        params={"_meta": client_capability_meta()},
+                    ),
+                    RawMCPResult,
+                    request_read_timeout_seconds=timedelta(seconds=5),
+                )
+                discover_payload = discover.model_dump(
+                    mode="json", by_alias=True, exclude_none=True
+                )
+                if extension_declared(discover_payload.get("capabilities")):
+                    return "extension"
+            except Exception:
+                logger.debug(
+                    "MCP server did not negotiate the Tasks extension",
+                    protocol_version=protocol_version,
+                    exc_info=True,
+                )
+
+        if legacy_tasks_declared(capabilities):
+            return "legacy"
+        return None
+
+    async def _call_tool_once(
+        self,
+        session: ClientSession,
+        *,
+        server_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+        timeout_seconds: float,
+        task_context: MCPTaskContext,
+    ) -> Any:
+        protocol = self._task_protocols.get(server_id)
+        if protocol == "extension":
+            result = await session.send_request(
+                RawMCPRequest(
+                    method="tools/call",
+                    params={
+                        "name": tool_name,
+                        "arguments": args,
+                        "_meta": client_capability_meta(),
+                    },
+                ),
+                RawMCPResult,
+            )
+            payload = result.model_dump(mode="json", by_alias=True, exclude_none=True)
+            if payload.get("resultType") != "task":
+                return mcp_types.CallToolResult.model_validate(payload)
+            state = parse_task_state(payload, protocol="extension")
+            record = await self._persist_task_state(
+                state,
+                server_id=server_id,
+                tool_name=tool_name,
+                protocol="extension",
+                task_context=task_context,
+            )
+            return await self._wait_for_task(
+                session,
+                record,
+                timeout_seconds=timeout_seconds,
+            )
+
+        task_support = self._tool_task_support.get((server_id, tool_name), "forbidden")
+        if protocol == "legacy" and task_support in {"optional", "required"}:
+            result = await session.experimental.call_tool_as_task(
+                tool_name,
+                args,
+                ttl=max(1000, min(int(timeout_seconds * 1000), _MCP_TASK_MAX_TTL_MS)),
+            )
+            state = parse_task_state(result, protocol="legacy")
+            record = await self._persist_task_state(
+                state,
+                server_id=server_id,
+                tool_name=tool_name,
+                protocol="legacy",
+                task_context=task_context,
+            )
+            return await self._wait_for_task(
+                session,
+                record,
+                timeout_seconds=timeout_seconds,
+            )
+
+        return await session.call_tool(tool_name, arguments=args)
+
+    async def _wait_for_task(
+        self,
+        session: ClientSession,
+        record: MCPTaskRecord,
+        *,
+        timeout_seconds: float,
+    ) -> mcp_types.CallToolResult:
+        deadline = time.monotonic() + max(0.05, timeout_seconds)
+        current = record
+        while True:
+            if current.remote_status in MCP_TASK_TERMINAL_STATUSES:
+                return await self._terminal_task_result(session, current)
+            if current.remote_status == "input_required":
+                return task_status_result(current)
+            if task_expired(current):
+                expired = current.model_copy(
+                    update={
+                        "runtime_status": "failed",
+                        "status_message": "MCP task TTL elapsed before completion.",
+                        "error": {"classification": "task_ttl_expired"},
+                        "updated_at": utc_now(),
+                    }
+                )
+                await self._persist_task_record(expired, previous=current)
+                raise MCPToolCallError(
+                    classification="task_ttl_expired",
+                    hint="The remote MCP task exceeded its advertised TTL.",
+                    retryable=False,
+                    server_id=current.server_id,
+                    tool_name=current.tool_name,
+                    details={"task_id": current.id},
+                )
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return task_status_result(current)
+            poll_seconds = task_poll_seconds(current)
+            if poll_seconds >= remaining:
+                await asyncio.sleep(remaining)
+                return task_status_result(current)
+            await asyncio.sleep(poll_seconds)
+            current = await self._refresh_task(session, current)
+
+    async def _refresh_task(
+        self,
+        session: ClientSession,
+        record: MCPTaskRecord,
+    ) -> MCPTaskRecord:
+        if record.protocol == "extension":
+            result = await session.send_request(
+                RawMCPRequest(
+                    method="tasks/get",
+                    params={
+                        "taskId": record.task_id,
+                        "_meta": client_capability_meta(),
+                    },
+                ),
+                RawMCPResult,
+            )
+            state = parse_task_state(result, protocol="extension")
+        else:
+            state = parse_task_state(
+                await session.experimental.get_task(record.task_id),
+                protocol="legacy",
+            )
+        context = MCPTaskContext(
+            correlation_id=record.correlation_id,
+            trace_id=record.trace_id,
+            span_id=record.span_id,
+            worker_run_id=record.worker_run_id,
+            chat_id=record.chat_id,
+            chat_turn_id=record.chat_turn_id,
+            plan_run_id=record.plan_run_id,
+            plan_step_id=record.plan_step_id,
+        )
+        return await self._persist_task_state(
+            state,
+            server_id=record.server_id,
+            tool_name=record.tool_name,
+            protocol=record.protocol,
+            task_context=context,
+            previous=record,
+        )
+
+    async def _terminal_task_result(
+        self,
+        session: ClientSession,
+        record: MCPTaskRecord,
+    ) -> mcp_types.CallToolResult:
+        if record.remote_status == "completed":
+            if record.protocol == "extension":
+                if not isinstance(record.result, dict):
+                    raise MCPToolCallError(
+                        classification="schema_mismatch",
+                        hint="Completed MCP task omitted its tools/call result.",
+                        retryable=False,
+                        server_id=record.server_id,
+                        tool_name=record.tool_name,
+                        details={"task_id": record.id},
+                    )
+                return mcp_types.CallToolResult.model_validate(record.result)
+            return await session.experimental.get_task_result(
+                record.task_id,
+                mcp_types.CallToolResult,
+            )
+
+        classification = "task_cancelled" if record.remote_status == "cancelled" else "task_failed"
+        raise MCPToolCallError(
+            classification=classification,
+            hint=record.status_message or f"Remote MCP task ended as {record.remote_status}.",
+            retryable=False,
+            server_id=record.server_id,
+            tool_name=record.tool_name,
+            details={"task_id": record.id, "remote_error": record.error or {}},
+        )
+
+    async def _persist_task_state(
+        self,
+        state: MCPTaskState,
+        *,
+        server_id: str,
+        tool_name: str,
+        protocol: MCPTaskProtocol,
+        task_context: MCPTaskContext,
+        previous: MCPTaskRecord | None = None,
+    ) -> MCPTaskRecord:
+        config = self._server_configs.get(server_id)
+        if config is None:
+            raise RuntimeError(f"MCP server '{server_id}' is not configured.")
+        auth_context_id = _mcp_auth_context_id(config)
+        provisional = build_task_record(
+            state=state,
+            server_id=server_id,
+            tool_name=tool_name,
+            protocol=protocol,
+            auth_context_id=auth_context_id,
+            context=task_context,
+            previous=previous,
+        )
+        if previous is None and self.store is not None:
+            previous = await asyncio.to_thread(self.store.get_mcp_task, provisional.id)
+        if previous is not None and (
+            state.created_at != previous.remote_created_at
+            or state.updated_at < previous.remote_updated_at
+            or (
+                previous.remote_status in MCP_TASK_TERMINAL_STATUSES
+                and state.status != previous.remote_status
+            )
+        ):
+            logger.warning(
+                "Ignoring stale or invalid MCP task transition",
+                task_id=previous.id,
+                server_id=server_id,
+                previous_status=previous.remote_status,
+                received_status=state.status,
+            )
+            return previous
+        if previous is not None:
+            provisional = build_task_record(
+                state=state,
+                server_id=server_id,
+                tool_name=tool_name,
+                protocol=protocol,
+                auth_context_id=auth_context_id,
+                context=task_context,
+                previous=previous,
+            )
+        await self._persist_task_record(provisional, previous=previous)
+        return provisional
+
+    async def _persist_task_record(
+        self,
+        record: MCPTaskRecord,
+        *,
+        previous: MCPTaskRecord | None,
+    ) -> None:
+        if self.store is not None:
+            await asyncio.to_thread(self.store.upsert_mcp_task, record)
+
+        created = previous is None
+        status_changed = (
+            previous is None
+            or previous.remote_status != record.remote_status
+            or previous.runtime_status != record.runtime_status
+        )
+        if not status_changed:
+            return
+        if created:
+            self._task_metrics["created"] += 1
+        metric_status = "failed" if record.runtime_status == "failed" else record.remote_status
+        if metric_status in self._task_metrics:
+            self._task_metrics[metric_status] += 1
+        event_type = "mcp_task_created" if created else "mcp_task_status_changed"
+        await self._append_task_audit(
+            event_type,
+            record,
+            data={
+                "previous_status": previous.remote_status if previous else None,
+                "remote_status": record.remote_status,
+                "runtime_status": record.runtime_status,
+                "protocol": record.protocol,
+            },
+        )
+
+    async def _append_task_audit(
+        self,
+        event_type: str,
+        record: MCPTaskRecord,
+        *,
+        data: dict[str, Any] | None = None,
+        level: Literal["debug", "info", "warning", "error", "critical"] = "info",
+    ) -> None:
+        if self.store is None:
+            return
+        payload = {
+            "task_id": record.id,
+            "task_ref": task_ref(record.task_id),
+            "server_id": record.server_id,
+            "tool_name": record.tool_name,
+            "worker_run_id": record.worker_run_id,
+            "chat_id": record.chat_id,
+            "chat_turn_id": record.chat_turn_id,
+            "plan_run_id": record.plan_run_id,
+            "plan_step_id": record.plan_step_id,
+            **(data or {}),
+        }
+        await asyncio.to_thread(
+            self.store.append_audit,
+            AuditEvent(
+                id=str(uuid.uuid4()),
+                ts=utc_now(),
+                correlation_id=record.correlation_id or record.worker_run_id,
+                level=level,
+                event_type=event_type,
+                data=payload,
+            ),
+        )
+
+    async def _schedule_task_recovery(self, server_id: str) -> None:
+        if self.store is None:
+            return
+        config = self._server_configs.get(server_id)
+        if config is None:
+            return
+        auth_context_id = _mcp_auth_context_id(config)
+        records = await asyncio.to_thread(
+            self.store.list_recoverable_mcp_tasks,
+            server_id=server_id,
+            auth_context_id=auth_context_id,
+        )
+        for record in records:
+            if record.remote_status != "working":
+                continue
+            existing = self._task_recovery_tasks.get(record.id)
+            if existing is not None and not existing.done():
+                continue
+            self._task_recovery_tasks[record.id] = asyncio.create_task(self._recover_task(record))
+
+    async def _recover_task(self, record: MCPTaskRecord) -> None:
+        try:
+            session = self.sessions.get(record.server_id)
+            if session is None:
+                return
+            await self._append_task_audit("mcp_task_recovery_started", record)
+            await self._wait_for_task(
+                session,
+                record,
+                timeout_seconds=_MCP_TASK_RECOVERY_BUDGET_SECONDS,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "MCP task recovery stopped",
+                task_id=record.id,
+                server_id=record.server_id,
+                error_type=type(exc).__name__,
+            )
+        finally:
+            if self.store is not None:
+                latest = await asyncio.to_thread(self.store.get_mcp_task, record.id)
+                if latest is not None and (
+                    latest.remote_status in MCP_TASK_TERMINAL_STATUSES
+                    or latest.runtime_status == "failed"
+                ):
+                    self._task_metrics["recovered"] += 1
+            self._task_recovery_tasks.pop(record.id, None)
+
+    async def get_task(
+        self,
+        task_record_id: str,
+        *,
+        task_context: MCPTaskContext | None = None,
+    ) -> MCPTaskRecord:
+        record = await self._load_bound_task(task_record_id, task_context=task_context)
+        session = self.sessions.get(record.server_id)
+        if session is None:
+            raise RuntimeError(f"MCP session '{record.server_id}' is not active.")
+        return await self._refresh_task(session, record)
+
+    async def update_task(
+        self,
+        task_record_id: str,
+        input_responses: dict[str, Any],
+        *,
+        task_context: MCPTaskContext | None = None,
+    ) -> MCPTaskRecord:
+        record = await self._load_bound_task(task_record_id, task_context=task_context)
+        if record.protocol != "extension":
+            raise MCPToolCallError(
+                classification="unsupported_operation",
+                hint="Legacy MCP tasks do not support tasks/update.",
+                retryable=False,
+                server_id=record.server_id,
+                tool_name=record.tool_name,
+                details={"task_id": record.id},
+            )
+        response_keys = {str(key) for key in input_responses}
+        outstanding_keys = set(record.input_requests)
+        if not response_keys or not response_keys.issubset(outstanding_keys):
+            raise MCPToolCallError(
+                classification="invalid_task_input",
+                hint="Task input responses must match currently outstanding request keys.",
+                retryable=False,
+                server_id=record.server_id,
+                tool_name=record.tool_name,
+                details={"task_id": record.id},
+            )
+        session = self.sessions.get(record.server_id)
+        if session is None:
+            raise RuntimeError(f"MCP session '{record.server_id}' is not active.")
+        await session.send_request(
+            RawMCPRequest(
+                method="tasks/update",
+                params={
+                    "taskId": record.task_id,
+                    "inputResponses": input_responses,
+                    "_meta": client_capability_meta(),
+                },
+            ),
+            RawMCPResult,
+        )
+        acknowledged = record.model_copy(
+            update={
+                "input_requests": {
+                    key: value
+                    for key, value in record.input_requests.items()
+                    if key not in response_keys
+                },
+                "responded_input_keys": sorted({*record.responded_input_keys, *response_keys}),
+                "updated_at": utc_now(),
+            }
+        )
+        await self._persist_task_record(acknowledged, previous=record)
+        await self._append_task_audit(
+            "mcp_task_input_submitted",
+            acknowledged,
+            data={"response_keys": sorted(response_keys)},
+        )
+        return await self._refresh_task(session, acknowledged)
+
+    async def cancel_task(
+        self,
+        task_record_id: str,
+        *,
+        task_context: MCPTaskContext | None = None,
+    ) -> MCPTaskRecord:
+        record = await self._load_bound_task(task_record_id, task_context=task_context)
+        session = self.sessions.get(record.server_id)
+        if session is None:
+            raise RuntimeError(f"MCP session '{record.server_id}' is not active.")
+        if record.protocol == "extension":
+            await session.send_request(
+                RawMCPRequest(
+                    method="tasks/cancel",
+                    params={
+                        "taskId": record.task_id,
+                        "_meta": client_capability_meta(),
+                    },
+                ),
+                RawMCPResult,
+            )
+            refreshed = record
+        else:
+            state = parse_task_state(
+                await session.experimental.cancel_task(record.task_id),
+                protocol="legacy",
+            )
+            refreshed = await self._persist_task_state(
+                state,
+                server_id=record.server_id,
+                tool_name=record.tool_name,
+                protocol=record.protocol,
+                task_context=task_context or MCPTaskContext(),
+                previous=record,
+            )
+        await self._append_task_audit("mcp_task_cancel_requested", refreshed)
+        return refreshed
+
+    async def _load_bound_task(
+        self,
+        task_record_id: str,
+        *,
+        task_context: MCPTaskContext | None,
+    ) -> MCPTaskRecord:
+        if self.store is None:
+            raise RuntimeError("MCP task persistence is unavailable.")
+        record = await asyncio.to_thread(self.store.get_mcp_task, task_record_id)
+        if record is None:
+            raise KeyError(f"Unknown MCP task: {task_record_id}")
+        config = self._server_configs.get(record.server_id)
+        if config is None or _mcp_auth_context_id(config) != record.auth_context_id:
+            raise PermissionError("MCP task authorization context no longer matches.")
+        if (
+            task_context is not None
+            and task_context.worker_run_id
+            and record.worker_run_id
+            and task_context.worker_run_id != record.worker_run_id
+        ):
+            raise PermissionError("MCP task is bound to another worker run.")
+        return record
+
+    def _generate_handler(
+        self, server_id: str, tool_name: str
+    ) -> Callable[[dict[str, Any], dict[str, Any]], Awaitable[Any]]:
         async def handler(args: dict[str, Any], ctx: dict[str, Any]) -> Any:
             worker = ctx.get("worker")
             if worker:
@@ -598,7 +1193,7 @@ class MCPManager:
 
         self._reconnect_tasks[server_id] = asyncio.create_task(_reconnect())
 
-    async def disconnect_server(self, server_id: str, *, intentional: bool = True):
+    async def disconnect_server(self, server_id: str, *, intentional: bool = True) -> None:
         if intentional:
             self._manual_disconnects.add(server_id)
         reconnect_task = self._reconnect_tasks.pop(server_id, None)
@@ -636,8 +1231,12 @@ class MCPManager:
             return spec
         return replace(spec, parameters=full_schema)
 
-    async def shutdown(self):
+    async def shutdown(self) -> None:
         self._shutdown_requested = True
+        for task in list(self._task_recovery_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._task_recovery_tasks.clear()
         for task in list(self._reconnect_tasks.values()):
             if not task.done():
                 task.cancel()
@@ -678,6 +1277,11 @@ class MCPManager:
                 "transport": config.transport or "auto",
                 "reconnect_attempts": reconnect_attempts,
                 "manual_disconnect": server_id in self._manual_disconnects,
+                "task_protocol": self._task_protocols.get(server_id) or "none",
+                "task_recoveries_active_total": sum(
+                    1 for task in self._task_recovery_tasks.values() if not task.done()
+                ),
+                "task_metrics": dict(self._task_metrics),
             }
         return statuses
 
@@ -695,6 +1299,32 @@ def _normalize_transport(raw: Any) -> Literal["auto", "sse", "streamable-http", 
     if value in {"stdio", "local"}:
         return "stdio"
     return None
+
+
+def _mcp_auth_context_id(config: MCPServerConfig) -> str:
+    """Fingerprint the configured remote principal without persisting raw credentials."""
+    inherited_credentials = {
+        key: value
+        for key, value in os.environ.items()
+        if not config.env
+        and any(marker in key.upper() for marker in ("TOKEN", "KEY", "SECRET", "AUTH", "PASSWORD"))
+    }
+    payload = {
+        "server_id": config.id,
+        "command": config.command,
+        "args": config.args,
+        "url": config.url,
+        "transport": config.transport or "auto",
+        "headers": config.headers,
+        "env": config.env or inherited_credentials,
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _resolve_transport(config: MCPServerConfig) -> Literal["sse", "streamable-http", "stdio"]:

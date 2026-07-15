@@ -245,15 +245,27 @@ def _build_runtime_plan_context(octo: Any, chat_id: int, *, limit: int = 3) -> s
 
 
 def _build_operational_memory_context(octo: Any, chat_id: int) -> str:
+    context, _ = _build_operational_memory_context_with_ids(octo, chat_id)
+    return context
+
+
+def _build_operational_memory_context_with_ids(octo: Any, chat_id: int) -> tuple[str, list[str]]:
     service = getattr(octo, "operational_memory", None)
     if service is None or chat_id == 0:
-        return ""
+        return "", []
     try:
+        getter = getattr(service, "active_context_with_ids", None)
+        if callable(getter):
+            context, selected_ids = getter(chat_id)
+            return (
+                context if isinstance(context, str) else "",
+                selected_ids if isinstance(selected_ids, list) else [],
+            )
         context = service.active_context(chat_id)
     except Exception:
         logger.debug("Failed to load operational memory context", chat_id=chat_id, exc_info=True)
-        return ""
-    return context if isinstance(context, str) else ""
+        return "", []
+    return context if isinstance(context, str) else "", []
 
 
 def _build_runtime_plan_guidance() -> str:

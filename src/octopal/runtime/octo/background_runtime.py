@@ -14,6 +14,7 @@ from octopal.runtime.housekeeping import (
 )
 from octopal.runtime.metrics import update_component_gauges
 from octopal.runtime.octo.runtime_config import _env_int
+from octopal.utils import utc_now
 
 logger = structlog.get_logger(__name__)
 
@@ -35,6 +36,20 @@ class OctoBackgroundRuntimeMixin:
                 deleted = await asyncio.to_thread(self.store.cleanup_old_workers)
                 if deleted > 0:
                     logger.info("Periodic cleanup complete", deleted_workers=deleted)
+
+                cleanup_episode_evidence = getattr(
+                    self.store, "cleanup_expired_execution_episode_evidence", None
+                )
+                if callable(cleanup_episode_evidence):
+                    deleted_evidence = await asyncio.to_thread(
+                        cleanup_episode_evidence,
+                        utc_now(),
+                    )
+                    if deleted_evidence > 0:
+                        logger.info(
+                            "Expired execution episode evidence cleanup complete",
+                            deleted_evidence=deleted_evidence,
+                        )
 
                 cfg = self._housekeeping_cfg or {}
                 worker_result = await asyncio.to_thread(

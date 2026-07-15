@@ -7,8 +7,19 @@ from types import SimpleNamespace
 
 from octopal.infrastructure.config.models import LLMConfig, OctopalConfig
 from octopal.infrastructure.config.settings import Settings
-from octopal.infrastructure.store.models import WorkerRecord, WorkerTemplateRecord
-from octopal.runtime.workers.contracts import Capability, TaskRequest, WorkerResult
+from octopal.infrastructure.observability import (
+    TraceContext,
+    bind_trace_context,
+    reset_trace_context,
+)
+from octopal.infrastructure.store.models import (
+    PlanStepRecord,
+    ProceduralRecipeContext,
+    WorkerRecord,
+    WorkerTemplateRecord,
+    procedural_recipe_definition_fingerprint,
+)
+from octopal.runtime.workers.contracts import Capability, TaskRequest, WorkerResult, WorkerSpec
 from octopal.runtime.workers.runtime import (
     WorkerRuntime,
     _validate_worker_local_tool_call,
@@ -77,6 +88,78 @@ def test_runtime_blocks_user_communication_tools_for_workers(tmp_path: Path) -> 
     assert "octo_update_self" not in spec.available_tools
 
 
+def test_runtime_attaches_only_resolver_selected_recipe_context(
+    tmp_path: Path, monkeypatch
+) -> None:
+    template = WorkerTemplateRecord(
+        id="worker",
+        name="Worker",
+        description="Test worker",
+        system_prompt="Do work",
+        available_tools=["fs_read"],
+        required_permissions=["filesystem_read"],
+        max_thinking_steps=3,
+        default_timeout_seconds=30,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    definition = {
+        "applicability_conditions": [],
+        "required_capabilities": [],
+        "required_permissions": [],
+        "strategy_steps": ["Inspect first."],
+        "verification_contract": {"required_checks": ["structured_output"]},
+        "known_failures": [],
+        "invalidating_conditions": [],
+    }
+    recipe = ProceduralRecipeContext(
+        id=f"recipe_{'a' * 64}",
+        evaluation_id=f"recipe_eval_{'b' * 64}",
+        definition_fingerprint=procedural_recipe_definition_fingerprint(definition),
+        **definition,
+    )
+
+    class _Store:
+        def get_worker_template(self, worker_id: str):
+            return template
+
+    class _Policy:
+        def grant_capabilities(self, capabilities):
+            return capabilities
+
+    resolution: dict[str, object] = {}
+
+    def _resolve(_self, **kwargs):
+        resolution.update(kwargs)
+        return [recipe]
+
+    monkeypatch.setattr(
+        "octopal.runtime.workers.runtime.ProceduralRecipeService.resolve_for_worker",
+        _resolve,
+    )
+    runtime = WorkerRuntime(
+        store=_Store(),
+        policy=_Policy(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        mcp_manager=None,
+        settings=Settings(),
+    )
+    captured: dict[str, object] = {}
+
+    async def _fake_run(spec, approval_requester=None):
+        captured["spec"] = spec
+        return WorkerResult(summary="ok")
+
+    runtime.run = _fake_run  # type: ignore[method-assign]
+    asyncio.run(runtime.run_task(TaskRequest(worker_id="worker", task="hello")))
+
+    spec = captured["spec"]
+    assert spec.procedural_recipes == [recipe]
+    assert resolution["task"] == "hello"
+    assert resolution["effective_permissions"] == ["filesystem_read"]
+
+
 def test_runtime_uses_task_max_thinking_steps_override(tmp_path: Path) -> None:
     template = WorkerTemplateRecord(
         id="worker",
@@ -122,6 +205,59 @@ def test_runtime_uses_task_max_thinking_steps_override(tmp_path: Path) -> None:
 
     spec = captured["spec"]
     assert spec.max_thinking_steps == 19
+
+
+def test_runtime_forwards_programmatic_read_budget_to_worker_spec(tmp_path: Path) -> None:
+    template = WorkerTemplateRecord(
+        id="worker",
+        name="Worker",
+        description="Test worker",
+        system_prompt="Do work",
+        available_tools=["web_search"],
+        required_permissions=["network"],
+        model=None,
+        max_thinking_steps=3,
+        default_timeout_seconds=30,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    class _Store:
+        def get_worker_template(self, worker_id: str):
+            return template
+
+    class _Policy:
+        def grant_capabilities(self, capabilities):
+            return [Capability(type="network", scope="worker")]
+
+    runtime = WorkerRuntime(
+        store=_Store(),
+        policy=_Policy(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        mcp_manager=None,
+        settings=Settings(),
+    )
+    captured: dict[str, object] = {}
+
+    async def _fake_run(spec, approval_requester=None):
+        captured["spec"] = spec
+        return WorkerResult(summary="ok")
+
+    runtime.run = _fake_run  # type: ignore[method-assign]
+
+    asyncio.run(
+        runtime.run_task(
+            TaskRequest(
+                worker_id="worker",
+                task="hello",
+                programmatic_read_call_budget=2,
+            )
+        )
+    )
+
+    spec = captured["spec"]
+    assert spec.programmatic_read_call_budget == 2
 
 
 def test_runtime_allows_worker_manage_templates(tmp_path: Path) -> None:
@@ -726,6 +862,37 @@ def test_runtime_launch_env_includes_search_keys_from_config(tmp_path: Path, mon
     assert env["BRAVE_API_KEY"] == "brave-from-config"
 
 
+def test_runtime_launch_env_keeps_programmatic_search_key_host_side(tmp_path: Path) -> None:
+    settings = Settings(config_obj=OctopalConfig(search={"brave_api_key": "host-only-key"}))
+    runtime = WorkerRuntime(
+        store=object(),
+        policy=object(),
+        workspace_dir=tmp_path / "workspace",
+        launcher=object(),
+        settings=settings,
+    )
+    spec = WorkerSpec(
+        id="worker",
+        task="search",
+        inputs={},
+        system_prompt="search",
+        available_tools=["web_search"],
+        granted_capabilities=[],
+        timeout_seconds=30,
+        max_thinking_steps=3,
+        effective_permissions=["network"],
+        programmatic_read_call_budget=1,
+    )
+
+    env = runtime._build_worker_env(spec)
+    inconsistent_env = runtime._build_worker_env(
+        spec.model_copy(update={"effective_permissions": []})
+    )
+
+    assert "BRAVE_API_KEY" not in env
+    assert "BRAVE_API_KEY" not in inconsistent_env
+
+
 def test_runtime_launch_env_keeps_provider_secrets_out_of_worker_env(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1041,3 +1208,60 @@ def test_runtime_mcp_bridge_guard_allows_remote_tool_name_match() -> None:
     )
 
     assert error is None
+
+
+def test_runtime_binds_native_mcp_task_to_trace_turn_and_plan(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    plan_step = PlanStepRecord(
+        run_id="plan-1",
+        step_id="step-2",
+        seq=2,
+        kind="worker",
+        title="Run MCP task",
+        status="in_progress",
+        worker_run_id="worker-1",
+        created_at=now,
+        updated_at=now,
+    )
+
+    class _Store:
+        def get_plan_step_by_worker_run_id(self, worker_run_id: str, *, chat_id=None):
+            assert worker_run_id == "worker-1"
+            assert chat_id == 42
+            return plan_step
+
+    runtime = WorkerRuntime(
+        store=_Store(),
+        policy=object(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        mcp_manager=None,
+        settings=Settings(),
+        octo=SimpleNamespace(
+            get_worker_chat_id=lambda _worker_id: 42,
+            current_chat_turn_epoch=lambda _chat_id: 7,
+        ),
+    )
+    trace = TraceContext(
+        trace_id="trace-1",
+        root_trace_id="root-1",
+        session_id="session-1",
+        span_id="span-1",
+        worker_run_id="worker-1",
+    )
+    token = bind_trace_context(trace)
+    try:
+        context = asyncio.run(
+            runtime._build_mcp_task_context(SimpleNamespace(id="worker-1", correlation_id="corr-1"))
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert context.correlation_id == "corr-1"
+    assert context.trace_id == "trace-1"
+    assert context.span_id == "span-1"
+    assert context.worker_run_id == "worker-1"
+    assert context.chat_id == 42
+    assert context.chat_turn_id == "42:7"
+    assert context.plan_run_id == "plan-1"
+    assert context.plan_step_id == "step-2"

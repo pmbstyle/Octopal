@@ -1249,6 +1249,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiogram" },
     { name = "colorama" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "google-auth" },
     { name = "google-auth-oauthlib" },
@@ -1283,6 +1284,7 @@ requires-dist = [
     { name = "aiogram", specifier = ">=3.5.0" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=24.4.0" },
     { name = "colorama", specifier = ">=0.4.6" },
+    { name = "cryptography", specifier = ">=46.0.0" },
     { name = "fastapi", specifier = ">=0.110.0" },
     { name = "google-auth", specifier = ">=2.38.0" },
     { name = "google-auth-oauthlib", specifier = ">=1.2.0" },

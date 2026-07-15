@@ -41,7 +41,7 @@ def build_octo(settings: Settings) -> Octo:
 
     policy = PolicyEngine()
     launcher = build_launcher(settings)
-    mcp_manager = MCPManager(workspace_dir=settings.workspace_dir)
+    mcp_manager = MCPManager(workspace_dir=settings.workspace_dir, store=store)
     runtime = WorkerRuntime(
         store=store,
         policy=policy,

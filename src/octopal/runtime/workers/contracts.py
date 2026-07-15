@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from octopal.infrastructure.config.models import LLMConfig
+from octopal.infrastructure.store.models import AdaptationContext, ProceduralRecipeContext
+from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 
 
 class WorkerTemplate(BaseModel):
@@ -48,6 +50,40 @@ class TaskRequest(BaseModel):
     root_task_id: str | None = None
     spawn_depth: int = 0
     allowed_paths: list[str] | None = None  # Restricted workspace paths the worker can access
+    programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
+    memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
+
+    @field_validator("memory_influence_ids", mode="before")
+    @classmethod
+    def validate_memory_influence_ids(cls, value: object) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        return require_complete_memory_influence_ids(value)
+
+
+class WorkerInferenceBudget(BaseModel):
+    """Fail-closed inference budget attached to an isolated worker run."""
+
+    model_config = ConfigDict(frozen=True)
+
+    pricing_model: str = Field(min_length=1)
+    max_llm_calls: int = Field(gt=0)
+    max_tool_calls: int = Field(gt=0)
+    max_total_tokens: int = Field(gt=0)
+    max_cost_microusd: int = Field(gt=0)
+    input_cost_microusd_per_million_tokens: int = Field(ge=0)
+    completion_cost_microusd_per_million_tokens: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_budget(self) -> Self:
+        if not self.pricing_model.strip():
+            raise ValueError("pricing_model must not be blank")
+        if (
+            self.input_cost_microusd_per_million_tokens == 0
+            and self.completion_cost_microusd_per_million_tokens == 0
+        ):
+            raise ValueError("at least one token cost rate must be non-zero")
+        return self
 
 
 class WorkerSpec(BaseModel):
@@ -69,6 +105,8 @@ class WorkerSpec(BaseModel):
     granted_capabilities: list[dict[str, Any]]  # From policy engine
     timeout_seconds: int
     max_thinking_steps: int
+    strict_thinking_budget: bool = False
+    inference_budget: WorkerInferenceBudget | None = None
     run_id: str = ""
     lifecycle: str = "ephemeral"
     correlation_id: str | None = None
@@ -78,6 +116,37 @@ class WorkerSpec(BaseModel):
     spawn_depth: int = 0
     effective_permissions: list[str] = Field(default_factory=list)
     allowed_paths: list[str] | None = None
+    programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
+    memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
+    procedural_recipes: list[ProceduralRecipeContext] = Field(default_factory=list, max_length=1)
+    adaptations: list[AdaptationContext] = Field(default_factory=list, max_length=1)
+
+    @field_validator("memory_influence_ids", mode="before")
+    @classmethod
+    def validate_memory_influence_ids(cls, value: object) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        return require_complete_memory_influence_ids(value)
+
+    @model_validator(mode="after")
+    def validate_inference_budget(self) -> Self:
+        if self.adaptations and self.lifecycle != "benchmark":
+            raise ValueError("adaptation contexts are restricted to benchmark lifecycle")
+        if self.inference_budget is None:
+            return self
+        if not self.strict_thinking_budget:
+            raise ValueError("inference_budget requires strict_thinking_budget")
+        if self.max_thinking_steps <= 0 or self.max_thinking_steps > 6:
+            raise ValueError("budgeted max_thinking_steps must be between 1 and 6")
+        if self.inference_budget.max_llm_calls > 6:
+            raise ValueError("budgeted max_llm_calls must not exceed 6")
+        if self.inference_budget.max_tool_calls > 6:
+            raise ValueError("budgeted max_tool_calls must not exceed 6")
+        if self.programmatic_read_call_budget > self.inference_budget.max_tool_calls:
+            raise ValueError(
+                "programmatic_read_call_budget must not exceed budgeted max_tool_calls"
+            )
+        return self
 
 
 class KnowledgeProposal(BaseModel):

@@ -126,6 +126,18 @@ class Settings(BaseSettings):
     memory_min_score: float = Field(0.25, alias="OCTOPAL_MEMORY_MIN_SCORE")
     memory_max_chars: int = Field(2000, alias="OCTOPAL_MEMORY_MAX_CHARS")
     memory_owner_id: str = Field("default", alias="OCTOPAL_MEMORY_OWNER_ID")
+    episode_evidence_key: str | None = Field(
+        default=None,
+        alias="OCTOPAL_EPISODE_EVIDENCE_KEY",
+        exclude=True,
+        repr=False,
+    )
+    episode_evidence_retention_days: int = Field(
+        30,
+        alias="OCTOPAL_EPISODE_EVIDENCE_RETENTION_DAYS",
+        ge=1,
+        le=3650,
+    )
 
     gateway_host: str = Field("127.0.0.1", alias="OCTOPAL_GATEWAY_HOST")
     gateway_port: int = Field(8000, alias="OCTOPAL_GATEWAY_PORT")

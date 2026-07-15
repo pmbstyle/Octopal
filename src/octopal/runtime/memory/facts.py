@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from typing import Any, cast
 
 from octopal.infrastructure.store.base import Store
 from octopal.infrastructure.store.models import (
     MemoryEntry,
     MemoryFactRecord,
     MemoryFactSourceRecord,
+    MemoryOrigin,
 )
 from octopal.runtime.memory.service import infer_memory_facets
 from octopal.utils import utc_now
@@ -29,6 +31,26 @@ _LOW_SIGNAL_SUBJECTS = {
     "here",
     "there",
 }
+_MEMORY_ORIGINS = {
+    "direct_user",
+    "assistant_inference",
+    "local_runtime_evidence",
+    "worker",
+    "connector",
+    "mcp",
+    "web",
+    "document",
+    "imported_canon",
+}
+_QUARANTINED_ORIGINS = {
+    "assistant_inference",
+    "worker",
+    "connector",
+    "mcp",
+    "web",
+    "document",
+}
+_RETRIEVABLE_TRUST_STATES = ["corroborated", "trusted"]
 
 
 @dataclass
@@ -47,10 +69,11 @@ class FactsService:
             extracted = _extract_assertion(entry.content)
             if extracted is None:
                 return None
-            subject = subject or extracted["subject"]
-            value_text = value_text or extracted["value_text"]
+            subject = subject or cast(str, extracted["subject"])
+            value_text = value_text or cast(str, extracted["value_text"])
 
         now = utc_now()
+        source_kind = _memory_origin(entry)
         record = MemoryFactRecord(
             id=_fact_id(self.owner_id, "memory", entry.id, subject, "is", value_text, "candidate"),
             owner_id=self.owner_id,
@@ -61,10 +84,13 @@ class FactsService:
             fact_type="assertion",
             confidence=float(metadata.get("confidence", 0.5) or 0.5),
             status="candidate",
+            trust_state=(
+                "quarantined_candidate" if source_kind in _QUARANTINED_ORIGINS else "observed"
+            ),
             valid_from=entry.created_at,
             valid_to=None,
             facets=sorted(set(_clean_facets(metadata.get("memory_facets")))),
-            source_kind="memory",
+            source_kind=source_kind,
             source_ref=entry.id,
             created_at=entry.created_at,
             updated_at=now,
@@ -75,26 +101,32 @@ class FactsService:
                 fact_id=record.id,
                 memory_entry_uuid=entry.id,
                 canon_filename=None,
-                source_note="memory_candidate",
+                source_note=f"memory_candidate:{source_kind}",
                 created_at=now,
             )
         )
         return record
 
-    def sync_verified_facts_from_canon(self, filename: str, content: str) -> dict[str, int]:
+    def sync_verified_facts_from_canon(
+        self,
+        filename: str,
+        content: str,
+        *,
+        provenance: list[dict[str, Any]] | None = None,
+    ) -> dict[str, int]:
         parsed = self._parse_canon_facts(filename, content)
+        provenance_by_fact = self._canon_provenance_by_fact(filename, provenance or [])
         parsed_by_id = {record.id: record for record in parsed}
         existing_active = self.store.list_memory_facts(
             self.owner_id,
             limit=500,
             status="active",
-            source_kind="canon",
+            source_kind="imported_canon",
             source_ref=filename,
         )
 
         superseded = 0
         now = utc_now()
-        existing_ids = {record.id for record in existing_active}
         for existing in existing_active:
             if existing.id in parsed_by_id:
                 continue
@@ -103,25 +135,51 @@ class FactsService:
 
         for record in parsed:
             self.store.upsert_memory_fact(record)
-            if record.id not in existing_ids:
+            source_notes = provenance_by_fact.get(_fact_identity(record)) or ["canon_verified"]
+            for source_note in source_notes:
                 self.store.add_memory_fact_source(
                     MemoryFactSourceRecord(
                         fact_id=record.id,
                         memory_entry_uuid=None,
                         canon_filename=filename,
-                        source_note="canon_verified",
+                        source_note=source_note,
                         created_at=now,
                     )
                 )
 
         return {"active": len(parsed), "superseded": superseded}
 
+    def _canon_provenance_by_fact(
+        self,
+        filename: str,
+        provenance: list[dict[str, Any]],
+    ) -> dict[tuple[str, str, str], list[str]]:
+        result: dict[tuple[str, str, str], list[str]] = {}
+        for event in provenance:
+            content = event.get("content")
+            if not isinstance(content, str) or not content:
+                continue
+            event_id = str(event.get("event_id") or "").strip()
+            source_kind = str(event.get("source_kind") or "imported_canon").strip()
+            source_ref = str(event.get("source_ref") or "").strip()
+            if event_id:
+                note = f"canon_event:{event_id}:{source_kind}"
+            elif source_ref:
+                note = f"canon_import:{source_kind}:{source_ref[:120]}"
+            else:
+                note = f"canon_import:{source_kind}"
+            for record in self._parse_canon_facts(filename, content):
+                notes = result.setdefault(_fact_identity(record), [])
+                if note not in notes:
+                    notes.append(note)
+        return result
+
     def prune_unsupported_canon_facts(self) -> int:
         active = self.store.list_memory_facts(
             self.owner_id,
             limit=500,
             status="active",
-            source_kind="canon",
+            source_kind="imported_canon",
         )
         now = utc_now()
         pruned = 0
@@ -139,6 +197,22 @@ class FactsService:
         memory_facets: list[str] | None = None,
         limit: int = 3,
     ) -> list[str]:
+        return [
+            _format_fact(record)
+            for record in self.get_relevant_fact_records(
+                query,
+                memory_facets=memory_facets,
+                limit=limit,
+            )
+        ]
+
+    def get_relevant_fact_records(
+        self,
+        query: str,
+        *,
+        memory_facets: list[str] | None = None,
+        limit: int = 3,
+    ) -> list[MemoryFactRecord]:
         tokens = _tokenize(query)
         if not tokens:
             return []
@@ -147,6 +221,7 @@ class FactsService:
             self.owner_id,
             limit=max(limit * 12, 50),
             status="active",
+            trust_states=_RETRIEVABLE_TRUST_STATES,
         )
         if not active:
             return []
@@ -178,7 +253,7 @@ class FactsService:
             )
 
         scored.sort(key=lambda item: item[0], reverse=True)
-        return [_format_fact(record) for _, record in scored[:limit]]
+        return [record for _, record in scored[:limit]]
 
     def _parse_canon_facts(self, filename: str, content: str) -> list[MemoryFactRecord]:
         if filename not in _SUPPORTED_CANON_FACT_FILES:
@@ -207,23 +282,24 @@ class FactsService:
                     self.owner_id,
                     "canon",
                     filename,
-                    assertion["subject"],
+                    cast(str, assertion["subject"]),
                     "is_not" if assertion["negated"] else "is",
-                    assertion["value_text"],
+                    cast(str, assertion["value_text"]),
                     "active",
                 ),
                 owner_id=self.owner_id,
-                subject=assertion["subject"],
+                subject=cast(str, assertion["subject"]),
                 key="is_not" if assertion["negated"] else "is",
-                value_text=assertion["value_text"],
+                value_text=cast(str, assertion["value_text"]),
                 value_json=None,
                 fact_type=filename.replace(".md", ""),
                 confidence=0.95,
                 status="active",
+                trust_state="trusted",
                 valid_from=now,
                 valid_to=None,
                 facets=sorted(facets),
-                source_kind="canon",
+                source_kind="imported_canon",
                 source_ref=filename,
                 created_at=now,
                 updated_at=now,
@@ -235,6 +311,10 @@ class FactsService:
 def _format_fact(record: MemoryFactRecord) -> str:
     source = f" ({record.source_ref})" if record.source_ref else ""
     return f"{record.subject} {record.key.replace('_', ' ')} {record.value_text}{source}"
+
+
+def _fact_identity(record: MemoryFactRecord) -> tuple[str, str, str]:
+    return (record.subject, record.key, record.value_text)
 
 
 def _fact_id(
@@ -291,6 +371,22 @@ def _clean_facets(value: object) -> list[str]:
         if text:
             result.append(text)
     return result
+
+
+def _memory_origin(entry: MemoryEntry) -> MemoryOrigin:
+    metadata = entry.metadata or {}
+    explicit = str(metadata.get("memory_origin") or "").strip().lower()
+    if explicit in _MEMORY_ORIGINS:
+        return cast(MemoryOrigin, explicit)
+    if metadata.get("worker_result"):
+        return "worker"
+    if metadata.get("mcp_long_task"):
+        return "mcp"
+    if entry.role == "user":
+        return "direct_user"
+    if entry.role == "assistant":
+        return "assistant_inference"
+    return "local_runtime_evidence"
 
 
 def _tokenize(value: str) -> set[str]:

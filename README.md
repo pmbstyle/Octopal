@@ -407,6 +407,17 @@ Memory maintenance:
 ```bash
 uv run octopal memory stats
 uv run octopal memory cleanup --dry-run
+uv run octopal memory proposals list
+uv run octopal memory proposals show <proposal-id>
+uv run octopal memory proposals promote <proposal-id> --yes
+uv run octopal memory proposals deprecate <proposal-id> --yes
+uv run octopal memory recipes propose <definition.json> --include-matching
+uv run octopal memory recipes list
+uv run octopal memory recipes show <recipe-id>
+uv run octopal memory recipes context <recipe-id> --json
+uv run octopal memory recipes evaluate <recipe-id> <baseline.json> <candidate.json>
+uv run octopal memory recipes promote <recipe-id> --yes
+uv run octopal memory recipes deprecate <recipe-id> --yes
 ```
 
 ## 💻 Development
@@ -425,6 +436,13 @@ Build the dashboard manually:
 cd webapp
 npm install
 npm run build
+```
+
+Run a preflight-only tool-call argument benchmark without executing any tools or making a model
+request:
+
+```bash
+uv run python scripts/tool_call_bench.py --suite <suite.json> --config <test-config.json> --preflight-only
 ```
 
 GitHub releases use date-based versions in `src/octopal/_version.py` and tags like `vYYYY.MM.DD` or `vYYYY.MM.DD.N`.

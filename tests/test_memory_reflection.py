@@ -39,7 +39,7 @@ def test_reflection_service_builds_wakeup_context(tmp_path: Path) -> None:
 def test_build_octo_prompt_includes_reflection_on_wakeup(tmp_path: Path) -> None:
     store = SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
     reflection = ReflectionService(store=store, owner_id="default")
-    reflection.record_context_reset(
+    record = reflection.record_context_reset(
         5,
         {
             "reason": "context overloaded",
@@ -63,6 +63,7 @@ def test_build_octo_prompt_includes_reflection_on_wakeup(tmp_path: Path) -> None
             return ""
 
     async def scenario() -> None:
+        selected_ids: list[str] = []
         messages = await build_octo_prompt(
             store=store,
             memory=DummyMemory(),
@@ -72,6 +73,7 @@ def test_build_octo_prompt_includes_reflection_on_wakeup(tmp_path: Path) -> None
             bootstrap_context="",
             wake_notice="You woke up after a reset.",
             reflection=reflection,
+            memory_influence_ids=selected_ids,
         )
         merged = "\n".join(
             str(message.content) for message in messages if isinstance(message.content, str)
@@ -79,6 +81,7 @@ def test_build_octo_prompt_includes_reflection_on_wakeup(tmp_path: Path) -> None
         assert "Wake-up directive after context reset:" in merged
         assert "Recent reflection relevant to this wake-up:" in merged
         assert "Resume the task." in merged
+        assert selected_ids == [f"octo_diary:{record.id}"]
 
     asyncio.run(scenario())
 

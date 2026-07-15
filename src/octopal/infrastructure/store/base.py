@@ -4,8 +4,15 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from octopal.infrastructure.store.models import (
+    AdaptationCandidateRecord,
+    AdaptationEvaluationRecord,
+    AdaptationFailureClusterRecord,
     AuditEvent,
+    ExecutionEpisodeEvidenceMetadata,
+    ExecutionEpisodeEvidenceRecord,
+    ExecutionEpisodeRecord,
     IntentRecord,
+    MCPTaskRecord,
     MemoryEntry,
     MemoryFactRecord,
     MemoryFactSourceRecord,
@@ -15,6 +22,8 @@ from octopal.infrastructure.store.models import (
     PlanEventRecord,
     PlanRunRecord,
     PlanStepRecord,
+    ProceduralRecipeEvaluationRecord,
+    ProceduralRecipeRecord,
     WorkerRecord,
     WorkerTemplateRecord,
 )
@@ -46,6 +55,138 @@ class Store(Protocol):
 
     def list_workers(self) -> list[WorkerRecord]: ...
 
+    def add_execution_episode(self, record: ExecutionEpisodeRecord) -> None: ...
+
+    def add_execution_episode_bundle(
+        self,
+        record: ExecutionEpisodeRecord,
+        evidence: ExecutionEpisodeEvidenceRecord,
+    ) -> None: ...
+
+    def get_execution_episode(self, episode_id: str) -> ExecutionEpisodeRecord | None: ...
+
+    def list_execution_episodes(
+        self,
+        *,
+        worker_run_id: str | None = None,
+        limit: int = 100,
+    ) -> list[ExecutionEpisodeRecord]: ...
+
+    def list_execution_episodes_for_task(
+        self,
+        task_fingerprint: str,
+        *,
+        capability_fingerprint: str | None = None,
+        limit: int = 16,
+    ) -> list[ExecutionEpisodeRecord]: ...
+
+    def add_adaptation_failure_cluster_with_audit(
+        self, record: AdaptationFailureClusterRecord, event: AuditEvent
+    ) -> bool: ...
+
+    def get_adaptation_failure_cluster(
+        self, cluster_id: str
+    ) -> AdaptationFailureClusterRecord | None: ...
+
+    def add_adaptation_candidate_with_audit(
+        self, record: AdaptationCandidateRecord, event: AuditEvent
+    ) -> bool: ...
+
+    def get_adaptation_candidate(self, candidate_id: str) -> AdaptationCandidateRecord | None: ...
+
+    def list_adaptation_candidates(
+        self,
+        *,
+        kind: str | None = None,
+        target: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[AdaptationCandidateRecord]: ...
+
+    def add_adaptation_evaluation_with_audit(
+        self, record: AdaptationEvaluationRecord, event: AuditEvent
+    ) -> bool: ...
+
+    def get_adaptation_evaluation(
+        self, evaluation_id: str
+    ) -> AdaptationEvaluationRecord | None: ...
+
+    def get_latest_adaptation_evaluation(
+        self, candidate_id: str
+    ) -> AdaptationEvaluationRecord | None: ...
+
+    def activate_adaptation_candidate_with_audit(
+        self,
+        candidate_id: str,
+        *,
+        expected_statuses: list[str],
+        evaluation_id: str,
+        updated_at: datetime,
+        event: AuditEvent,
+    ) -> bool: ...
+
+    def add_procedural_recipe_with_audit(
+        self, record: ProceduralRecipeRecord, event: AuditEvent
+    ) -> bool: ...
+
+    def get_procedural_recipe(self, recipe_id: str) -> ProceduralRecipeRecord | None: ...
+
+    def list_procedural_recipes(
+        self, *, status: str | None = None, limit: int = 100
+    ) -> list[ProceduralRecipeRecord]: ...
+
+    def transition_procedural_recipe_with_audit(
+        self,
+        recipe_id: str,
+        *,
+        expected_statuses: list[str],
+        new_status: str,
+        updated_at: datetime,
+        event: AuditEvent,
+    ) -> bool: ...
+
+    def add_procedural_recipe_evaluation_with_audit(
+        self, record: ProceduralRecipeEvaluationRecord, event: AuditEvent
+    ) -> bool: ...
+
+    def get_latest_procedural_recipe_evaluation(
+        self, recipe_id: str
+    ) -> ProceduralRecipeEvaluationRecord | None: ...
+
+    def get_procedural_recipe_evaluation(
+        self, evaluation_id: str
+    ) -> ProceduralRecipeEvaluationRecord | None: ...
+
+    def record_procedural_recipe_outcome_with_audit(
+        self,
+        recipe_id: str,
+        *,
+        episode_id: str,
+        succeeded: bool,
+        validated_at: datetime,
+        event: AuditEvent,
+    ) -> bool: ...
+
+    def get_execution_episode_evidence(
+        self, episode_id: str
+    ) -> ExecutionEpisodeEvidenceRecord | None: ...
+
+    def get_execution_episode_evidence_metadata(
+        self, episode_id: str
+    ) -> ExecutionEpisodeEvidenceMetadata | None: ...
+
+    def delete_execution_episode_evidence(self, episode_id: str) -> bool: ...
+
+    def delete_execution_episode_evidence_with_audit(
+        self,
+        episode_id: str,
+        event: AuditEvent,
+    ) -> bool: ...
+
+    def cleanup_expired_execution_episode_evidence(self, now: datetime) -> int: ...
+
+    def secure_purge_evidence_storage(self) -> None: ...
+
     def upsert_worker_template(self, record: WorkerTemplateRecord) -> None: ...
 
     def list_worker_templates(self) -> list[WorkerTemplateRecord]: ...
@@ -65,6 +206,18 @@ class Store(Protocol):
     def get_permit(self, permit_id: str, now: datetime) -> PermitRecord | None: ...
 
     def append_audit(self, event: AuditEvent) -> None: ...
+
+    def upsert_mcp_task(self, record: MCPTaskRecord) -> None: ...
+
+    def get_mcp_task(self, task_record_id: str) -> MCPTaskRecord | None: ...
+
+    def list_recoverable_mcp_tasks(
+        self,
+        *,
+        server_id: str | None = None,
+        auth_context_id: str | None = None,
+        limit: int = 100,
+    ) -> list[MCPTaskRecord]: ...
 
     def list_audit(self, limit: int = 100) -> list[AuditEvent]: ...
 
@@ -107,6 +260,7 @@ class Store(Protocol):
         key: str | None = None,
         source_kind: str | None = None,
         source_ref: str | None = None,
+        trust_states: list[str] | None = None,
     ) -> list[MemoryFactRecord]: ...
 
     def invalidate_memory_fact(

@@ -7,7 +7,7 @@ from octopal.tools.memory.canon import manage_canon
 
 class DummyCanon:
     def __init__(self) -> None:
-        self.writes: list[tuple[str, str, str]] = []
+        self.writes: list[tuple[str, str, str, str, str | None]] = []
 
     def list_files(self) -> list[str]:
         return ["facts.md", "decisions.md", "failures.md", "weather.md"]
@@ -15,9 +15,17 @@ class DummyCanon:
     def read_canon(self, filename: str) -> str:
         return f"read:{filename}"
 
-    async def write_canon(self, filename: str, content: str, mode: str) -> str:
-        self.writes.append((filename, content, mode))
-        return "Success"
+    async def write_canon(
+        self,
+        filename: str,
+        content: str,
+        mode: str,
+        *,
+        source_kind: str,
+        source_ref: str | None,
+    ) -> str:
+        self.writes.append((filename, content, mode, source_kind, source_ref))
+        return "Quarantined canon proposal: canon_test"
 
 
 class DummyOcto:
@@ -52,7 +60,7 @@ def test_manage_canon_rejects_non_canon_weather_artifacts() -> None:
     assert octo.canon.writes == []
 
 
-def test_manage_canon_still_writes_supported_files() -> None:
+def test_manage_canon_quarantines_supported_writes_with_route_provenance() -> None:
     octo = DummyOcto()
 
     result = asyncio.run(
@@ -63,9 +71,13 @@ def test_manage_canon_still_writes_supported_files() -> None:
                 "content": "# Facts",
                 "mode": "overwrite",
             },
-            {"octo": octo},
+            {
+                "octo": octo,
+                "memory_origin": "worker",
+                "correlation_id": "worker-run-1",
+            },
         )
     )
 
-    assert result == "Success"
-    assert octo.canon.writes == [("facts.md", "# Facts", "overwrite")]
+    assert result == "Quarantined canon proposal: canon_test"
+    assert octo.canon.writes == [("facts.md", "# Facts", "overwrite", "worker", "worker-run-1")]

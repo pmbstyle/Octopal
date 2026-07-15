@@ -289,6 +289,44 @@ def test_complete_with_tools_downgrades_response_format_to_json_object(monkeypat
     )
 
 
+def test_budgeted_complete_with_tools_uses_exactly_one_provider_attempt(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def _fake_acompletion(**kwargs):
+        calls.append(dict(kwargs))
+        raise RuntimeError("response_format unsupported")
+
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion", _fake_acompletion
+    )
+    LiteLLMProvider._tool_response_format_modes.clear()
+    provider = LiteLLMProvider(_settings())
+
+    try:
+        asyncio.run(
+            provider.complete_with_tools(
+                [{"role": "user", "content": "hello"}],
+                tools=[{"type": "function", "function": {"name": "dummy"}}],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "worker_result", "schema": {"type": "object"}},
+                },
+                max_tokens=100,
+                strict_single_attempt=True,
+            )
+        )
+    except RuntimeError as exc:
+        assert "LiteLLM completion with tools failed" in str(exc)
+    else:
+        raise AssertionError("expected strict provider attempt to fail")
+
+    assert len(calls) == 1
+    assert calls[0]["max_tokens"] == 100
+    assert calls[0]["num_retries"] == 0
+    assert calls[0]["fallbacks"] is None
+    assert "strict_single_attempt" not in calls[0]
+
+
 def test_complete_with_tools_reuses_cached_response_format_mode(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 

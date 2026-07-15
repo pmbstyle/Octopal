@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -27,6 +27,7 @@ import structlog
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.mcp.manager import MCPManager
+from octopal.infrastructure.mcp.tasks import MCPTaskContext
 from octopal.infrastructure.observability.base import (
     TraceSink,
     bind_trace_context,
@@ -39,6 +40,12 @@ from octopal.infrastructure.store.base import Store
 from octopal.infrastructure.store.models import AuditEvent, WorkerRecord, WorkerTemplateRecord
 from octopal.runtime.housekeeping import remove_tree_with_retries
 from octopal.runtime.intents.types import ActionIntent
+from octopal.runtime.memory.episode_evidence import (
+    EpisodeEvidenceCipher,
+    build_encrypted_worker_episode_evidence,
+)
+from octopal.runtime.memory.episodes import build_worker_execution_episode
+from octopal.runtime.memory.recipes import ProceduralRecipeService
 from octopal.runtime.policy.engine import PolicyEngine
 from octopal.runtime.tool_errors import ToolBridgeError
 from octopal.runtime.workers.contracts import (
@@ -50,6 +57,12 @@ from octopal.runtime.workers.contracts import (
     WorkerSpec,
 )
 from octopal.runtime.workers.launcher import DockerLauncher, WorkerLauncher
+from octopal.runtime.workers.programmatic_bridge import (
+    ProgrammaticReadBridgeOutcome,
+    handle_programmatic_read_bridge_request,
+    programmatic_read_proxy_tool_names,
+    safe_programmatic_read_request_id,
+)
 from octopal.utils import utc_now
 
 logger = structlog.get_logger(__name__)
@@ -181,6 +194,17 @@ class WorkerRuntime:
     _running: dict[str, asyncio.subprocess.Process] = field(default_factory=dict)
     _stop_requests: set[str] = field(default_factory=set)
     _instruction_waiters: dict[tuple[str, str], asyncio.Future[str]] = field(default_factory=dict)
+    _programmatic_read_calls_used: dict[str, int] = field(default_factory=dict)
+    _episode_evidence_cipher: EpisodeEvidenceCipher | None = field(
+        init=False,
+        repr=False,
+        default=None,
+    )
+
+    def __post_init__(self) -> None:
+        encoded_key = self.settings.episode_evidence_key
+        if encoded_key:
+            self._episode_evidence_cipher = EpisodeEvidenceCipher.from_encoded_key(encoded_key)
 
     async def run_task(
         self,
@@ -349,6 +373,24 @@ class WorkerRuntime:
         # Resolve worker LLM configuration
         llm_config = self._resolve_worker_llm_config(template, task_request)
 
+        granted_payload = [c.model_dump() for c in granted]
+        procedural_recipes = []
+        try:
+            procedural_recipes = await asyncio.to_thread(
+                ProceduralRecipeService(self.store).resolve_for_worker,
+                task=task_request.task,
+                inputs=task_request.inputs,
+                granted_capabilities=granted_payload,
+                effective_permissions=granted_permission_names,
+                available_tools=requested_tool_names,
+                mcp_tools=mcp_tools_data,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Procedural recipe resolution failed closed",
+                error_type=type(exc).__name__,
+            )
+
         # Create worker spec
         worker_id = task_request.run_id or str(uuid.uuid4())
         spec = WorkerSpec(
@@ -363,7 +405,7 @@ class WorkerRuntime:
             mcp_tools=mcp_tools_data,
             model=template.model,
             llm_config=llm_config,
-            granted_capabilities=[c.model_dump() for c in granted],
+            granted_capabilities=granted_payload,
             timeout_seconds=task_request.timeout_seconds or template.default_timeout_seconds,
             max_thinking_steps=task_request.max_thinking_steps or template.max_thinking_steps,
             run_id=task_request.run_id or worker_id,
@@ -375,6 +417,9 @@ class WorkerRuntime:
             spawn_depth=task_request.spawn_depth,
             effective_permissions=granted_permission_names,
             allowed_paths=task_request.allowed_paths,
+            programmatic_read_call_budget=task_request.programmatic_read_call_budget,
+            memory_influence_ids=task_request.memory_influence_ids,
+            procedural_recipes=procedural_recipes,
         )
 
         # Run worker
@@ -503,6 +548,7 @@ class WorkerRuntime:
             "lineage_id": spec.lineage_id,
             "parent_worker_id": spec.parent_worker_id,
             "spawn_depth": spec.spawn_depth,
+            "procedural_recipe_count": len(spec.procedural_recipes),
         }
         if trace_sink is not None and parent_trace_ctx is not None:
             worker_trace_ctx = await trace_sink.start_span(
@@ -570,6 +616,7 @@ class WorkerRuntime:
         max_attempts = 1 + _MAX_RECOVERY_ATTEMPTS
         last_error: Exception | None = None
         result: WorkerResult | None = None
+        self._programmatic_read_calls_used[spec.id] = 0
 
         try:
             pinchtab_session_id, pinchtab_session_token = await self._prepare_pinchtab_worker_env(
@@ -674,6 +721,12 @@ class WorkerRuntime:
                 }
             if str(result.status).strip().lower() == "failed":
                 worker_trace_status = "error"
+            await self._record_execution_episode(
+                spec=spec,
+                result=result,
+                stored_output=result.output,
+                worker_status="failed" if result.status == "failed" else "completed",
+            )
             worker_trace_output = {
                 "status": result.status,
                 "summary_preview": safe_preview(result.summary, limit=240),
@@ -698,6 +751,15 @@ class WorkerRuntime:
                 summary="Worker stopped.",
                 error="Worker stop requested.",
             )
+            stopped_result = WorkerResult(
+                status="failed", summary="Worker stopped.", output={"stopped": True}
+            )
+            await self._record_execution_episode(
+                spec=spec,
+                result=stopped_result,
+                stored_output=stopped_result.output,
+                worker_status="stopped",
+            )
             await self._append_audit(
                 "worker_stopped",
                 level="warning",
@@ -719,15 +781,23 @@ class WorkerRuntime:
                 "recovery_attempts": attempts,
                 "recovered": attempts > 1,
             }
-            return WorkerResult(
-                status="failed", summary="Worker stopped.", output={"stopped": True}
-            )
+            return stopped_result
         except TimeoutError:
             await asyncio.to_thread(self.store.update_worker_status, spec.id, "failed")
             await asyncio.to_thread(
                 self.store.update_worker_result,
                 spec.id,
                 error=f"Worker timed out after recovery attempts ({attempts}/{max_attempts})",
+            )
+            await self._record_execution_episode(
+                spec=spec,
+                result=WorkerResult(
+                    status="failed",
+                    summary="Worker timed out after recovery attempts.",
+                    output={"reason": "timeout"},
+                ),
+                stored_output={"reason": "timeout"},
+                worker_status="failed",
             )
             await self._append_audit(
                 "worker_failed",
@@ -748,6 +818,16 @@ class WorkerRuntime:
                 spec.id,
                 error=f"Worker failed after recovery attempts: {exc}",
             )
+            await self._record_execution_episode(
+                spec=spec,
+                result=WorkerResult(
+                    status="failed",
+                    summary="Worker failed after recovery attempts.",
+                    output={"reason": "exception", "error_type": type(exc).__name__},
+                ),
+                stored_output={"reason": "exception", "error_type": type(exc).__name__},
+                worker_status="failed",
+            )
             await self._append_audit(
                 "worker_failed",
                 level="error",
@@ -765,6 +845,7 @@ class WorkerRuntime:
                 raise RuntimeError(f"Worker failed after recovery attempts: {last_error}") from None
             raise
         finally:
+            self._programmatic_read_calls_used.pop(spec.id, None)
             if pinchtab_session_token is not None:
                 await self._close_pinchtab_worker_tabs(
                     pinchtab_session_token, pinchtab_ownership_file
@@ -860,7 +941,12 @@ class WorkerRuntime:
         if isinstance(self.launcher, DockerLauncher) and self.settings.webclaw_enabled:
             env["OCTOPAL_WEBCLAW_BINARY"] = "webclaw"
 
-        tool_env = _tool_env_from_settings(self.settings, spec.available_tools)
+        host_proxy_tools = programmatic_read_proxy_tool_names(spec)
+        tool_env = _tool_env_from_settings(
+            self.settings,
+            spec.available_tools,
+            host_proxy_tools=host_proxy_tools,
+        )
         env.update(tool_env)
 
         return env
@@ -1018,6 +1104,41 @@ class WorkerRuntime:
         except Exception:
             logger.debug("Failed to resolve worker chat id", worker_id=worker_id, exc_info=True)
             return 0
+
+    async def _build_mcp_task_context(self, spec: WorkerSpec) -> MCPTaskContext:
+        chat_id = self._resolve_octo_chat_id(spec.id)
+        plan_step = None
+        plan_resolver = getattr(self.store, "get_plan_step_by_worker_run_id", None)
+        if callable(plan_resolver):
+            plan_step = await asyncio.to_thread(
+                plan_resolver,
+                spec.id,
+                chat_id=chat_id or None,
+            )
+        chat_turn_id: str | None = None
+        if chat_id and self.octo is not None:
+            turn_resolver = getattr(self.octo, "current_chat_turn_epoch", None)
+            if callable(turn_resolver):
+                try:
+                    chat_turn_id = f"{chat_id}:{int(turn_resolver(chat_id))}"
+                except Exception:
+                    logger.debug(
+                        "Failed to resolve MCP task chat turn",
+                        worker_id=spec.id,
+                        chat_id=chat_id,
+                        exc_info=True,
+                    )
+        trace_context = get_current_trace_context()
+        return MCPTaskContext(
+            correlation_id=spec.correlation_id or spec.id,
+            trace_id=trace_context.trace_id if trace_context is not None else None,
+            span_id=trace_context.span_id if trace_context is not None else None,
+            worker_run_id=spec.id,
+            chat_id=chat_id or None,
+            chat_turn_id=chat_turn_id,
+            plan_run_id=plan_step.run_id if plan_step is not None else None,
+            plan_step_id=plan_step.step_id if plan_step is not None else None,
+        )
 
     async def _read_loop_with_active_timeout(
         self,
@@ -1399,7 +1520,7 @@ class WorkerRuntime:
         buffer = b""
 
         async def _handle_line(line: bytes) -> WorkerResult | None:
-            nonlocal invalid_lines, consecutive_invalid_lines, invalid_limit_reached
+            nonlocal consecutive_invalid_lines, invalid_limit_reached, invalid_lines
             payload = _safe_parse_json(line)
             if payload is None:
                 text_line = line.decode("utf-8", errors="replace").strip()
@@ -1425,6 +1546,44 @@ class WorkerRuntime:
                     return None
                 log_method = getattr(logger, level, logger.debug)
                 log_method("Worker %s: %s", spec.id, message)
+                return None
+            if msg_type == "programmatic_read_batch":
+                call_budget = int(spec.programmatic_read_call_budget)
+                programmatic_read_calls_used = self._programmatic_read_calls_used.get(spec.id, 0)
+                remaining_calls = max(0, call_budget - programmatic_read_calls_used)
+                try:
+                    outcome = await handle_programmatic_read_bridge_request(
+                        spec=spec,
+                        payload=payload,
+                        remaining_calls=remaining_calls,
+                        ctx={
+                            "base_dir": self.workspace_dir,
+                            "worker": SimpleNamespace(spec=spec),
+                            "search_credentials": _search_credentials_from_settings(self.settings),
+                        },
+                    )
+                except Exception:
+                    logger.exception(
+                        "Programmatic read bridge failed",
+                        worker_id=spec.id,
+                    )
+                    self._programmatic_read_calls_used[spec.id] = call_budget
+                    outcome = ProgrammaticReadBridgeOutcome(
+                        response={
+                            "type": "programmatic_read_batch_result",
+                            "request_id": safe_programmatic_read_request_id(payload),
+                            "ok": False,
+                            "remaining_calls": 0,
+                            "error": {"code": "bridge_internal_error"},
+                        },
+                        consumed_calls=remaining_calls,
+                    )
+                else:
+                    self._programmatic_read_calls_used[spec.id] = min(
+                        call_budget,
+                        programmatic_read_calls_used + outcome.consumed_calls,
+                    )
+                await self._write_to_worker(process, outcome.response)
                 return None
             if msg_type == "octo_tool_call":
                 if not self.octo:
@@ -1477,14 +1636,16 @@ class WorkerRuntime:
                         "worker": SimpleNamespace(spec=spec),
                     }
                     if spec_tool.is_async:
-                        result = spec_tool.handler(arguments, tool_ctx)
-                        if inspect.isawaitable(result):
-                            result = await result
+                        tool_result = spec_tool.handler(arguments, tool_ctx)
+                        if inspect.isawaitable(tool_result):
+                            tool_result = await tool_result
                     else:
-                        result = await asyncio.to_thread(spec_tool.handler, arguments, tool_ctx)
+                        tool_result = await asyncio.to_thread(
+                            spec_tool.handler, arguments, tool_ctx
+                        )
                     await self._write_to_worker(
                         process,
-                        {"type": "octo_tool_result", "ok": True, "result": result},
+                        {"type": "octo_tool_result", "ok": True, "result": tool_result},
                     )
                 except Exception as exc:
                     await self._write_to_worker(
@@ -1494,12 +1655,12 @@ class WorkerRuntime:
                 return None
             if msg_type == "mcp_call":
                 server_id = payload.get("server_id")
-                tool_name = payload.get("tool_name")
+                mcp_tool_name = payload.get("tool_name")
                 args = payload.get("arguments", {})
                 mcp_tool_error = _validate_worker_mcp_tool_call(
                     spec=spec,
                     server_id=server_id,
-                    tool_name=tool_name,
+                    tool_name=mcp_tool_name,
                 )
                 if mcp_tool_error is not None:
                     await self._write_to_worker(
@@ -1514,7 +1675,8 @@ class WorkerRuntime:
                     )
                     return None
 
-                session = self.mcp_manager.sessions.get(server_id)
+                server_key = str(server_id)
+                session = self.mcp_manager.sessions.get(server_key)
                 if not session:
                     try:
                         await self.mcp_manager.ensure_configured_servers_connected([str(server_id)])
@@ -1523,10 +1685,10 @@ class WorkerRuntime:
                             "Failed to restore MCP session for worker call",
                             worker_id=spec.id,
                             server_id=server_id,
-                            tool=tool_name,
+                            tool=mcp_tool_name,
                             exc_info=True,
                         )
-                    session = self.mcp_manager.sessions.get(server_id)
+                    session = self.mcp_manager.sessions.get(server_key)
                 if not session:
                     await self._write_to_worker(
                         process,
@@ -1539,18 +1701,19 @@ class WorkerRuntime:
                         "Executing MCP call for worker",
                         worker_id=spec.id,
                         server_id=server_id,
-                        tool=tool_name,
+                        tool=mcp_tool_name,
                     )
-                    result = await self.mcp_manager.call_tool(
+                    mcp_result = await self.mcp_manager.call_tool(
                         str(server_id),
-                        str(tool_name),
+                        str(mcp_tool_name),
                         args,
                         allow_name_fallback=True,
+                        task_context=await self._build_mcp_task_context(spec),
                     )
                     # Convert MCP content objects to something serializable
                     content = [
                         c.model_dump() if hasattr(c, "model_dump") else str(c)
-                        for c in result.content
+                        for c in mcp_result.content
                     ]
                     await self._write_to_worker(process, {"type": "mcp_result", "result": content})
                 except Exception as e:
@@ -1588,6 +1751,8 @@ class WorkerRuntime:
                             payload_hash=action_intent.payload_hash,
                             risk=action_intent.risk,
                             requires_approval=action_intent.requires_approval,
+                            memory_influence_ids=spec.memory_influence_ids,
+                            procedural_recipe_ids=[recipe.id for recipe in spec.procedural_recipes],
                             status="pending",
                             created_at=utc_now(),
                         ),
@@ -1747,7 +1912,7 @@ class WorkerRuntime:
             if msg_type == "result":
                 raw_result = payload.get("result", {})
                 repaired_result = _repair_worker_result_payload(raw_result)
-                result = WorkerResult.model_validate(repaired_result)
+                worker_result: WorkerResult = WorkerResult.model_validate(repaired_result)
                 if raw_result != repaired_result:
                     await self._append_audit(
                         "worker_result_repaired",
@@ -1755,21 +1920,26 @@ class WorkerRuntime:
                         correlation_id=spec.id,
                         data={"reason": "malformed_worker_result_payload"},
                     )
-                worker_status = "failed" if result.status == "failed" else "completed"
+                worker_status = "failed" if worker_result.status == "failed" else "completed"
+                stored_output = _merge_existing_orchestration_plan_output(
+                    self.store,
+                    spec.id,
+                    worker_result.output,
+                )
                 await asyncio.to_thread(self.store.update_worker_status, spec.id, worker_status)
                 await asyncio.to_thread(
                     self.store.update_worker_result,
                     spec.id,
-                    summary=result.summary,
-                    output=_merge_existing_orchestration_plan_output(
-                        self.store,
-                        spec.id,
-                        result.output,
+                    summary=worker_result.summary,
+                    output=stored_output,
+                    error=(
+                        _worker_result_error_text(worker_result)
+                        if worker_status == "failed"
+                        else None
                     ),
-                    error=_worker_result_error_text(result) if worker_status == "failed" else None,
-                    tools_used=result.tools_used,
+                    tools_used=worker_result.tools_used,
                 )
-                return result
+                return worker_result
             return None
 
         while True:
@@ -1803,6 +1973,103 @@ class WorkerRuntime:
             self.store.update_worker_result, spec.id, error="Worker exited without result"
         )
         raise RuntimeError("Worker exited without result")
+
+    async def _record_execution_episode(
+        self,
+        *,
+        spec: WorkerSpec,
+        result: WorkerResult,
+        stored_output: dict[str, Any] | None,
+        worker_status: Literal["completed", "failed", "stopped"],
+    ) -> None:
+        add_execution_episode = getattr(self.store, "add_execution_episode", None)
+        if not callable(add_execution_episode):
+            return
+        try:
+            evidence_output = stored_output
+            get_worker = getattr(self.store, "get_worker", None)
+            if callable(get_worker):
+                stored_worker = await asyncio.to_thread(get_worker, spec.id)
+                if stored_worker is not None and stored_worker.output is not None:
+                    evidence_output = stored_worker.output
+            episode = build_worker_execution_episode(
+                spec=spec,
+                result=result,
+                stored_output=evidence_output,
+                status=worker_status,
+                launcher_kind=type(self.launcher).__name__,
+                evidence_storage=(
+                    "aes256gcm" if self._episode_evidence_cipher is not None else "metadata_only"
+                ),
+            )
+            if self._episode_evidence_cipher is None:
+                await asyncio.to_thread(add_execution_episode, episode)
+            else:
+                add_bundle = getattr(self.store, "add_execution_episode_bundle", None)
+                if not callable(add_bundle):
+                    raise RuntimeError(
+                        "store does not support atomic encrypted execution episode evidence"
+                    )
+                encrypted_evidence = build_encrypted_worker_episode_evidence(
+                    cipher=self._episode_evidence_cipher,
+                    episode=episode,
+                    spec=spec,
+                    result=result,
+                    stored_output=evidence_output,
+                    retention_days=self.settings.episode_evidence_retention_days,
+                )
+                await asyncio.to_thread(add_bundle, episode, encrypted_evidence)
+        except Exception as exc:
+            logger.warning(
+                "Failed to record execution episode",
+                worker_id=spec.id,
+                error_type=type(exc).__name__,
+            )
+            try:
+                await self._append_audit(
+                    "execution_episode_record_failed",
+                    level="warning",
+                    correlation_id=spec.id,
+                    data={"error_type": type(exc).__name__},
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to audit execution episode recording failure",
+                    worker_id=spec.id,
+                    exc_info=True,
+                )
+            return
+        try:
+            await self._append_audit(
+                "execution_episode_recorded",
+                correlation_id=spec.id,
+                data={
+                    "episode_id": episode.id,
+                    "source_kind": episode.source_kind,
+                    "trust_state": episode.trust_state,
+                    "evidence_storage": episode.provenance.get("evidence_storage"),
+                },
+            )
+        except Exception:
+            logger.warning(
+                "Failed to audit execution episode recording",
+                worker_id=spec.id,
+                exc_info=True,
+            )
+        for recipe in spec.procedural_recipes:
+            try:
+                await asyncio.to_thread(
+                    ProceduralRecipeService(self.store).record_outcome,
+                    recipe.id,
+                    episode,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to record procedural recipe outcome",
+                    worker_id=spec.id,
+                    recipe_id=recipe.id,
+                    error_type=type(exc).__name__,
+                )
 
     def _build_capabilities(self, permissions: list[str]) -> list[Any]:
         """Build capability objects from permission strings."""
@@ -1982,7 +2249,8 @@ def _child_worker_outcome_from_record(record: WorkerRecord) -> ChildWorkerOutcom
 
 def _safe_parse_json(line: bytes) -> dict[str, Any] | None:
     try:
-        return json.loads(line.decode("utf-8"))
+        payload = json.loads(line.decode("utf-8"))
+        return payload if isinstance(payload, dict) else None
     except Exception:
         return None
 
@@ -2169,7 +2437,12 @@ def _safe_worker_host_env(source: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def _tool_env_from_settings(settings: Settings, tool_names: list[str]) -> dict[str, str]:
+def _tool_env_from_settings(
+    settings: Settings,
+    tool_names: list[str],
+    *,
+    host_proxy_tools: frozenset[str] = frozenset(),
+) -> dict[str, str]:
     lowered_tools = {str(name).strip().lower() for name in tool_names if str(name).strip()}
     env: dict[str, str] = {}
     brave_api_key = (
@@ -2179,7 +2452,7 @@ def _tool_env_from_settings(settings: Settings, tool_names: list[str]) -> dict[s
         settings.config_obj.search.firecrawl_api_key if settings.config_obj else None
     ) or settings.firecrawl_api_key
 
-    if "web_search" in lowered_tools and brave_api_key:
+    if "web_search" in lowered_tools - host_proxy_tools and brave_api_key:
         env["BRAVE_API_KEY"] = brave_api_key
 
     if (
@@ -2189,6 +2462,23 @@ def _tool_env_from_settings(settings: Settings, tool_names: list[str]) -> dict[s
         env["FIRECRAWL_API_KEY"] = firecrawl_api_key
 
     return env
+
+
+def _search_credentials_from_settings(settings: Settings) -> dict[str, str]:
+    brave_api_key = (
+        settings.config_obj.search.brave_api_key if settings.config_obj else None
+    ) or settings.brave_api_key
+    firecrawl_api_key = (
+        settings.config_obj.search.firecrawl_api_key if settings.config_obj else None
+    ) or settings.firecrawl_api_key
+    return {
+        name: value
+        for name, value in {
+            "brave": brave_api_key,
+            "firecrawl": firecrawl_api_key,
+        }.items()
+        if value
+    }
 
 
 def _extract_mcp_tool_identity(

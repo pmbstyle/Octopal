@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
+
+from octopal.infrastructure.store.models import MemoryOrigin
 
 _MANAGE_CANON_FILENAMES = {"facts.md", "decisions.md", "failures.md"}
 
@@ -39,7 +41,14 @@ async def manage_canon(args: dict[str, Any], ctx: dict[str, Any]) -> str:
         if not content:
             return "Error: Content required for write action."
         try:
-            return await canon.write_canon(filename, content, mode)
+            source_kind, source_ref = _canon_write_provenance(ctx)
+            return await canon.write_canon(
+                filename,
+                content,
+                mode,
+                source_kind=source_kind,
+                source_ref=source_ref,
+            )
         except ValueError as exc:
             return f"Error: {exc}"
 
@@ -51,6 +60,25 @@ def _normalize_manage_canon_filename(filename: Any) -> str:
     if candidate and not candidate.endswith(".md"):
         candidate += ".md"
     return candidate
+
+
+def _canon_write_provenance(ctx: dict[str, Any]) -> tuple[MemoryOrigin, str | None]:
+    raw_origin = str(ctx.get("memory_origin") or "assistant_inference").strip().lower()
+    allowed = {
+        "assistant_inference",
+        "worker",
+        "connector",
+        "mcp",
+        "web",
+        "document",
+        "local_runtime_evidence",
+    }
+    source_kind = cast(MemoryOrigin, raw_origin if raw_origin in allowed else "assistant_inference")
+    correlation_id = str(ctx.get("correlation_id") or "").strip()
+    if correlation_id:
+        return source_kind, correlation_id
+    chat_id = ctx.get("chat_id")
+    return source_kind, f"chat:{chat_id}" if chat_id is not None else None
 
 
 async def search_canon(args: dict[str, Any], ctx: dict[str, Any]) -> str:

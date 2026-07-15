@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 from octopal.tools.metadata import ToolMetadata
+
+_MAX_TOOL_USAGE_EXAMPLES = 2
+_MAX_TOOL_USAGE_EXAMPLE_CHARS = 600
+_MAX_TOOL_USAGE_EXAMPLE_EVIDENCE_CHARS = 200
 
 
 @dataclass(frozen=True)
@@ -19,16 +24,73 @@ class ToolSpec:
     server_id: str | None = field(default=None, compare=False)
     remote_tool_name: str | None = field(default=None, compare=False)
     metadata: ToolMetadata = field(default_factory=ToolMetadata, compare=False)
+    usage_examples: tuple[dict[str, Any], ...] = field(default_factory=tuple, compare=False)
+    usage_example_evidence: str | None = field(default=None, compare=False)
+    _rendered_usage_examples: str = field(default="", init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        examples = tuple(self.usage_examples or ())
+        evidence = str(self.usage_example_evidence or "").strip()
+        if len(examples) > _MAX_TOOL_USAGE_EXAMPLES:
+            raise ValueError(f"usage_examples supports at most {_MAX_TOOL_USAGE_EXAMPLES} examples")
+        if examples and not evidence:
+            raise ValueError("usage examples require a measured evidence reference")
+        if not examples and evidence:
+            raise ValueError("usage example evidence requires at least one example")
+        if len(evidence) > _MAX_TOOL_USAGE_EXAMPLE_EVIDENCE_CHARS:
+            raise ValueError(
+                "usage example evidence exceeds "
+                f"{_MAX_TOOL_USAGE_EXAMPLE_EVIDENCE_CHARS} characters"
+            )
+        if any(ord(character) < 32 or ord(character) == 127 for character in evidence):
+            raise ValueError("usage example evidence must be a single printable line")
+        for example in examples:
+            if not isinstance(example, dict) or not example:
+                raise ValueError("each usage example must be a non-empty argument object")
+            if any(not isinstance(key, str) or not key.strip() for key in example):
+                raise ValueError("usage example keys must be non-empty strings")
+        rendered = _render_usage_examples(examples)
+        if len(rendered) > _MAX_TOOL_USAGE_EXAMPLE_CHARS:
+            raise ValueError(
+                "rendered usage examples exceed " f"{_MAX_TOOL_USAGE_EXAMPLE_CHARS} characters"
+            )
+        object.__setattr__(self, "usage_examples", examples)
+        object.__setattr__(self, "usage_example_evidence", evidence or None)
+        object.__setattr__(self, "_rendered_usage_examples", rendered)
 
     def to_openai_tool(self) -> dict[str, Any]:
         return {
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description,
+                "description": self.description + self._rendered_usage_examples,
                 "parameters": self.parameters,
             },
         }
+
+    def usage_example_prompt_chars(self) -> int:
+        return len(self._rendered_usage_examples)
+
+
+def _render_usage_examples(examples: tuple[dict[str, Any], ...]) -> str:
+    if not examples:
+        return ""
+    try:
+        rendered = [
+            json.dumps(
+                example,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            for example in examples
+        ]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("usage examples must be finite JSON objects") from exc
+    if len(rendered) == 1:
+        return f"\nExample arguments: {rendered[0]}"
+    return "\nExample arguments:\n" + "\n".join(f"- {item}" for item in rendered)
 
 
 @dataclass(frozen=True)

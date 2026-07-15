@@ -53,13 +53,31 @@ class ReflectionService:
         )
 
     def build_wakeup_context(self, chat_id: int, limit: int = 2, max_chars: int = 600) -> str:
+        context, _ = self.build_wakeup_context_with_ids(
+            chat_id,
+            limit=limit,
+            max_chars=max_chars,
+        )
+        return context
+
+    def build_wakeup_context_with_ids(
+        self, chat_id: int, limit: int = 2, max_chars: int = 600
+    ) -> tuple[str, list[str]]:
         entries = self.list_recent(chat_id=chat_id, limit=limit)
         if not entries:
-            return ""
+            return "", []
         lines = ["Recent reflection relevant to this wake-up:"]
+        selected_ids: list[str] = []
         for entry in reversed(entries):
-            lines.append(f"- {entry.summary}")
-        text = "\n".join(lines)
-        if len(text) <= max_chars:
-            return text
-        return text[: max_chars - 28].rstrip() + "\n...[reflection truncated]..."
+            candidate = "\n".join([*lines, f"- {entry.summary}"])
+            if len(candidate) <= max_chars:
+                lines.append(f"- {entry.summary}")
+                selected_ids.append(f"octo_diary:{entry.id}")
+                continue
+            suffix = "\n...[reflection truncated]..."
+            remaining = max(0, max_chars - len("\n".join(lines)) - len(suffix) - 1)
+            if remaining:
+                lines.append(f"- {entry.summary}"[:remaining].rstrip())
+                selected_ids.append(f"octo_diary:{entry.id}")
+            return "\n".join(lines).rstrip() + suffix, selected_ids
+        return "\n".join(lines), selected_ids

@@ -205,6 +205,46 @@ def test_start_workers_parallel_forwards_max_thinking_steps_per_task() -> None:
     assert [launch["max_thinking_steps"] for launch in octo.launches] == [20, 14]
 
 
+def test_start_workers_parallel_forwards_programmatic_read_budget_per_task() -> None:
+    templates = [_template("web_researcher", "research web topics", ["web_search"], ["network"])]
+
+    class _Store:
+        def list_worker_templates(self):
+            return templates
+
+        def get_worker_template(self, worker_id: str):
+            return templates[0] if worker_id == "web_researcher" else None
+
+    class _Octo:
+        def __init__(self) -> None:
+            self.store = _Store()
+            self.launches = []
+
+        async def _start_worker_async(self, **kwargs):
+            self.launches.append(kwargs)
+            return {"status": "started", "worker_id": "run-1", "run_id": "run-1"}
+
+    octo = _Octo()
+
+    payload = asyncio.run(
+        _tool_start_workers_parallel(
+            {
+                "tasks": [
+                    {
+                        "task": "search docs",
+                        "worker_id": "web_researcher",
+                        "programmatic_read_call_budget": 3,
+                    }
+                ]
+            },
+            {"octo": octo, "chat_id": 123},
+        )
+    )
+
+    assert json.loads(payload)["started_count"] == 1
+    assert octo.launches[0]["programmatic_read_call_budget"] == 3
+
+
 def test_start_workers_parallel_rejects_tools_outside_template_allowlist() -> None:
     templates = [
         _template("coder", "fix code and bugs", ["fs_read"], ["filesystem_read"]),

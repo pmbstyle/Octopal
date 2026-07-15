@@ -5,6 +5,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from octopal.runtime.intents.types import IntentRequest
 from octopal.runtime.tool_errors import ToolBridgeError
 from octopal.runtime.workers.contracts import WorkerResult, WorkerSpec
@@ -46,6 +48,8 @@ def test_valid_message_types_exposes_expected_protocol_surface() -> None:
     assert "resume_instruction" in VALID_MESSAGE_TYPES
     assert "intent_request" in VALID_MESSAGE_TYPES
     assert "octo_tool_result" in VALID_MESSAGE_TYPES
+    assert "programmatic_read_batch" in VALID_MESSAGE_TYPES
+    assert "programmatic_read_batch_result" in VALID_MESSAGE_TYPES
     assert "shutdown" in VALID_MESSAGE_TYPES
 
 
@@ -181,6 +185,71 @@ def test_worker_request_instruction_emits_request_and_returns_resume_payload(mon
     assert sent[0]["timeout_seconds"] == 45
     assert payload["status"] == "answered"
     assert payload["instruction"] == "Use the narrow path."
+
+
+def test_worker_programmatic_read_batch_round_trips_correlated_response(monkeypatch) -> None:
+    worker = _worker()
+    sent: list[dict] = []
+    request_id = ""
+
+    async def _fake_write_message(payload: dict) -> None:
+        nonlocal request_id
+        sent.append(payload)
+        request_id = str(payload["request_id"])
+
+    async def _fake_read_message() -> dict:
+        return {
+            "type": "programmatic_read_batch_result",
+            "request_id": request_id,
+            "ok": True,
+            "remaining_calls": 1,
+            "result": {"completed_count": 1, "results": [{"call_id": "call-1"}]},
+        }
+
+    monkeypatch.setattr(worker, "_write_message", _fake_write_message)
+    monkeypatch.setattr(worker, "_read_message", _fake_read_message)
+
+    result = asyncio.run(
+        worker.programmatic_read_batch(
+            [{"call_id": "call-1", "tool_name": "web_search", "arguments": {}}]
+        )
+    )
+
+    assert sent[0]["type"] == "programmatic_read_batch"
+    assert sent[0]["request_id"].startswith("prb-")
+    assert result["completed_count"] == 1
+
+
+def test_worker_programmatic_read_batch_raises_classified_bridge_error(monkeypatch) -> None:
+    worker = _worker()
+    request_id = ""
+
+    async def _fake_write_message(payload: dict) -> None:
+        nonlocal request_id
+        request_id = str(payload["request_id"])
+
+    async def _fake_read_message() -> dict:
+        return {
+            "type": "programmatic_read_batch_result",
+            "request_id": request_id,
+            "ok": False,
+            "remaining_calls": 0,
+            "error": {
+                "code": "call_budget_exhausted",
+                "message": "Programmatic read call budget is exhausted",
+                "details": {},
+            },
+        }
+
+    monkeypatch.setattr(worker, "_write_message", _fake_write_message)
+    monkeypatch.setattr(worker, "_read_message", _fake_read_message)
+
+    with pytest.raises(ToolBridgeError) as exc_info:
+        asyncio.run(worker.programmatic_read_batch([]))
+
+    assert exc_info.value.bridge == "programmatic_read"
+    assert exc_info.value.classification == "call_budget_exhausted"
+    assert str(exc_info.value) == "call_budget_exhausted"
 
 
 def test_worker_request_intent_returns_permit_when_hash_matches(monkeypatch) -> None:

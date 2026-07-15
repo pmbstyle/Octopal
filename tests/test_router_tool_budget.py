@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,6 +36,7 @@ from octopal.runtime.octo.router import (
     route_or_reply,
     route_worker_results_back_to_octo,
 )
+from octopal.runtime.octo.tool_selection import _build_tool_selection_manifest
 from octopal.runtime.workers.contracts import WorkerResult
 from octopal.tools.communication.send_file import send_file_to_user
 from octopal.tools.registry import ToolSpec
@@ -99,6 +101,7 @@ def test_get_octo_tools_uses_small_core_and_defers_mcp_tools(monkeypatch) -> Non
     names = {spec.name for spec in tool_specs}
     all_names = {spec.name for spec in ctx["all_tool_specs"]}
 
+    assert ctx["memory_origin"] == "assistant_inference"
     assert "tool_catalog_search" in names
     assert _RUNTIME_PLAN_TOOL_NAMES.issubset(names)
     assert "start_worker" in names
@@ -127,6 +130,17 @@ def test_get_octo_tools_uses_small_core_and_defers_mcp_tools(monkeypatch) -> Non
     assert "mcp_demo_tool_0" not in names
     assert "mcp_demo_tool_0" in all_names
     assert len(tool_specs) < len(all_names)
+    manifest = ctx["tool_selection_manifest"]
+    assert manifest["mode"] == "deferred"
+    assert manifest["initial_active_tool_count"] == len(tool_specs)
+    assert manifest["initial_deferred_tool_count"] > 0
+    assert manifest["initial_deferred_tool_count"] == (
+        manifest["available_tool_count"] - manifest["initial_active_tool_count"]
+    )
+    assert manifest["initial_schema_chars"] < manifest["available_schema_chars"]
+    assert manifest["schema_chars_saved"] > 0
+    assert manifest["expansions"] == []
+    assert manifest["rejected_expansions"] == []
 
 
 def test_get_octo_tools_keeps_self_lifecycle_tools_with_profile(monkeypatch) -> None:
@@ -143,6 +157,61 @@ def test_get_octo_tools_keeps_self_lifecycle_tools_with_profile(monkeypatch) -> 
     assert "octo_check_update" in names
     assert "octo_update_self" in names
     assert _RUNTIME_PLAN_TOOL_NAMES.issubset(names)
+
+
+def test_tool_selection_manifest_counts_usage_examples_in_schema_budget() -> None:
+    example_tool = ToolSpec(
+        name="fs_read",
+        description="Read a workspace file.",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        permission="filesystem_read",
+        handler=lambda _args, _ctx: "",
+        usage_examples=(
+            {"path": "reports/latest.md"},
+            {"path": "memory/handoff.json"},
+        ),
+        usage_example_evidence="eval:filesystem-path-ambiguity-v1",
+    )
+
+    manifest = _build_tool_selection_manifest(
+        available_tool_specs=[example_tool],
+        active_tool_specs=[example_tool],
+        deferred_enabled=True,
+    )
+    base_manifest = _build_tool_selection_manifest(
+        available_tool_specs=[
+            replace(example_tool, usage_examples=(), usage_example_evidence=None)
+        ],
+        active_tool_specs=[replace(example_tool, usage_examples=(), usage_example_evidence=None)],
+        deferred_enabled=True,
+    )
+
+    assert manifest["available_usage_example_tool_count"] == 1
+    assert manifest["available_usage_example_count"] == 2
+    assert manifest["available_usage_example_schema_chars"] == (
+        manifest["available_schema_chars"] - base_manifest["available_schema_chars"]
+    )
+    assert manifest["available_usage_example_evidence"] == [
+        {"tool_name": "fs_read", "evidence": "eval:filesystem-path-ambiguity-v1"}
+    ]
+    assert manifest["initial_usage_example_tool_count"] == 1
+    assert manifest["initial_usage_example_count"] == 2
+    assert manifest["initial_usage_example_schema_chars"] == (
+        manifest["initial_schema_chars"] - base_manifest["initial_schema_chars"]
+    )
+    assert (
+        manifest["current_usage_example_schema_chars"]
+        == manifest["initial_usage_example_schema_chars"]
+    )
+    assert manifest["current_usage_example_evidence"] == [
+        {"tool_name": "fs_read", "evidence": "eval:filesystem-path-ambiguity-v1"}
+    ]
+    assert manifest["available_schema_chars"] == manifest["initial_schema_chars"]
 
 
 def test_get_octo_tools_keeps_runtime_plan_tools_under_tiny_budget(monkeypatch) -> None:
@@ -175,11 +244,15 @@ def test_get_octo_tools_keeps_a2a_tools_when_enabled_despite_initial_budget(
 
     monkeypatch.setenv("OCTOPAL_OCTO_MAX_INITIAL_TOOL_COUNT", "8")
 
-    tool_specs, _ctx = _get_octo_tools(DummyOcto(), 0)
+    tool_specs, ctx = _get_octo_tools(DummyOcto(), 0)
     names = {spec.name for spec in tool_specs}
 
     assert "a2a_list_peers" in names
     assert "a2a_send_message" in names
+    assert ctx["tool_selection_manifest"]["forced_activations"] == [
+        {"tool_name": "a2a_list_peers", "reason": "a2a_interop_enabled"},
+        {"tool_name": "a2a_send_message", "reason": "a2a_interop_enabled"},
+    ]
 
 
 def test_get_octo_tools_does_not_force_a2a_tools_when_disabled(monkeypatch) -> None:
@@ -552,6 +625,7 @@ def test_worker_followup_tools_do_not_hydrate_dynamic_mcp_catalog(monkeypatch) -
 
     assert calls == [None]
     assert ctx["mcp_refresh_attempted"] is False
+    assert ctx["memory_origin"] == "worker"
     assert {tool.name for tool in tools} == {
         "manage_canon",
         "get_worker_output_path",
@@ -1655,21 +1729,99 @@ def test_catalog_result_expands_active_tool_specs() -> None:
         parameters={"type": "object", "properties": {}},
         permission="self_control",
         handler=lambda args, ctx: {"ok": True},
+        usage_examples=({"detail": "summary"},),
+        usage_example_evidence="eval:hidden-tool-argument-ambiguity-v1",
     )
+
+    manifest = _build_tool_selection_manifest(
+        available_tool_specs=active + [hidden],
+        active_tool_specs=active,
+        deferred_enabled=True,
+    )
+    ctx = {
+        "all_tool_specs": active + [hidden],
+        "tool_resolution_report": SimpleNamespace(available_tools=active + [hidden]),
+        "tool_selection_manifest": manifest,
+    }
 
     updated, expanded = _expand_active_tool_specs_from_catalog_result(
         {
+            "query": "hidden tool",
             "results": [
-                {"name": "hidden_tool", "active_now": False},
+                {"name": "hidden_tool", "active_now": False, "score": 80},
                 {"name": "tool_catalog_search", "active_now": True},
-            ]
+            ],
         },
         active_tool_specs=active,
-        ctx={"all_tool_specs": active + [hidden]},
+        ctx=ctx,
     )
 
     assert expanded == ["hidden_tool"]
     assert {spec.name for spec in updated} == {"tool_catalog_search", "hidden_tool"}
+    assert manifest["current_active_tool_count"] == 2
+    assert manifest["current_deferred_tool_count"] == 0
+    assert manifest["current_schema_chars"] > manifest["initial_schema_chars"]
+    event = manifest["expansions"][0]
+    assert event["source"] == "tool_catalog_search"
+    assert event["query_fingerprint"]
+    assert "hidden tool" not in event.values()
+    assert event["activated"] == [
+        {"tool_name": "hidden_tool", "reason": "catalog_match", "score": 80}
+    ]
+    assert event["usage_example_count_activated"] == 1
+    assert event["usage_example_schema_chars_activated"] > 0
+    assert event["usage_example_evidence_activated"] == [
+        {"tool_name": "hidden_tool", "evidence": "eval:hidden-tool-argument-ambiguity-v1"}
+    ]
+    assert manifest["current_usage_example_count"] == 1
+
+
+def test_catalog_result_cannot_expand_tool_outside_resolution_set() -> None:
+    active = [
+        ToolSpec(
+            name="tool_catalog_search",
+            description="catalog",
+            parameters={"type": "object", "properties": {}},
+            permission="self_control",
+            handler=lambda args, ctx: "{}",
+        )
+    ]
+    blocked = ToolSpec(
+        name="blocked_tool",
+        description="blocked",
+        parameters={"type": "object", "properties": {}},
+        permission="deploy_control",
+        handler=lambda args, ctx: {"ok": True},
+    )
+    manifest = _build_tool_selection_manifest(
+        available_tool_specs=active,
+        active_tool_specs=active,
+        deferred_enabled=True,
+    )
+    ctx = {
+        "all_tool_specs": active + [blocked],
+        "tool_resolution_report": SimpleNamespace(available_tools=active),
+        "tool_selection_manifest": manifest,
+    }
+
+    updated, expanded = _expand_active_tool_specs_from_catalog_result(
+        {
+            "query": "blocked tool",
+            "results": [
+                {"name": "fabricated_tool", "active_now": False, "score": 999},
+                {"name": "blocked_tool", "active_now": False, "score": 120},
+            ],
+        },
+        active_tool_specs=active,
+        ctx=ctx,
+    )
+
+    assert updated == active
+    assert expanded == []
+    assert manifest["expansions"] == []
+    assert manifest["rejected_expansions"] == [
+        {"tool_name": "blocked_tool", "reason": "not_in_resolution_set"}
+    ]
 
 
 def test_catalog_result_expands_only_exact_mcp_match() -> None:
@@ -1726,7 +1878,10 @@ def test_catalog_result_expands_only_exact_mcp_match() -> None:
             ],
         },
         active_tool_specs=active,
-        ctx={"all_tool_specs": active + [exact, sibling]},
+        ctx={
+            "all_tool_specs": active + [exact, sibling],
+            "tool_resolution_report": SimpleNamespace(available_tools=active + [exact, sibling]),
+        },
     )
 
     assert expanded == ["mcp_drive_search_files"]
@@ -1774,7 +1929,10 @@ def test_catalog_result_does_not_auto_expand_broad_mcp_search() -> None:
             ],
         },
         active_tool_specs=active,
-        ctx={"all_tool_specs": active + broad_matches},
+        ctx={
+            "all_tool_specs": active + broad_matches,
+            "tool_resolution_report": SimpleNamespace(available_tools=active + broad_matches),
+        },
     )
 
     assert expanded == []
@@ -1848,7 +2006,11 @@ def test_catalog_result_hydrates_selected_mcp_tool_from_manager() -> None:
             ],
         },
         active_tool_specs=active,
-        ctx={"all_tool_specs": active + [mcp_tool], "mcp_manager": _MCPManager()},
+        ctx={
+            "all_tool_specs": active + [mcp_tool],
+            "tool_resolution_report": SimpleNamespace(available_tools=active + [mcp_tool]),
+            "mcp_manager": _MCPManager(),
+        },
     )
 
     assert expanded == ["mcp_drive_search_files"]
@@ -3135,6 +3297,10 @@ def test_route_can_expand_toolset_after_catalog_search(monkeypatch) -> None:
             "chat_id": chat_id,
             "active_tool_specs": active_tools,
             "all_tool_specs": all_tools,
+            "tool_resolution_report": SimpleNamespace(
+                available_tools=all_tools,
+                blocked_tools=(),
+            ),
         }
 
     import octopal.runtime.octo.router as router

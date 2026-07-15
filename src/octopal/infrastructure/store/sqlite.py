@@ -11,8 +11,15 @@ from typing import Any
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.store.base import UNSET, Store
 from octopal.infrastructure.store.models import (
+    AdaptationCandidateRecord,
+    AdaptationEvaluationRecord,
+    AdaptationFailureClusterRecord,
     AuditEvent,
+    ExecutionEpisodeEvidenceMetadata,
+    ExecutionEpisodeEvidenceRecord,
+    ExecutionEpisodeRecord,
     IntentRecord,
+    MCPTaskRecord,
     MemoryEntry,
     MemoryFactRecord,
     MemoryFactSourceRecord,
@@ -22,12 +29,18 @@ from octopal.infrastructure.store.models import (
     PlanEventRecord,
     PlanRunRecord,
     PlanStepRecord,
+    ProceduralRecipeEvaluationRecord,
+    ProceduralRecipeRecord,
     WorkerRecord,
     WorkerTemplateRecord,
 )
 from octopal.runtime.workers.loader import discover_worker_templates
 from octopal.runtime.workers.loader import get_worker_template as get_template_from_fs
 from octopal.utils import utc_now
+
+
+class EvidenceSecurePurgeIncomplete(RuntimeError):
+    """The row was deleted, but SQLite could not purge stale WAL pages."""
 
 
 class LockedCursor:
@@ -81,6 +94,10 @@ class LockedConnection:
         with self._lock:
             self._conn.commit()
 
+    def rollback(self) -> None:
+        with self._lock:
+            self._conn.rollback()
+
     def __getattr__(self, item: str) -> Any:
         return getattr(self._conn, item)
 
@@ -97,11 +114,13 @@ class SQLiteStore(Store):
         self._db_path = settings.state_dir / "octopal.db"
         self._workspace_dir = settings.workspace_dir
         self._lock = threading.RLock()
+        self._evidence_secure_purge_pending = False
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn = LockedConnection(conn, self._lock)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA foreign_keys=ON;")
+        self._conn.execute("PRAGMA secure_delete=ON;")
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -133,9 +152,285 @@ class SQLiteStore(Store):
                 payload_hash TEXT NOT NULL,
                 risk TEXT NOT NULL,
                 requires_approval INTEGER NOT NULL,
+                memory_influence_ids_json TEXT NOT NULL DEFAULT '[]',
+                procedural_recipe_ids_json TEXT NOT NULL DEFAULT '[]',
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS execution_episodes (
+                id TEXT PRIMARY KEY,
+                worker_run_id TEXT NOT NULL,
+                task_fingerprint TEXT NOT NULL,
+                environment_fingerprint TEXT NOT NULL,
+                capability_fingerprint TEXT NOT NULL,
+                result_fingerprint TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                trust_state TEXT NOT NULL,
+                correlation_id TEXT,
+                template_id TEXT,
+                model TEXT,
+                trajectory_refs_json TEXT NOT NULL,
+                result_metadata_json TEXT NOT NULL,
+                verification_json TEXT NOT NULL,
+                provenance_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_execution_episodes_worker_created
+                ON execution_episodes (worker_run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_execution_episodes_task_created
+                ON execution_episodes (task_fingerprint, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS adaptation_failure_clusters (
+                id TEXT PRIMARY KEY,
+                signature TEXT NOT NULL,
+                source_summary_fingerprint TEXT NOT NULL,
+                failure_categories_json TEXT NOT NULL,
+                scenario_ids_json TEXT NOT NULL,
+                task_fingerprints_json TEXT NOT NULL,
+                trial_refs_json TEXT NOT NULL,
+                trial_count INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_adaptation_failure_clusters_signature
+                ON adaptation_failure_clusters (signature, created_at DESC);
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_failure_clusters_immutable
+            BEFORE UPDATE ON adaptation_failure_clusters
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation failure clusters are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_failure_clusters_no_delete
+            BEFORE DELETE ON adaptation_failure_clusters
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation failure clusters cannot be deleted');
+            END;
+
+            CREATE TABLE IF NOT EXISTS adaptation_candidates (
+                id TEXT PRIMARY KEY,
+                family_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                target TEXT NOT NULL,
+                artifact_fingerprint TEXT NOT NULL,
+                definition_fingerprint TEXT NOT NULL UNIQUE,
+                hypothesis TEXT NOT NULL,
+                change_json TEXT NOT NULL,
+                source_cluster_ids_json TEXT NOT NULL,
+                parent_id TEXT,
+                status TEXT NOT NULL,
+                evaluation_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(family_id, version),
+                FOREIGN KEY(parent_id) REFERENCES adaptation_candidates(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_adaptation_candidates_family_version
+                ON adaptation_candidates (family_id, version DESC);
+            CREATE INDEX IF NOT EXISTS ix_adaptation_candidates_status_updated
+                ON adaptation_candidates (status, updated_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_adaptation_candidates_active_family
+                ON adaptation_candidates (family_id)
+                WHERE status = 'active';
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_candidates_definition_immutable
+            BEFORE UPDATE ON adaptation_candidates
+            WHEN NEW.id != OLD.id
+              OR NEW.family_id != OLD.family_id
+              OR NEW.version != OLD.version
+              OR NEW.kind != OLD.kind
+              OR NEW.target != OLD.target
+              OR NEW.artifact_fingerprint != OLD.artifact_fingerprint
+              OR NEW.definition_fingerprint != OLD.definition_fingerprint
+              OR NEW.hypothesis != OLD.hypothesis
+              OR NEW.change_json != OLD.change_json
+              OR NEW.source_cluster_ids_json != OLD.source_cluster_ids_json
+              OR COALESCE(NEW.parent_id, '') != COALESCE(OLD.parent_id, '')
+              OR NEW.created_at != OLD.created_at
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation candidate definition is immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_candidates_no_delete
+            BEFORE DELETE ON adaptation_candidates
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation candidates cannot be deleted');
+            END;
+
+            CREATE TABLE IF NOT EXISTS adaptation_evaluations (
+                id TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL,
+                baseline_fingerprint TEXT NOT NULL,
+                candidate_fingerprint TEXT NOT NULL,
+                scenario_set_fingerprint TEXT NOT NULL,
+                common_trial_count INTEGER NOT NULL,
+                distinct_scenario_count INTEGER NOT NULL,
+                baseline_success_rate REAL NOT NULL,
+                candidate_success_rate REAL NOT NULL,
+                success_rate_delta REAL NOT NULL,
+                regression_count INTEGER NOT NULL,
+                improvement_count INTEGER NOT NULL,
+                held_out INTEGER NOT NULL,
+                passed INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(candidate_id) REFERENCES adaptation_candidates(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_adaptation_evaluations_candidate_created
+                ON adaptation_evaluations (candidate_id, created_at DESC);
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_evaluations_immutable
+            BEFORE UPDATE ON adaptation_evaluations
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation evaluations are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS adaptation_evaluations_no_delete
+            BEFORE DELETE ON adaptation_evaluations
+            BEGIN
+                SELECT RAISE(ABORT, 'adaptation evaluations cannot be deleted');
+            END;
+
+            CREATE TABLE IF NOT EXISTS procedural_recipes (
+                id TEXT PRIMARY KEY,
+                intent_fingerprint TEXT NOT NULL,
+                definition_fingerprint TEXT NOT NULL,
+                applicability_conditions_json TEXT NOT NULL,
+                required_capabilities_json TEXT NOT NULL,
+                required_permissions_json TEXT NOT NULL,
+                strategy_steps_json TEXT NOT NULL,
+                verification_contract_json TEXT NOT NULL,
+                known_failures_json TEXT NOT NULL,
+                invalidating_conditions_json TEXT NOT NULL,
+                source_episode_ids_json TEXT NOT NULL,
+                success_count INTEGER NOT NULL,
+                failure_count INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                last_validated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_procedural_recipes_intent_status
+                ON procedural_recipes (intent_fingerprint, status, updated_at DESC);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_procedural_recipes_active_intent
+                ON procedural_recipes (intent_fingerprint)
+                WHERE status = 'active';
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipes_definition_immutable
+            BEFORE UPDATE ON procedural_recipes
+            WHEN NEW.id != OLD.id
+              OR NEW.intent_fingerprint != OLD.intent_fingerprint
+              OR NEW.definition_fingerprint != OLD.definition_fingerprint
+              OR NEW.applicability_conditions_json != OLD.applicability_conditions_json
+              OR NEW.required_capabilities_json != OLD.required_capabilities_json
+              OR NEW.required_permissions_json != OLD.required_permissions_json
+              OR NEW.strategy_steps_json != OLD.strategy_steps_json
+              OR NEW.verification_contract_json != OLD.verification_contract_json
+              OR NEW.known_failures_json != OLD.known_failures_json
+              OR NEW.invalidating_conditions_json != OLD.invalidating_conditions_json
+              OR NEW.source_episode_ids_json != OLD.source_episode_ids_json
+              OR NEW.created_at != OLD.created_at
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipe definition is immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipes_no_delete
+            BEFORE DELETE ON procedural_recipes
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipes cannot be deleted');
+            END;
+
+            CREATE TABLE IF NOT EXISTS procedural_recipe_evaluations (
+                id TEXT PRIMARY KEY,
+                recipe_id TEXT NOT NULL,
+                baseline_fingerprint TEXT NOT NULL,
+                candidate_fingerprint TEXT NOT NULL,
+                scenario_set_fingerprint TEXT NOT NULL,
+                common_trial_count INTEGER NOT NULL,
+                baseline_success_rate REAL NOT NULL,
+                candidate_success_rate REAL NOT NULL,
+                regression_count INTEGER NOT NULL,
+                improvement_count INTEGER NOT NULL,
+                passed INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(recipe_id) REFERENCES procedural_recipes(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_procedural_recipe_evaluations_recipe_created
+                ON procedural_recipe_evaluations (recipe_id, created_at DESC);
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipe_evaluations_immutable
+            BEFORE UPDATE ON procedural_recipe_evaluations
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipe evaluations are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipe_evaluations_no_delete
+            BEFORE DELETE ON procedural_recipe_evaluations
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipe evaluations cannot be deleted');
+            END;
+
+            CREATE TABLE IF NOT EXISTS procedural_recipe_outcomes (
+                recipe_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
+                succeeded INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (recipe_id, episode_id),
+                FOREIGN KEY(recipe_id) REFERENCES procedural_recipes(id),
+                FOREIGN KEY(episode_id) REFERENCES execution_episodes(id)
+            );
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipe_outcomes_immutable
+            BEFORE UPDATE ON procedural_recipe_outcomes
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipe outcomes are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS procedural_recipe_outcomes_no_delete
+            BEFORE DELETE ON procedural_recipe_outcomes
+            BEGIN
+                SELECT RAISE(ABORT, 'procedural recipe outcomes cannot be deleted');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS execution_episodes_reject_update
+            BEFORE UPDATE ON execution_episodes
+            BEGIN
+                SELECT RAISE(ABORT, 'execution episodes are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS execution_episodes_reject_delete
+            BEFORE DELETE ON execution_episodes
+            BEGIN
+                SELECT RAISE(ABORT, 'execution episodes are immutable');
+            END;
+
+            CREATE TABLE IF NOT EXISTS execution_episode_evidence (
+                episode_id TEXT PRIMARY KEY,
+                algorithm TEXT NOT NULL,
+                key_id TEXT NOT NULL,
+                nonce BLOB NOT NULL,
+                ciphertext BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY(episode_id) REFERENCES execution_episodes(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_execution_episode_evidence_expires
+                ON execution_episode_evidence (expires_at);
+
+            CREATE TRIGGER IF NOT EXISTS execution_episode_evidence_reject_update
+            BEFORE UPDATE ON execution_episode_evidence
+            BEGIN
+                SELECT RAISE(ABORT, 'execution episode evidence is immutable');
+            END;
 
             CREATE TABLE IF NOT EXISTS permits (
                 id TEXT PRIMARY KEY,
@@ -156,6 +451,42 @@ class SQLiteStore(Store):
                 event_type TEXT NOT NULL,
                 data_json TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS mcp_tasks (
+                id TEXT PRIMARY KEY,
+                server_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                protocol TEXT NOT NULL,
+                remote_status TEXT NOT NULL,
+                runtime_status TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                auth_context_id TEXT NOT NULL,
+                correlation_id TEXT,
+                trace_id TEXT,
+                span_id TEXT,
+                worker_run_id TEXT,
+                chat_id INTEGER,
+                chat_turn_id TEXT,
+                plan_run_id TEXT,
+                plan_step_id TEXT,
+                status_message TEXT,
+                ttl_ms INTEGER,
+                poll_interval_ms INTEGER,
+                input_requests_json TEXT NOT NULL,
+                responded_input_keys_json TEXT NOT NULL DEFAULT '[]',
+                result_json TEXT,
+                error_json TEXT,
+                remote_created_at TEXT NOT NULL,
+                remote_updated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(server_id, task_id, auth_context_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_mcp_tasks_recovery
+                ON mcp_tasks (server_id, auth_context_id, remote_status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_mcp_tasks_worker
+                ON mcp_tasks (worker_run_id, updated_at DESC);
 
             CREATE TABLE IF NOT EXISTS memory_entries (
                 id INTEGER PRIMARY KEY,
@@ -197,6 +528,7 @@ class SQLiteStore(Store):
                 fact_type TEXT NOT NULL,
                 confidence REAL NOT NULL,
                 status TEXT NOT NULL,
+                trust_state TEXT NOT NULL,
                 valid_from TEXT,
                 valid_to TEXT,
                 facets_json TEXT NOT NULL,
@@ -381,6 +713,7 @@ class SQLiteStore(Store):
                     fact_type TEXT NOT NULL,
                     confidence REAL NOT NULL,
                     status TEXT NOT NULL,
+                    trust_state TEXT NOT NULL,
                     valid_from TEXT,
                     valid_to TEXT,
                     facets_json TEXT NOT NULL,
@@ -462,6 +795,28 @@ class SQLiteStore(Store):
         try:
             self._conn.execute(
                 "ALTER TABLE permits ADD COLUMN intent_type TEXT NOT NULL DEFAULT ''"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE mcp_tasks ADD COLUMN "
+                "responded_input_keys_json TEXT NOT NULL DEFAULT '[]'"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE intents ADD COLUMN memory_influence_ids_json TEXT NOT NULL DEFAULT '[]'"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE intents ADD COLUMN procedural_recipe_ids_json TEXT NOT NULL DEFAULT '[]'"
             )
             self._conn.commit()
         except sqlite3.OperationalError:
@@ -598,6 +953,107 @@ class SQLiteStore(Store):
             self._conn.commit()
         except sqlite3.OperationalError:
             pass
+
+        self._ensure_memory_fact_trust_schema()
+
+    def _ensure_memory_fact_trust_schema(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(memory_facts)").fetchall()
+        }
+        trust_column_added = "trust_state" not in columns
+        if trust_column_added:
+            self._conn.execute(
+                "ALTER TABLE memory_facts ADD COLUMN trust_state TEXT NOT NULL "
+                "DEFAULT 'quarantined_candidate'"
+            )
+
+        allowed_origins = {
+            "direct_user",
+            "assistant_inference",
+            "local_runtime_evidence",
+            "worker",
+            "connector",
+            "mcp",
+            "web",
+            "document",
+            "imported_canon",
+        }
+        origin_placeholders = ", ".join("?" for _ in allowed_origins)
+        legacy_rows = self._conn.execute(
+            "SELECT id, source_kind, source_ref FROM memory_facts "
+            f"WHERE source_kind IS NULL OR source_kind NOT IN ({origin_placeholders})",
+            tuple(sorted(allowed_origins)),
+        ).fetchall()
+        migrated_origins: dict[str, str] = {}
+        for row in legacy_rows:
+            source_kind = str(row["source_kind"] or "").strip()
+            if source_kind == "canon":
+                migrated_origins[str(row["id"])] = "imported_canon"
+                continue
+            if source_kind in allowed_origins:
+                continue
+
+            origin = "assistant_inference"
+            if source_kind == "memory" and row["source_ref"]:
+                memory_row = self._conn.execute(
+                    "SELECT role, metadata_json FROM memory_entries WHERE uuid = ?",
+                    (row["source_ref"],),
+                ).fetchone()
+                if memory_row is not None:
+                    metadata = _loads_json(memory_row["metadata_json"], {})
+                    explicit = str(metadata.get("memory_origin") or "").strip().lower()
+                    if explicit in allowed_origins:
+                        origin = explicit
+                    elif metadata.get("worker_result"):
+                        origin = "worker"
+                    elif metadata.get("mcp_long_task"):
+                        origin = "mcp"
+                    elif memory_row["role"] == "user":
+                        origin = "direct_user"
+                    elif memory_row["role"] == "system":
+                        origin = "local_runtime_evidence"
+            migrated_origins[str(row["id"])] = origin
+
+        for fact_id, origin in migrated_origins.items():
+            self._conn.execute(
+                "UPDATE memory_facts SET source_kind = ? WHERE id = ?",
+                (origin, fact_id),
+            )
+
+        if trust_column_added:
+            rows = self._conn.execute("SELECT id, status, source_kind FROM memory_facts").fetchall()
+            quarantined_origins = {
+                "assistant_inference",
+                "worker",
+                "connector",
+                "mcp",
+                "web",
+                "document",
+            }
+            for row in rows:
+                status = str(row["status"] or "").strip().lower()
+                source_kind = str(row["source_kind"] or "").strip()
+                if status == "superseded":
+                    trust_state = "superseded"
+                elif status in {"deprecated", "invalidated"}:
+                    trust_state = "deprecated"
+                elif status == "active" and source_kind == "imported_canon":
+                    trust_state = "trusted"
+                elif source_kind in quarantined_origins:
+                    trust_state = "quarantined_candidate"
+                else:
+                    trust_state = "observed"
+                self._conn.execute(
+                    "UPDATE memory_facts SET trust_state = ? WHERE id = ?",
+                    (trust_state, row["id"]),
+                )
+
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_memory_facts_owner_trust_status "
+            "ON memory_facts (owner_id, trust_state, status, updated_at DESC)"
+        )
+        self._conn.commit()
 
     def create_worker(self, record: WorkerRecord) -> None:
         self._conn.execute(
@@ -739,6 +1195,705 @@ class SQLiteStore(Store):
         )
         return [self._row_to_worker(row) for row in cursor.fetchall()]
 
+    def add_execution_episode(self, record: ExecutionEpisodeRecord) -> None:
+        self._insert_execution_episode(record)
+        self._conn.commit()
+
+    def _insert_execution_episode(self, record: ExecutionEpisodeRecord) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO execution_episodes (
+                id, worker_run_id, task_fingerprint, environment_fingerprint,
+                capability_fingerprint, result_fingerprint, status, source_kind,
+                trust_state, correlation_id, template_id, model, trajectory_refs_json,
+                result_metadata_json, verification_json, provenance_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.id,
+                record.worker_run_id,
+                record.task_fingerprint,
+                record.environment_fingerprint,
+                record.capability_fingerprint,
+                record.result_fingerprint,
+                record.status,
+                record.source_kind,
+                record.trust_state,
+                record.correlation_id,
+                record.template_id,
+                record.model,
+                _safe_json_dumps(record.trajectory_refs),
+                _safe_json_dumps(record.result_metadata),
+                _safe_json_dumps(record.verification),
+                _safe_json_dumps(record.provenance),
+                record.created_at.isoformat(),
+            ),
+        )
+
+    def add_execution_episode_bundle(
+        self,
+        record: ExecutionEpisodeRecord,
+        evidence: ExecutionEpisodeEvidenceRecord,
+    ) -> None:
+        if evidence.episode_id != record.id:
+            raise ValueError("execution episode evidence must reference the bundled episode")
+        with self._lock:
+            try:
+                self._insert_execution_episode(record)
+                self._conn.execute(
+                    """
+                    INSERT INTO execution_episode_evidence (
+                        episode_id, algorithm, key_id, nonce, ciphertext, created_at, expires_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        evidence.episode_id,
+                        evidence.algorithm,
+                        evidence.key_id,
+                        evidence.nonce,
+                        evidence.ciphertext,
+                        evidence.created_at.isoformat(),
+                        evidence.expires_at.isoformat(),
+                    ),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_execution_episode(self, episode_id: str) -> ExecutionEpisodeRecord | None:
+        cursor = self._conn.execute("SELECT * FROM execution_episodes WHERE id = ?", (episode_id,))
+        row = cursor.fetchone()
+        return self._row_to_execution_episode(row) if row else None
+
+    def list_execution_episodes(
+        self,
+        *,
+        worker_run_id: str | None = None,
+        limit: int = 100,
+    ) -> list[ExecutionEpisodeRecord]:
+        safe_limit = max(1, int(limit))
+        if worker_run_id is None:
+            cursor = self._conn.execute(
+                "SELECT * FROM execution_episodes ORDER BY created_at DESC LIMIT ?",
+                (safe_limit,),
+            )
+        else:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM execution_episodes
+                WHERE worker_run_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (worker_run_id, safe_limit),
+            )
+        return [self._row_to_execution_episode(row) for row in cursor.fetchall()]
+
+    def list_execution_episodes_for_task(
+        self,
+        task_fingerprint: str,
+        *,
+        capability_fingerprint: str | None = None,
+        limit: int = 16,
+    ) -> list[ExecutionEpisodeRecord]:
+        safe_limit = max(1, min(int(limit), 16))
+        if capability_fingerprint is None:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM execution_episodes
+                WHERE task_fingerprint = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (task_fingerprint, safe_limit),
+            )
+        else:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM execution_episodes
+                WHERE task_fingerprint = ? AND capability_fingerprint = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (task_fingerprint, capability_fingerprint, safe_limit),
+            )
+        return [self._row_to_execution_episode(row) for row in cursor.fetchall()]
+
+    def add_adaptation_failure_cluster_with_audit(
+        self, record: AdaptationFailureClusterRecord, event: AuditEvent
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO adaptation_failure_clusters (
+                        id, signature, source_summary_fingerprint,
+                        failure_categories_json, scenario_ids_json,
+                        task_fingerprints_json, trial_refs_json, trial_count, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.signature,
+                        record.source_summary_fingerprint,
+                        _safe_json_dumps(record.failure_categories),
+                        _safe_json_dumps(record.scenario_ids),
+                        _safe_json_dumps(record.task_fingerprints),
+                        _safe_json_dumps(record.trial_refs),
+                        record.trial_count,
+                        record.created_at.isoformat(),
+                    ),
+                )
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                if self.get_adaptation_failure_cluster(record.id) is not None:
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_adaptation_failure_cluster(
+        self, cluster_id: str
+    ) -> AdaptationFailureClusterRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM adaptation_failure_clusters WHERE id = ?",
+            (cluster_id,),
+        ).fetchone()
+        return self._row_to_adaptation_failure_cluster(row) if row else None
+
+    def add_adaptation_candidate_with_audit(
+        self, record: AdaptationCandidateRecord, event: AuditEvent
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO adaptation_candidates (
+                        id, family_id, version, kind, target, artifact_fingerprint,
+                        definition_fingerprint, hypothesis, change_json,
+                        source_cluster_ids_json, parent_id, status, evaluation_id,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.family_id,
+                        record.version,
+                        record.kind,
+                        record.target,
+                        record.artifact_fingerprint,
+                        record.definition_fingerprint,
+                        record.hypothesis,
+                        _safe_json_dumps(record.change),
+                        _safe_json_dumps(record.source_cluster_ids),
+                        record.parent_id,
+                        record.status,
+                        record.evaluation_id,
+                        record.created_at.isoformat(),
+                        record.updated_at.isoformat(),
+                    ),
+                )
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                return False
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_adaptation_candidate(self, candidate_id: str) -> AdaptationCandidateRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM adaptation_candidates WHERE id = ?",
+            (candidate_id,),
+        ).fetchone()
+        return self._row_to_adaptation_candidate(row) if row else None
+
+    def list_adaptation_candidates(
+        self,
+        *,
+        kind: str | None = None,
+        target: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[AdaptationCandidateRecord]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        for column, value in (("kind", kind), ("target", target), ("status", status)):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        query = "SELECT * FROM adaptation_candidates"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC, version DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 1000)))
+        rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [self._row_to_adaptation_candidate(row) for row in rows]
+
+    def add_adaptation_evaluation_with_audit(
+        self, record: AdaptationEvaluationRecord, event: AuditEvent
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO adaptation_evaluations (
+                        id, candidate_id, baseline_fingerprint, candidate_fingerprint,
+                        scenario_set_fingerprint, common_trial_count,
+                        distinct_scenario_count, baseline_success_rate,
+                        candidate_success_rate, success_rate_delta, regression_count,
+                        improvement_count, held_out, passed, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.candidate_id,
+                        record.baseline_fingerprint,
+                        record.candidate_fingerprint,
+                        record.scenario_set_fingerprint,
+                        record.common_trial_count,
+                        record.distinct_scenario_count,
+                        record.baseline_success_rate,
+                        record.candidate_success_rate,
+                        record.success_rate_delta,
+                        record.regression_count,
+                        record.improvement_count,
+                        int(record.held_out),
+                        int(record.passed),
+                        record.created_at.isoformat(),
+                    ),
+                )
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                if self.get_adaptation_evaluation(record.id) is not None:
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_adaptation_evaluation(self, evaluation_id: str) -> AdaptationEvaluationRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM adaptation_evaluations WHERE id = ?",
+            (evaluation_id,),
+        ).fetchone()
+        return self._row_to_adaptation_evaluation(row) if row else None
+
+    def get_latest_adaptation_evaluation(
+        self, candidate_id: str
+    ) -> AdaptationEvaluationRecord | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM adaptation_evaluations
+            WHERE candidate_id = ?
+            ORDER BY created_at DESC, id DESC LIMIT 1
+            """,
+            (candidate_id,),
+        ).fetchone()
+        return self._row_to_adaptation_evaluation(row) if row else None
+
+    def activate_adaptation_candidate_with_audit(
+        self,
+        candidate_id: str,
+        *,
+        expected_statuses: list[str],
+        evaluation_id: str,
+        updated_at: datetime,
+        event: AuditEvent,
+    ) -> bool:
+        if not expected_statuses:
+            return False
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                candidate = self._conn.execute(
+                    "SELECT * FROM adaptation_candidates WHERE id = ?",
+                    (candidate_id,),
+                ).fetchone()
+                if candidate is None or candidate["status"] not in expected_statuses:
+                    self._conn.rollback()
+                    return False
+                evaluation = self._conn.execute(
+                    """
+                    SELECT id FROM adaptation_evaluations
+                    WHERE id = ? AND candidate_id = ? AND passed = 1
+                    """,
+                    (evaluation_id, candidate_id),
+                ).fetchone()
+                if evaluation is None:
+                    self._conn.rollback()
+                    return False
+                self._conn.execute(
+                    """
+                    UPDATE adaptation_candidates
+                    SET status = 'retired', updated_at = ?
+                    WHERE family_id = ? AND status = 'active' AND id != ?
+                    """,
+                    (updated_at.isoformat(), candidate["family_id"], candidate_id),
+                )
+                placeholders = ", ".join("?" for _item in expected_statuses)
+                cursor = self._conn.execute(
+                    f"""
+                    UPDATE adaptation_candidates
+                    SET status = 'active', evaluation_id = ?, updated_at = ?
+                    WHERE id = ? AND status IN ({placeholders})
+                    """,
+                    (
+                        evaluation_id,
+                        updated_at.isoformat(),
+                        candidate_id,
+                        *expected_statuses,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    self._conn.rollback()
+                    return False
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def add_procedural_recipe_with_audit(
+        self, record: ProceduralRecipeRecord, event: AuditEvent
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO procedural_recipes (
+                        id, intent_fingerprint, definition_fingerprint,
+                        applicability_conditions_json, required_capabilities_json,
+                        required_permissions_json, strategy_steps_json,
+                        verification_contract_json, known_failures_json,
+                        invalidating_conditions_json, source_episode_ids_json,
+                        success_count, failure_count, status, last_validated_at,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.intent_fingerprint,
+                        record.definition_fingerprint,
+                        _safe_json_dumps(record.applicability_conditions),
+                        _safe_json_dumps(record.required_capabilities),
+                        _safe_json_dumps(record.required_permissions),
+                        _safe_json_dumps(record.strategy_steps),
+                        _safe_json_dumps(record.verification_contract),
+                        _safe_json_dumps(record.known_failures),
+                        _safe_json_dumps(record.invalidating_conditions),
+                        _safe_json_dumps(record.source_episode_ids),
+                        record.success_count,
+                        record.failure_count,
+                        record.status,
+                        record.last_validated_at.isoformat(),
+                        record.created_at.isoformat(),
+                        record.updated_at.isoformat(),
+                    ),
+                )
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                if "procedural_recipes.id" in str(exc):
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_procedural_recipe(self, recipe_id: str) -> ProceduralRecipeRecord | None:
+        cursor = self._conn.execute("SELECT * FROM procedural_recipes WHERE id = ?", (recipe_id,))
+        row = cursor.fetchone()
+        return self._row_to_procedural_recipe(row) if row else None
+
+    def list_procedural_recipes(
+        self, *, status: str | None = None, limit: int = 100
+    ) -> list[ProceduralRecipeRecord]:
+        safe_limit = max(1, min(int(limit), 1000))
+        if status is None:
+            cursor = self._conn.execute(
+                "SELECT * FROM procedural_recipes ORDER BY updated_at DESC LIMIT ?",
+                (safe_limit,),
+            )
+        else:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM procedural_recipes
+                WHERE status = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (status, safe_limit),
+            )
+        return [self._row_to_procedural_recipe(row) for row in cursor.fetchall()]
+
+    def transition_procedural_recipe_with_audit(
+        self,
+        recipe_id: str,
+        *,
+        expected_statuses: list[str],
+        new_status: str,
+        updated_at: datetime,
+        event: AuditEvent,
+    ) -> bool:
+        if not expected_statuses:
+            return False
+        placeholders = ",".join("?" for _ in expected_statuses)
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    f"""
+                    UPDATE procedural_recipes
+                    SET status = ?, updated_at = ?
+                    WHERE id = ? AND status IN ({placeholders})
+                    """,
+                    (new_status, updated_at.isoformat(), recipe_id, *expected_statuses),
+                )
+                if cursor.rowcount != 1:
+                    self._conn.rollback()
+                    return False
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                if "procedural_recipes.intent_fingerprint" in str(exc):
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def add_procedural_recipe_evaluation_with_audit(
+        self, record: ProceduralRecipeEvaluationRecord, event: AuditEvent
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO procedural_recipe_evaluations (
+                        id, recipe_id, baseline_fingerprint, candidate_fingerprint,
+                        scenario_set_fingerprint, common_trial_count,
+                        baseline_success_rate, candidate_success_rate,
+                        regression_count, improvement_count, passed, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.recipe_id,
+                        record.baseline_fingerprint,
+                        record.candidate_fingerprint,
+                        record.scenario_set_fingerprint,
+                        record.common_trial_count,
+                        record.baseline_success_rate,
+                        record.candidate_success_rate,
+                        record.regression_count,
+                        record.improvement_count,
+                        1 if record.passed else 0,
+                        record.created_at.isoformat(),
+                    ),
+                )
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                if "procedural_recipe_evaluations.id" in str(exc):
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_latest_procedural_recipe_evaluation(
+        self, recipe_id: str
+    ) -> ProceduralRecipeEvaluationRecord | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM procedural_recipe_evaluations
+            WHERE recipe_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (recipe_id,),
+        ).fetchone()
+        return self._row_to_procedural_recipe_evaluation(row) if row else None
+
+    def get_procedural_recipe_evaluation(
+        self, evaluation_id: str
+    ) -> ProceduralRecipeEvaluationRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM procedural_recipe_evaluations WHERE id = ?",
+            (evaluation_id,),
+        ).fetchone()
+        return self._row_to_procedural_recipe_evaluation(row) if row else None
+
+    def record_procedural_recipe_outcome_with_audit(
+        self,
+        recipe_id: str,
+        *,
+        episode_id: str,
+        succeeded: bool,
+        validated_at: datetime,
+        event: AuditEvent,
+    ) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO procedural_recipe_outcomes (
+                        recipe_id, episode_id, succeeded, created_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        recipe_id,
+                        episode_id,
+                        1 if succeeded else 0,
+                        validated_at.isoformat(),
+                    ),
+                )
+                cursor = self._conn.execute(
+                    """
+                    UPDATE procedural_recipes
+                    SET success_count = success_count + ?,
+                        failure_count = failure_count + ?,
+                        last_validated_at = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        1 if succeeded else 0,
+                        0 if succeeded else 1,
+                        validated_at.isoformat(),
+                        validated_at.isoformat(),
+                        recipe_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    self._conn.rollback()
+                    raise ValueError("procedural recipe not found")
+                self._insert_audit(event)
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                if "procedural_recipe_outcomes.recipe_id" in str(
+                    exc
+                ) and "procedural_recipe_outcomes.episode_id" in str(exc):
+                    return False
+                raise
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_execution_episode_evidence(
+        self, episode_id: str
+    ) -> ExecutionEpisodeEvidenceRecord | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM execution_episode_evidence WHERE episode_id = ?",
+            (episode_id,),
+        )
+        row = cursor.fetchone()
+        return self._row_to_execution_episode_evidence(row) if row else None
+
+    def get_execution_episode_evidence_metadata(
+        self, episode_id: str
+    ) -> ExecutionEpisodeEvidenceMetadata | None:
+        cursor = self._conn.execute(
+            """
+            SELECT episode_id, algorithm, key_id, created_at, expires_at
+            FROM execution_episode_evidence
+            WHERE episode_id = ?
+            """,
+            (episode_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return ExecutionEpisodeEvidenceMetadata(
+            episode_id=row["episode_id"],
+            algorithm=row["algorithm"],
+            key_id=row["key_id"],
+            created_at=_parse_dt(row["created_at"]),
+            expires_at=_parse_dt(row["expires_at"]),
+        )
+
+    def delete_execution_episode_evidence(self, episode_id: str) -> bool:
+        cursor = self._conn.execute(
+            "DELETE FROM execution_episode_evidence WHERE episode_id = ?",
+            (episode_id,),
+        )
+        self._conn.commit()
+        deleted = cursor.rowcount > 0
+        if deleted:
+            self._evidence_secure_purge_pending = True
+            self.secure_purge_evidence_storage()
+        return deleted
+
+    def delete_execution_episode_evidence_with_audit(
+        self,
+        episode_id: str,
+        event: AuditEvent,
+    ) -> bool:
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "DELETE FROM execution_episode_evidence WHERE episode_id = ?",
+                    (episode_id,),
+                )
+                if cursor.rowcount <= 0:
+                    self._conn.rollback()
+                    return False
+                self._insert_audit(event)
+                self._conn.commit()
+                self._evidence_secure_purge_pending = True
+                self.secure_purge_evidence_storage()
+                return True
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def cleanup_expired_execution_episode_evidence(self, now: datetime) -> int:
+        cursor = self._conn.execute(
+            """
+            DELETE FROM execution_episode_evidence
+            WHERE julianday(expires_at) <= julianday(?)
+            """,
+            (now.isoformat(),),
+        )
+        self._conn.commit()
+        deleted = cursor.rowcount
+        if deleted > 0:
+            self._evidence_secure_purge_pending = True
+        if self._evidence_secure_purge_pending:
+            self.secure_purge_evidence_storage()
+        return deleted
+
+    def secure_purge_evidence_storage(self) -> None:
+        """Checkpoint and truncate WAL so securely deleted evidence pages are discarded."""
+        with self._lock:
+            row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if row is None or int(row[0]) != 0:
+                raise EvidenceSecurePurgeIncomplete(
+                    "SQLite WAL checkpoint was blocked after evidence deletion"
+                )
+            self._evidence_secure_purge_pending = False
+
     def count_workers_created_since(self, since: datetime) -> int:
         cursor = self._conn.execute(
             "SELECT COUNT(*) AS cnt FROM workers WHERE julianday(created_at) >= julianday(?)",
@@ -755,8 +1910,11 @@ class SQLiteStore(Store):
     def save_intent(self, record: IntentRecord) -> None:
         self._conn.execute(
             """
-            INSERT INTO intents (id, worker_id, type, payload_json, payload_hash, risk, requires_approval, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO intents (
+                id, worker_id, type, payload_json, payload_hash, risk,
+                requires_approval, memory_influence_ids_json,
+                procedural_recipe_ids_json, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.id,
@@ -766,6 +1924,8 @@ class SQLiteStore(Store):
                 record.payload_hash,
                 record.risk,
                 1 if record.requires_approval else 0,
+                json.dumps(record.memory_influence_ids),
+                json.dumps(record.procedural_recipe_ids),
                 record.status,
                 record.created_at.isoformat(),
             ),
@@ -823,6 +1983,96 @@ class SQLiteStore(Store):
         return record
 
     def append_audit(self, event: AuditEvent) -> None:
+        self._insert_audit(event)
+        self._conn.commit()
+
+    def upsert_mcp_task(self, record: MCPTaskRecord) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO mcp_tasks (
+                id, server_id, task_id, protocol, remote_status, runtime_status,
+                tool_name, auth_context_id, correlation_id, trace_id, span_id,
+                worker_run_id, chat_id, chat_turn_id, plan_run_id, plan_step_id,
+                status_message, ttl_ms, poll_interval_ms, input_requests_json,
+                responded_input_keys_json, result_json, error_json, remote_created_at,
+                remote_updated_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                remote_status = excluded.remote_status,
+                runtime_status = excluded.runtime_status,
+                status_message = excluded.status_message,
+                ttl_ms = excluded.ttl_ms,
+                poll_interval_ms = excluded.poll_interval_ms,
+                input_requests_json = excluded.input_requests_json,
+                responded_input_keys_json = excluded.responded_input_keys_json,
+                result_json = excluded.result_json,
+                error_json = excluded.error_json,
+                remote_updated_at = excluded.remote_updated_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                record.id,
+                record.server_id,
+                record.task_id,
+                record.protocol,
+                record.remote_status,
+                record.runtime_status,
+                record.tool_name,
+                record.auth_context_id,
+                record.correlation_id,
+                record.trace_id,
+                record.span_id,
+                record.worker_run_id,
+                record.chat_id,
+                record.chat_turn_id,
+                record.plan_run_id,
+                record.plan_step_id,
+                record.status_message,
+                record.ttl_ms,
+                record.poll_interval_ms,
+                json.dumps(record.input_requests),
+                json.dumps(record.responded_input_keys),
+                json.dumps(record.result) if record.result is not None else None,
+                json.dumps(record.error) if record.error is not None else None,
+                record.remote_created_at.isoformat(),
+                record.remote_updated_at.isoformat(),
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def get_mcp_task(self, task_record_id: str) -> MCPTaskRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM mcp_tasks WHERE id = ?",
+            (task_record_id,),
+        ).fetchone()
+        return self._row_to_mcp_task(row) if row else None
+
+    def list_recoverable_mcp_tasks(
+        self,
+        *,
+        server_id: str | None = None,
+        auth_context_id: str | None = None,
+        limit: int = 100,
+    ) -> list[MCPTaskRecord]:
+        clauses = ["runtime_status IN ('running', 'awaiting_instruction')"]
+        params: list[Any] = []
+        if server_id is not None:
+            clauses.append("server_id = ?")
+            params.append(server_id)
+        if auth_context_id is not None:
+            clauses.append("auth_context_id = ?")
+            params.append(auth_context_id)
+        params.append(max(1, min(int(limit), 1000)))
+        rows = self._conn.execute(
+            f"SELECT * FROM mcp_tasks WHERE {' AND '.join(clauses)} "
+            "ORDER BY updated_at ASC LIMIT ?",
+            tuple(params),
+        ).fetchall()
+        return [self._row_to_mcp_task(row) for row in rows]
+
+    def _insert_audit(self, event: AuditEvent) -> None:
         self._conn.execute(
             """
             INSERT INTO audit_events (id, ts, correlation_id, level, event_type, data_json)
@@ -837,7 +2087,6 @@ class SQLiteStore(Store):
                 json.dumps(event.data),
             ),
         )
-        self._conn.commit()
 
     def list_audit(self, limit: int = 100) -> list[AuditEvent]:
         cursor = self._conn.execute(
@@ -1049,10 +2298,10 @@ class SQLiteStore(Store):
             """
             INSERT OR REPLACE INTO memory_facts (
                 id, owner_id, subject, key, value_text, value_json, fact_type, confidence,
-                status, valid_from, valid_to, facets_json, source_kind, source_ref,
-                created_at, updated_at
+                status, trust_state, valid_from, valid_to, facets_json, source_kind,
+                source_ref, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.id,
@@ -1064,6 +2313,7 @@ class SQLiteStore(Store):
                 record.fact_type,
                 float(record.confidence),
                 record.status,
+                record.trust_state,
                 record.valid_from.isoformat() if record.valid_from else None,
                 record.valid_to.isoformat() if record.valid_to else None,
                 json.dumps(record.facets),
@@ -1085,6 +2335,7 @@ class SQLiteStore(Store):
         key: str | None = None,
         source_kind: str | None = None,
         source_ref: str | None = None,
+        trust_states: list[str] | None = None,
     ) -> list[MemoryFactRecord]:
         query = ["SELECT * FROM memory_facts WHERE owner_id = ?"]
         params: list[Any] = [owner_id]
@@ -1103,6 +2354,10 @@ class SQLiteStore(Store):
         if source_ref is not None:
             query.append("AND source_ref = ?")
             params.append(source_ref)
+        if trust_states:
+            placeholders = ", ".join("?" for _ in trust_states)
+            query.append(f"AND trust_state IN ({placeholders})")
+            params.extend(trust_states)
         query.append("ORDER BY updated_at DESC LIMIT ?")
         params.append(limit)
         cursor = self._conn.execute(" ".join(query), tuple(params))
@@ -1111,13 +2366,18 @@ class SQLiteStore(Store):
     def invalidate_memory_fact(
         self, fact_id: str, valid_to: datetime, status: str = "invalidated"
     ) -> None:
+        trust_state = {
+            "superseded": "superseded",
+            "deprecated": "deprecated",
+            "invalidated": "deprecated",
+        }.get(status)
         self._conn.execute(
             """
             UPDATE memory_facts
-            SET status = ?, valid_to = ?, updated_at = ?
+            SET status = ?, trust_state = COALESCE(?, trust_state), valid_to = ?, updated_at = ?
             WHERE id = ?
             """,
-            (status, valid_to.isoformat(), utc_now().isoformat(), fact_id),
+            (status, trust_state, valid_to.isoformat(), utc_now().isoformat(), fact_id),
         )
         self._conn.commit()
 
@@ -1729,6 +2989,132 @@ class SQLiteStore(Store):
             template_name=_row_get(row, "template_name"),
         )
 
+    def _row_to_execution_episode(self, row: sqlite3.Row) -> ExecutionEpisodeRecord:
+        return ExecutionEpisodeRecord(
+            id=row["id"],
+            worker_run_id=row["worker_run_id"],
+            task_fingerprint=row["task_fingerprint"],
+            environment_fingerprint=row["environment_fingerprint"],
+            capability_fingerprint=row["capability_fingerprint"],
+            result_fingerprint=row["result_fingerprint"],
+            status=row["status"],
+            source_kind=row["source_kind"],
+            trust_state=row["trust_state"],
+            correlation_id=row["correlation_id"],
+            template_id=row["template_id"],
+            model=row["model"],
+            trajectory_refs=_loads_json(row["trajectory_refs_json"], {}),
+            result_metadata=_loads_json(row["result_metadata_json"], {}),
+            verification=_loads_json(row["verification_json"], {}),
+            provenance=_loads_json(row["provenance_json"], {}),
+            created_at=_parse_dt(row["created_at"]),
+        )
+
+    def _row_to_adaptation_failure_cluster(
+        self, row: sqlite3.Row
+    ) -> AdaptationFailureClusterRecord:
+        return AdaptationFailureClusterRecord(
+            id=row["id"],
+            signature=row["signature"],
+            source_summary_fingerprint=row["source_summary_fingerprint"],
+            failure_categories=_loads_json(row["failure_categories_json"], []),
+            scenario_ids=_loads_json(row["scenario_ids_json"], []),
+            task_fingerprints=_loads_json(row["task_fingerprints_json"], []),
+            trial_refs=_loads_json(row["trial_refs_json"], []),
+            trial_count=int(row["trial_count"]),
+            created_at=_parse_dt(row["created_at"]),
+        )
+
+    def _row_to_adaptation_candidate(self, row: sqlite3.Row) -> AdaptationCandidateRecord:
+        return AdaptationCandidateRecord(
+            id=row["id"],
+            family_id=row["family_id"],
+            version=int(row["version"]),
+            kind=row["kind"],
+            target=row["target"],
+            artifact_fingerprint=row["artifact_fingerprint"],
+            definition_fingerprint=row["definition_fingerprint"],
+            hypothesis=row["hypothesis"],
+            change=_loads_json(row["change_json"], {}),
+            source_cluster_ids=_loads_json(row["source_cluster_ids_json"], []),
+            parent_id=row["parent_id"],
+            status=row["status"],
+            evaluation_id=row["evaluation_id"],
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
+        )
+
+    def _row_to_adaptation_evaluation(self, row: sqlite3.Row) -> AdaptationEvaluationRecord:
+        return AdaptationEvaluationRecord(
+            id=row["id"],
+            candidate_id=row["candidate_id"],
+            baseline_fingerprint=row["baseline_fingerprint"],
+            candidate_fingerprint=row["candidate_fingerprint"],
+            scenario_set_fingerprint=row["scenario_set_fingerprint"],
+            common_trial_count=int(row["common_trial_count"]),
+            distinct_scenario_count=int(row["distinct_scenario_count"]),
+            baseline_success_rate=float(row["baseline_success_rate"]),
+            candidate_success_rate=float(row["candidate_success_rate"]),
+            success_rate_delta=float(row["success_rate_delta"]),
+            regression_count=int(row["regression_count"]),
+            improvement_count=int(row["improvement_count"]),
+            held_out=bool(row["held_out"]),
+            passed=bool(row["passed"]),
+            created_at=_parse_dt(row["created_at"]),
+        )
+
+    def _row_to_procedural_recipe(self, row: sqlite3.Row) -> ProceduralRecipeRecord:
+        return ProceduralRecipeRecord(
+            id=row["id"],
+            intent_fingerprint=row["intent_fingerprint"],
+            definition_fingerprint=row["definition_fingerprint"],
+            applicability_conditions=_loads_json(row["applicability_conditions_json"], []),
+            required_capabilities=_loads_json(row["required_capabilities_json"], []),
+            required_permissions=_loads_json(row["required_permissions_json"], []),
+            strategy_steps=_loads_json(row["strategy_steps_json"], []),
+            verification_contract=_loads_json(row["verification_contract_json"], {}),
+            known_failures=_loads_json(row["known_failures_json"], []),
+            invalidating_conditions=_loads_json(row["invalidating_conditions_json"], []),
+            source_episode_ids=_loads_json(row["source_episode_ids_json"], []),
+            success_count=int(row["success_count"]),
+            failure_count=int(row["failure_count"]),
+            status=row["status"],
+            last_validated_at=_parse_dt(row["last_validated_at"]),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
+        )
+
+    def _row_to_procedural_recipe_evaluation(
+        self, row: sqlite3.Row
+    ) -> ProceduralRecipeEvaluationRecord:
+        return ProceduralRecipeEvaluationRecord(
+            id=row["id"],
+            recipe_id=row["recipe_id"],
+            baseline_fingerprint=row["baseline_fingerprint"],
+            candidate_fingerprint=row["candidate_fingerprint"],
+            scenario_set_fingerprint=row["scenario_set_fingerprint"],
+            common_trial_count=int(row["common_trial_count"]),
+            baseline_success_rate=float(row["baseline_success_rate"]),
+            candidate_success_rate=float(row["candidate_success_rate"]),
+            regression_count=int(row["regression_count"]),
+            improvement_count=int(row["improvement_count"]),
+            passed=bool(row["passed"]),
+            created_at=_parse_dt(row["created_at"]),
+        )
+
+    def _row_to_execution_episode_evidence(
+        self, row: sqlite3.Row
+    ) -> ExecutionEpisodeEvidenceRecord:
+        return ExecutionEpisodeEvidenceRecord(
+            episode_id=row["episode_id"],
+            algorithm=row["algorithm"],
+            key_id=row["key_id"],
+            nonce=bytes(row["nonce"]),
+            ciphertext=bytes(row["ciphertext"]),
+            created_at=_parse_dt(row["created_at"]),
+            expires_at=_parse_dt(row["expires_at"]),
+        )
+
     def _row_to_permit(self, row: sqlite3.Row) -> PermitRecord:
         intent_type = _row_get(row, "intent_type", "")
         return PermitRecord(
@@ -1750,6 +3136,40 @@ class SQLiteStore(Store):
             level=row["level"],
             event_type=row["event_type"],
             data=_loads_json(row["data_json"]),
+        )
+
+    def _row_to_mcp_task(self, row: sqlite3.Row) -> MCPTaskRecord:
+        return MCPTaskRecord(
+            id=row["id"],
+            server_id=row["server_id"],
+            task_id=row["task_id"],
+            protocol=row["protocol"],
+            remote_status=row["remote_status"],
+            runtime_status=row["runtime_status"],
+            tool_name=row["tool_name"],
+            auth_context_id=row["auth_context_id"],
+            correlation_id=_row_get(row, "correlation_id"),
+            trace_id=_row_get(row, "trace_id"),
+            span_id=_row_get(row, "span_id"),
+            worker_run_id=_row_get(row, "worker_run_id"),
+            chat_id=_row_get(row, "chat_id"),
+            chat_turn_id=_row_get(row, "chat_turn_id"),
+            plan_run_id=_row_get(row, "plan_run_id"),
+            plan_step_id=_row_get(row, "plan_step_id"),
+            status_message=_row_get(row, "status_message"),
+            ttl_ms=_row_get(row, "ttl_ms"),
+            poll_interval_ms=_row_get(row, "poll_interval_ms"),
+            input_requests=_loads_json(row["input_requests_json"], {}),
+            responded_input_keys=_loads_json(
+                _row_get(row, "responded_input_keys_json"),
+                [],
+            ),
+            result=_loads_json(_row_get(row, "result_json")),
+            error=_loads_json(_row_get(row, "error_json")),
+            remote_created_at=_parse_dt(row["remote_created_at"]),
+            remote_updated_at=_parse_dt(row["remote_updated_at"]),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
         )
 
     def _row_to_memory(self, row: sqlite3.Row) -> MemoryEntry:
@@ -1780,6 +3200,7 @@ class SQLiteStore(Store):
             fact_type=row["fact_type"],
             confidence=float(row["confidence"]),
             status=row["status"],
+            trust_state=row["trust_state"],
             valid_from=_parse_dt(row["valid_from"]) if row["valid_from"] else None,
             valid_to=_parse_dt(row["valid_to"]) if row["valid_to"] else None,
             facets=_loads_json(row["facets_json"], []),
