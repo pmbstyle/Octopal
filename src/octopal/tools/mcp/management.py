@@ -6,9 +6,55 @@ from typing import Any
 import structlog
 
 from octopal.infrastructure.mcp.manager import MCPServerConfig
+from octopal.infrastructure.mcp.tasks import MCPTaskContext, task_status_result
+from octopal.infrastructure.store.models import MCPTaskRecord
 from octopal.tools.registry import ToolSpec
 
 logger = structlog.get_logger(__name__)
+
+
+def _task_context(ctx: dict[str, Any]) -> MCPTaskContext:
+    worker = ctx.get("worker")
+    spec = getattr(worker, "spec", None)
+    worker_run_id = str(ctx.get("worker_id") or getattr(spec, "id", None) or "").strip()
+    chat_id: int | None = None
+    try:
+        raw_chat_id = ctx.get("chat_id")
+        if raw_chat_id is not None:
+            chat_id = int(raw_chat_id)
+    except (TypeError, ValueError):
+        pass
+    chat_turn_id: str | None = None
+    if chat_id is not None and ctx.get("chat_turn_epoch") is not None:
+        try:
+            chat_turn_id = f"{chat_id}:{int(ctx['chat_turn_epoch'])}"
+        except (TypeError, ValueError):
+            chat_turn_id = None
+    return MCPTaskContext(
+        correlation_id=(
+            str(ctx.get("correlation_id") or getattr(spec, "correlation_id", None) or "").strip()
+            or None
+        ),
+        worker_run_id=worker_run_id or None,
+        chat_id=chat_id,
+        chat_turn_id=chat_turn_id,
+    )
+
+
+def _task_record_payload(record: MCPTaskRecord) -> dict[str, Any]:
+    structured = task_status_result(record).structuredContent
+    return dict(structured or {})
+
+
+def _tool_result_payload(result: Any) -> dict[str, Any]:
+    return {
+        "ok": not bool(getattr(result, "isError", False)),
+        "content": [
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else str(item)
+            for item in result.content
+        ],
+        "structured_content": getattr(result, "structuredContent", None),
+    }
 
 
 async def mcp_connect(args: dict[str, Any], ctx: dict[str, Any]) -> str:
@@ -257,9 +303,17 @@ async def mcp_call(args: dict[str, Any], ctx: dict[str, Any]) -> str:
 
     logger.info("Octo calling MCP tool via mcp_call", server_id=server_id, tool=tool_name)
     try:
-        result = await octo.mcp_manager.call_tool(server_id, tool_name, tool_args)
+        result = await octo.mcp_manager.call_tool(
+            server_id,
+            tool_name,
+            tool_args,
+            task_context=_task_context(ctx),
+        )
         return json.dumps(
-            [c.model_dump() if hasattr(c, "model_dump") else str(c) for c in result.content],
+            [
+                item.model_dump() if hasattr(item, "model_dump") else str(item)
+                for item in result.content
+            ],
             indent=2,
         )
     except Exception as e:
@@ -273,6 +327,65 @@ async def mcp_call(args: dict[str, Any], ctx: dict[str, Any]) -> str:
             },
             indent=2,
         )
+
+
+async def mcp_task_get(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    """Refresh or resume a durable MCP task by its client-side handle."""
+    octo = ctx.get("octo")
+    if not octo or not octo.mcp_manager:
+        return "Error: MCP Manager not initialized."
+    task_id = str(args.get("task_id") or "").strip()
+    if not task_id:
+        return "Error: 'task_id' is required."
+    try:
+        result = await octo.mcp_manager.resume_task(
+            task_id,
+            task_context=_task_context(ctx),
+        )
+        return json.dumps(_tool_result_payload(result), indent=2)
+    except Exception as exc:
+        logger.exception("MCP task refresh failed", task_id=task_id)
+        return json.dumps({"ok": False, "task_id": task_id, "error": str(exc)}, indent=2)
+
+
+async def mcp_task_update(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    """Submit trusted responses for an MCP task waiting for input."""
+    octo = ctx.get("octo")
+    if not octo or not octo.mcp_manager:
+        return "Error: MCP Manager not initialized."
+    task_id = str(args.get("task_id") or "").strip()
+    input_responses = args.get("input_responses")
+    if not task_id or not isinstance(input_responses, dict):
+        return "Error: 'task_id' and object 'input_responses' are required."
+    try:
+        record = await octo.mcp_manager.update_task(
+            task_id,
+            input_responses,
+            task_context=_task_context(ctx),
+        )
+        return json.dumps({"ok": True, **_task_record_payload(record)}, indent=2)
+    except Exception as exc:
+        logger.exception("MCP task update failed", task_id=task_id)
+        return json.dumps({"ok": False, "task_id": task_id, "error": str(exc)}, indent=2)
+
+
+async def mcp_task_cancel(args: dict[str, Any], ctx: dict[str, Any]) -> str:
+    """Request cancellation for a durable MCP task."""
+    octo = ctx.get("octo")
+    if not octo or not octo.mcp_manager:
+        return "Error: MCP Manager not initialized."
+    task_id = str(args.get("task_id") or "").strip()
+    if not task_id:
+        return "Error: 'task_id' is required."
+    try:
+        record = await octo.mcp_manager.cancel_task(
+            task_id,
+            task_context=_task_context(ctx),
+        )
+        return json.dumps({"ok": True, **_task_record_payload(record)}, indent=2)
+    except Exception as exc:
+        logger.exception("MCP task cancellation failed", task_id=task_id)
+        return json.dumps({"ok": False, "task_id": task_id, "error": str(exc)}, indent=2)
 
 
 def get_mcp_mgmt_tools() -> list[ToolSpec]:
@@ -388,5 +501,63 @@ def get_mcp_mgmt_tools() -> list[ToolSpec]:
             },
             permission="self_control",
             handler=mcp_discover,
+        ),
+        ToolSpec(
+            name="mcp_task_get",
+            description="Refresh or resume a durable MCP task returned by an earlier MCP tool call.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "Durable client-side MCP task ID.",
+                    }
+                },
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+            permission="mcp_exec",
+            handler=mcp_task_get,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="mcp_task_update",
+            description="Submit trusted input for a durable MCP task in input_required state. Only use responses obtained through the normal instruction or approval path.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "Durable client-side MCP task ID.",
+                    },
+                    "input_responses": {
+                        "type": "object",
+                        "description": "Responses keyed by the outstanding input request names.",
+                    },
+                },
+                "required": ["task_id", "input_responses"],
+                "additionalProperties": False,
+            },
+            permission="mcp_exec",
+            handler=mcp_task_update,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="mcp_task_cancel",
+            description="Request cancellation of a durable MCP task returned by an earlier MCP tool call.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "Durable client-side MCP task ID.",
+                    }
+                },
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+            permission="mcp_exec",
+            handler=mcp_task_cancel,
+            is_async=True,
         ),
     ]

@@ -2143,6 +2143,30 @@ def _get_fallback_mcp_management_tools() -> list[ToolSpec]:
             permission="self_control",
             handler=_fallback_mcp_unavailable,
         ),
+        ToolSpec(
+            name="mcp_task_get",
+            description="Refresh or resume a durable MCP task.",
+            parameters={"type": "object", "properties": {}, "additionalProperties": True},
+            permission="mcp_exec",
+            handler=_fallback_mcp_unavailable,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="mcp_task_update",
+            description="Submit trusted input for a durable MCP task.",
+            parameters={"type": "object", "properties": {}, "additionalProperties": True},
+            permission="mcp_exec",
+            handler=_fallback_mcp_unavailable,
+            is_async=True,
+        ),
+        ToolSpec(
+            name="mcp_task_cancel",
+            description="Request cancellation of a durable MCP task.",
+            parameters={"type": "object", "properties": {}, "additionalProperties": True},
+            permission="mcp_exec",
+            handler=_fallback_mcp_unavailable,
+            is_async=True,
+        ),
     ]
 
 

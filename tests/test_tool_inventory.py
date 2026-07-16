@@ -63,6 +63,16 @@ def test_catalog_returns_annotated_tools() -> None:
     assert "skill_use" in tools["use_skill"].metadata.capabilities
     assert tools["run_skill_script"].metadata.category == "skills"
     assert "skill_exec" in tools["run_skill_script"].metadata.capabilities
+    assert {
+        "mcp_task_get",
+        "mcp_task_update",
+        "mcp_task_cancel",
+    }.issubset(tools)
+    assert tools["mcp_task_update"].parameters["required"] == [
+        "task_id",
+        "input_responses",
+    ]
+    assert tools["mcp_task_cancel"].metadata.category == "mcp"
 
 
 def test_octo_system_prompt_describes_workers_as_execution_fabric() -> None:
