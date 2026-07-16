@@ -784,7 +784,7 @@ class MCPManager:
 
     async def _terminal_task_result(
         self,
-        session: ClientSession,
+        session: ClientSession | None,
         record: MCPTaskRecord,
     ) -> mcp_types.CallToolResult:
         if record.remote_status == "completed":
@@ -799,6 +799,8 @@ class MCPManager:
                         details={"task_id": record.id},
                     )
                 return mcp_types.CallToolResult.model_validate(record.result)
+            if session is None:
+                raise RuntimeError(f"MCP session '{record.server_id}' is not active.")
             return await session.experimental.get_task_result(
                 record.task_id,
                 mcp_types.CallToolResult,
@@ -1023,11 +1025,11 @@ class MCPManager:
         task_context: MCPTaskContext | None = None,
     ) -> MCPTaskRecord:
         record = await self._load_bound_task(task_record_id, task_context=task_context)
+        if record.remote_status in MCP_TASK_TERMINAL_STATUSES:
+            return record
         session = self.sessions.get(record.server_id)
         if session is None:
             raise RuntimeError(f"MCP session '{record.server_id}' is not active.")
-        if record.remote_status in MCP_TASK_TERMINAL_STATUSES:
-            return record
         refreshed = await self._refresh_task(session, record)
         self._ensure_task_recovery(refreshed)
         return refreshed
@@ -1039,6 +1041,8 @@ class MCPManager:
         task_context: MCPTaskContext | None = None,
     ) -> mcp_types.CallToolResult:
         record = await self._load_bound_task(task_record_id, task_context=task_context)
+        if record.remote_status in MCP_TASK_TERMINAL_STATUSES and record.protocol == "extension":
+            return await self._terminal_task_result(None, record)
         session = self.sessions.get(record.server_id)
         if session is None:
             raise RuntimeError(f"MCP session '{record.server_id}' is not active.")
@@ -1135,7 +1139,7 @@ class MCPManager:
                 ),
                 RawMCPResult,
             )
-            refreshed = record
+            refreshed = await self._refresh_task(session, record)
         else:
             state = parse_task_state(
                 await session.experimental.cancel_task(record.task_id),
@@ -1150,6 +1154,7 @@ class MCPManager:
                 previous=record,
             )
         await self._append_task_audit("mcp_task_cancel_requested", refreshed)
+        self._ensure_task_recovery(refreshed)
         return refreshed
 
     async def _load_bound_task(

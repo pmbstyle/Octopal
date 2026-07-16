@@ -221,6 +221,11 @@ def test_extension_task_polls_to_completed_and_persists_bindings(tmp_path) -> No
     assert record.plan_step_id == "step-2"
     assert session.calls[0][1]["_meta"] == client_capability_meta()
 
+    manager.sessions.clear()
+    resumed = asyncio.run(manager.resume_task(task_id, task_context=context))
+
+    assert resumed.content[0].text == "extension complete"
+
 
 def test_extension_sync_result_preserves_normal_tool_contract(tmp_path) -> None:
     session = _ExtensionSession(
@@ -414,6 +419,17 @@ def test_extension_update_and_cancel_use_bound_durable_handle(tmp_path) -> None:
             task_context=context,
         )
     )
+    session.states.append(
+        {
+            "resultType": "complete",
+            "taskId": "managed-secret-id",
+            "status": "cancelled",
+            "createdAt": created_at,
+            "lastUpdatedAt": _timestamp(2),
+            "ttlMs": 60_000,
+            "pollIntervalMs": 1000,
+        }
+    )
     with pytest.raises(MCPToolCallError) as duplicate_error:
         asyncio.run(
             manager.update_task(
@@ -428,11 +444,12 @@ def test_extension_update_and_cancel_use_bound_durable_handle(tmp_path) -> None:
     assert updated.responded_input_keys == ["answer"]
     assert updated.input_requests == {}
     assert duplicate_error.value.classification == "invalid_task_input"
-    assert cancelled.id == task_id
-    assert [method for method, _params in session.calls][-3:] == [
+    assert cancelled.remote_status == "cancelled"
+    assert [method for method, _params in session.calls][-4:] == [
         "tasks/update",
         "tasks/get",
         "tasks/cancel",
+        "tasks/get",
     ]
     audits = manager.store.list_audit()  # type: ignore[union-attr]
     assert "mcp_task_input_submitted" in {event.event_type for event in audits}
