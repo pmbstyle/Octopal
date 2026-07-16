@@ -221,6 +221,11 @@ def test_extension_task_polls_to_completed_and_persists_bindings(tmp_path) -> No
     assert record.plan_step_id == "step-2"
     assert session.calls[0][1]["_meta"] == client_capability_meta()
 
+    manager.sessions.clear()
+    resumed = asyncio.run(manager.resume_task(task_id, task_context=context))
+
+    assert resumed.content[0].text == "extension complete"
+
 
 def test_extension_sync_result_preserves_normal_tool_contract(tmp_path) -> None:
     session = _ExtensionSession(
@@ -277,6 +282,57 @@ def test_extension_input_required_returns_durable_wait_state(tmp_path) -> None:
     assert stored is not None
     assert stored.remote_status == "input_required"
     assert stored.worker_run_id == "worker-1"
+
+
+def test_new_working_task_starts_background_recovery(tmp_path, monkeypatch) -> None:
+    created_at = _timestamp()
+    session = _ExtensionSession(
+        created={
+            "resultType": "task",
+            "taskId": "background-secret-id",
+            "status": "working",
+            "createdAt": created_at,
+            "lastUpdatedAt": created_at,
+            "ttlMs": 60_000,
+            "pollIntervalMs": 0,
+        },
+        states=[
+            {
+                "resultType": "complete",
+                "taskId": "background-secret-id",
+                "status": "completed",
+                "createdAt": created_at,
+                "lastUpdatedAt": _timestamp(1),
+                "ttlMs": 60_000,
+                "pollIntervalMs": 0,
+                "result": {
+                    "content": [{"type": "text", "text": "background complete"}],
+                    "isError": False,
+                },
+            }
+        ],
+    )
+    manager = _configured_manager(tmp_path, protocol="extension", session=session)
+    monkeypatch.setattr(
+        "octopal.infrastructure.mcp.manager._mcp_timeout_seconds",
+        lambda _tool_name, _args: 0.01,
+    )
+
+    async def run() -> tuple[str, str]:
+        result = await manager.call_tool("demo", "long_tool", {})
+        task_id = result.structuredContent["mcp_task"]["id"]
+        assert task_id in manager._task_recovery_tasks
+        recovery = manager._task_recovery_tasks[task_id]
+        await recovery
+        stored = manager.store.get_mcp_task(task_id)  # type: ignore[union-attr]
+        assert stored is not None
+        return task_id, stored.remote_status
+
+    task_id, remote_status = asyncio.run(run())
+
+    assert task_id.startswith("mcp_task_")
+    assert remote_status == "completed"
+    assert manager._task_metrics["recovered"] == 1
 
 
 def test_legacy_task_uses_sdk_lifecycle_and_sync_result_contract(tmp_path) -> None:
@@ -363,6 +419,17 @@ def test_extension_update_and_cancel_use_bound_durable_handle(tmp_path) -> None:
             task_context=context,
         )
     )
+    session.states.append(
+        {
+            "resultType": "complete",
+            "taskId": "managed-secret-id",
+            "status": "cancelled",
+            "createdAt": created_at,
+            "lastUpdatedAt": _timestamp(2),
+            "ttlMs": 60_000,
+            "pollIntervalMs": 1000,
+        }
+    )
     with pytest.raises(MCPToolCallError) as duplicate_error:
         asyncio.run(
             manager.update_task(
@@ -377,11 +444,12 @@ def test_extension_update_and_cancel_use_bound_durable_handle(tmp_path) -> None:
     assert updated.responded_input_keys == ["answer"]
     assert updated.input_requests == {}
     assert duplicate_error.value.classification == "invalid_task_input"
-    assert cancelled.id == task_id
-    assert [method for method, _params in session.calls][-3:] == [
+    assert cancelled.remote_status == "cancelled"
+    assert [method for method, _params in session.calls][-4:] == [
         "tasks/update",
         "tasks/get",
         "tasks/cancel",
+        "tasks/get",
     ]
     audits = manager.store.list_audit()  # type: ignore[union-attr]
     assert "mcp_task_input_submitted" in {event.event_type for event in audits}
@@ -582,6 +650,89 @@ def test_terminal_task_state_cannot_regress_from_stale_poll(tmp_path) -> None:
 
     assert preserved.remote_status == "completed"
     assert manager.store.get_mcp_task(record.id).remote_status == "completed"  # type: ignore[union-attr]
+
+
+def test_atomic_task_upsert_rejects_poll_racing_with_terminal_state(tmp_path) -> None:
+    manager = _configured_manager(
+        tmp_path,
+        protocol="extension",
+        session=_ExtensionSession(created={}, states=[]),
+    )
+    created_at = datetime.now(UTC) - timedelta(seconds=10)
+    initial_state = parse_task_state(
+        {
+            "taskId": "race-secret-id",
+            "status": "working",
+            "createdAt": created_at.isoformat(),
+            "lastUpdatedAt": created_at.isoformat(),
+            "ttlMs": 60_000,
+        },
+        protocol="extension",
+    )
+    initial = asyncio.run(
+        manager._persist_task_state(
+            initial_state,
+            server_id="demo",
+            tool_name="race_tool",
+            protocol="extension",
+            task_context=MCPTaskContext(),
+        )
+    )
+    completed_state = parse_task_state(
+        {
+            "taskId": "race-secret-id",
+            "status": "completed",
+            "createdAt": created_at.isoformat(),
+            "lastUpdatedAt": (created_at + timedelta(seconds=2)).isoformat(),
+            "ttlMs": 60_000,
+            "result": {
+                "content": [{"type": "text", "text": "done"}],
+                "isError": False,
+            },
+        },
+        protocol="extension",
+    )
+    stale_poll = parse_task_state(
+        {
+            "taskId": "race-secret-id",
+            "status": "working",
+            "createdAt": created_at.isoformat(),
+            "lastUpdatedAt": (created_at + timedelta(seconds=1)).isoformat(),
+            "ttlMs": 60_000,
+        },
+        protocol="extension",
+    )
+
+    completed = asyncio.run(
+        manager._persist_task_state(
+            completed_state,
+            server_id="demo",
+            tool_name="race_tool",
+            protocol="extension",
+            task_context=MCPTaskContext(),
+            previous=initial,
+        )
+    )
+    preserved = asyncio.run(
+        manager._persist_task_state(
+            stale_poll,
+            server_id="demo",
+            tool_name="race_tool",
+            protocol="extension",
+            task_context=MCPTaskContext(),
+            previous=initial,
+        )
+    )
+
+    stored = manager.store.get_mcp_task(initial.id)  # type: ignore[union-attr]
+    assert completed.remote_status == "completed"
+    assert preserved.remote_status == "completed"
+    assert stored is not None
+    assert stored.remote_status == "completed"
+    assert stored.result == {
+        "content": [{"type": "text", "text": "done"}],
+        "isError": False,
+    }
 
 
 def test_expired_task_fails_locally_without_another_remote_poll(tmp_path) -> None:

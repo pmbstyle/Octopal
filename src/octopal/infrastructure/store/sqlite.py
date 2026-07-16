@@ -1986,9 +1986,29 @@ class SQLiteStore(Store):
         self._insert_audit(event)
         self._conn.commit()
 
-    def upsert_mcp_task(self, record: MCPTaskRecord) -> None:
-        self._conn.execute(
-            """
+    def upsert_mcp_task(
+        self, record: MCPTaskRecord
+    ) -> tuple[MCPTaskRecord, MCPTaskRecord | None, bool]:
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT * FROM mcp_tasks WHERE id = ?",
+                    (record.id,),
+                ).fetchone()
+                previous = self._row_to_mcp_task(row) if row else None
+                if previous is not None and _mcp_task_transition_is_stale(previous, record):
+                    self._conn.rollback()
+                    return previous, previous, False
+
+                effective = (
+                    _merge_mcp_task_records(previous, record) if previous is not None else record
+                )
+                if previous is not None and _mcp_task_records_equivalent(previous, effective):
+                    self._conn.rollback()
+                    return previous, previous, False
+                self._conn.execute(
+                    """
             INSERT INTO mcp_tasks (
                 id, server_id, task_id, protocol, remote_status, runtime_status,
                 tool_name, auth_context_id, correlation_id, trace_id, span_id,
@@ -2010,37 +2030,41 @@ class SQLiteStore(Store):
                 remote_updated_at = excluded.remote_updated_at,
                 updated_at = excluded.updated_at
             """,
-            (
-                record.id,
-                record.server_id,
-                record.task_id,
-                record.protocol,
-                record.remote_status,
-                record.runtime_status,
-                record.tool_name,
-                record.auth_context_id,
-                record.correlation_id,
-                record.trace_id,
-                record.span_id,
-                record.worker_run_id,
-                record.chat_id,
-                record.chat_turn_id,
-                record.plan_run_id,
-                record.plan_step_id,
-                record.status_message,
-                record.ttl_ms,
-                record.poll_interval_ms,
-                json.dumps(record.input_requests),
-                json.dumps(record.responded_input_keys),
-                json.dumps(record.result) if record.result is not None else None,
-                json.dumps(record.error) if record.error is not None else None,
-                record.remote_created_at.isoformat(),
-                record.remote_updated_at.isoformat(),
-                record.created_at.isoformat(),
-                record.updated_at.isoformat(),
-            ),
-        )
-        self._conn.commit()
+                    (
+                        effective.id,
+                        effective.server_id,
+                        effective.task_id,
+                        effective.protocol,
+                        effective.remote_status,
+                        effective.runtime_status,
+                        effective.tool_name,
+                        effective.auth_context_id,
+                        effective.correlation_id,
+                        effective.trace_id,
+                        effective.span_id,
+                        effective.worker_run_id,
+                        effective.chat_id,
+                        effective.chat_turn_id,
+                        effective.plan_run_id,
+                        effective.plan_step_id,
+                        effective.status_message,
+                        effective.ttl_ms,
+                        effective.poll_interval_ms,
+                        json.dumps(effective.input_requests),
+                        json.dumps(effective.responded_input_keys),
+                        json.dumps(effective.result) if effective.result is not None else None,
+                        json.dumps(effective.error) if effective.error is not None else None,
+                        effective.remote_created_at.isoformat(),
+                        effective.remote_updated_at.isoformat(),
+                        effective.created_at.isoformat(),
+                        effective.updated_at.isoformat(),
+                    ),
+                )
+                self._conn.commit()
+                return effective, previous, True
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def get_mcp_task(self, task_record_id: str) -> MCPTaskRecord | None:
         row = self._conn.execute(
@@ -3340,6 +3364,72 @@ def _parse_dt(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value
     return datetime.fromisoformat(value)
+
+
+def _mcp_task_transition_is_stale(
+    current: MCPTaskRecord,
+    incoming: MCPTaskRecord,
+) -> bool:
+    if incoming.remote_created_at != current.remote_created_at:
+        return True
+    if incoming.remote_updated_at < current.remote_updated_at:
+        return True
+    if current.remote_status in {"completed", "failed", "cancelled"}:
+        return incoming.remote_status != current.remote_status
+    return (
+        current.runtime_status == "failed"
+        and incoming.runtime_status != "failed"
+        and incoming.remote_updated_at <= current.remote_updated_at
+    )
+
+
+def _merge_mcp_task_records(
+    current: MCPTaskRecord,
+    incoming: MCPTaskRecord,
+) -> MCPTaskRecord:
+    responded_input_keys = sorted({*current.responded_input_keys, *incoming.responded_input_keys})
+    input_requests = {
+        key: value
+        for key, value in incoming.input_requests.items()
+        if key not in responded_input_keys
+    }
+    preserve_terminal_payload = (
+        current.remote_status == incoming.remote_status
+        and current.remote_status in {"completed", "failed", "cancelled"}
+    )
+    return incoming.model_copy(
+        update={
+            "correlation_id": current.correlation_id,
+            "trace_id": current.trace_id,
+            "span_id": current.span_id,
+            "worker_run_id": current.worker_run_id,
+            "chat_id": current.chat_id,
+            "chat_turn_id": current.chat_turn_id,
+            "plan_run_id": current.plan_run_id,
+            "plan_step_id": current.plan_step_id,
+            "responded_input_keys": responded_input_keys,
+            "input_requests": input_requests,
+            "result": (
+                current.result
+                if preserve_terminal_payload and incoming.result is None
+                else incoming.result
+            ),
+            "error": (
+                current.error
+                if preserve_terminal_payload and incoming.error is None
+                else incoming.error
+            ),
+            "remote_created_at": current.remote_created_at,
+            "created_at": current.created_at,
+        }
+    )
+
+
+def _mcp_task_records_equivalent(
+    current: MCPTaskRecord,
+    incoming: MCPTaskRecord,
+) -> bool:
+    return current.model_dump(exclude={"updated_at"}) == incoming.model_dump(exclude={"updated_at"})
 
 
 def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:

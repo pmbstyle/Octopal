@@ -22,6 +22,7 @@ SELF_RESTART_REQUESTED_BY = "octo_self_restart"
 SELF_UPDATE_ACTION = "update_service"
 SELF_UPDATE_REQUESTED_BY = "octo_self_update"
 RECENT_CONTROL_ACTION_WINDOW_SECONDS = 15 * 60
+_RESTART_HELPER_TIMEOUT_SECONDS = 10 * 60
 
 _CONTROL_SUCCESS_STATUSES = {"executed", "restart_executed"}
 _CONTROL_FAILURE_STATUSES = {"cleared", "error", "update_failed", "restart_failed"}
@@ -385,7 +386,7 @@ def run_update_helper(
     restart_result = _run_cli_command(
         ["restart"],
         project_root=project_root,
-        timeout_seconds=120,
+        timeout_seconds=_RESTART_HELPER_TIMEOUT_SECONDS,
     )
     append_control_ack(
         state_dir,
@@ -414,7 +415,11 @@ def run_restart_helper(
     )
     if delay_seconds > 0:
         time.sleep(delay_seconds)
-    result = _run_cli_command(["restart"], project_root=project_root, timeout_seconds=120)
+    result = _run_cli_command(
+        ["restart"],
+        project_root=project_root,
+        timeout_seconds=_RESTART_HELPER_TIMEOUT_SECONDS,
+    )
     status = "executed" if result["returncode"] == 0 else "error"
     append_control_ack(
         state_dir,

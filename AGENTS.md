@@ -75,6 +75,7 @@
 - Important settings include channel credentials, provider API keys, dashboard protection, and the storage paths in `config.json`.
 - Local WebClaw extraction is enabled by default under `web`; Docker workers include the pinned binary and host startup manages a checksum-verified copy. The adapter removes WebClaw cloud credentials and falls back through the existing fetch plan.
 - Browser automation defaults to `auto`: Octopal manages a pinned loopback-only PinchTab container and falls back to Playwright when it is unavailable. Keep calls tab-scoped and never pass the PinchTab server token into worker environments.
+- Native MCP tasks use durable client-side handles. Working tasks recover in the background; use `mcp_task_get`, `mcp_task_update`, and `mcp_task_cancel` for explicit lifecycle control, and never expose remote task handles.
 - Treat `data/`, WhatsApp auth state, and generated workspace files as local runtime artifacts unless the repo explicitly needs fixtures.
 
 ## Octo Context Reset Policy

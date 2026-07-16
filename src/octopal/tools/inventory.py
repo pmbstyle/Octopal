@@ -544,6 +544,24 @@ _TOOL_METADATA_BY_NAME: dict[str, ToolMetadata] = {
         capabilities=("mcp_exec",),
         profile_tags=("ops", "research", "coding"),
     ),
+    "mcp_task_get": ToolMetadata(
+        category="mcp",
+        risk="guarded",
+        capabilities=("mcp_exec",),
+        profile_tags=("ops", "research", "coding"),
+    ),
+    "mcp_task_update": ToolMetadata(
+        category="mcp",
+        risk="guarded",
+        capabilities=("mcp_exec",),
+        profile_tags=("ops", "research", "coding"),
+    ),
+    "mcp_task_cancel": ToolMetadata(
+        category="mcp",
+        risk="guarded",
+        capabilities=("mcp_exec",),
+        profile_tags=("ops", "research", "coding"),
+    ),
     "list_skills": ToolMetadata(
         category="skills",
         capabilities=("skill_read",),

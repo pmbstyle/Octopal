@@ -714,7 +714,12 @@ class MCPManager:
                         "updated_at": utc_now(),
                     }
                 )
-                await self._persist_task_record(expired, previous=current)
+                effective = await self._persist_task_record(expired, previous=current)
+                if effective.remote_status in MCP_TASK_TERMINAL_STATUSES:
+                    return await self._terminal_task_result(session, effective)
+                if effective.runtime_status != "failed":
+                    current = effective
+                    continue
                 raise MCPToolCallError(
                     classification="task_ttl_expired",
                     hint="The remote MCP task exceeded its advertised TTL.",
@@ -726,10 +731,12 @@ class MCPManager:
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                self._ensure_task_recovery(current)
                 return task_status_result(current)
             poll_seconds = task_poll_seconds(current)
             if poll_seconds >= remaining:
                 await asyncio.sleep(remaining)
+                self._ensure_task_recovery(current)
                 return task_status_result(current)
             await asyncio.sleep(poll_seconds)
             current = await self._refresh_task(session, current)
@@ -777,7 +784,7 @@ class MCPManager:
 
     async def _terminal_task_result(
         self,
-        session: ClientSession,
+        session: ClientSession | None,
         record: MCPTaskRecord,
     ) -> mcp_types.CallToolResult:
         if record.remote_status == "completed":
@@ -792,6 +799,8 @@ class MCPManager:
                         details={"task_id": record.id},
                     )
                 return mcp_types.CallToolResult.model_validate(record.result)
+            if session is None:
+                raise RuntimeError(f"MCP session '{record.server_id}' is not active.")
             return await session.experimental.get_task_result(
                 record.task_id,
                 mcp_types.CallToolResult,
@@ -858,42 +867,53 @@ class MCPManager:
                 context=task_context,
                 previous=previous,
             )
-        await self._persist_task_record(provisional, previous=previous)
-        return provisional
+        return await self._persist_task_record(provisional, previous=previous)
 
     async def _persist_task_record(
         self,
         record: MCPTaskRecord,
         *,
         previous: MCPTaskRecord | None,
-    ) -> None:
+    ) -> MCPTaskRecord:
+        effective = record
+        persisted_previous = previous
+        applied = True
         if self.store is not None:
-            await asyncio.to_thread(self.store.upsert_mcp_task, record)
+            effective, persisted_previous, applied = await asyncio.to_thread(
+                self.store.upsert_mcp_task, record
+            )
+        if not applied:
+            return effective
 
-        created = previous is None
+        created = persisted_previous is None
         status_changed = (
-            previous is None
-            or previous.remote_status != record.remote_status
-            or previous.runtime_status != record.runtime_status
+            persisted_previous is None
+            or persisted_previous.remote_status != effective.remote_status
+            or persisted_previous.runtime_status != effective.runtime_status
         )
         if not status_changed:
-            return
+            return effective
         if created:
             self._task_metrics["created"] += 1
-        metric_status = "failed" if record.runtime_status == "failed" else record.remote_status
+        metric_status = (
+            "failed" if effective.runtime_status == "failed" else effective.remote_status
+        )
         if metric_status in self._task_metrics:
             self._task_metrics[metric_status] += 1
         event_type = "mcp_task_created" if created else "mcp_task_status_changed"
         await self._append_task_audit(
             event_type,
-            record,
+            effective,
             data={
-                "previous_status": previous.remote_status if previous else None,
-                "remote_status": record.remote_status,
-                "runtime_status": record.runtime_status,
-                "protocol": record.protocol,
+                "previous_status": (
+                    persisted_previous.remote_status if persisted_previous else None
+                ),
+                "remote_status": effective.remote_status,
+                "runtime_status": effective.runtime_status,
+                "protocol": effective.protocol,
             },
         )
+        return effective
 
     async def _append_task_audit(
         self,
@@ -942,14 +962,28 @@ class MCPManager:
             auth_context_id=auth_context_id,
         )
         for record in records:
-            if record.remote_status != "working":
-                continue
-            existing = self._task_recovery_tasks.get(record.id)
-            if existing is not None and not existing.done():
-                continue
-            self._task_recovery_tasks[record.id] = asyncio.create_task(self._recover_task(record))
+            self._ensure_task_recovery(record)
+
+    def _ensure_task_recovery(self, record: MCPTaskRecord) -> None:
+        if (
+            self.store is None
+            or record.remote_status != "working"
+            or record.runtime_status == "failed"
+            or task_expired(record)
+            or self._shutdown_requested
+            or record.server_id in self._manual_disconnects
+            or record.server_id not in self.sessions
+        ):
+            return
+        existing = self._task_recovery_tasks.get(record.id)
+        if existing is not None and not existing.done():
+            return
+        self._task_recovery_tasks[record.id] = asyncio.create_task(self._recover_task(record))
 
     async def _recover_task(self, record: MCPTaskRecord) -> None:
+        cancelled = False
+        wait_completed = False
+        latest: MCPTaskRecord | None = None
         try:
             session = self.sessions.get(record.server_id)
             if session is None:
@@ -960,7 +994,9 @@ class MCPManager:
                 record,
                 timeout_seconds=_MCP_TASK_RECOVERY_BUDGET_SECONDS,
             )
+            wait_completed = True
         except asyncio.CancelledError:
+            cancelled = True
             raise
         except Exception as exc:
             logger.warning(
@@ -977,7 +1013,10 @@ class MCPManager:
                     or latest.runtime_status == "failed"
                 ):
                     self._task_metrics["recovered"] += 1
-            self._task_recovery_tasks.pop(record.id, None)
+            if self._task_recovery_tasks.get(record.id) is asyncio.current_task():
+                self._task_recovery_tasks.pop(record.id, None)
+            if not cancelled and wait_completed and latest is not None:
+                self._ensure_task_recovery(latest)
 
     async def get_task(
         self,
@@ -986,10 +1025,33 @@ class MCPManager:
         task_context: MCPTaskContext | None = None,
     ) -> MCPTaskRecord:
         record = await self._load_bound_task(task_record_id, task_context=task_context)
+        if record.remote_status in MCP_TASK_TERMINAL_STATUSES:
+            return record
         session = self.sessions.get(record.server_id)
         if session is None:
             raise RuntimeError(f"MCP session '{record.server_id}' is not active.")
-        return await self._refresh_task(session, record)
+        refreshed = await self._refresh_task(session, record)
+        self._ensure_task_recovery(refreshed)
+        return refreshed
+
+    async def resume_task(
+        self,
+        task_record_id: str,
+        *,
+        task_context: MCPTaskContext | None = None,
+    ) -> mcp_types.CallToolResult:
+        record = await self._load_bound_task(task_record_id, task_context=task_context)
+        if record.remote_status in MCP_TASK_TERMINAL_STATUSES and record.protocol == "extension":
+            return await self._terminal_task_result(None, record)
+        session = self.sessions.get(record.server_id)
+        if session is None:
+            raise RuntimeError(f"MCP session '{record.server_id}' is not active.")
+        if record.remote_status not in MCP_TASK_TERMINAL_STATUSES:
+            record = await self._refresh_task(session, record)
+        if record.remote_status in MCP_TASK_TERMINAL_STATUSES:
+            return await self._terminal_task_result(session, record)
+        self._ensure_task_recovery(record)
+        return task_status_result(record)
 
     async def update_task(
         self,
@@ -1044,13 +1106,17 @@ class MCPManager:
                 "updated_at": utc_now(),
             }
         )
-        await self._persist_task_record(acknowledged, previous=record)
+        acknowledged = await self._persist_task_record(acknowledged, previous=record)
         await self._append_task_audit(
             "mcp_task_input_submitted",
             acknowledged,
             data={"response_keys": sorted(response_keys)},
         )
-        return await self._refresh_task(session, acknowledged)
+        if acknowledged.remote_status in MCP_TASK_TERMINAL_STATUSES:
+            return acknowledged
+        refreshed = await self._refresh_task(session, acknowledged)
+        self._ensure_task_recovery(refreshed)
+        return refreshed
 
     async def cancel_task(
         self,
@@ -1073,7 +1139,7 @@ class MCPManager:
                 ),
                 RawMCPResult,
             )
-            refreshed = record
+            refreshed = await self._refresh_task(session, record)
         else:
             state = parse_task_state(
                 await session.experimental.cancel_task(record.task_id),
@@ -1088,6 +1154,7 @@ class MCPManager:
                 previous=record,
             )
         await self._append_task_audit("mcp_task_cancel_requested", refreshed)
+        self._ensure_task_recovery(refreshed)
         return refreshed
 
     async def _load_bound_task(
@@ -1111,6 +1178,13 @@ class MCPManager:
             and task_context.worker_run_id != record.worker_run_id
         ):
             raise PermissionError("MCP task is bound to another worker run.")
+        if (
+            task_context is not None
+            and task_context.chat_id is not None
+            and record.chat_id is not None
+            and task_context.chat_id != record.chat_id
+        ):
+            raise PermissionError("MCP task is bound to another chat.")
         return record
 
     def _generate_handler(
@@ -1132,7 +1206,12 @@ class MCPManager:
 
             logger.info("Calling MCP tool", server_id=server_id, tool=tool_name)
             try:
-                result = await self.call_tool(server_id, tool_name, args)
+                result = await self.call_tool(
+                    server_id,
+                    tool_name,
+                    args,
+                    task_context=_mcp_task_context_from_tool_ctx(ctx),
+                )
                 return [
                     c.model_dump() if hasattr(c, "model_dump") else str(c) for c in result.content
                 ]
@@ -1325,6 +1404,28 @@ def _mcp_auth_context_id(config: MCPServerConfig) -> str:
         ensure_ascii=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _mcp_task_context_from_tool_ctx(ctx: dict[str, Any]) -> MCPTaskContext:
+    chat_id: int | None = None
+    try:
+        raw_chat_id = ctx.get("chat_id")
+        if raw_chat_id is not None:
+            chat_id = int(raw_chat_id)
+    except (TypeError, ValueError):
+        pass
+    chat_turn_id: str | None = None
+    if chat_id is not None and ctx.get("chat_turn_epoch") is not None:
+        try:
+            chat_turn_id = f"{chat_id}:{int(ctx['chat_turn_epoch'])}"
+        except (TypeError, ValueError):
+            chat_turn_id = None
+    return MCPTaskContext(
+        correlation_id=str(ctx.get("correlation_id") or "").strip() or None,
+        worker_run_id=str(ctx.get("worker_id") or "").strip() or None,
+        chat_id=chat_id,
+        chat_turn_id=chat_turn_id,
+    )
 
 
 def _resolve_transport(config: MCPServerConfig) -> Literal["sse", "streamable-http", "stdio"]:

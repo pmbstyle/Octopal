@@ -75,6 +75,9 @@ _PRIORITY_TOOL_NAMES = {
     "git_ops",
     "mcp_discover",
     "mcp_call",
+    "mcp_task_get",
+    "mcp_task_update",
+    "mcp_task_cancel",
     "manage_canon",
 }
 _ALWAYS_INCLUDE_TOOL_NAMES = {
@@ -124,6 +127,9 @@ _ALWAYS_INCLUDE_TOOL_NAMES = {
     "exec_run",
     "git_ops",
     "mcp_call",
+    "mcp_task_get",
+    "mcp_task_update",
+    "mcp_task_cancel",
     "list_skills",
     "use_skill",
     "run_skill_script",

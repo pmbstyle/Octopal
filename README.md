@@ -211,6 +211,8 @@ Octo is the long-lived coordinator. It owns the conversation, memory, policy, ro
 
 Workers are the execution layer. They run tools, touch files, browse, call MCP servers, use skills, and return structured results, questions, or errors. Workers can also spawn subworkers for multi-step tasks when their policy allows it.
 
+Long-running MCP calls use durable client-side task handles. Octopal keeps polling working tasks in the background and exposes `mcp_task_get`, `mcp_task_update`, and `mcp_task_cancel` to resume a task, submit explicitly trusted input, or request cancellation without exposing the remote task handle.
+
 Prebuilt worker templates include:
 
 - Web Researcher

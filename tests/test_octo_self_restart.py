@@ -18,6 +18,7 @@ from octopal.runtime.self_control import (
     due_self_update_requests,
     find_recent_control_action,
     read_pending_restart_resume,
+    run_restart_helper,
     run_update_helper,
 )
 from octopal.runtime.workers import runtime as worker_runtime
@@ -528,10 +529,10 @@ def test_due_self_update_requests_are_octo_only(tmp_path: Path) -> None:
 
 
 def test_update_helper_runs_update_then_restart(tmp_path: Path, monkeypatch) -> None:
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], int]] = []
 
     def fake_run_cli_command(args, *, project_root, timeout_seconds):
-        calls.append(list(args))
+        calls.append((list(args), timeout_seconds))
         return {
             "returncode": 0,
             "stdout_tail": "ok",
@@ -549,7 +550,32 @@ def test_update_helper_runs_update_then_restart(tmp_path: Path, monkeypatch) -> 
     )
 
     assert rc == 0
-    assert calls == [["update"], ["restart"]]
+    assert calls == [(["update"], 180), (["restart"], 600)]
+
+
+def test_restart_helper_allows_worker_image_rebuild_budget(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[list[str], int]] = []
+
+    def fake_run_cli_command(args, *, project_root, timeout_seconds):
+        calls.append((list(args), timeout_seconds))
+        return {
+            "returncode": 0,
+            "stdout_tail": "ok",
+            "stderr_tail": "",
+            "command": " ".join(args),
+        }
+
+    monkeypatch.setattr("octopal.runtime.self_control._run_cli_command", fake_run_cli_command)
+
+    rc = run_restart_helper(
+        request_id="r1",
+        project_root=tmp_path,
+        state_dir=tmp_path / "data",
+        delay_seconds=0,
+    )
+
+    assert rc == 0
+    assert calls == [(["restart"], 600)]
 
 
 def test_workers_cannot_receive_self_restart_tools() -> None:

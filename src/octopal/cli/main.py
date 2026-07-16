@@ -807,17 +807,7 @@ def start(
 
     _maybe_warn_about_newer_release(settings)
 
-    launcher_status = ensure_worker_launcher_status(settings)
-    if launcher_status.configured_launcher == "docker" and (
-        not launcher_status.available or launcher_status.effective_launcher != "docker"
-    ):
-        console.print("[bold red]Docker worker isolation is unavailable.[/bold red]")
-        console.print(f"   [dim]Reason:[/dim] {launcher_status.reason}")
-        console.print(
-            "   Restore Docker, or explicitly select [magenta]same_env[/magenta] "
-            "for trusted local development."
-        )
-        raise typer.Exit(code=1)
+    _ensure_worker_launcher_ready(settings)
 
     if foreground:
         _init_logging(settings)
@@ -1045,9 +1035,10 @@ def restart(
     ),
 ) -> None:
     """Stop and then start the Octopal Octo."""
+    settings = load_settings()
+    _ensure_worker_launcher_ready(settings)
     stop()
 
-    settings = load_settings()
     log_dir = settings.state_dir / "logs"
 
     with console.status("[bold yellow]Restarting system...[/bold yellow]"):
@@ -1064,6 +1055,23 @@ def restart(
                     pass
 
     start(foreground=foreground)
+
+
+def _ensure_worker_launcher_ready(settings: Settings) -> None:
+    """Fail a restart before stopping a healthy runtime when Docker cannot become ready."""
+
+    launcher_status = ensure_worker_launcher_status(settings)
+    if launcher_status.configured_launcher != "docker" or (
+        launcher_status.available and launcher_status.effective_launcher == "docker"
+    ):
+        return
+    console.print("[bold red]Docker worker isolation is unavailable.[/bold red]")
+    console.print(f"   [dim]Reason:[/dim] {launcher_status.reason}")
+    console.print(
+        "   Restore Docker, or explicitly select [magenta]same_env[/magenta] "
+        "for trusted local development."
+    )
+    raise typer.Exit(code=1)
 
 
 @app.command()
