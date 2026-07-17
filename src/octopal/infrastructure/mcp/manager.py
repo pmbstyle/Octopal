@@ -788,6 +788,8 @@ class MCPManager:
         record: MCPTaskRecord,
     ) -> mcp_types.CallToolResult:
         if record.remote_status == "completed":
+            if isinstance(record.result, dict):
+                return mcp_types.CallToolResult.model_validate(record.result)
             if record.protocol == "extension":
                 if not isinstance(record.result, dict):
                     raise MCPToolCallError(
@@ -801,10 +803,16 @@ class MCPManager:
                 return mcp_types.CallToolResult.model_validate(record.result)
             if session is None:
                 raise RuntimeError(f"MCP session '{record.server_id}' is not active.")
-            return await session.experimental.get_task_result(
+            result = await session.experimental.get_task_result(
                 record.task_id,
                 mcp_types.CallToolResult,
             )
+            payload = result.model_dump(mode="json", by_alias=True, exclude_none=True)
+            await self._persist_task_record(
+                record.model_copy(update={"result": payload, "updated_at": utc_now()}),
+                previous=record,
+            )
+            return result
 
         classification = "task_cancelled" if record.remote_status == "cancelled" else "task_failed"
         raise MCPToolCallError(
@@ -1041,6 +1049,8 @@ class MCPManager:
         task_context: MCPTaskContext | None = None,
     ) -> mcp_types.CallToolResult:
         record = await self._load_bound_task(task_record_id, task_context=task_context)
+        if record.remote_status in MCP_TASK_TERMINAL_STATUSES and isinstance(record.result, dict):
+            return await self._terminal_task_result(None, record)
         if record.remote_status in MCP_TASK_TERMINAL_STATUSES and record.protocol == "extension":
             return await self._terminal_task_result(None, record)
         session = self.sessions.get(record.server_id)

@@ -347,6 +347,32 @@ def test_legacy_task_uses_sdk_lifecycle_and_sync_result_contract(tmp_path) -> No
     assert session.experimental.calls[1:] == ["get", "result"]
 
 
+def test_legacy_completed_task_result_is_durable_across_session_loss(tmp_path) -> None:
+    session = _LegacySession()
+    manager = _configured_manager(tmp_path, protocol="legacy", session=session)
+    manager._tool_task_support[("demo", "legacy_tool")] = "optional"
+    context = MCPTaskContext(correlation_id="corr-legacy")
+
+    result = asyncio.run(
+        manager.call_tool("demo", "legacy_tool", {"value": 1}, task_context=context)
+    )
+
+    assert result.content[0].text == "legacy complete"
+    audits = manager.store.list_audit_for_correlation("corr-legacy")  # type: ignore[union-attr]
+    task_id = audits[0].data["task_id"]
+    stored = manager.store.get_mcp_task(task_id)  # type: ignore[union-attr]
+    assert stored is not None
+    assert stored.result == {
+        "content": [{"type": "text", "text": "legacy complete"}],
+        "isError": False,
+    }
+
+    manager.sessions.clear()
+    resumed = asyncio.run(manager.resume_task(task_id, task_context=context))
+
+    assert resumed.content[0].text == "legacy complete"
+
+
 def test_task_access_is_bound_to_originating_worker(tmp_path) -> None:
     created_at = _timestamp()
     session = _ExtensionSession(
