@@ -1677,7 +1677,7 @@ async def test_route_scheduled_octo_task_uses_full_conversation_route(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_octo_run_scheduler_tick_once_uses_bounded_scheduler_route(monkeypatch):
+async def test_octo_run_scheduler_tick_once_does_not_call_llm_when_idle(monkeypatch):
     calls = {"scheduler_tick": 0, "dispatch": 0}
     monkeypatch.setattr(octo_core, "_PROACTIVE_TICK_ENABLED", False)
 
@@ -1723,11 +1723,11 @@ async def test_octo_run_scheduler_tick_once_uses_bounded_scheduler_route(monkeyp
 
     await octo._run_scheduler_tick_once(max_tasks=7)
 
-    assert calls == {"scheduler_tick": 1, "dispatch": 1}
+    assert calls == {"scheduler_tick": 0, "dispatch": 1}
 
 
 @pytest.mark.asyncio
-async def test_octo_run_scheduler_tick_once_runs_proactive_after_idle_dispatch(monkeypatch):
+async def test_octo_run_scheduler_tick_once_does_not_run_proactive_llm_when_idle(monkeypatch):
     calls = {"scheduler_tick": 0, "dispatch": 0, "proactive": 0}
     monkeypatch.setattr(octo_core, "_PROACTIVE_TICK_ENABLED", True)
     monkeypatch.setattr(octo_core, "_PROACTIVE_TICK_MIN_INTERVAL_SECONDS", 0.0)
@@ -1775,11 +1775,11 @@ async def test_octo_run_scheduler_tick_once_runs_proactive_after_idle_dispatch(m
 
     await octo._run_scheduler_tick_once(max_tasks=7)
 
-    assert calls == {"scheduler_tick": 1, "dispatch": 1, "proactive": 1}
+    assert calls == {"scheduler_tick": 0, "dispatch": 1, "proactive": 0}
 
 
 @pytest.mark.asyncio
-async def test_octo_run_scheduler_tick_once_delivers_user_visible_scheduler_output(monkeypatch):
+async def test_octo_run_scheduler_tick_once_does_not_deliver_generic_scheduler_output(monkeypatch):
     sent_messages = []
     monkeypatch.setattr(octo_core, "_PROACTIVE_TICK_ENABLED", False)
 
@@ -1823,7 +1823,7 @@ async def test_octo_run_scheduler_tick_once_delivers_user_visible_scheduler_outp
 
     await octo._run_scheduler_tick_once(max_tasks=7)
 
-    assert sent_messages == [(777, None, "Планировщик нашел важное обновление.")]
+    assert sent_messages == []
 
 
 @pytest.mark.asyncio
@@ -1926,19 +1926,21 @@ async def test_octo_dispatch_due_scheduled_tasks_starts_dispatchable_workers(mon
         "policy_reasons": {},
         "errors": 0,
     }
-    assert started_calls == [
-        {
-            "worker_id": "writer",
-            "task": "Generate digest",
-            "chat_id": 0,
-            "inputs": {"section": "news"},
-            "tools": None,
-            "model": None,
-            "timeout_seconds": None,
-            "allowed_paths": None,
-            "scheduled_task_id": "daily_digest",
-        }
-    ]
+    assert len(started_calls) == 1
+    started_call = dict(started_calls[0])
+    assert started_call.pop("scheduled_attempt_id")
+    assert started_call.pop("scheduled_idempotency_key")
+    assert started_call == {
+        "worker_id": "writer",
+        "task": "Generate digest",
+        "chat_id": 0,
+        "inputs": {"section": "news"},
+        "tools": None,
+        "model": None,
+        "timeout_seconds": None,
+        "allowed_paths": None,
+        "scheduled_task_id": "daily_digest",
+    }
 
 
 @pytest.mark.asyncio

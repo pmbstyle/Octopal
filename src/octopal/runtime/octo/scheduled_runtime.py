@@ -297,6 +297,16 @@ class OctoScheduledRuntimeMixin:
             worker_id = str(task.get("worker_id") or "").strip()
             task_text = str(task.get("task_text") or "").strip()
             inputs = task.get("inputs") if isinstance(task.get("inputs"), dict) else {}
+            claimed_task = scheduler.claim_due_task(
+                task,
+                lease_owner=f"octo-scheduler:{id(self)}",
+            )
+            if claimed_task is None:
+                summary["duplicates"] += 1
+                logger.info("Scheduled task lease was claimed by another runtime", task_id=task_id)
+                continue
+            task = claimed_task
+            attempt_id = str(task.get("attempt_id") or "").strip() or None
             dispatch_chat_id, delivery_target_source = (
                 self._resolve_scheduled_task_delivery_chat_id(
                     task,
@@ -315,6 +325,11 @@ class OctoScheduledRuntimeMixin:
                     notify_user=task.get("notify_user"),
                     delivery_target_source=delivery_target_source,
                 )
+                scheduler.fail_attempt(
+                    task_id,
+                    attempt_id=attempt_id,
+                    error_class="missing_delivery_target",
+                )
                 continue
             if execution_mode == "octo_control":
                 persisted_backoff = self._get_persisted_scheduled_octo_control_backoff(task)
@@ -327,6 +342,11 @@ class OctoScheduledRuntimeMixin:
                         backoff_reason=backoff_reason,
                         cooldown_seconds=round(remaining_seconds, 1),
                     )
+                    scheduler.fail_attempt(
+                        task_id,
+                        attempt_id=attempt_id,
+                        error_class="persisted_backoff",
+                    )
                     continue
                 backoff = self._get_scheduled_octo_control_backoff(task_id)
                 if backoff is not None:
@@ -338,6 +358,11 @@ class OctoScheduledRuntimeMixin:
                         backoff_reason=backoff_reason,
                         cooldown_seconds=round(remaining_seconds, 1),
                     )
+                    scheduler.fail_attempt(
+                        task_id,
+                        attempt_id=attempt_id,
+                        error_class="runtime_backoff",
+                    )
                     continue
                 summary["attempted"] += 1
                 try:
@@ -347,6 +372,11 @@ class OctoScheduledRuntimeMixin:
                     )
                 except Exception:
                     summary["errors"] += 1
+                    scheduler.fail_attempt(
+                        task_id,
+                        attempt_id=attempt_id,
+                        error_class="octo_control_exception",
+                    )
                     logger.exception(
                         "Scheduled Octo control task failed",
                         task_id=task_id or None,
@@ -356,6 +386,11 @@ class OctoScheduledRuntimeMixin:
                     summary["completed"] += 1
                 elif str(result.get("status") or "").strip().lower() == "failed":
                     summary["errors"] += 1
+                    scheduler.fail_attempt(
+                        task_id,
+                        attempt_id=attempt_id,
+                        error_class=str(result.get("reason") or "octo_control_failed"),
+                    )
                 continue
             if execution_mode == "octo_task":
                 summary["attempted"] += 1
@@ -366,6 +401,11 @@ class OctoScheduledRuntimeMixin:
                     )
                 except Exception:
                     summary["errors"] += 1
+                    scheduler.fail_attempt(
+                        task_id,
+                        attempt_id=attempt_id,
+                        error_class="octo_task_exception",
+                    )
                     logger.exception(
                         "Scheduled Octo task failed",
                         task_id=task_id or None,
@@ -375,6 +415,11 @@ class OctoScheduledRuntimeMixin:
                     summary["completed"] += 1
                 elif str(result.get("status") or "").strip().lower() == "failed":
                     summary["errors"] += 1
+                    scheduler.fail_attempt(
+                        task_id,
+                        attempt_id=attempt_id,
+                        error_class=str(result.get("reason") or "octo_task_failed"),
+                    )
                 continue
             if not worker_id or not task_text:
                 summary["rejected_by_policy"] += 1
@@ -389,6 +434,7 @@ class OctoScheduledRuntimeMixin:
                     worker_id=worker_id or None,
                     has_task_text=bool(task_text),
                 )
+                scheduler.fail_attempt(task_id, attempt_id=attempt_id, error_class=reason)
                 continue
 
             summary["attempted"] += 1
@@ -409,9 +455,17 @@ class OctoScheduledRuntimeMixin:
                     timeout_seconds=None,
                     allowed_paths=allowed_paths,
                     scheduled_task_id=task_id or None,
+                    scheduled_attempt_id=attempt_id,
+                    scheduled_idempotency_key=str(task.get("idempotency_key") or "").strip()
+                    or None,
                 )
             except Exception:
                 summary["errors"] += 1
+                scheduler.fail_attempt(
+                    task_id,
+                    attempt_id=attempt_id,
+                    error_class="worker_dispatch_exception",
+                )
                 logger.exception(
                     "Scheduled task dispatch failed",
                     task_id=task_id or None,
@@ -424,8 +478,18 @@ class OctoScheduledRuntimeMixin:
                 summary["started"] += 1
             elif status == "skipped_duplicate":
                 summary["duplicates"] += 1
+                scheduler.fail_attempt(
+                    task_id,
+                    attempt_id=attempt_id,
+                    error_class="worker_duplicate",
+                )
             elif status in {"rejected", "failed"}:
                 summary["errors"] += 1
+                scheduler.fail_attempt(
+                    task_id,
+                    attempt_id=attempt_id,
+                    error_class=str(result.get("reason") or status),
+                )
 
         return summary
 
@@ -489,7 +553,7 @@ class OctoScheduledRuntimeMixin:
                 reason=None,
             )
             if scheduler is not None and task_id:
-                scheduler.mark_executed(task_id)
+                scheduler.mark_executed(task_id, attempt_id=task.get("attempt_id"))
             logger.info(
                 "Scheduled Octo control task completed silently",
                 task_id=task_id or None,
@@ -524,7 +588,7 @@ class OctoScheduledRuntimeMixin:
                 chat_id=chat_id,
             )
         if scheduler is not None and task_id:
-            scheduler.mark_executed(task_id)
+            scheduler.mark_executed(task_id, attempt_id=task.get("attempt_id"))
         logger.info(
             "Scheduled Octo control task completed",
             task_id=task_id or None,
@@ -590,7 +654,7 @@ class OctoScheduledRuntimeMixin:
             }
         if normalized_reply == _SCHEDULED_OCTO_CONTROL_DONE:
             if scheduler is not None and task_id:
-                scheduler.mark_executed(task_id)
+                scheduler.mark_executed(task_id, attempt_id=task.get("attempt_id"))
             logger.info(
                 "Scheduled Octo task completed silently",
                 task_id=task_id or None,
@@ -626,7 +690,7 @@ class OctoScheduledRuntimeMixin:
                 chat_id=chat_id,
             )
         if scheduler is not None and task_id:
-            scheduler.mark_executed(task_id)
+            scheduler.mark_executed(task_id, attempt_id=task.get("attempt_id"))
         logger.info(
             "Scheduled Octo task completed",
             task_id=task_id or None,

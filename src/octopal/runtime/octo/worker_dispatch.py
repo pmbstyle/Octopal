@@ -112,6 +112,8 @@ class OctoWorkerDispatchMixin:
         timeout_seconds: int | None,
         max_thinking_steps: int | None = None,
         scheduled_task_id: str | None = None,
+        scheduled_attempt_id: str | None = None,
+        scheduled_idempotency_key: str | None = None,
         parent_worker_id: str | None = None,
         lineage_id: str | None = None,
         root_task_id: str | None = None,
@@ -132,6 +134,8 @@ class OctoWorkerDispatchMixin:
             "task_preview": safe_preview(task, limit=240),
             "chat_id": chat_id,
             "scheduled_task_id": scheduled_task_id,
+            "scheduled_attempt_id": scheduled_attempt_id,
+            "scheduled_idempotency_key": scheduled_idempotency_key,
             "parent_worker_id": parent_worker_id,
             "lineage_id": lineage_id,
             "root_task_id": root_task_id,
@@ -327,6 +331,7 @@ class OctoWorkerDispatchMixin:
                 allowed_paths=effective_allowed_paths,
                 programmatic_read_call_budget=programmatic_read_call_budget,
                 memory_influence_ids=memory_influence_ids or [],
+                idempotency_key=scheduled_idempotency_key,
             )
             self.register_worker_correlation(run_id, correlation_id)
             self.register_worker_chat(run_id, chat_id)
@@ -377,7 +382,10 @@ class OctoWorkerDispatchMixin:
                     )
                     if scheduled_task_id and self.scheduler:
                         if not failed:
-                            self.scheduler.mark_executed(scheduled_task_id)
+                            self.scheduler.mark_executed(
+                                scheduled_task_id,
+                                attempt_id=scheduled_attempt_id,
+                            )
                             logger.info(
                                 "Marked scheduled task as executed after worker completion",
                                 task_id=scheduled_task_id,
@@ -385,6 +393,11 @@ class OctoWorkerDispatchMixin:
                                 worker_status=worker_status,
                             )
                         else:
+                            self.scheduler.fail_attempt(
+                                scheduled_task_id,
+                                attempt_id=scheduled_attempt_id,
+                                error_class=str(worker_status or "failed"),
+                            )
                             logger.warning(
                                 "Skipped scheduled task execution mark due to non-completed worker state",
                                 task_id=scheduled_task_id,
@@ -462,6 +475,12 @@ class OctoWorkerDispatchMixin:
                             "error": str(exc),
                         },
                     )
+                    if scheduled_task_id and self.scheduler:
+                        self.scheduler.fail_attempt(
+                            scheduled_task_id,
+                            attempt_id=scheduled_attempt_id,
+                            error_class="worker_exception",
+                        )
                 finally:
                     self._release_recent_task(
                         chat_id=chat_id,

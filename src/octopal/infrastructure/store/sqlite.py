@@ -612,7 +612,17 @@ class SQLiteStore(Store):
                 inputs_json TEXT,
                 last_run_at TEXT,
                 enabled INTEGER NOT NULL DEFAULT 1,
-                metadata_json TEXT
+                metadata_json TEXT,
+                next_run_at TEXT,
+                lease_owner TEXT,
+                lease_expires_at TEXT,
+                attempt_id TEXT,
+                attempt_no INTEGER NOT NULL DEFAULT 0,
+                last_outcome TEXT,
+                last_error_class TEXT,
+                last_started_at TEXT,
+                last_completed_at TEXT,
+                idempotency_key TEXT
             );
 
             CREATE TABLE IF NOT EXISTS plan_runs (
@@ -823,6 +833,32 @@ class SQLiteStore(Store):
             pass
         try:
             self._conn.execute("ALTER TABLE chat_state ADD COLUMN bootstrap_hash TEXT")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        for column, definition in (
+            ("next_run_at", "TEXT"),
+            ("lease_owner", "TEXT"),
+            ("lease_expires_at", "TEXT"),
+            ("attempt_id", "TEXT"),
+            ("attempt_no", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_outcome", "TEXT"),
+            ("last_error_class", "TEXT"),
+            ("last_started_at", "TEXT"),
+            ("last_completed_at", "TEXT"),
+            ("idempotency_key", "TEXT"),
+        ):
+            try:
+                self._conn.execute(f"ALTER TABLE scheduled_tasks ADD COLUMN {column} {definition}")
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                pass
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_scheduled_tasks_due_lease "
+                "ON scheduled_tasks (enabled, next_run_at, lease_expires_at)"
+            )
             self._conn.commit()
         except sqlite3.OperationalError:
             pass
@@ -2987,6 +3023,14 @@ class SQLiteStore(Store):
                 name = excluded.name,
                 description = excluded.description,
                 frequency = excluded.frequency,
+                next_run_at = CASE
+                    WHEN frequency IS NOT excluded.frequency THEN NULL
+                    ELSE next_run_at
+                END,
+                idempotency_key = CASE
+                    WHEN frequency IS NOT excluded.frequency THEN NULL
+                    ELSE idempotency_key
+                END,
                 worker_id = excluded.worker_id,
                 task_text = excluded.task_text,
                 inputs_json = excluded.inputs_json,
@@ -3013,6 +3057,89 @@ class SQLiteStore(Store):
             (ts.isoformat(), task_id),
         )
         self._conn.commit()
+
+    def claim_scheduled_task(
+        self,
+        task_id: str,
+        *,
+        lease_owner: str,
+        lease_expires_at: datetime,
+        attempt_id: str,
+        idempotency_key: str,
+        started_at: datetime,
+        expected_last_run_at: str | None,
+        expected_next_run_at: str | None,
+    ) -> bool:
+        cursor = self._conn.execute(
+            """
+            UPDATE scheduled_tasks
+            SET lease_owner = ?,
+                lease_expires_at = ?,
+                attempt_id = ?,
+                attempt_no = COALESCE(attempt_no, 0) + 1,
+                last_outcome = 'running',
+                last_error_class = NULL,
+                last_started_at = ?,
+                idempotency_key = ?
+            WHERE id = ?
+              AND enabled = 1
+              AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+              AND last_run_at IS ?
+              AND next_run_at IS ?
+              AND (next_run_at IS NULL OR next_run_at <= ?)
+            """,
+            (
+                lease_owner,
+                lease_expires_at.isoformat(),
+                attempt_id,
+                started_at.isoformat(),
+                idempotency_key,
+                task_id,
+                started_at.isoformat(),
+                expected_last_run_at,
+                expected_next_run_at,
+                started_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    def finish_scheduled_task_attempt(
+        self,
+        task_id: str,
+        *,
+        attempt_id: str,
+        outcome: str,
+        finished_at: datetime,
+        completed: bool,
+        next_run_at: datetime | None,
+        error_class: str | None = None,
+    ) -> bool:
+        cursor = self._conn.execute(
+            """
+            UPDATE scheduled_tasks
+            SET last_run_at = CASE WHEN ? THEN ? ELSE last_run_at END,
+                next_run_at = ?,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                last_outcome = ?,
+                last_error_class = ?,
+                last_completed_at = ?
+            WHERE id = ? AND attempt_id = ?
+            """,
+            (
+                1 if completed else 0,
+                finished_at.isoformat(),
+                next_run_at.isoformat() if next_run_at is not None else None,
+                outcome,
+                error_class,
+                finished_at.isoformat(),
+                task_id,
+                attempt_id,
+            ),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
 
     def update_scheduled_task_metadata(
         self,

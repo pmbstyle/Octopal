@@ -135,6 +135,14 @@ def test_worker_task_prompt_omits_empty_inputs_and_keeps_unicode_compact() -> No
     assert "\\u041f" not in prompt
     assert "\n  " not in prompt
 
+    idempotent_prompt = _build_worker_task_prompt(
+        "Publish the digest",
+        {},
+        idempotency_key="daily_digest:occurrence-1",
+    )
+    assert "Idempotency key: daily_digest:occurrence-1" in idempotent_prompt
+    assert "use this exact value" in idempotent_prompt
+
 
 def test_worker_completion_protocol_keeps_required_contract_concise() -> None:
     prompt = _build_worker_completion_protocol_prompt()

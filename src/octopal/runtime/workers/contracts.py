@@ -52,6 +52,7 @@ class TaskRequest(BaseModel):
     allowed_paths: list[str] | None = None  # Restricted workspace paths the worker can access
     programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
     memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
+    idempotency_key: str | None = None
 
     @field_validator("memory_influence_ids", mode="before")
     @classmethod
@@ -120,6 +121,7 @@ class WorkerSpec(BaseModel):
     memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
     procedural_recipes: list[ProceduralRecipeContext] = Field(default_factory=list, max_length=1)
     adaptations: list[AdaptationContext] = Field(default_factory=list, max_length=1)
+    idempotency_key: str | None = None
 
     @field_validator("memory_influence_ids", mode="before")
     @classmethod

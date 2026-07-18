@@ -419,6 +419,7 @@ class WorkerRuntime:
             allowed_paths=task_request.allowed_paths,
             programmatic_read_call_budget=task_request.programmatic_read_call_budget,
             memory_influence_ids=task_request.memory_influence_ids,
+            idempotency_key=task_request.idempotency_key,
             procedural_recipes=procedural_recipes,
         )
 
@@ -940,6 +941,9 @@ class WorkerRuntime:
             env["OCTOPAL_PINCHTAB_BASE_URL"] = self.settings.pinchtab_worker_base_url
         if isinstance(self.launcher, DockerLauncher) and self.settings.webclaw_enabled:
             env["OCTOPAL_WEBCLAW_BINARY"] = "webclaw"
+        idempotency_key = str(getattr(spec, "idempotency_key", "") or "").strip()
+        if idempotency_key:
+            env["OCTOPAL_IDEMPOTENCY_KEY"] = idempotency_key
 
         host_proxy_tools = programmatic_read_proxy_tool_names(spec)
         tool_env = _tool_env_from_settings(

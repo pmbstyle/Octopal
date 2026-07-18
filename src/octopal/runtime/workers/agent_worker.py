@@ -298,8 +298,19 @@ def _build_worker_skill_usage_prompt(tools: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_worker_task_prompt(task: str, inputs: Any) -> str:
+def _build_worker_task_prompt(
+    task: str,
+    inputs: Any,
+    *,
+    idempotency_key: str | None = None,
+) -> str:
     task_prompt = f"Task: {task}"
+    if idempotency_key:
+        task_prompt += (
+            "\n\nIdempotency key: "
+            f"{idempotency_key}\n"
+            "For any effectful external call that accepts an idempotency key, use this exact value."
+        )
     if not inputs:
         return task_prompt
     try:
@@ -1184,7 +1195,11 @@ Available tools:
 {completion_protocol_prompt}
 """
 
-    task_prompt = _build_worker_task_prompt(spec.task, spec.inputs)
+    task_prompt = _build_worker_task_prompt(
+        spec.task,
+        spec.inputs,
+        idempotency_key=spec.idempotency_key,
+    )
     context_manifest = _build_worker_context_manifest(
         spec=spec,
         tools=filtered_tools,

@@ -122,6 +122,25 @@ def test_docker_worker_uses_bundled_webclaw_binary(tmp_path: Path) -> None:
     assert env["OCTOPAL_WEBCLAW_BINARY"] == "webclaw"
 
 
+def test_worker_runtime_exposes_idempotency_key_to_worker_process(tmp_path: Path) -> None:
+    runtime = WorkerRuntime(
+        store=object(),
+        policy=object(),
+        workspace_dir=tmp_path,
+        launcher=object(),
+        settings=Settings(),
+    )
+
+    env = runtime._build_worker_env(
+        SimpleNamespace(
+            available_tools=["fetch_plan_tool"],
+            idempotency_key="daily_digest:occurrence-1",
+        )
+    )
+
+    assert env["OCTOPAL_IDEMPOTENCY_KEY"] == "daily_digest:occurrence-1"
+
+
 def test_worker_falls_back_to_playwright_when_session_mint_fails(
     tmp_path: Path, monkeypatch
 ) -> None:
