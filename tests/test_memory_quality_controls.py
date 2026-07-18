@@ -39,6 +39,51 @@ class _EmbedStub:
         return [[1.0, 0.0] for _ in texts]
 
 
+class _PrefixAwareEmbedStub:
+    model_id = "test-e5"
+
+    def __init__(self) -> None:
+        self.document_calls: list[list[str]] = []
+        self.query_calls: list[list[str]] = []
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.document_calls.append(texts)
+        return [[1.0, 0.0] for _ in texts]
+
+    async def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        self.query_calls.append(texts)
+        return [[1.0, 0.0] for _ in texts]
+
+
+class _MigrationStore(_StoreStub):
+    def list_memory_entries_requiring_embedding_migration(
+        self, owner_id: str, model: str, limit: int = 100
+    ) -> list[MemoryEntry]:
+        return [
+            entry
+            for entry in self.entries
+            if entry.metadata.get("owner_id") == owner_id
+            and entry.metadata.get("embedding_model") != model
+        ][:limit]
+
+    def replace_memory_embeddings(
+        self, model: str, embeddings: list[tuple[str, list[float]]]
+    ) -> None:
+        vectors = dict(embeddings)
+        self.entries = [
+            entry.model_copy(
+                update={
+                    "embedding": vectors.get(entry.id, entry.embedding),
+                    "metadata": {
+                        **entry.metadata,
+                        **({"embedding_model": model} if entry.id in vectors else {}),
+                    },
+                }
+            )
+            for entry in self.entries
+        ]
+
+
 def test_memory_dedup_skips_exact_duplicate_in_chat() -> None:
     store = _StoreStub()
     service = MemoryService(store=store, embeddings=None, owner_id="default")
@@ -96,6 +141,46 @@ def test_memory_context_uses_confidence_weighting() -> None:
     context = asyncio.run(scenario())
     assert len(context) == 1
     assert "High confidence old fact" in context[0]
+
+
+def test_memory_uses_document_and_query_embedding_contracts() -> None:
+    store = _StoreStub()
+    embeddings = _PrefixAwareEmbedStub()
+    service = MemoryService(store=store, embeddings=embeddings, owner_id="default", min_score=0.05)
+
+    async def scenario() -> list[str]:
+        await service.add_message("assistant", "Use uv for installs.", {"chat_id": 7})
+        return await service.get_context("What should install dependencies?", exclude_chat_id=None)
+
+    context = asyncio.run(scenario())
+
+    assert embeddings.document_calls == [["Use uv for installs."]]
+    assert embeddings.query_calls == [["What should install dependencies?"]]
+    assert store.entries[0].metadata["embedding_model"] == "test-e5"
+    assert context == ["assistant: Use uv for installs."]
+
+
+def test_memory_migrates_vectors_from_previous_embedding_model() -> None:
+    store = _MigrationStore()
+    store.entries.append(
+        MemoryEntry(
+            id=str(uuid.uuid4()),
+            role="assistant",
+            content="Use uv for installs.",
+            embedding=[0.0] * 1536,
+            created_at=utc_now(),
+            metadata={"owner_id": "default", "embedding_model": "openai-text-embedding-3-small"},
+        )
+    )
+    embeddings = _PrefixAwareEmbedStub()
+    service = MemoryService(store=store, embeddings=embeddings, owner_id="default")
+
+    migrated = asyncio.run(service.migrate_embeddings())
+
+    assert migrated == 1
+    assert embeddings.document_calls == [["Use uv for installs."]]
+    assert store.entries[0].embedding == [1.0, 0.0]
+    assert store.entries[0].metadata["embedding_model"] == "test-e5"
 
 
 def test_recent_history_excludes_internal_system_entries() -> None:

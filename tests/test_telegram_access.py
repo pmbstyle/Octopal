@@ -19,11 +19,16 @@ def test_is_allowed_chat_defaults_to_allow_when_empty() -> None:
     assert not is_allowed_chat(999, {123})
 
 
-def test_dispatcher_uses_single_shared_mcp_manager(tmp_path: Path) -> None:
+def test_dispatcher_uses_single_shared_mcp_manager(tmp_path: Path, monkeypatch) -> None:
     if "telegramify_markdown" not in sys.modules:
         sys.modules["telegramify_markdown"] = types.SimpleNamespace(markdownify=lambda text: text)
 
     from octopal.channels.telegram.bot import build_dispatcher
+
+    monkeypatch.setattr(
+        "octopal.runtime.app.build_local_embeddings_provider",
+        lambda _settings: None,
+    )
 
     settings = Settings(
         TELEGRAM_BOT_TOKEN="123:abc",

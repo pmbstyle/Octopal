@@ -2197,7 +2197,7 @@ class SQLiteStore(Store):
                 """,
                 (
                     entry.id,
-                    "openai-text-embedding-3-small",  # TODO: Get this from settings/provider
+                    str((entry.metadata or {}).get("embedding_model") or "unknown"),
                     json.dumps(entry.embedding),
                     entry.created_at.isoformat(),
                 ),
@@ -2243,6 +2243,48 @@ class SQLiteStore(Store):
             (owner_id, limit),
         )
         return [self._row_to_memory(row) for row in cursor.fetchall()]
+
+    def list_memory_entries_requiring_embedding_migration(
+        self, owner_id: str, model: str, limit: int = 100
+    ) -> list[MemoryEntry]:
+        cursor = self._conn.execute(
+            """
+            SELECT m.*, e.vector_json as new_embedding_json
+            FROM memory_entries m
+            LEFT JOIN memory_embeddings e ON m.uuid = e.entry_uuid
+            WHERE m.owner_id = ?
+              AND (e.entry_uuid IS NULL OR e.model != ?)
+            ORDER BY m.id ASC
+            LIMIT ?
+            """,
+            (owner_id, model, limit),
+        )
+        return [self._row_to_memory(row) for row in cursor.fetchall()]
+
+    def replace_memory_embeddings(
+        self, model: str, embeddings: list[tuple[str, list[float]]]
+    ) -> None:
+        if not embeddings:
+            return
+        now = utc_now().isoformat()
+        for entry_id, embedding in embeddings:
+            vector_json = json.dumps(embedding)
+            self._conn.execute(
+                "UPDATE memory_entries SET embedding_json = ? WHERE uuid = ?",
+                (vector_json, entry_id),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO memory_embeddings (entry_uuid, model, vector_json, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(entry_uuid) DO UPDATE SET
+                    model = excluded.model,
+                    vector_json = excluded.vector_json,
+                    created_at = excluded.created_at
+                """,
+                (entry_id, model, vector_json, now),
+            )
+        self._conn.commit()
 
     def list_memory_entries_by_chat(self, chat_id: int, limit: int = 50) -> list[MemoryEntry]:
         cursor = self._conn.execute(
@@ -2312,6 +2354,7 @@ class SQLiteStore(Store):
             {
                 "filename": row["filename"],
                 "content": row["content"],
+                "model": row["model"],
                 "vector": json.loads(row["vector_json"]),
             }
             for row in rows

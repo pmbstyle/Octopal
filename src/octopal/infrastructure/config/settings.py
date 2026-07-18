@@ -114,8 +114,6 @@ class Settings(BaseSettings):
     langfuse_host: str | None = Field(default=None, alias="LANGFUSE_HOST")
 
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
-    openai_base_url: str = Field("https://api.openai.com/v1", alias="OPENAI_BASE_URL")
-    openai_embed_model: str = Field("text-embedding-3-small", alias="OPENAI_EMBED_MODEL")
 
     log_level: str = Field("INFO", alias="OCTOPAL_LOG_LEVEL")
     state_dir: Path = Field(Path("data"), alias="OCTOPAL_STATE_DIR")
@@ -126,6 +124,16 @@ class Settings(BaseSettings):
     memory_min_score: float = Field(0.25, alias="OCTOPAL_MEMORY_MIN_SCORE")
     memory_max_chars: int = Field(2000, alias="OCTOPAL_MEMORY_MAX_CHARS")
     memory_owner_id: str = Field("default", alias="OCTOPAL_MEMORY_OWNER_ID")
+    memory_local_embedding_model_dir: Path | None = Field(
+        default=None,
+        alias="OCTOPAL_MEMORY_LOCAL_EMBEDDING_MODEL_DIR",
+    )
+    memory_local_embedding_threads: int = Field(
+        0,
+        alias="OCTOPAL_MEMORY_LOCAL_EMBEDDING_THREADS",
+        ge=0,
+        le=64,
+    )
     episode_evidence_key: str | None = Field(
         default=None,
         alias="OCTOPAL_EPISODE_EVIDENCE_KEY",
@@ -312,6 +320,8 @@ def config_from_settings(settings: Settings) -> OctopalConfig:
             min_score=settings.memory_min_score,
             max_chars=settings.memory_max_chars,
             owner_id=settings.memory_owner_id,
+            local_model_dir=settings.memory_local_embedding_model_dir,
+            local_threads=settings.memory_local_embedding_threads,
         ),
         gateway=GatewayConfig(
             host=settings.gateway_host,
@@ -461,6 +471,8 @@ def _settings_updates_from_config(config: OctopalConfig) -> dict[str, object | N
     updates["memory_min_score"] = config.memory.min_score
     updates["memory_max_chars"] = config.memory.max_chars
     updates["memory_owner_id"] = config.memory.owner_id
+    updates["memory_local_embedding_model_dir"] = config.memory.local_model_dir
+    updates["memory_local_embedding_threads"] = config.memory.local_threads
 
     # Gateway
     updates["gateway_host"] = config.gateway.host

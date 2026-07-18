@@ -143,6 +143,42 @@ Very roughly, the system works like this:
 - reset continuity notes are mainly used after a context reset
 - operational commitments are surfaced when open obligations, blockers, or follow-ups may affect the next action
 
+## Local semantic embeddings
+
+Semantic memory always runs locally, independently from the chat provider. The cross-platform
+baseline is `intfloat/multilingual-e5-small` in ONNX format, using CPU-only ONNX Runtime and the
+lightweight `tokenizers` package. It does not install PyTorch, Transformers, or Sentence
+Transformers.
+
+Install Octopal normally:
+
+```bash
+uv sync
+```
+
+At the first `octopal start`, Octopal automatically downloads the pinned `model.onnx` and
+`tokenizer.json` from the official model revision into its local state directory. Each file is
+streamed into a temporary file, verified against a built-in SHA-256, and atomically moved into
+place. The initial download is roughly 490 MB and requires network access; later starts reuse the
+verified local bundle.
+
+By default the bundle is stored in `<state_dir>/models/multilingual-e5-small`. To put it elsewhere
+(for example, on a persistent volume), configure only the directory and CPU thread count:
+
+```json
+{
+  "memory": {
+    "local_model_dir": "/opt/octopal/models/multilingual-e5-small",
+    "local_threads": 2
+  }
+}
+```
+
+Local ONNX is the only embedding backend. Octopal loads and validates it during runtime startup;
+there is no OpenAI or automatic fallback. If assets are missing or corrupted, startup repairs them
+from the pinned source; if the download or runtime initialization fails, startup stops with an
+explicit error rather than serving semantic memory in a degraded mode.
+
 This keeps the system practical. The point is not to remember everything equally. The point is to remember the right things at the right time.
 
 ## What Gets Saved Automatically

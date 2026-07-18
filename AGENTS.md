@@ -14,7 +14,7 @@
 
 ## Build, Test, and Development Commands
 
-- `uv sync` installs the project and dev dependencies for day-to-day development.
+- `uv sync` installs the project and the cross-platform CPU-only ONNX semantic-memory runtime without PyTorch; the pinned local model bundle downloads and validates on first runtime start.
 - `python -m venv .venv` and `pip install -e .[dev]` are the non-`uv` editable setup path.
 - `uv run octopal configure` runs the interactive configuration wizard and bootstraps missing workspace files.
 - `uv run octopal config show [--reveal-secrets]` prints the effective config for inspection, and `uv run octopal config migrate` writes the current `.env`-backed settings into `config.json`.

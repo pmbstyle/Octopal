@@ -83,13 +83,20 @@ class MemoryService:
         embedding = None
         if self.embeddings is not None:
             try:
-                vectors = await self.embeddings.embed([trimmed])
+                embed_documents = getattr(self.embeddings, "embed_documents", None)
+                if not callable(embed_documents):
+                    embed_documents = self.embeddings.embed
+                vectors = await embed_documents([trimmed])
                 embedding = vectors[0] if vectors else None
             except Exception:
                 embedding = None
 
         merged_metadata = dict(metadata or {})
         merged_metadata.setdefault("owner_id", self.owner_id)
+        if self.embeddings is not None and embedding is not None:
+            merged_metadata.setdefault(
+                "embedding_model", str(getattr(self.embeddings, "model_id", "unknown"))
+            )
         merged_metadata.setdefault("confidence", _default_confidence(role))
         _merge_enrichment_metadata(merged_metadata, trimmed)
 
@@ -134,6 +141,34 @@ class MemoryService:
             memory_facets=None,
         )
 
+    async def migrate_embeddings(self, *, batch_size: int = 64) -> int:
+        """Rebuild persisted vectors that were produced by a previous embedding model."""
+        if self.embeddings is None:
+            return 0
+        model_id = str(getattr(self.embeddings, "model_id", "unknown"))
+        if model_id == "unknown":
+            raise RuntimeError("local embedding provider did not report a model identifier")
+        embed_documents = getattr(self.embeddings, "embed_documents", None)
+        if not callable(embed_documents):
+            embed_documents = self.embeddings.embed
+
+        migrated = 0
+        while True:
+            entries = await asyncio.to_thread(
+                self.store.list_memory_entries_requiring_embedding_migration,
+                self.owner_id,
+                model_id,
+                batch_size,
+            )
+            if not entries:
+                return migrated
+            vectors = await embed_documents([entry.content for entry in entries])
+            if len(vectors) != len(entries):
+                raise RuntimeError("embedding provider returned an incomplete migration batch")
+            updates = [(entry.id, vector) for entry, vector in zip(entries, vectors, strict=True)]
+            await asyncio.to_thread(self.store.replace_memory_embeddings, model_id, updates)
+            migrated += len(updates)
+
     async def get_context_by_facets(
         self,
         query: str,
@@ -161,7 +196,10 @@ class MemoryService:
         if not trimmed:
             return []
         try:
-            vectors = await self.embeddings.embed([trimmed])
+            embed_queries = getattr(self.embeddings, "embed_queries", None)
+            if not callable(embed_queries):
+                embed_queries = self.embeddings.embed
+            vectors = await embed_queries([trimmed])
         except Exception:
             return []
         if not vectors:

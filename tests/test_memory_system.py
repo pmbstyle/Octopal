@@ -46,8 +46,50 @@ class _StaleEmbeddingStore(_NoopStore):
 
 
 class _EmbeddingProvider:
+    model_id = "test-e5"
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         return [[1.0, 0.0] for _text in texts]
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return await self.embed(texts)
+
+    async def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        return await self.embed(texts)
+
+
+def test_canon_embedding_migration_reindexes_only_stale_files(tmp_path: Path, monkeypatch) -> None:
+    class Store(_NoopStore):
+        def list_canon_embeddings(self, filename: str | None = None):
+            return [
+                {"filename": "facts.md", "content": "old", "model": "openai", "vector": [0.0]},
+                {
+                    "filename": "decisions.md",
+                    "content": "current",
+                    "model": "test-e5",
+                    "vector": [1.0, 0.0],
+                },
+                {
+                    "filename": "failures.md",
+                    "content": "current",
+                    "model": "test-e5",
+                    "vector": [1.0, 0.0],
+                },
+            ]
+
+    canon = CanonService(tmp_path / "workspace", Store(), embeddings=_EmbeddingProvider())
+    reindexed: list[str] = []
+
+    async def record_index(filename: str, *, fail_on_error: bool = False) -> None:
+        assert fail_on_error is True
+        reindexed.append(filename)
+
+    monkeypatch.setattr(canon, "index_canon", record_index)
+
+    migrated = asyncio.run(canon.migrate_embeddings())
+
+    assert migrated == 1
+    assert reindexed == ["facts.md"]
 
 
 def _make_entry(role: str, content: str, *, owner_id: str, chat_id: int) -> MemoryEntry:
@@ -81,6 +123,28 @@ def test_memory_owner_filter(tmp_path: Path) -> None:
     rows = store.list_memory_entries_for_owner("default", limit=20)
     assert len(rows) == 1
     assert rows[0].content == "owned by default"
+
+
+def test_memory_embedding_migration_replaces_legacy_vectors(tmp_path: Path) -> None:
+    store = SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
+    entry = MemoryEntry(
+        id=str(uuid.uuid4()),
+        role="assistant",
+        content="Use uv for installs.",
+        embedding=[0.0] * 1536,
+        created_at=utc_now(),
+        metadata={"owner_id": "default", "chat_id": 1},
+    )
+    store.add_memory_entry(entry)
+
+    candidates = store.list_memory_entries_requiring_embedding_migration("default", "test-e5")
+    assert [candidate.id for candidate in candidates] == [entry.id]
+
+    store.replace_memory_embeddings("test-e5", [(entry.id, [1.0, 0.0])])
+
+    assert store.list_memory_entries_requiring_embedding_migration("default", "test-e5") == []
+    migrated = store.list_memory_entries_for_owner("default", limit=10)
+    assert migrated[0].embedding == [1.0, 0.0]
 
 
 def test_memory_chat_history_orders_by_created_at_not_uuid(tmp_path: Path) -> None:

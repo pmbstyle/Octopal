@@ -8,8 +8,8 @@ from octopal.channels.telegram.approvals import ApprovalManager
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.mcp.manager import MCPManager
 from octopal.infrastructure.observability import build_trace_sink
+from octopal.infrastructure.providers.embeddings_factory import build_local_embeddings_provider
 from octopal.infrastructure.providers.factory import build_inference_provider
-from octopal.infrastructure.providers.openai_embeddings import OpenAIEmbeddingsProvider
 from octopal.infrastructure.store.sqlite import SQLiteStore
 from octopal.runtime.memory.canon import CanonService
 from octopal.runtime.memory.facts import FactsService
@@ -52,7 +52,7 @@ def build_octo(settings: Settings) -> Octo:
         trace_sink=trace_sink,
     )
     approvals = ApprovalManager(bot=None)
-    embeddings = OpenAIEmbeddingsProvider(settings) if settings.openai_api_key else None
+    embeddings = build_local_embeddings_provider(settings)
     facts = FactsService(
         store=store,
         owner_id=settings.memory_owner_id,

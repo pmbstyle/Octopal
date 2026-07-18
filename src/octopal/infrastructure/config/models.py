@@ -52,6 +52,8 @@ class MemoryConfig(BaseModel):
     min_score: float = 0.25
     max_chars: int = 2000
     owner_id: str = "default"
+    local_model_dir: Path | None = None
+    local_threads: int = Field(default=0, ge=0, le=64)
 
 
 class GatewayConfig(BaseModel):

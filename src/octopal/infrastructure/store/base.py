@@ -237,6 +237,14 @@ class Store(Protocol):
         self, owner_id: str, limit: int = 200
     ) -> list[MemoryEntry]: ...
 
+    def list_memory_entries_requiring_embedding_migration(
+        self, owner_id: str, model: str, limit: int = 100
+    ) -> list[MemoryEntry]: ...
+
+    def replace_memory_embeddings(
+        self, model: str, embeddings: list[tuple[str, list[float]]]
+    ) -> None: ...
+
     def list_memory_entries_by_chat(self, chat_id: int, limit: int = 50) -> list[MemoryEntry]: ...
 
     def search_memory_entries_lexical(
