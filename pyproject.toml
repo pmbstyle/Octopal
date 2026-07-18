@@ -25,10 +25,13 @@ dependencies = [
   "cryptography>=46.0.0",
   "rich>=13.7.0",
   "mcp>=1.0.0",
+  "numpy>=1.26,<3",
+  "onnxruntime>=1.22,<2",
   "orjson>=3.10.0",
   "google-auth>=2.38.0",
   "google-auth-oauthlib>=1.2.0",
   "telegramify-markdown>=0.5.4",
+  "tokenizers>=0.22,<1",
 ]
 
 [project.optional-dependencies]

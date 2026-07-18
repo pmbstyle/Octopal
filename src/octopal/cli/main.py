@@ -1612,9 +1612,6 @@ def config_show(
             {
                 "BRAVE_API_KEY",
                 "FIRECRAWL_API_KEY",
-                "OPENAI_API_KEY",
-                "OPENAI_BASE_URL",
-                "OPENAI_EMBED_MODEL",
             },
         ),
         (

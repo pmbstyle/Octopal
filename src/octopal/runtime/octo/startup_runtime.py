@@ -37,6 +37,16 @@ class OctoStartupRuntimeMixin:
     async def initialize_system(self, bot=None, allowed_chat_ids: list[int] | None = None) -> None:
         system_chat_id = 0
         logger.info("Octo waking up")
+        migrate_memory = getattr(self.memory, "migrate_embeddings", None)
+        if callable(migrate_memory):
+            migrated = await migrate_memory()
+            if migrated:
+                logger.info("Migrated semantic memory embeddings", entries=migrated)
+        migrate_canon = getattr(self.canon, "migrate_embeddings", None)
+        if callable(migrate_canon):
+            migrated = await migrate_canon()
+            if migrated:
+                logger.info("Migrated canon embeddings", files=migrated)
         self.start_background_tasks()
 
         # Load and connect MCP servers

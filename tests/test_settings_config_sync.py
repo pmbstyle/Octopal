@@ -97,6 +97,27 @@ def test_load_settings_syncs_pinchtab_runtime_config(tmp_path, monkeypatch) -> N
     assert settings.pinchtab_timeout_seconds == 12.5
 
 
+def test_load_settings_syncs_local_onnx_embedding_config(tmp_path, monkeypatch) -> None:
+    model_dir = tmp_path / "models" / "multilingual-e5-small"
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "memory": {
+                    "local_model_dir": str(model_dir),
+                    "local_threads": 2,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.memory_local_embedding_model_dir == model_dir
+    assert settings.memory_local_embedding_threads == 2
+
+
 def test_load_settings_defaults_to_empty_telegram_values_without_config_json(
     tmp_path, monkeypatch
 ) -> None:

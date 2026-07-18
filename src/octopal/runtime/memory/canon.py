@@ -294,7 +294,7 @@ class CanonService:
         if self.embeddings:
             asyncio.create_task(self.index_canon(filename))
 
-    async def index_canon(self, filename: str) -> None:
+    async def index_canon(self, filename: str, *, fail_on_error: bool = False) -> None:
         """Chunks and embeds a canonical file."""
         if not self.embeddings:
             return
@@ -310,21 +310,52 @@ class CanonService:
             return
 
         try:
-            vectors = await self.embeddings.embed(chunks)
+            embed_documents = getattr(self.embeddings, "embed_documents", None)
+            if not callable(embed_documents):
+                embed_documents = self.embeddings.embed
+            vectors = await embed_documents(chunks)
+            if len(vectors) != len(chunks):
+                raise RuntimeError("embedding provider returned an incomplete canon indexing batch")
             await asyncio.to_thread(self.store.clear_canon_embeddings, filename)
 
-            for i, (chunk, vector) in enumerate(zip(chunks, vectors, strict=False)):
+            for i, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True)):
                 await asyncio.to_thread(
                     self.store.add_canon_embedding,
                     filename=filename,
                     chunk_index=i,
                     content=chunk,
-                    model="openai-text-embedding-3-small",
+                    model=str(getattr(self.embeddings, "model_id", "unknown")),
                     vector=vector,
                 )
             logger.info("Canon file indexed", filename=filename, chunks=len(chunks))
         except Exception:
             logger.exception("Failed to index canon file", filename=filename)
+            if fail_on_error:
+                raise
+
+    async def migrate_embeddings(self) -> int:
+        """Reindex canon files whose persisted vectors use another embedding model."""
+        if not self.embeddings:
+            return 0
+        model_id = str(getattr(self.embeddings, "model_id", "unknown"))
+        if model_id == "unknown":
+            raise RuntimeError("local embedding provider did not report a model identifier")
+        indexed = await asyncio.to_thread(self.store.list_canon_embeddings)
+        models_by_filename: dict[str, set[str]] = {}
+        for entry in indexed:
+            filename = str(entry.get("filename") or "").strip()
+            if filename:
+                models_by_filename.setdefault(filename, set()).add(
+                    str(entry.get("model") or "unknown")
+                )
+
+        migrated = 0
+        for filename in self.list_files():
+            if models_by_filename.get(filename) == {model_id}:
+                continue
+            await self.index_canon(filename, fail_on_error=True)
+            migrated += 1
+        return migrated
 
     async def search_canon(self, query: str, top_k: int = 3) -> list[str]:
         """Searches across all indexed canon files."""
@@ -332,7 +363,10 @@ class CanonService:
             return []
 
         try:
-            query_vectors = await self.embeddings.embed([query])
+            embed_queries = getattr(self.embeddings, "embed_queries", None)
+            if not callable(embed_queries):
+                embed_queries = self.embeddings.embed
+            query_vectors = await embed_queries([query])
             if not query_vectors:
                 return []
             query_vector = query_vectors[0]

@@ -280,6 +280,10 @@ Octopal keeps memory in layers so the assistant can stay personal without turnin
 
 See [docs/memory.md](docs/memory.md).
 
+Semantic retrieval uses a mandatory local, CPU-only ONNX runtime without PyTorch. On Linux,
+Windows, and macOS, the first runtime start downloads and verifies the pinned
+`intfloat/multilingual-e5-small` bundle; see [local embedding setup](docs/memory.md#local-semantic-embeddings).
+
 ## 📡 Channels And Dashboard
 
 Octopal can talk through:
