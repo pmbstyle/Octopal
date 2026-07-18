@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import structlog
 
@@ -26,6 +27,8 @@ SCHEDULED_TASK_TARGET_CHAT_ID_KEY = "target_chat_id"
 SCHEDULED_TASK_BLOCKED_UNTIL_KEY = "blocked_until"
 SCHEDULED_TASK_BLOCKED_REASON_KEY = "blocked_reason"
 SCHEDULED_TASK_SUGGESTED_EXECUTION_MODE_KEY = "suggested_execution_mode"
+_SCHEDULED_TASK_LEASE_SECONDS = 3600
+_SCHEDULED_TASK_RETRY_SECONDS = 60
 
 
 def normalize_notify_user_policy(notify_user: str | None) -> str:
@@ -285,6 +288,8 @@ class SchedulerService:
             normalized = self._normalize_task_record(task)
             if not bool(normalized.get("dispatch_ready")):
                 continue
+            if self._has_active_lease(normalized, now):
+                continue
             if self._should_run(normalized, now):
                 actionable.append(normalized)
 
@@ -309,8 +314,82 @@ class SchedulerService:
         )
         return described
 
-    def mark_executed(self, task_id: str) -> None:
-        self.store.update_task_last_run(task_id, utc_now())
+    def claim_due_task(self, task: dict[str, Any], *, lease_owner: str) -> dict[str, Any] | None:
+        """Atomically reserve a due task and attach its durable attempt identity."""
+        task_id = str(task.get("id") or "").strip()
+        if not task_id:
+            return None
+        now = utc_now()
+        attempt_id = str(uuid4())
+        existing_idempotency_key = str(task.get("idempotency_key") or "").strip()
+        last_outcome = str(task.get("last_outcome") or "").strip().lower()
+        idempotency_key = (
+            existing_idempotency_key
+            if existing_idempotency_key and last_outcome != "completed"
+            else f"{task_id}:{uuid4()}"
+        )
+        claim = getattr(self.store, "claim_scheduled_task", None)
+        if callable(claim):
+            claimed = claim(
+                task_id,
+                lease_owner=lease_owner,
+                lease_expires_at=now + timedelta(seconds=_SCHEDULED_TASK_LEASE_SECONDS),
+                attempt_id=attempt_id,
+                idempotency_key=idempotency_key,
+                started_at=now,
+                expected_last_run_at=task.get("last_run_at"),
+                expected_next_run_at=task.get("next_run_at"),
+            )
+            if not claimed:
+                return None
+        claimed_task = dict(task)
+        claimed_task["attempt_id"] = attempt_id
+        claimed_task["idempotency_key"] = idempotency_key
+        return claimed_task
+
+    def mark_executed(
+        self,
+        task_id: str,
+        *,
+        attempt_id: str | None = None,
+        outcome: str = "completed",
+    ) -> None:
+        now = utc_now()
+        finish = getattr(self.store, "finish_scheduled_task_attempt", None)
+        if attempt_id and callable(finish):
+            task = self.get_task(task_id) or {"frequency": ""}
+            finish(
+                task_id,
+                attempt_id=attempt_id,
+                outcome=outcome,
+                finished_at=now,
+                completed=True,
+                next_run_at=self._next_run_after_execution(task, now),
+            )
+        else:
+            self.store.update_task_last_run(task_id, now)
+        self.sync_to_markdown()
+
+    def fail_attempt(
+        self,
+        task_id: str,
+        *,
+        attempt_id: str | None,
+        error_class: str,
+    ) -> None:
+        finish = getattr(self.store, "finish_scheduled_task_attempt", None)
+        if not attempt_id or not callable(finish):
+            return
+        now = utc_now()
+        finish(
+            task_id,
+            attempt_id=attempt_id,
+            outcome="failed",
+            finished_at=now,
+            completed=False,
+            next_run_at=now + timedelta(seconds=_SCHEDULED_TASK_RETRY_SECONDS),
+            error_class=error_class,
+        )
         self.sync_to_markdown()
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
@@ -368,6 +447,15 @@ class SchedulerService:
         return re.sub(r"[^a-z0-9_]", "", name.lower().replace(" ", "_"))
 
     def _should_run(self, task: dict[str, Any], now: datetime) -> bool:
+        next_run_str = task.get("next_run_at")
+        if isinstance(next_run_str, str) and next_run_str.strip():
+            try:
+                next_run = datetime.fromisoformat(next_run_str)
+            except ValueError:
+                logger.warning("Invalid scheduled task next_run_at", task_id=task.get("id"))
+            else:
+                if next_run.tzinfo is not None:
+                    return now >= next_run
         last_run_str = task.get("last_run_at")
         if not last_run_str:
             return True  # Never run before
@@ -404,6 +492,22 @@ class SchedulerService:
             return last_run < target_today
 
         return False
+
+    def _has_active_lease(self, task: dict[str, Any], now: datetime) -> bool:
+        raw_value = task.get("lease_expires_at")
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            return False
+        try:
+            expires_at = datetime.fromisoformat(raw_value)
+        except ValueError:
+            logger.warning("Invalid scheduled task lease_expires_at", task_id=task.get("id"))
+            return False
+        return expires_at.tzinfo is not None and expires_at > now
+
+    def _next_run_after_execution(self, task: dict[str, Any], now: datetime) -> datetime | None:
+        completed_task = dict(task)
+        completed_task["last_run_at"] = now.isoformat()
+        return self._estimate_next_run(completed_task, now)
 
     def _validate_and_normalize_frequency(self, frequency: str) -> str:
         freq = (frequency or "").strip()
@@ -552,7 +656,18 @@ class SchedulerService:
             and bool(task.get("dispatch_ready", True))
             and self._should_run(task, now)
         )
-        next_run_at = self._estimate_next_run(task, now)
+        next_run_at: datetime | None = None
+        raw_next_run_at = task.get("next_run_at")
+        if isinstance(raw_next_run_at, str) and raw_next_run_at.strip():
+            try:
+                persisted_next_run_at = datetime.fromisoformat(raw_next_run_at)
+            except ValueError:
+                logger.warning("Invalid scheduled task next_run_at", task_id=task.get("id"))
+            else:
+                if persisted_next_run_at.tzinfo is not None:
+                    next_run_at = persisted_next_run_at
+        if next_run_at is None:
+            next_run_at = self._estimate_next_run(task, now)
         last_run_at = task.get("last_run_at")
         overdue = False
         if due_now and last_run_at:

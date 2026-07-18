@@ -394,6 +394,31 @@ class Store(Protocol):
 
     def update_task_last_run(self, task_id: str, ts: datetime) -> None: ...
 
+    def claim_scheduled_task(
+        self,
+        task_id: str,
+        *,
+        lease_owner: str,
+        lease_expires_at: datetime,
+        attempt_id: str,
+        idempotency_key: str,
+        started_at: datetime,
+        expected_last_run_at: str | None,
+        expected_next_run_at: str | None,
+    ) -> bool: ...
+
+    def finish_scheduled_task_attempt(
+        self,
+        task_id: str,
+        *,
+        attempt_id: str,
+        outcome: str,
+        finished_at: datetime,
+        completed: bool,
+        next_run_at: datetime | None,
+        error_class: str | None = None,
+    ) -> bool: ...
+
     def update_scheduled_task_metadata(
         self,
         task_id: str,
