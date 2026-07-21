@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
@@ -124,6 +125,18 @@ class MCPManager:
         self._tool_failure_state: dict[tuple[str, str], dict[str, Any]] = {}
         self._reconnect_tasks: dict[str, asyncio.Task] = {}
         self._reconnect_attempts: dict[str, int] = {}
+        self._connection_locks: dict[str, asyncio.Lock] = {}
+        self._server_states: dict[
+            str,
+            Literal[
+                "disconnected",
+                "connecting",
+                "ready",
+                "degraded",
+                "reconnect_wait",
+                "stopping",
+            ],
+        ] = {}
         self._manual_disconnects: set[str] = set()
         self._shutdown_requested = False
         self.config_path = workspace_dir / "mcp_servers.json"
@@ -261,15 +274,27 @@ class MCPManager:
         return resolved
 
     async def connect_server(self, config: MCPServerConfig) -> list[ToolSpec]:
+        lock = self._connection_locks.setdefault(config.id, asyncio.Lock())
+        async with lock:
+            return await self._connect_server(config)
+
+    async def _connect_server(self, config: MCPServerConfig) -> list[ToolSpec]:
         self._shutdown_requested = False
         self._server_configs[config.id] = config
         self._manual_disconnects.discard(config.id)
-        reconnect_task = self._reconnect_tasks.pop(config.id, None)
-        if reconnect_task and not reconnect_task.done():
-            reconnect_task.cancel()
+        current_task = asyncio.current_task()
+        reconnect_task = self._reconnect_tasks.get(config.id)
+        if reconnect_task and reconnect_task is not current_task:
+            self._reconnect_tasks.pop(config.id, None)
+            if not reconnect_task.done():
+                reconnect_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await reconnect_task
         if config.id in self.sessions:
             logger.info("MCP server already connected", server_id=config.id)
             return self._tools.get(config.id, [])
+
+        self._server_states[config.id] = "connecting"
 
         # Create an event to signal connection readiness and an event for stopping
         ready_event = asyncio.Event()
@@ -281,18 +306,17 @@ class MCPManager:
         self._tasks[config.id] = task
 
         # Wait for the session to be initialized or task to fail
+        ready_waiter = asyncio.create_task(ready_event.wait())
         try:
-            # Monitor both the ready event and the task itself
-            done, pending = await asyncio.wait(
-                [asyncio.create_task(ready_event.wait()), task],
+            # Monitor both the ready event and the lifecycle task itself.
+            done, _pending = await asyncio.wait(
+                [ready_waiter, task],
                 return_when=asyncio.FIRST_COMPLETED,
                 timeout=45.0,
             )
 
             # Check if we timed out
             if not done:
-                for pending_task in pending:
-                    pending_task.cancel()
                 config.last_error = "Connection timed out after 45s"
                 raise RuntimeError(f"Connection to MCP server '{config.id}' timed out after 45s.")
 
@@ -322,6 +346,11 @@ class MCPManager:
             if isinstance(e, RuntimeError) and "timed out" in str(e):
                 raise
             raise RuntimeError(f"MCP Connection Error ({config.id}): {e}") from e
+        finally:
+            if not ready_waiter.done():
+                ready_waiter.cancel()
+            with suppress(asyncio.CancelledError):
+                await ready_waiter
 
     async def _run_server_lifecycle(
         self, config: MCPServerConfig, ready_event: asyncio.Event, stop_event: asyncio.Event
@@ -430,12 +459,15 @@ class MCPManager:
 
             # Signal that we are ready
             ready_event.set()
+            self._server_states[config.id] = "ready"
 
             # Keep alive until signaled to stop
             await stop_event.wait()
             logger.info("Shutting down MCP server session (signaled)", server_id=config.id)
 
         except Exception as e:
+            config.last_error = str(e)
+            self._server_states[config.id] = "degraded"
             hint = _connection_hint(e)
             logger.exception(
                 "MCP server lifecycle error",
@@ -470,6 +502,8 @@ class MCPManager:
                 and config.id not in self.sessions
             ):
                 self._schedule_reconnect(config.id)
+            elif self._server_states.get(config.id) != "stopping":
+                self._server_states[config.id] = "disconnected"
 
     async def call_tool(
         self,
@@ -1247,9 +1281,11 @@ class MCPManager:
             return
         attempt = int(self._reconnect_attempts.get(server_id, 0)) + 1
         self._reconnect_attempts[server_id] = attempt
+        self._server_states[server_id] = "reconnect_wait"
         delay = min(_MCP_RECONNECT_MAX_SECONDS, _MCP_RECONNECT_BASE_SECONDS * (2 ** (attempt - 1)))
 
         async def _reconnect() -> None:
+            retry = False
             try:
                 logger.warning(
                     "Scheduling MCP reconnect",
@@ -1264,6 +1300,7 @@ class MCPManager:
                     or server_id in self.sessions
                 ):
                     return
+                self._server_states[server_id] = "connecting"
                 await self.connect_server(config)
             except asyncio.CancelledError:
                 raise
@@ -1274,20 +1311,29 @@ class MCPManager:
                     attempt=attempt,
                     exc_info=True,
                 )
-                self._schedule_reconnect(server_id)
+                retry = True
             finally:
                 task = self._reconnect_tasks.get(server_id)
                 if task is asyncio.current_task():
                     self._reconnect_tasks.pop(server_id, None)
+                if retry:
+                    self._schedule_reconnect(server_id)
 
         self._reconnect_tasks[server_id] = asyncio.create_task(_reconnect())
 
     async def disconnect_server(self, server_id: str, *, intentional: bool = True) -> None:
         if intentional:
             self._manual_disconnects.add(server_id)
-        reconnect_task = self._reconnect_tasks.pop(server_id, None)
-        if reconnect_task and not reconnect_task.done():
-            reconnect_task.cancel()
+            self._server_states[server_id] = "stopping"
+            reconnect_task = self._reconnect_tasks.pop(server_id, None)
+            if (
+                reconnect_task
+                and reconnect_task is not asyncio.current_task()
+                and not reconnect_task.done()
+            ):
+                reconnect_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await reconnect_task
         event = self._stop_events.get(server_id)
         if event:
             event.set()
@@ -1300,7 +1346,11 @@ class MCPManager:
             except (TimeoutError, asyncio.CancelledError):
                 if not task.done():
                     task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
             logger.info("Disconnected MCP server", server_id=server_id)
+        if intentional:
+            self._server_states[server_id] = "disconnected"
 
     def get_all_tools(self) -> list[ToolSpec]:
         all_specs = []
@@ -1322,14 +1372,17 @@ class MCPManager:
 
     async def shutdown(self) -> None:
         self._shutdown_requested = True
-        for task in list(self._task_recovery_tasks.values()):
+        recovery_tasks = list(self._task_recovery_tasks.values())
+        for task in recovery_tasks:
             if not task.done():
                 task.cancel()
         self._task_recovery_tasks.clear()
-        for task in list(self._reconnect_tasks.values()):
+        reconnect_tasks = list(self._reconnect_tasks.values())
+        for task in reconnect_tasks:
             if not task.done():
                 task.cancel()
         self._reconnect_tasks.clear()
+        await asyncio.gather(*recovery_tasks, *reconnect_tasks, return_exceptions=True)
         # Trigger all stop events
         for server_id in list(self._stop_events.keys()):
             await self.disconnect_server(server_id)
@@ -1366,6 +1419,10 @@ class MCPManager:
                 "transport": config.transport or "auto",
                 "reconnect_attempts": reconnect_attempts,
                 "manual_disconnect": server_id in self._manual_disconnects,
+                "lifecycle_state": self._server_states.get(
+                    server_id,
+                    "ready" if is_connected else "disconnected",
+                ),
                 "task_protocol": self._task_protocols.get(server_id) or "none",
                 "task_recoveries_active_total": sum(
                     1 for task in self._task_recovery_tasks.values() if not task.done()

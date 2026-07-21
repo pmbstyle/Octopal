@@ -40,6 +40,70 @@ def test_mcp_manager_schedules_self_healing_reconnect(tmp_path, monkeypatch) -> 
     assert calls == ["demo"]
 
 
+def test_mcp_manager_reconnect_retries_after_a_failed_attempt(tmp_path, monkeypatch) -> None:
+    manager = MCPManager(tmp_path)
+    manager._server_configs["demo"] = MCPServerConfig(
+        id="demo",
+        name="Demo",
+        command="demo-cmd",
+        transport="stdio",
+    )
+
+    calls: list[str] = []
+
+    async def _fake_connect(config: MCPServerConfig):
+        calls.append(config.id)
+        if len(calls) == 1:
+            raise RuntimeError("connection closed")
+        return []
+
+    monkeypatch.setattr("octopal.infrastructure.mcp.manager._MCP_RECONNECT_BASE_SECONDS", 0.01)
+    monkeypatch.setattr("octopal.infrastructure.mcp.manager._MCP_RECONNECT_MAX_SECONDS", 0.01)
+    manager.connect_server = _fake_connect  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        manager._schedule_reconnect("demo")
+        for _ in range(25):
+            if len(calls) == 2:
+                return
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+
+    assert calls == ["demo", "demo"]
+    assert "demo" not in manager._reconnect_tasks
+
+
+def test_mcp_manager_reconnect_attempt_does_not_cancel_itself(tmp_path, monkeypatch) -> None:
+    manager = MCPManager(tmp_path)
+    manager._server_configs["demo"] = MCPServerConfig(
+        id="demo",
+        name="Demo",
+        command="demo-cmd",
+        transport="stdio",
+    )
+    attempts: list[str] = []
+
+    async def _exit_before_ready(config: MCPServerConfig, *_args) -> None:
+        attempts.append(config.id)
+
+    monkeypatch.setattr(manager, "_run_server_lifecycle", _exit_before_ready)
+    monkeypatch.setattr("octopal.infrastructure.mcp.manager._MCP_RECONNECT_BASE_SECONDS", 0.01)
+    monkeypatch.setattr("octopal.infrastructure.mcp.manager._MCP_RECONNECT_MAX_SECONDS", 0.01)
+
+    async def scenario() -> None:
+        manager._schedule_reconnect("demo")
+        for _ in range(25):
+            if len(attempts) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+    assert attempts == ["demo", "demo"]
+
+
 def test_mcp_manager_does_not_reconnect_after_intentional_disconnect(tmp_path, monkeypatch) -> None:
     manager = MCPManager(tmp_path)
     manager._server_configs["demo"] = MCPServerConfig(
@@ -99,6 +163,46 @@ def test_mcp_manager_statuses_report_reconnecting_and_reason(tmp_path) -> None:
     assert payload["reconnecting"] is True
     assert payload["reason"] == "Background reconnect scheduled"
     assert payload["reconnect_attempts"] == 2
+
+
+def test_mcp_manager_cleans_ready_waiter_after_connection_failure(tmp_path, monkeypatch) -> None:
+    manager = MCPManager(tmp_path)
+    config = MCPServerConfig(id="demo", name="Demo", command="demo-cmd", transport="stdio")
+
+    async def _fail_lifecycle(*_args) -> None:
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(manager, "_run_server_lifecycle", _fail_lifecycle)
+
+    async def scenario() -> None:
+        with contextlib.suppress(RuntimeError):
+            await manager.connect_server(config)
+        await asyncio.sleep(0)
+        current = asyncio.current_task()
+        assert [
+            task for task in asyncio.all_tasks() if task is not current and not task.done()
+        ] == []
+
+    asyncio.run(scenario())
+
+
+def test_mcp_manager_shutdown_waits_for_reconnect_tasks(tmp_path) -> None:
+    manager = MCPManager(tmp_path)
+    manager._server_configs["demo"] = MCPServerConfig(
+        id="demo",
+        name="Demo",
+        command="demo-cmd",
+        transport="stdio",
+    )
+
+    async def scenario() -> None:
+        manager._schedule_reconnect("demo")
+        reconnect_task = manager._reconnect_tasks["demo"]
+        await manager.shutdown()
+        assert reconnect_task.done()
+        assert manager._reconnect_tasks == {}
+
+    asyncio.run(scenario())
 
 
 def test_classify_mcp_invalid_arguments_preserves_missing_fields() -> None:
