@@ -9,6 +9,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 from octopal.runtime.plans import PlanRunService
 from octopal.runtime.worker_result_payloads import (
@@ -18,6 +20,7 @@ from octopal.runtime.worker_result_payloads import (
 from octopal.runtime.workers.allowed_paths import (
     infer_allowed_paths_from_values as _infer_allowed_paths_from_values,
 )
+from octopal.runtime.workers.contracts import WorkspaceFileVerificationContract
 from octopal.tools.registry import ToolSpec
 from octopal.utils import utc_now
 
@@ -75,6 +78,31 @@ _PROGRAMMATIC_READ_BUDGET_GUIDANCE = (
     "Optional host-side budget for explicitly eligible bounded read-only tools. "
     "Default 0 keeps the bridge disabled; maximum 16."
 )
+_OUTCOME_VERIFICATION_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional host-side completion check for a worker that must create one workspace file. "
+        "The runtime checks this path after the worker exits; it does not trust the worker's self-report."
+    ),
+    "properties": {
+        "kind": {"type": "string", "const": "workspace_file"},
+        "artifact_path": {
+            "type": "string",
+            "description": (
+                "Workspace-relative file path below a workspace directory that must exist after "
+                "completion, for example 'artifacts/report.json'."
+            ),
+        },
+        "min_bytes": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "max_bytes": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "expected_sha256": {
+            "type": "string",
+            "description": "Optional expected SHA-256 digest for an exact artifact.",
+        },
+    },
+    "required": ["kind", "artifact_path"],
+    "additionalProperties": False,
+}
 
 
 def _infer_allowed_paths_from_task(task: str) -> list[str] | None:
@@ -504,6 +532,7 @@ def get_worker_tools() -> list[ToolSpec]:
                             "'experiments/README.md']. Omit this when the worker only needs its own scratch files."
                         ),
                     },
+                    "outcome_verification": _OUTCOME_VERIFICATION_SCHEMA,
                 },
                 "required": ["worker_id", "task"],
                 "additionalProperties": False,
@@ -582,6 +611,7 @@ def get_worker_tools() -> list[ToolSpec]:
                             "needs its own scratch files."
                         ),
                     },
+                    "outcome_verification": _OUTCOME_VERIFICATION_SCHEMA,
                 },
                 "required": ["worker_id", "task"],
                 "additionalProperties": False,
@@ -1300,6 +1330,15 @@ async def _start_worker_common(
         ),
     )
     scheduled_task_id = str(args.get("scheduled_task_id", "")).strip() or None
+    try:
+        outcome_verification = (
+            WorkspaceFileVerificationContract.model_validate(args["outcome_verification"])
+            if "outcome_verification" in args
+            else None
+        )
+    except ValidationError as exc:
+        prefix = "start_child_worker" if require_worker_context else "start_worker"
+        return f"{prefix} error: invalid outcome_verification: {exc.errors()[0]['msg']}"
 
     if not task:
         return "start_worker error: task is required."
@@ -1401,6 +1440,7 @@ async def _start_worker_common(
         root_task_id=child_ctx["root_task_id"] if child_ctx else None,
         spawn_depth=(child_ctx["spawn_depth"] + 1) if child_ctx else 0,
         allowed_paths=allowed_paths,
+        outcome_verification=outcome_verification,
         programmatic_read_call_budget=programmatic_read_call_budget,
         memory_influence_ids=_memory_influence_ids_from_context(ctx),
     )
@@ -1448,6 +1488,7 @@ async def _start_worker_common(
             "lineage_id": launch.get("lineage_id"),
             "parent_worker_id": launch.get("parent_worker_id"),
             "root_task_id": launch.get("root_task_id"),
+            "outcome_verification_requested": outcome_verification is not None,
             "spawn_depth": launch.get("spawn_depth"),
             "message": message,
             "followup_required": followup_required,

@@ -452,6 +452,22 @@ def _build_worker_context_manifest(
     }
 
 
+def _build_outcome_verification_prompt(spec: WorkerSpec) -> str:
+    contract = spec.outcome_verification
+    if contract is None:
+        return ""
+    expected_hash = (
+        f" Its SHA-256 must be `{contract.expected_sha256}`."
+        if contract.expected_sha256 is not None
+        else ""
+    )
+    return (
+        "Outcome contract: create a regular file at the shared workspace path "
+        f"`{contract.artifact_path}` with {contract.min_bytes} to {contract.max_bytes} bytes."
+        f"{expected_hash} The host will independently check it after you finish."
+    )
+
+
 def _build_procedural_recipe_prompt(spec: WorkerSpec) -> str:
     if not spec.procedural_recipes:
         return ""
@@ -1165,6 +1181,7 @@ async def execute_agent_task(
             _build_worker_file_write_prompt(filtered_tools, spec.required_tool_calls),
             coordination_prompt,
             _build_worker_skill_usage_prompt(filtered_tools),
+            _build_outcome_verification_prompt(spec),
         )
         if part
     )

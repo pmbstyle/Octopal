@@ -48,9 +48,19 @@ def _episode(
     capability_fingerprint: str = "b" * 64,
     status: str = "completed",
     verified: bool = True,
+    outcome_contract_present: bool | None = None,
     trust_state: str = "observed",
     created_at: datetime | None = None,
 ) -> ExecutionEpisodeRecord:
+    verification: dict[str, object] = {
+        "result_contract_validated": True,
+        "structured_output_present": True,
+        "explicit_verification_present": verified,
+        "grader_results": [],
+    }
+    if outcome_contract_present is not None:
+        verification["verified"] = verified
+        verification["outcome_contract_present"] = outcome_contract_present
     return ExecutionEpisodeRecord.model_validate(
         {
             "id": episode_id,
@@ -64,12 +74,7 @@ def _episode(
             "trust_state": trust_state,
             "trajectory_refs": {"worker_record_id": f"worker-{episode_id}"},
             "result_metadata": {},
-            "verification": {
-                "result_contract_validated": True,
-                "structured_output_present": True,
-                "explicit_verification_present": verified,
-                "grader_results": [],
-            },
+            "verification": verification,
             "provenance": {"content_policy": "metadata_only_v1"},
             "created_at": created_at or datetime.now(UTC),
         }
@@ -253,6 +258,16 @@ def test_recipe_promotion_requires_recurrent_verified_success_and_supports_depre
     [
         ([_episode("episode-failed", status="failed")], "not completed"),
         ([_episode("episode-unverified", verified=False)], "no successful verification"),
+        (
+            [
+                _episode(
+                    "episode-failed-outcome-contract",
+                    verified=False,
+                    outcome_contract_present=True,
+                )
+            ],
+            "from host",
+        ),
         (
             [_episode("episode-quarantined", trust_state="quarantined_candidate")],
             "trust state",

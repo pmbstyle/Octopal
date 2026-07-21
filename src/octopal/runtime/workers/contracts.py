@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -50,6 +52,7 @@ class TaskRequest(BaseModel):
     root_task_id: str | None = None
     spawn_depth: int = 0
     allowed_paths: list[str] | None = None  # Restricted workspace paths the worker can access
+    outcome_verification: WorkspaceFileVerificationContract | None = None
     programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
     memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
     idempotency_key: str | None = None
@@ -60,6 +63,96 @@ class TaskRequest(BaseModel):
         if not isinstance(value, (list, tuple)):
             return []
         return require_complete_memory_influence_ids(value)
+
+
+class WorkspaceFileVerificationContract(BaseModel):
+    """Host-side postcondition for a worker that must produce one workspace file.
+
+    The worker does not attest to this condition: the runtime checks the path after
+    the worker exits.  Paths are intentionally workspace-relative so the same task
+    contract works with native and Docker workers on every supported platform.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["workspace_file"] = "workspace_file"
+    artifact_path: str = Field(min_length=1, max_length=1024)
+    min_bytes: int = Field(default=1, ge=0, le=64 * 1024 * 1024)
+    max_bytes: int = Field(default=64 * 1024 * 1024, ge=0, le=64 * 1024 * 1024)
+    expected_sha256: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{64}$")
+
+    @field_validator("artifact_path")
+    @classmethod
+    def validate_artifact_path(cls, value: str) -> str:
+        normalized = value.strip().replace("\\", "/")
+        if not normalized or "\x00" in normalized:
+            raise ValueError("artifact_path must be a non-empty workspace-relative path")
+        if normalized.startswith("/") or PureWindowsPath(normalized).is_absolute():
+            raise ValueError("artifact_path must be workspace-relative")
+        if any(part == ".." for part in normalized.split("/")):
+            raise ValueError("artifact_path must not traverse outside the workspace")
+        if normalized.endswith("/") or PurePosixPath(normalized).parent == PurePosixPath("."):
+            raise ValueError("artifact_path must name a file inside a workspace directory")
+        return normalized
+
+    @field_validator("expected_sha256")
+    @classmethod
+    def normalize_expected_sha256(cls, value: str | None) -> str | None:
+        return value.lower() if value else None
+
+    @model_validator(mode="after")
+    def validate_size_range(self) -> Self:
+        if self.min_bytes > self.max_bytes:
+            raise ValueError("min_bytes must not exceed max_bytes")
+        return self
+
+
+class WorkspaceFileVerificationEvidence(BaseModel):
+    """Metadata-only evidence produced by the host outcome verifier."""
+
+    model_config = ConfigDict(frozen=True)
+
+    verifier: Literal["workspace_file"] = "workspace_file"
+    status: Literal["passed", "failed", "not_run"]
+    expected_postcondition: Literal["workspace_file_exists"] = "workspace_file_exists"
+    verification_method: Literal["host_filesystem_stat_sha256"] = "host_filesystem_stat_sha256"
+    artifact_path_fingerprint: str
+    observed_exists: bool
+    observed_regular_file: bool
+    observed_size_bytes: int | None = None
+    observed_sha256: str | None = None
+    unresolved_gaps: list[str] = Field(default_factory=list)
+
+
+def ensure_outcome_artifact_is_shared(
+    allowed_paths: list[str] | None,
+    outcome_verification: WorkspaceFileVerificationContract | Mapping[str, Any] | None,
+) -> list[str] | None:
+    """Grant a file contract access to its smallest shared workspace directory."""
+
+    if isinstance(outcome_verification, WorkspaceFileVerificationContract):
+        artifact_path = outcome_verification.artifact_path
+    elif isinstance(outcome_verification, Mapping):
+        artifact_path = str(outcome_verification.get("artifact_path") or "").strip()
+        artifact_path = artifact_path.replace("\\", "/")
+    else:
+        return allowed_paths
+
+    if not artifact_path or PurePosixPath(artifact_path).parent == PurePosixPath("."):
+        return allowed_paths
+    required_path = PurePosixPath(artifact_path).parent.as_posix()
+
+    normalized_allowed = [
+        str(path).strip().replace("\\", "/").strip("/")
+        for path in allowed_paths or []
+        if str(path).strip()
+    ]
+    if any(
+        allowed == "." or artifact_path == allowed or artifact_path.startswith(f"{allowed}/")
+        for allowed in normalized_allowed
+    ):
+        return list(allowed_paths or []) or None
+    return [*(allowed_paths or []), required_path]
 
 
 class WorkerInferenceBudget(BaseModel):
@@ -117,11 +210,25 @@ class WorkerSpec(BaseModel):
     spawn_depth: int = 0
     effective_permissions: list[str] = Field(default_factory=list)
     allowed_paths: list[str] | None = None
+    outcome_verification: WorkspaceFileVerificationContract | None = None
     programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
     memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
     procedural_recipes: list[ProceduralRecipeContext] = Field(default_factory=list, max_length=1)
     adaptations: list[AdaptationContext] = Field(default_factory=list, max_length=1)
     idempotency_key: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def share_outcome_artifact(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        outcome_verification = value.get("outcome_verification")
+        allowed_paths = ensure_outcome_artifact_is_shared(
+            value.get("allowed_paths"), outcome_verification
+        )
+        if allowed_paths == value.get("allowed_paths"):
+            return value
+        return {**value, "allowed_paths": allowed_paths}
 
     @field_validator("memory_influence_ids", mode="before")
     @classmethod

@@ -57,6 +57,7 @@ from octopal.runtime.workers.contracts import (
     WorkerSpec,
 )
 from octopal.runtime.workers.launcher import DockerLauncher, WorkerLauncher
+from octopal.runtime.workers.outcomes import verify_worker_outcome
 from octopal.runtime.workers.programmatic_bridge import (
     ProgrammaticReadBridgeOutcome,
     handle_programmatic_read_bridge_request,
@@ -417,6 +418,7 @@ class WorkerRuntime:
             spawn_depth=task_request.spawn_depth,
             effective_permissions=granted_permission_names,
             allowed_paths=task_request.allowed_paths,
+            outcome_verification=task_request.outcome_verification,
             programmatic_read_call_budget=task_request.programmatic_read_call_budget,
             memory_influence_ids=task_request.memory_influence_ids,
             idempotency_key=task_request.idempotency_key,
@@ -1996,12 +1998,20 @@ class WorkerRuntime:
                 stored_worker = await asyncio.to_thread(get_worker, spec.id)
                 if stored_worker is not None and stored_worker.output is not None:
                     evidence_output = stored_worker.output
+            outcome_evidence = await asyncio.to_thread(
+                verify_worker_outcome,
+                spec=spec,
+                result=result,
+                worker_status=worker_status,
+                workspace_dir=self.workspace_dir,
+            )
             episode = build_worker_execution_episode(
                 spec=spec,
                 result=result,
                 stored_output=evidence_output,
                 status=worker_status,
                 launcher_kind=type(self.launcher).__name__,
+                outcome_evidence=outcome_evidence,
                 evidence_storage=(
                     "aes256gcm" if self._episode_evidence_cipher is not None else "metadata_only"
                 ),
@@ -2052,6 +2062,7 @@ class WorkerRuntime:
                     "source_kind": episode.source_kind,
                     "trust_state": episode.trust_state,
                     "evidence_storage": episode.provenance.get("evidence_storage"),
+                    "verified": episode.verification.get("verified"),
                 },
             )
         except Exception:
