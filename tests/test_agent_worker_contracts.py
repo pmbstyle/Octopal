@@ -7,6 +7,7 @@ from octopal.infrastructure.store.models import (
     ProceduralRecipeContext,
     procedural_recipe_definition_fingerprint,
 )
+from octopal.runtime.context_compiler import ContextSection, compile_context
 from octopal.runtime.workers.agent_worker import (
     _build_procedural_recipe_prompt,
     _build_worker_completion_protocol_prompt,
@@ -323,6 +324,36 @@ def test_worker_context_manifest_records_selection_without_prompt_content() -> N
     ]
     assert "Secret task text" not in str(manifest)
     assert "secret input" not in str(manifest)
+
+
+def test_worker_context_manifest_records_compiler_decisions_without_content() -> None:
+    compiled = compile_context(
+        [
+            ContextSection("policy", "immutable policy", required=True),
+            ContextSection("memory", "private memory value" * 20, priority=1),
+        ],
+        token_budget=24,
+    )
+    spec = WorkerSpec(
+        id="worker-1",
+        task="Secret task text",
+        inputs={},
+        system_prompt="Role",
+        available_tools=[],
+        granted_capabilities=[],
+        timeout_seconds=30,
+        max_thinking_steps=4,
+    )
+
+    manifest = _build_worker_context_manifest(
+        spec=spec,
+        tools=[],
+        prompt_sections=compiled.sections,
+        context_compiler=compiled.manifest,
+    )
+
+    assert manifest["context_compiler"]["token_budget"] == 24
+    assert "private memory value" not in str(manifest)
 
 
 def test_worker_recipe_context_is_bounded_advisory_and_manifest_is_content_free() -> None:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
+from octopal.runtime.context_compiler import CompiledContext
+from octopal.runtime.octo import prompt_builder
 from octopal.runtime.octo.prompt_builder import build_control_plane_prompt, build_octo_prompt
 
 
@@ -112,5 +114,62 @@ def test_build_control_plane_prompt_uses_compact_system_prompt() -> None:
         assert "Return SCHEDULER_IDLE." in system_text
         assert "Available worker templates" not in system_text
         assert "Canonical Memory Management" not in system_text
+
+    asyncio.run(scenario())
+
+
+def test_control_plane_prompt_keeps_required_mode_rules_when_optional_persona_is_large(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "SOUL.md").write_text("persona " * 20_000, encoding="utf-8")
+    monkeypatch.setenv("OCTOPAL_WORKSPACE_DIR", str(workspace))
+
+    async def scenario() -> None:
+        messages = await build_control_plane_prompt(
+            user_text="scheduled tick",
+            chat_id=123,
+            mode_label="scheduler",
+            mode_rules="Return SCHEDULER_IDLE.",
+        )
+
+        system_text = "\n".join(
+            str(message.content)
+            for message in messages
+            if message.role == "system" and isinstance(message.content, str)
+        )
+        assert "Return SCHEDULER_IDLE." in system_text
+        assert len(system_text) < 10_000
+
+    asyncio.run(scenario())
+
+
+def test_control_plane_reflection_provenance_requires_inclusion(monkeypatch) -> None:
+    class Reflection:
+        def build_wakeup_context_with_ids(self, _chat_id: int) -> tuple[str, list[str]]:
+            return "REFLECTION_MARKER", ["memory_entry:reflection-1"]
+
+    def omit_reflection(*_args, **_kwargs) -> CompiledContext:
+        return CompiledContext(
+            content="control-plane context",
+            sections={"control_plane_base": "control-plane context"},
+            manifest={},
+        )
+
+    monkeypatch.setattr(prompt_builder, "compile_context", omit_reflection)
+
+    async def scenario() -> None:
+        influence_ids: list[str] = []
+        await build_control_plane_prompt(
+            user_text="scheduled tick",
+            chat_id=123,
+            mode_label="scheduler",
+            wake_notice="continue safely",
+            reflection=Reflection(),
+            memory_influence_ids=influence_ids,
+        )
+
+        assert influence_ids == []
 
     asyncio.run(scenario())

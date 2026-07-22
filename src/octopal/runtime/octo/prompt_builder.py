@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from octopal.runtime.context_compiler import ContextSection, compile_context
 from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 from octopal.runtime.memory.memchain import memchain_verify
 from octopal.runtime.memory.service import infer_memory_facets
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 
 
 _OCTO_SYSTEM_PROMPT_CONTENT = ""
+_CONTROL_PLANE_CONTEXT_TOKEN_BUDGET = 2200
 _CONTROL_PLANE_SYSTEM_PROMPT = """You are Octopal Octo handling an internal operational turn.
 
 Core rules:
@@ -691,46 +693,48 @@ async def build_control_plane_prompt(
     persona_prompt_lines = await build_persona_prompt()
     datetime_prompt = _current_datetime_prompt()
 
-    messages: list[Message] = [Message(role="system", content=_CONTROL_PLANE_SYSTEM_PROMPT)]
-    if persona_prompt_lines:
-        messages.append(Message(role="system", content="\n".join(persona_prompt_lines)))
     selected_influence_ids: list[str] = []
+    wake_context = ""
+    reflection_context = ""
+    reflection_ids: list[str] = []
     if wake_notice.strip():
-        messages.append(
-            Message(
-                role="system",
-                content=(
-                    "Wake-up directive after context reset:\n"
-                    f"{wake_notice.strip()}\n"
-                    "Do not autopilot; first pick one mode: continue / clarify / replan."
-                ),
-            )
+        wake_context = (
+            "Wake-up directive after context reset:\n"
+            f"{wake_notice.strip()}\n"
+            "Do not autopilot; first pick one mode: continue / clarify / replan."
         )
         if reflection is not None:
             reflection_context, reflection_ids = await _load_reflection_context(reflection, chat_id)
-            selected_influence_ids.extend(reflection_ids)
-            if reflection_context:
-                messages.append(Message(role="system", content=reflection_context))
 
-    messages.append(Message(role="system", content=datetime_prompt))
-    messages.append(
-        Message(
-            role="system",
-            content=(
-                f"Runtime execution contract: {mode_label}.\n"
-                "This contract constrains tools, budget, and delivery; it is not a user-facing capability story.\n"
-                "Keep this turn cheap, deterministic, and operationally safe.\n"
-                "If broader work is needed, use a route-provided continuation/repair path when available; "
-                "otherwise return the strict contract signal rather than explaining internal route limits."
-            ),
-        )
+    runtime_contract = (
+        f"Runtime execution contract: {mode_label}.\n"
+        "This contract constrains tools, budget, and delivery; it is not a user-facing capability story.\n"
+        "Keep this turn cheap, deterministic, and operationally safe.\n"
+        "If broader work is needed, use a route-provided continuation/repair path when available; "
+        "otherwise return the strict contract signal rather than explaining internal route limits."
     )
-    if tool_policy_summary.strip():
-        messages.append(Message(role="system", content=tool_policy_summary.strip()))
-    if mode_rules.strip():
-        messages.append(Message(role="system", content=mode_rules.strip()))
+    compiled_context = compile_context(
+        [
+            ContextSection("control_plane_base", _CONTROL_PLANE_SYSTEM_PROMPT, required=True),
+            ContextSection("persona", "\n".join(persona_prompt_lines), priority=40),
+            ContextSection("wake_directive", wake_context, required=bool(wake_context)),
+            ContextSection("reflection", reflection_context, priority=90),
+            ContextSection("runtime_contract", runtime_contract, required=True),
+            ContextSection(
+                "tool_policy", tool_policy_summary.strip(), required=bool(tool_policy_summary)
+            ),
+            ContextSection("mode_rules", mode_rules.strip(), required=bool(mode_rules)),
+        ],
+        token_budget=_CONTROL_PLANE_CONTEXT_TOKEN_BUDGET,
+    )
+    messages: list[Message] = [
+        Message(role="system", content=content) for content in compiled_context.sections.values()
+    ]
+    messages.append(Message(role="system", content=datetime_prompt))
 
     messages.append(Message(role="user", content=user_text))
     if memory_influence_ids is not None:
+        if "reflection" in compiled_context.sections:
+            selected_influence_ids.extend(reflection_ids)
         memory_influence_ids.extend(require_complete_memory_influence_ids(selected_influence_ids))
     return messages

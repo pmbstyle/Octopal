@@ -27,6 +27,7 @@ import structlog
 from octopal.infrastructure.config.settings import load_settings
 from octopal.infrastructure.providers.base import InferenceProvider
 from octopal.infrastructure.providers.factory import build_inference_provider
+from octopal.runtime.context_compiler import ContextSection, compile_context
 from octopal.runtime.memory.episodes import worker_task_fingerprint
 from octopal.runtime.temporal_context import format_temporal_context_prompt
 from octopal.runtime.tool_errors import ToolBridgeError
@@ -49,6 +50,7 @@ _DEFAULT_TOOL_TIMEOUT_SECONDS = 60
 _DEFAULT_MAX_STEP_CAP = 30
 _MAX_EMPTY_TURNS = 3
 _MAX_MALFORMED_RESULT_TURNS = 2
+_WORKER_SYSTEM_CONTEXT_TOKEN_BUDGET = 6000
 _ORCHESTRATION_STALL_WARNING_THRESHOLD = 2
 _ORCHESTRATION_STALL_CRITICAL_THRESHOLD = 3
 _ORCHESTRATION_STALL_WARNING_MIN_ELAPSED_SECONDS = 15
@@ -393,6 +395,7 @@ def _build_worker_context_manifest(
     spec: WorkerSpec,
     tools: list[Any],
     prompt_sections: dict[str, str],
+    context_compiler: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     active_tool_names = [
         str(getattr(tool, "name", "") or "").strip()
@@ -403,7 +406,7 @@ def _build_worker_context_manifest(
     active_name_set = set(active_tool_names)
     resolved_model = (spec.llm_config.model if spec.llm_config else None) or spec.model
     resolved_provider = spec.llm_config.provider_id if spec.llm_config else None
-    return {
+    manifest = {
         "version": 1,
         "scope": "worker_run",
         "task": {
@@ -450,6 +453,9 @@ def _build_worker_context_manifest(
         },
         "adaptation": _adaptation_manifest(spec),
     }
+    if context_compiler is not None:
+        manifest["context_compiler"] = context_compiler
+    return manifest
 
 
 def _build_outcome_verification_prompt(spec: WorkerSpec) -> str:
@@ -1193,44 +1199,30 @@ async def execute_agent_task(
     worker_base_prompt = _load_worker_base_prompt()
     completion_protocol_prompt = _build_worker_completion_protocol_prompt()
 
-    system_prompt = f"""{worker_base_prompt}
-
-Template role:
-{spec.system_prompt}
-
-{temporal_context_prompt}
-
-{procedural_recipe_prompt}
-
-{adaptation_prompt}
-
-Available tools:
-{tool_inventory}
-
-{guidance_prompt}
-
-{completion_protocol_prompt}
-"""
-
     task_prompt = _build_worker_task_prompt(
         spec.task,
         spec.inputs,
         idempotency_key=spec.idempotency_key,
     )
+    compiled_system_context = compile_context(
+        [
+            ContextSection("worker_base", worker_base_prompt, required=True),
+            ContextSection("template_role", f"Template role:\n{spec.system_prompt}", required=True),
+            ContextSection("temporal_context", temporal_context_prompt, priority=10),
+            ContextSection("procedural_memory", procedural_recipe_prompt, priority=80),
+            ContextSection("adaptation", adaptation_prompt, priority=70),
+            ContextSection("tool_inventory", f"Available tools:\n{tool_inventory}", priority=100),
+            ContextSection("guidance", guidance_prompt, required=True),
+            ContextSection("completion_protocol", completion_protocol_prompt, required=True),
+        ],
+        token_budget=_WORKER_SYSTEM_CONTEXT_TOKEN_BUDGET,
+    )
+    system_prompt = compiled_system_context.content
     context_manifest = _build_worker_context_manifest(
         spec=spec,
         tools=filtered_tools,
-        prompt_sections={
-            "worker_base": worker_base_prompt,
-            "template_role": spec.system_prompt,
-            "temporal_context": temporal_context_prompt,
-            "procedural_memory": procedural_recipe_prompt,
-            "adaptation": adaptation_prompt,
-            "tool_inventory": tool_inventory,
-            "guidance": guidance_prompt,
-            "completion_protocol": completion_protocol_prompt,
-            "task": task_prompt,
-        },
+        prompt_sections={**compiled_system_context.sections, "task": task_prompt},
+        context_compiler=compiled_system_context.manifest,
     )
     messages = [
         {"role": "system", "content": system_prompt},
