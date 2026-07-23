@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.infrastructure.store.models import AdaptationContext, ProceduralRecipeContext
 from octopal.runtime.memory.influence import require_complete_memory_influence_ids
+from octopal.runtime.memory.retrieval import MemoryRetrievalTrace
 
 
 class WorkerTemplate(BaseModel):
@@ -55,6 +56,7 @@ class TaskRequest(BaseModel):
     outcome_verification: WorkspaceFileVerificationContract | None = None
     programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
     memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
+    memory_retrievals: list[MemoryRetrievalTrace] = Field(default_factory=list, max_length=20)
     idempotency_key: str | None = None
 
     @field_validator("memory_influence_ids", mode="before")
@@ -63,6 +65,14 @@ class TaskRequest(BaseModel):
         if not isinstance(value, (list, tuple)):
             return []
         return require_complete_memory_influence_ids(value)
+
+    @model_validator(mode="after")
+    def validate_memory_retrievals(self) -> Self:
+        selected_ids = set(self.memory_influence_ids)
+        if any(retrieval.memory_id not in selected_ids for retrieval in self.memory_retrievals):
+            raise ValueError("memory retrieval traces must reference selected memory influence ids")
+        _require_unique_ranked_memory_retrievals(self.memory_retrievals)
+        return self
 
 
 class WorkspaceFileVerificationContract(BaseModel):
@@ -213,6 +223,7 @@ class WorkerSpec(BaseModel):
     outcome_verification: WorkspaceFileVerificationContract | None = None
     programmatic_read_call_budget: int = Field(default=0, ge=0, le=16, strict=True)
     memory_influence_ids: list[str] = Field(default_factory=list, max_length=128)
+    memory_retrievals: list[MemoryRetrievalTrace] = Field(default_factory=list, max_length=20)
     procedural_recipes: list[ProceduralRecipeContext] = Field(default_factory=list, max_length=1)
     adaptations: list[AdaptationContext] = Field(default_factory=list, max_length=1)
     idempotency_key: str | None = None
@@ -238,6 +249,14 @@ class WorkerSpec(BaseModel):
         return require_complete_memory_influence_ids(value)
 
     @model_validator(mode="after")
+    def validate_memory_retrievals(self) -> Self:
+        selected_ids = set(self.memory_influence_ids)
+        if any(retrieval.memory_id not in selected_ids for retrieval in self.memory_retrievals):
+            raise ValueError("memory retrieval traces must reference selected memory influence ids")
+        _require_unique_ranked_memory_retrievals(self.memory_retrievals)
+        return self
+
+    @model_validator(mode="after")
     def validate_inference_budget(self) -> Self:
         if self.adaptations and self.lifecycle != "benchmark":
             raise ValueError("adaptation contexts are restricted to benchmark lifecycle")
@@ -256,6 +275,17 @@ class WorkerSpec(BaseModel):
                 "programmatic_read_call_budget must not exceed budgeted max_tool_calls"
             )
         return self
+
+
+def _require_unique_ranked_memory_retrievals(
+    retrievals: list[MemoryRetrievalTrace],
+) -> None:
+    memory_ids = [retrieval.memory_id for retrieval in retrievals]
+    if len(memory_ids) != len(set(memory_ids)):
+        raise ValueError("memory retrieval traces must reference unique memory entries")
+    ranks = [retrieval.rank for retrieval in retrievals]
+    if ranks != list(range(1, len(retrievals) + 1)):
+        raise ValueError("memory retrieval trace ranks must be contiguous and ordered")
 
 
 class KnowledgeProposal(BaseModel):

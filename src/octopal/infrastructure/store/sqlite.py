@@ -20,6 +20,7 @@ from octopal.infrastructure.store.models import (
     ExecutionEpisodeRecord,
     IntentRecord,
     MCPTaskRecord,
+    MemoryEmbeddingCandidate,
     MemoryEntry,
     MemoryFactRecord,
     MemoryFactSourceRecord,
@@ -506,6 +507,9 @@ class SQLiteStore(Store):
                 FOREIGN KEY(entry_uuid) REFERENCES memory_entries(uuid) ON DELETE CASCADE
             );
 
+            CREATE INDEX IF NOT EXISTS ix_memory_embeddings_model
+                ON memory_embeddings (model);
+
             CREATE TABLE IF NOT EXISTS canon_embeddings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 filename TEXT NOT NULL,
@@ -698,6 +702,10 @@ class SQLiteStore(Store):
                     FOREIGN KEY(entry_uuid) REFERENCES memory_entries(uuid) ON DELETE CASCADE
                 )
                 """)
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_memory_embeddings_model "
+                "ON memory_embeddings (model)"
+            )
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS canon_embeddings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2296,6 +2304,61 @@ class SQLiteStore(Store):
             (owner_id, model, limit),
         )
         return [self._row_to_memory(row) for row in cursor.fetchall()]
+
+    def list_memory_embedding_candidates(
+        self,
+        owner_id: str,
+        model: str,
+        exclude_chat_id: int | None = None,
+    ) -> list[MemoryEmbeddingCandidate]:
+        query = ["""
+            SELECT m.uuid, m.created_at, m.metadata_json, e.vector_json
+            FROM memory_entries m
+            JOIN memory_embeddings e ON m.uuid = e.entry_uuid
+            WHERE m.owner_id = ?
+              AND e.model = ?
+            """]
+        params: list[Any] = [owner_id, model]
+        if exclude_chat_id is not None:
+            query.append("AND (m.chat_id IS NULL OR m.chat_id != ?)")
+            params.append(exclude_chat_id)
+        cursor = self._conn.execute("\n".join(query), tuple(params))
+        return [
+            MemoryEmbeddingCandidate(
+                id=row["uuid"],
+                embedding=json.loads(row["vector_json"]),
+                created_at=_parse_dt(row["created_at"]),
+                metadata=_loads_json(row["metadata_json"]),
+            )
+            for row in cursor.fetchall()
+        ]
+
+    def list_memory_entries_by_ids(
+        self,
+        owner_id: str,
+        entry_ids: list[str],
+    ) -> list[MemoryEntry]:
+        if not entry_ids:
+            return []
+        entries_by_id: dict[str, MemoryEntry] = {}
+        for offset in range(0, len(entry_ids), 500):
+            batch = entry_ids[offset : offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            cursor = self._conn.execute(
+                f"""
+                SELECT m.*, e.vector_json as new_embedding_json
+                FROM memory_entries m
+                LEFT JOIN memory_embeddings e ON m.uuid = e.entry_uuid
+                WHERE m.owner_id = ?
+                  AND m.uuid IN ({placeholders})
+                """,
+                (owner_id, *batch),
+            )
+            entries_by_id.update(
+                (entry.id, entry)
+                for entry in (self._row_to_memory(row) for row in cursor.fetchall())
+            )
+        return [entries_by_id[entry_id] for entry_id in entry_ids if entry_id in entries_by_id]
 
     def replace_memory_embeddings(
         self, model: str, embeddings: list[tuple[str, list[float]]]

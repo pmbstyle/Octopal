@@ -6,11 +6,12 @@ import re
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from octopal.infrastructure.providers.embeddings import EmbeddingsProvider
 from octopal.infrastructure.store.base import Store
-from octopal.infrastructure.store.models import MemoryEntry
+from octopal.infrastructure.store.models import MemoryEmbeddingCandidate, MemoryEntry
+from octopal.runtime.memory.retrieval import MemoryRetrievalTrace
 from octopal.utils import utc_now
 
 if TYPE_CHECKING:
@@ -190,58 +191,128 @@ class MemoryService:
         exclude_chat_id: int | None = None,
         memory_facets: list[str] | None = None,
     ) -> list[MemoryEntry]:
-        if self.embeddings is None:
-            return []
+        retrievals = await self.get_context_retrievals_by_facets(
+            query,
+            exclude_chat_id=exclude_chat_id,
+            memory_facets=memory_facets,
+        )
+        return [retrieval.entry for retrieval in retrievals]
+
+    async def get_context_retrievals_by_facets(
+        self,
+        query: str,
+        *,
+        exclude_chat_id: int | None = None,
+        memory_facets: list[str] | None = None,
+    ) -> list[MemoryRetrieval]:
         trimmed = query.strip()
         if not trimmed:
             return []
-        try:
-            embed_queries = getattr(self.embeddings, "embed_queries", None)
-            if not callable(embed_queries):
-                embed_queries = self.embeddings.embed
-            vectors = await embed_queries([trimmed])
-        except Exception:
-            return []
-        if not vectors:
-            return []
-        query_embedding = vectors[0]
-        candidates = await asyncio.to_thread(
+        lexical_candidates = await asyncio.to_thread(
             self.store.search_memory_entries_lexical,
             self.owner_id,
             trimmed,
             self.prefilter_k,
             exclude_chat_id,
         )
-        if not candidates:
-            candidates = await asyncio.to_thread(
-                self.store.list_memory_entries_for_owner,
-                self.owner_id,
-                max(self.prefilter_k, 200),
+        if exclude_chat_id is not None:
+            lexical_candidates = [
+                entry
+                for entry in lexical_candidates
+                if entry.metadata.get("chat_id") != exclude_chat_id
+            ]
+        if self.embeddings is None:
+            lexical_candidates = _prefer_matching_facets(
+                lexical_candidates,
+                requested_facets=memory_facets,
             )
-        facet_filtered = _filter_entries_by_facets(candidates, memory_facets)
-        if facet_filtered:
-            candidates = facet_filtered
-        scored: list[tuple[float, MemoryEntry]] = []
-        for entry in candidates:
-            if not entry.embedding:
+            return _rank_lexical_candidates(lexical_candidates, top_k=self.top_k)
+        try:
+            embed_queries = getattr(self.embeddings, "embed_queries", None)
+            if not callable(embed_queries):
+                embed_queries = self.embeddings.embed
+            vectors = await embed_queries([trimmed])
+        except Exception:
+            lexical_candidates = _prefer_matching_facets(
+                lexical_candidates,
+                requested_facets=memory_facets,
+            )
+            return _rank_lexical_candidates(lexical_candidates, top_k=self.top_k)
+        if not vectors:
+            lexical_candidates = _prefer_matching_facets(
+                lexical_candidates,
+                requested_facets=memory_facets,
+            )
+            return _rank_lexical_candidates(lexical_candidates, top_k=self.top_k)
+        query_embedding = vectors[0]
+        model_id = str(getattr(self.embeddings, "model_id", "unknown") or "unknown")
+        if model_id != "unknown":
+            semantic_pool = await asyncio.to_thread(
+                self.store.list_memory_embedding_candidates,
+                self.owner_id,
+                model_id,
+                exclude_chat_id,
+            )
+        else:
+            semantic_pool = []
+
+        lexical_candidates, semantic_pool = _prefer_matching_facets_across_sources(
+            lexical_candidates,
+            semantic_pool,
+            requested_facets=memory_facets,
+        )
+
+        semantic_scores, semantic_candidates = await asyncio.to_thread(
+            _rank_semantic_candidates,
+            semantic_pool,
+            query_embedding=query_embedding,
+            exclude_chat_id=exclude_chat_id,
+            limit=self.prefilter_k,
+        )
+        semantic_entries = await asyncio.to_thread(
+            self.store.list_memory_entries_by_ids,
+            self.owner_id,
+            [candidate.id for candidate in semantic_candidates],
+        )
+
+        candidate_by_id = {entry.id: entry for entry in lexical_candidates}
+        candidate_by_id.update({entry.id: entry for entry in semantic_entries})
+        lexical_rank = {entry.id: rank for rank, entry in enumerate(lexical_candidates)}
+        semantic_rank = {entry.id: rank for rank, entry in enumerate(semantic_candidates)}
+        scored: list[MemoryRetrieval] = []
+        for entry in candidate_by_id.values():
+            quality_weight = _memory_quality_weight(entry)
+            semantic_similarity = semantic_scores.get(entry.id)
+            semantic_score = (semantic_similarity or 0.0) * quality_weight
+            lexical_index = lexical_rank.get(entry.id)
+            lexical_score = (
+                (0.05 / (lexical_index + 1)) * quality_weight if lexical_index is not None else 0.0
+            )
+            hybrid_score = semantic_score + lexical_score
+            if lexical_index is None and semantic_score < self.min_score:
                 continue
-
-            # Skip entries from the current chat to avoid duplication with recent history
-            if exclude_chat_id is not None:
-                entry_chat_id = entry.metadata.get("chat_id")
-                if entry_chat_id == exclude_chat_id:
-                    continue
-
-            score = _cosine_similarity(query_embedding, entry.embedding)
-            score *= _coerce_confidence(entry.metadata.get("confidence"), default=0.5)
-            score *= _recency_weight(entry.created_at)
-            if entry.metadata.get("contradiction_detected"):
-                score *= 0.75
-            if score >= self.min_score:
-                scored.append((score, entry))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        top = scored[: max(0, min(self.top_k, 20))]
-        return [entry for _, entry in top]
+            mode: Literal["hybrid", "semantic", "lexical"] = (
+                "hybrid"
+                if lexical_index is not None and semantic_similarity is not None
+                else "lexical" if lexical_index is not None else "semantic"
+            )
+            scored.append(
+                MemoryRetrieval(
+                    entry=entry,
+                    score=hybrid_score,
+                    mode=mode,
+                    semantic_similarity=semantic_similarity,
+                    semantic_rank=semantic_rank.get(entry.id),
+                    lexical_rank=lexical_index,
+                    quality_weight=quality_weight,
+                    embedding_model=model_id if semantic_similarity is not None else None,
+                )
+            )
+        scored.sort(
+            key=lambda item: (item.score, item.entry.created_at, item.entry.id),
+            reverse=True,
+        )
+        return scored[: max(0, min(self.top_k, 20))]
 
     async def get_recent_history(
         self,
@@ -301,6 +372,94 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+def _memory_quality_weight(entry: MemoryEntry | MemoryEmbeddingCandidate) -> float:
+    weight = _coerce_confidence(entry.metadata.get("confidence"), default=0.5)
+    weight *= _recency_weight(entry.created_at)
+    if entry.metadata.get("contradiction_detected"):
+        weight *= 0.75
+    return weight
+
+
+@dataclass(frozen=True)
+class MemoryRetrieval:
+    entry: MemoryEntry
+    score: float
+    mode: Literal["hybrid", "semantic", "lexical"]
+    semantic_similarity: float | None
+    semantic_rank: int | None
+    lexical_rank: int | None
+    quality_weight: float
+    embedding_model: str | None
+
+    def to_trace(self, *, rank: int) -> MemoryRetrievalTrace:
+        return MemoryRetrievalTrace(
+            memory_id=f"memory_entry:{self.entry.id}",
+            rank=rank,
+            score=max(0.0, min(2.0, self.score)),
+            mode=self.mode,
+            semantic_similarity=(
+                max(0.0, min(1.0, self.semantic_similarity))
+                if self.semantic_similarity is not None
+                else None
+            ),
+            semantic_rank=(self.semantic_rank + 1 if self.semantic_rank is not None else None),
+            lexical_rank=(self.lexical_rank + 1 if self.lexical_rank is not None else None),
+            quality_weight=max(0.0, min(1.0, self.quality_weight)),
+            embedding_model=self.embedding_model,
+        )
+
+
+def _rank_semantic_candidates(
+    candidates: list[MemoryEmbeddingCandidate],
+    *,
+    query_embedding: list[float],
+    exclude_chat_id: int | None,
+    limit: int,
+) -> tuple[dict[str, float], list[MemoryEmbeddingCandidate]]:
+    scores: dict[str, float] = {}
+    ranked: list[tuple[float, MemoryEmbeddingCandidate]] = []
+    for entry in candidates:
+        if not entry.embedding:
+            continue
+        if exclude_chat_id is not None and entry.metadata.get("chat_id") == exclude_chat_id:
+            continue
+        score = max(0.0, _cosine_similarity(query_embedding, entry.embedding))
+        scores[entry.id] = score
+        ranked.append((score, entry))
+    ranked.sort(
+        key=lambda item: (item[0], item[1].created_at, item[1].id),
+        reverse=True,
+    )
+    return scores, [entry for _, entry in ranked[: max(0, limit)]]
+
+
+def _rank_lexical_candidates(
+    candidates: list[MemoryEntry],
+    *,
+    top_k: int,
+) -> list[MemoryRetrieval]:
+    scored = []
+    for rank, entry in enumerate(candidates):
+        quality_weight = _memory_quality_weight(entry)
+        scored.append(
+            MemoryRetrieval(
+                entry=entry,
+                score=(1.0 / (rank + 1)) * quality_weight,
+                mode="lexical",
+                semantic_similarity=None,
+                semantic_rank=None,
+                lexical_rank=rank,
+                quality_weight=quality_weight,
+                embedding_model=None,
+            )
+        )
+    scored.sort(
+        key=lambda item: (item.score, item.entry.created_at, item.entry.id),
+        reverse=True,
+    )
+    return scored[: max(0, min(top_k, 20))]
 
 
 @dataclass(frozen=True)
@@ -440,20 +599,43 @@ def infer_memory_facets(content: str) -> set[str]:
     return facets
 
 
-def _filter_entries_by_facets(
-    entries: list[MemoryEntry],
-    memory_facets: list[str] | None,
-) -> list[MemoryEntry]:
-    requested = set(_coerce_str_list(memory_facets))
-    if not requested:
-        return []
+def _entry_matches_facets(
+    entry: MemoryEntry | MemoryEmbeddingCandidate,
+    requested: set[str],
+) -> bool:
+    entry_facets = set(_coerce_str_list((entry.metadata or {}).get("memory_facets")))
+    return bool(entry_facets & requested)
 
-    matches: list[MemoryEntry] = []
-    for entry in entries:
-        entry_facets = set(_coerce_str_list((entry.metadata or {}).get("memory_facets")))
-        if entry_facets & requested:
-            matches.append(entry)
-    return matches
+
+def _prefer_matching_facets[T: (MemoryEntry, MemoryEmbeddingCandidate)](
+    entries: list[T],
+    *,
+    requested_facets: list[str] | None,
+) -> list[T]:
+    requested = set(_coerce_str_list(requested_facets))
+    if not requested:
+        return entries
+    matches = [entry for entry in entries if _entry_matches_facets(entry, requested)]
+    return matches or entries
+
+
+def _prefer_matching_facets_across_sources(
+    lexical_entries: list[MemoryEntry],
+    semantic_entries: list[MemoryEmbeddingCandidate],
+    *,
+    requested_facets: list[str] | None,
+) -> tuple[list[MemoryEntry], list[MemoryEmbeddingCandidate]]:
+    requested = set(_coerce_str_list(requested_facets))
+    if not requested:
+        return lexical_entries, semantic_entries
+    if not any(
+        _entry_matches_facets(entry, requested) for entry in [*lexical_entries, *semantic_entries]
+    ):
+        return lexical_entries, semantic_entries
+    return (
+        [entry for entry in lexical_entries if _entry_matches_facets(entry, requested)],
+        [entry for entry in semantic_entries if _entry_matches_facets(entry, requested)],
+    )
 
 
 def _coerce_str_list(value: Any) -> list[str]:

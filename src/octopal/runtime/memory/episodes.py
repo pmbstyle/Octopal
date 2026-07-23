@@ -129,6 +129,10 @@ def build_worker_execution_episode(
                 else "metadata_only_v1"
             ),
             "evidence_storage": evidence_storage,
+            "memory_influence_ids": spec.memory_influence_ids,
+            "memory_retrievals": [
+                retrieval.model_dump(mode="json") for retrieval in spec.memory_retrievals
+            ],
             "procedural_recipe_ids": [recipe.id for recipe in spec.procedural_recipes],
             "adaptation_ids": [adaptation.id for adaptation in spec.adaptations],
             "adaptation_artifact_fingerprints": {

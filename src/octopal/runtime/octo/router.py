@@ -341,6 +341,7 @@ async def route_or_reply(
             ctx.get("tool_resolution_report"),
         )
         memory_influence_ids: list[str] = []
+        memory_retrievals: list[Any] = []
         messages = await build_octo_prompt(
             store=octo.store,
             memory=memory,
@@ -358,6 +359,7 @@ async def route_or_reply(
             conversation_scope=conversation_scope,
             channel_context=channel_context,
             memory_influence_ids=memory_influence_ids,
+            memory_retrievals=memory_retrievals,
         )
         runtime_plan_context = _build_runtime_plan_context(octo, chat_id)
         operational_memory_context, operational_memory_ids = (
@@ -365,6 +367,7 @@ async def route_or_reply(
         )
         memory_influence_ids.extend(operational_memory_ids)
         ctx["memory_influence_ids"] = require_complete_memory_influence_ids(memory_influence_ids)
+        ctx["memory_retrievals"] = memory_retrievals
         messages.append(Message(role="system", content=_build_runtime_plan_guidance()))
         a2a_context = _build_a2a_route_context(octo)
         if a2a_context:

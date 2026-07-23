@@ -26,6 +26,7 @@ from octopal.runtime.memory.episode_evidence import (
     build_encrypted_worker_episode_evidence,
 )
 from octopal.runtime.memory.episodes import build_worker_execution_episode
+from octopal.runtime.memory.retrieval import MemoryRetrievalTrace
 from octopal.runtime.workers.contracts import (
     WorkerResult,
     WorkerSpec,
@@ -187,6 +188,45 @@ def test_worker_episode_records_recipe_id_without_recipe_instructions() -> None:
 
     assert episode.provenance["procedural_recipe_ids"] == [recipe.id]
     assert "Sensitive strategy text" not in episode.model_dump_json()
+
+
+def test_worker_episode_records_content_free_memory_retrieval_scores() -> None:
+    secret = "private recalled content"
+    spec = _spec(secret).model_copy(
+        update={
+            "memory_influence_ids": ["memory_entry:entry-1"],
+            "memory_retrievals": [
+                MemoryRetrievalTrace(
+                    memory_id="memory_entry:entry-1",
+                    rank=1,
+                    score=0.72,
+                    mode="hybrid",
+                    semantic_similarity=0.8,
+                    semantic_rank=1,
+                    lexical_rank=2,
+                    quality_weight=0.9,
+                    embedding_model="test-e5",
+                )
+            ],
+        }
+    )
+    result = WorkerResult(
+        status="completed",
+        summary="done",
+        output={"report": "ok"},
+    )
+
+    episode = build_worker_execution_episode(
+        spec=spec,
+        result=result,
+        stored_output=result.output,
+        status="completed",
+        launcher_kind="same_env",
+    )
+
+    assert episode.provenance["memory_influence_ids"] == ["memory_entry:entry-1"]
+    assert episode.provenance["memory_retrievals"][0]["score"] == 0.72
+    assert secret not in json.dumps(episode.provenance)
 
 
 def test_internal_output_does_not_count_as_structured_domain_output() -> None:

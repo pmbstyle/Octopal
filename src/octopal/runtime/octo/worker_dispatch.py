@@ -21,6 +21,7 @@ from octopal.infrastructure.observability.helpers import (
     summarize_exception,
 )
 from octopal.runtime.intents.types import ActionIntent
+from octopal.runtime.memory.retrieval import MemoryRetrievalTrace
 from octopal.runtime.octo import followup_pipeline as _followup_pipeline
 from octopal.runtime.octo.worker_records import _serialize_worker_record
 from octopal.runtime.octo.worker_timeouts import _resolve_worker_timeout_seconds
@@ -127,6 +128,7 @@ class OctoWorkerDispatchMixin:
         outcome_verification: WorkspaceFileVerificationContract | None = None,
         programmatic_read_call_budget: int = 0,
         memory_influence_ids: list[str] | None = None,
+        memory_retrievals: list[MemoryRetrievalTrace] | None = None,
     ) -> dict[str, Any]:
         trace_sink = self.trace_sink
         parent_trace_ctx = get_current_trace_context()
@@ -337,6 +339,7 @@ class OctoWorkerDispatchMixin:
                 outcome_verification=outcome_verification,
                 programmatic_read_call_budget=programmatic_read_call_budget,
                 memory_influence_ids=memory_influence_ids or [],
+                memory_retrievals=memory_retrievals or [],
                 idempotency_key=scheduled_idempotency_key,
             )
             self.register_worker_correlation(run_id, correlation_id)

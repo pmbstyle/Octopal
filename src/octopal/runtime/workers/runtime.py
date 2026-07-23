@@ -421,6 +421,7 @@ class WorkerRuntime:
             outcome_verification=task_request.outcome_verification,
             programmatic_read_call_budget=task_request.programmatic_read_call_budget,
             memory_influence_ids=task_request.memory_influence_ids,
+            memory_retrievals=task_request.memory_retrievals,
             idempotency_key=task_request.idempotency_key,
             procedural_recipes=procedural_recipes,
         )

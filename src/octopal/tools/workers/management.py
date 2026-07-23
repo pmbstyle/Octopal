@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from octopal.runtime.memory.influence import require_complete_memory_influence_ids
+from octopal.runtime.memory.retrieval import MemoryRetrievalTrace
 from octopal.runtime.plans import PlanRunService
 from octopal.runtime.worker_result_payloads import (
     SYNTHESIZE_WORKER_OUTPUT_CONTEXT_BUDGET,
@@ -123,6 +124,17 @@ def _memory_influence_ids_from_context(ctx: dict[str, object]) -> list[str]:
     if not isinstance(values, (list, tuple)):
         return []
     return require_complete_memory_influence_ids(values)
+
+
+def _memory_retrievals_from_context(ctx: dict[str, object]) -> list[MemoryRetrievalTrace]:
+    direct = ctx.get("memory_retrievals")
+    if isinstance(direct, (list, tuple)):
+        return [MemoryRetrievalTrace.model_validate(value) for value in direct]
+    spec = _worker_context_spec(ctx)
+    values = getattr(spec, "memory_retrievals", None)
+    if not isinstance(values, (list, tuple)):
+        return []
+    return [MemoryRetrievalTrace.model_validate(value) for value in values]
 
 
 def _worker_context_id(ctx: dict[str, object]) -> str:
@@ -1443,6 +1455,7 @@ async def _start_worker_common(
         outcome_verification=outcome_verification,
         programmatic_read_call_budget=programmatic_read_call_budget,
         memory_influence_ids=_memory_influence_ids_from_context(ctx),
+        memory_retrievals=_memory_retrievals_from_context(ctx),
     )
     status = str(launch.get("status", "started"))
     launched_worker_id = launch.get("worker_id")
@@ -1850,6 +1863,7 @@ async def _tool_start_workers_parallel(args: dict[str, object], ctx: dict[str, o
                 spawn_depth=(child_ctx["spawn_depth"] + 1) if child_ctx else 0,
                 programmatic_read_call_budget=programmatic_read_call_budget,
                 memory_influence_ids=_memory_influence_ids_from_context(ctx),
+                memory_retrievals=_memory_retrievals_from_context(ctx),
                 allowed_paths=(
                     item.get("allowed_paths")
                     if "allowed_paths" in item
