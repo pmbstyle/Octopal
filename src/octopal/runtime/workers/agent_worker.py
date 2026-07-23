@@ -27,7 +27,13 @@ import structlog
 from octopal.infrastructure.config.settings import load_settings
 from octopal.infrastructure.providers.base import InferenceProvider
 from octopal.infrastructure.providers.factory import build_inference_provider
-from octopal.runtime.context_compiler import ContextSection, compile_context
+from octopal.runtime.context_compiler import (
+    CompiledContext,
+    ContextBudgetExceededError,
+    ContextSection,
+    compile_context,
+    estimate_tokens,
+)
 from octopal.runtime.memory.episodes import worker_task_fingerprint
 from octopal.runtime.temporal_context import format_temporal_context_prompt
 from octopal.runtime.tool_errors import ToolBridgeError
@@ -57,6 +63,8 @@ _DEFAULT_MAX_STEP_CAP = 30
 _MAX_EMPTY_TURNS = 3
 _MAX_MALFORMED_RESULT_TURNS = 2
 _WORKER_SYSTEM_CONTEXT_TOKEN_BUDGET = 6000
+_WORKER_SYSTEM_CONTEXT_OPTIONAL_RESERVE = 2000
+_WORKER_SYSTEM_CONTEXT_HARD_LIMIT = 64_000
 _TOOL_RESULT_READ_MAX_CHARS = 24_000
 _TOOL_RESULT_SEARCH_MAX_MATCHES = 20
 _TOOL_RESULT_ACCESS_TOOL_NAMES = frozenset({"tool_result_read", "tool_result_search"})
@@ -108,6 +116,47 @@ _UPSTREAM_UNAVAILABLE_HINTS = (
     "bad gateway",
     "gateway timeout",
 )
+
+
+def _compile_worker_system_context(sections: list[ContextSection]) -> CompiledContext:
+    """Compile a worker prompt without making prompt growth an agent concern.
+
+    The normal budget is a soft target for required worker instructions plus
+    optional runtime context. Required sections are never truncated. When they
+    outgrow that target, the runtime expands the effective budget automatically
+    and retains a small reserve for the highest-priority optional sections.
+    """
+
+    required_tokens = sum(
+        estimate_tokens(section.content)
+        for section in sections
+        if section.required and section.content
+    )
+    if required_tokens > _WORKER_SYSTEM_CONTEXT_HARD_LIMIT:
+        raise ContextBudgetExceededError(
+            "required worker prompt context exceeds runtime safety limit "
+            f"({required_tokens} > {_WORKER_SYSTEM_CONTEXT_HARD_LIMIT})"
+        )
+
+    effective_budget = min(
+        _WORKER_SYSTEM_CONTEXT_HARD_LIMIT,
+        max(
+            _WORKER_SYSTEM_CONTEXT_TOKEN_BUDGET,
+            required_tokens + _WORKER_SYSTEM_CONTEXT_OPTIONAL_RESERVE,
+        ),
+    )
+    compiled = compile_context(sections, token_budget=effective_budget)
+    return replace(
+        compiled,
+        manifest={
+            **compiled.manifest,
+            "soft_token_budget": _WORKER_SYSTEM_CONTEXT_TOKEN_BUDGET,
+            "hard_token_limit": _WORKER_SYSTEM_CONTEXT_HARD_LIMIT,
+            "auto_expanded": effective_budget > _WORKER_SYSTEM_CONTEXT_TOKEN_BUDGET,
+        },
+    )
+
+
 _SYSTEMIC_TOOL_ERROR_CLASSIFICATIONS = {"schema_mismatch"}
 _RESULT_SCHEMA = {
     "type": "object",
@@ -1325,7 +1374,7 @@ async def execute_agent_task(
         spec.inputs,
         idempotency_key=spec.idempotency_key,
     )
-    compiled_system_context = compile_context(
+    compiled_system_context = _compile_worker_system_context(
         [
             ContextSection("worker_base", worker_base_prompt, required=True),
             ContextSection("template_role", f"Template role:\n{spec.system_prompt}", required=True),
@@ -1335,8 +1384,7 @@ async def execute_agent_task(
             ContextSection("tool_inventory", f"Available tools:\n{tool_inventory}", priority=100),
             ContextSection("guidance", guidance_prompt, required=True),
             ContextSection("completion_protocol", completion_protocol_prompt, required=True),
-        ],
-        token_budget=_WORKER_SYSTEM_CONTEXT_TOKEN_BUDGET,
+        ]
     )
     system_prompt = compiled_system_context.content
     context_manifest = _build_worker_context_manifest(

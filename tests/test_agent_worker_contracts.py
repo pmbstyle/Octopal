@@ -4,12 +4,18 @@ import asyncio
 import json
 import re
 
+import pytest
+
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.infrastructure.store.models import (
     ProceduralRecipeContext,
     procedural_recipe_definition_fingerprint,
 )
-from octopal.runtime.context_compiler import ContextSection, compile_context
+from octopal.runtime.context_compiler import (
+    ContextBudgetExceededError,
+    ContextSection,
+    compile_context,
+)
 from octopal.runtime.tool_result_store import ToolResultStore
 from octopal.runtime.workers.agent_worker import (
     _build_procedural_recipe_prompt,
@@ -19,6 +25,7 @@ from octopal.runtime.workers.agent_worker import (
     _build_worker_skill_usage_prompt,
     _build_worker_task_prompt,
     _build_worker_tool_inventory_prompt,
+    _compile_worker_system_context,
     _force_tool_choice,
     _make_request_instruction_tool,
     _record_worker_llm_context_snapshot,
@@ -398,6 +405,32 @@ def test_worker_context_manifest_records_compiler_decisions_without_content() ->
 
     assert manifest["context_compiler"]["token_budget"] == 24
     assert "private memory value" not in str(manifest)
+
+
+def test_worker_context_compiler_auto_expands_for_required_prompt_growth() -> None:
+    required_context = "r" * 6461
+
+    compiled = _compile_worker_system_context(
+        [
+            ContextSection("required", required_context, required=True),
+            ContextSection("optional", "useful optional context", priority=100),
+        ]
+    )
+
+    assert compiled.sections["required"] == required_context
+    assert compiled.sections["optional"] == "useful optional context"
+    assert compiled.manifest["required_tokens"] == 6461
+    assert compiled.manifest["token_budget"] == 8461
+    assert compiled.manifest["soft_token_budget"] == 6000
+    assert compiled.manifest["auto_expanded"] is True
+
+
+def test_worker_context_compiler_keeps_a_runtime_safety_limit() -> None:
+    with pytest.raises(
+        ContextBudgetExceededError,
+        match=r"runtime safety limit \(64001 > 64000\)",
+    ):
+        _compile_worker_system_context([ContextSection("required", "r" * 64_001, required=True)])
 
 
 def test_worker_recipe_context_is_bounded_advisory_and_manifest_is_content_free() -> None:
