@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from octopal.runtime.context_compiler import ContextSection, compile_context
 from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 from octopal.runtime.memory.memchain import memchain_verify
+from octopal.runtime.memory.retrieval import MemoryRetrievalTrace
 from octopal.runtime.memory.service import infer_memory_facets
 
 if TYPE_CHECKING:
@@ -58,6 +59,7 @@ class MemoryContextBundle:
     prune_stats: dict[str, int]
     selected_facets: list[str]
     selected_ids: list[str]
+    retrievals: list[MemoryRetrievalTrace]
 
 
 async def _load_system_prompt_file() -> str:
@@ -402,7 +404,22 @@ async def _build_memory_context_bundle(
         except Exception:
             facts_context = []
     memory_entries_getter = getattr(memory, "get_context_entries_by_facets", None)
-    if callable(memory_entries_getter):
+    retrievals: list[MemoryRetrievalTrace] = []
+    memory_retrievals_getter = getattr(memory, "get_context_retrievals_by_facets", None)
+    if callable(memory_retrievals_getter):
+        memory_retrievals = await memory_retrievals_getter(
+            user_text,
+            exclude_chat_id=chat_id,
+            memory_facets=selected_facets or None,
+        )
+        memory_entries = [retrieval.entry for retrieval in memory_retrievals]
+        retrievals = [
+            retrieval.to_trace(rank=rank)
+            for rank, retrieval in enumerate(memory_retrievals, start=1)
+        ]
+        memory_context = [f"{entry.role}: {entry.content}" for entry in memory_entries]
+        selected_ids.extend(trace.memory_id for trace in retrievals)
+    elif callable(memory_entries_getter):
         memory_entries = await memory_entries_getter(
             user_text,
             exclude_chat_id=chat_id,
@@ -467,6 +484,7 @@ async def _build_memory_context_bundle(
         prune_stats=prune_stats,
         selected_facets=selected_facets,
         selected_ids=normalized_selected_ids,
+        retrievals=retrievals,
     )
 
 
@@ -487,6 +505,7 @@ async def build_octo_prompt(
     conversation_scope: str | None = None,
     channel_context: dict[str, object] | None = None,
     memory_influence_ids: list[str] | None = None,
+    memory_retrievals: list[MemoryRetrievalTrace] | None = None,
 ) -> list[Message]:
     """Assembles all the pieces into the final message list for the LLM."""
 
@@ -629,6 +648,8 @@ async def build_octo_prompt(
 
     if memory_influence_ids is not None:
         memory_influence_ids.extend(require_complete_memory_influence_ids(selected_influence_ids))
+    if memory_retrievals is not None:
+        memory_retrievals.extend(memory_bundle.retrievals)
     return messages
 
 

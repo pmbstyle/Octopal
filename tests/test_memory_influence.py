@@ -10,12 +10,15 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from octopal.infrastructure.store.models import IntentRecord
+from octopal.infrastructure.store.models import IntentRecord, MemoryEntry
 from octopal.infrastructure.store.sqlite import SQLiteStore
 from octopal.runtime.memory.canon import CanonService
 from octopal.runtime.memory.influence import normalize_memory_influence_ids
+from octopal.runtime.memory.retrieval import MemoryRetrievalTrace
+from octopal.runtime.memory.service import MemoryRetrieval
 from octopal.runtime.octo.prompt_builder import build_octo_prompt
 from octopal.runtime.octo.router import _handle_octo_tool_call
+from octopal.runtime.workers.contracts import TaskRequest
 from octopal.tools.registry import ToolSpec
 
 
@@ -66,6 +69,42 @@ def test_memory_influence_ids_are_typed_bounded_and_content_free() -> None:
             memory_influence_ids=["raw prompt content"],
             status="pending",
             created_at=datetime.now(UTC),
+        )
+
+
+def test_worker_memory_retrievals_are_bounded_to_selected_memory_ids() -> None:
+    trace = MemoryRetrievalTrace(
+        memory_id="memory_entry:entry-1",
+        rank=1,
+        score=0.72,
+        mode="hybrid",
+        semantic_similarity=0.8,
+        semantic_rank=1,
+        lexical_rank=2,
+        quality_weight=0.9,
+        embedding_model="test-e5",
+    )
+
+    request = TaskRequest(
+        worker_id="worker",
+        task="use memory",
+        memory_influence_ids=["memory_entry:entry-1"],
+        memory_retrievals=[trace],
+    )
+
+    assert request.memory_retrievals == [trace]
+    with pytest.raises(ValidationError, match="selected memory influence ids"):
+        TaskRequest(
+            worker_id="worker",
+            task="use memory",
+            memory_retrievals=[trace],
+        )
+    with pytest.raises(ValidationError, match="embedding model identifier"):
+        MemoryRetrievalTrace(
+            **{
+                **trace.model_dump(),
+                "embedding_model": "raw private model description with spaces",
+            }
         )
 
 
@@ -237,6 +276,72 @@ def test_prompt_collects_canon_fact_and_semantic_memory_ids() -> None:
         "memory_fact:fact-1",
         "memory_entry:semantic-entry",
     ]
+
+
+def test_prompt_collects_content_free_structured_memory_retrievals() -> None:
+    secret = "private memory content"
+    entry = MemoryEntry(
+        id="semantic-entry",
+        role="assistant",
+        content=secret,
+        embedding=[1.0, 0.0],
+        created_at=datetime.now(UTC),
+        metadata={},
+    )
+
+    class _Memory:
+        async def get_context_retrievals_by_facets(self, *args, **kwargs):
+            return [
+                MemoryRetrieval(
+                    entry=entry,
+                    score=0.72,
+                    mode="hybrid",
+                    semantic_similarity=0.8,
+                    semantic_rank=0,
+                    lexical_rank=1,
+                    quality_weight=0.9,
+                    embedding_model="test-e5",
+                )
+            ]
+
+        async def get_recent_history_entries(self, *args, **kwargs):
+            return []
+
+    class _Canon:
+        def get_tier1_context_with_ids(self):
+            return "", []
+
+    selected_ids: list[str] = []
+    retrievals: list[MemoryRetrievalTrace] = []
+
+    async def scenario() -> None:
+        await build_octo_prompt(
+            store=object(),
+            memory=_Memory(),
+            canon=_Canon(),
+            user_text="deploy",
+            chat_id=7,
+            bootstrap_context="",
+            memory_influence_ids=selected_ids,
+            memory_retrievals=retrievals,
+        )
+
+    asyncio.run(scenario())
+    assert selected_ids == ["memory_entry:semantic-entry"]
+    assert len(retrievals) == 1
+    payload = retrievals[0].model_dump(mode="json")
+    assert payload == {
+        "memory_id": "memory_entry:semantic-entry",
+        "rank": 1,
+        "score": 0.72,
+        "mode": "hybrid",
+        "semantic_similarity": 0.8,
+        "semantic_rank": 1,
+        "lexical_rank": 2,
+        "quality_weight": 0.9,
+        "embedding_model": "test-e5",
+    }
+    assert secret not in json.dumps(payload)
 
 
 def test_intent_memory_influence_column_migrates_existing_database(tmp_path: Path) -> None:

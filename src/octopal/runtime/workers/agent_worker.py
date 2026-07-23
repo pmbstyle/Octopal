@@ -601,6 +601,9 @@ def _build_worker_context_manifest(
         },
         "memory": {
             "selected_ids": spec.memory_influence_ids,
+            "retrievals": [
+                retrieval.model_dump(mode="json") for retrieval in spec.memory_retrievals
+            ],
             "recipe_ids": [recipe.id for recipe in spec.procedural_recipes],
             "recipe_definition_fingerprints": {
                 recipe.id: recipe.definition_fingerprint for recipe in spec.procedural_recipes
