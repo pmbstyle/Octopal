@@ -92,14 +92,25 @@ def test_canon_embedding_migration_reindexes_only_stale_files(tmp_path: Path, mo
     assert reindexed == ["facts.md"]
 
 
-def _make_entry(role: str, content: str, *, owner_id: str, chat_id: int) -> MemoryEntry:
+def _make_entry(
+    role: str,
+    content: str,
+    *,
+    owner_id: str,
+    chat_id: int,
+    embedding: list[float] | None = None,
+    embedding_model: str | None = None,
+) -> MemoryEntry:
+    metadata: dict[str, object] = {"owner_id": owner_id, "chat_id": chat_id}
+    if embedding_model is not None:
+        metadata["embedding_model"] = embedding_model
     return MemoryEntry(
         id=str(uuid.uuid4()),
         role=role,
         content=content,
-        embedding=None,
+        embedding=embedding,
         created_at=utc_now(),
-        metadata={"owner_id": owner_id, "chat_id": chat_id},
+        metadata=metadata,
     )
 
 
@@ -145,6 +156,56 @@ def test_memory_embedding_migration_replaces_legacy_vectors(tmp_path: Path) -> N
     assert store.list_memory_entries_requiring_embedding_migration("default", "test-e5") == []
     migrated = store.list_memory_entries_for_owner("default", limit=10)
     assert migrated[0].embedding == [1.0, 0.0]
+
+
+def test_semantic_memory_pool_filters_owner_model_and_current_chat(tmp_path: Path) -> None:
+    store = SQLiteStore(_StoreSettings(tmp_path / "data", tmp_path / "workspace"))
+    entries = [
+        _make_entry(
+            "assistant",
+            "current model",
+            owner_id="default",
+            chat_id=1,
+            embedding=[1.0, 0.0],
+            embedding_model="test-e5",
+        ),
+        _make_entry(
+            "assistant",
+            "excluded current chat",
+            owner_id="default",
+            chat_id=7,
+            embedding=[1.0, 0.0],
+            embedding_model="test-e5",
+        ),
+        _make_entry(
+            "assistant",
+            "stale model",
+            owner_id="default",
+            chat_id=2,
+            embedding=[0.0, 1.0],
+            embedding_model="old-model",
+        ),
+        _make_entry(
+            "assistant",
+            "different owner",
+            owner_id="other",
+            chat_id=3,
+            embedding=[1.0, 0.0],
+            embedding_model="test-e5",
+        ),
+    ]
+    for entry in entries:
+        store.add_memory_entry(entry)
+
+    candidates = store.list_memory_embedding_candidates(
+        "default",
+        "test-e5",
+        exclude_chat_id=7,
+    )
+
+    assert [entry.id for entry in candidates] == [entries[0].id]
+    assert not hasattr(candidates[0], "content")
+    assert store.list_memory_entries_by_ids("default", [entries[0].id]) == [entries[0]]
 
 
 def test_memory_chat_history_orders_by_created_at_not_uuid(tmp_path: Path) -> None:

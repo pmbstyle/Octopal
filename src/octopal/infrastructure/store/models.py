@@ -568,6 +568,17 @@ class MemoryEntry(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class MemoryEmbeddingCandidate(BaseModel):
+    """Lightweight vector row used before hydrating selected memory content."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    embedding: list[float]
+    created_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class MemoryFactRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 

@@ -10,6 +10,7 @@ from octopal.infrastructure.store.models import (
     procedural_recipe_definition_fingerprint,
 )
 from octopal.runtime.context_compiler import ContextSection, compile_context
+from octopal.runtime.memory.retrieval import MemoryRetrievalTrace
 from octopal.runtime.tool_result_store import ToolResultStore
 from octopal.runtime.workers.agent_worker import (
     _build_procedural_recipe_prompt,
@@ -344,6 +345,19 @@ def test_worker_context_manifest_records_selection_without_prompt_content() -> N
         effective_permissions=["network"],
         allowed_paths=["reports"],
         memory_influence_ids=["memory_fact:fact-1", "memory_entry:entry-2"],
+        memory_retrievals=[
+            MemoryRetrievalTrace(
+                memory_id="memory_entry:entry-2",
+                rank=1,
+                score=0.72,
+                mode="hybrid",
+                semantic_similarity=0.8,
+                semantic_rank=1,
+                lexical_rank=2,
+                quality_weight=0.9,
+                embedding_model="test-e5",
+            )
+        ],
         llm_config=LLMConfig(provider_id="openrouter", model="resolved-model"),
     )
 
@@ -366,6 +380,8 @@ def test_worker_context_manifest_records_selection_without_prompt_content() -> N
         "memory_fact:fact-1",
         "memory_entry:entry-2",
     ]
+    assert manifest["memory"]["retrievals"][0]["memory_id"] == "memory_entry:entry-2"
+    assert manifest["memory"]["retrievals"][0]["score"] == 0.72
     assert "Secret task text" not in str(manifest)
     assert "secret input" not in str(manifest)
 

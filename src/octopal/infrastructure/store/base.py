@@ -13,6 +13,7 @@ from octopal.infrastructure.store.models import (
     ExecutionEpisodeRecord,
     IntentRecord,
     MCPTaskRecord,
+    MemoryEmbeddingCandidate,
     MemoryEntry,
     MemoryFactRecord,
     MemoryFactSourceRecord,
@@ -239,6 +240,19 @@ class Store(Protocol):
 
     def list_memory_entries_requiring_embedding_migration(
         self, owner_id: str, model: str, limit: int = 100
+    ) -> list[MemoryEntry]: ...
+
+    def list_memory_embedding_candidates(
+        self,
+        owner_id: str,
+        model: str,
+        exclude_chat_id: int | None = None,
+    ) -> list[MemoryEmbeddingCandidate]: ...
+
+    def list_memory_entries_by_ids(
+        self,
+        owner_id: str,
+        entry_ids: list[str],
     ) -> list[MemoryEntry]: ...
 
     def replace_memory_embeddings(
