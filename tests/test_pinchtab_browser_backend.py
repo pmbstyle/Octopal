@@ -116,6 +116,8 @@ def test_pinchtab_backend_runs_snapshot_actions_wait_and_extract() -> None:
         extracted = await backend.extract({}, {"chat_id": 7})
         assert extracted["text"] == "Page body"
         assert extracted["title"] == "Example"
+        assert extracted["content_chars"] == len("Page body")
+        assert extracted["truncated"] is False
 
     asyncio.run(scenario())
 

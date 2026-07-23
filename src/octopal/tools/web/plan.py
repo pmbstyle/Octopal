@@ -160,12 +160,10 @@ async def fetch_plan_tool(args: dict[str, Any], ctx: dict[str, Any]) -> str:
                     browser_attempt["reason"] = str(snap_result.get("error") or snap)
                 else:
                     target_id = snap_result.get("target_id")
-                    extract = await browser_extract(
-                        {"max_chars": max_chars, "target_id": target_id}, ctx
-                    )
+                    extract = await browser_extract({"target_id": target_id}, ctx)
                     extract_result = _parse_fetch_output(extract)
                     snapshot_text = str(snap_result.get("snapshot") or "")
-                    snippet = str(extract_result.get("text") or snapshot_text)[:max_chars]
+                    snippet = str(extract_result.get("text") or snapshot_text)
                     if _has_enough_content({"snippet": snippet}, min_content_chars):
                         browser_attempt["status"] = "ok"
                         browser_attempt["reason"] = (

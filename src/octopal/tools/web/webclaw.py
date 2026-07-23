@@ -12,7 +12,6 @@ from urllib.parse import urlparse
 
 from octopal.infrastructure.config.settings import load_settings
 
-_DEFAULT_MAX_CHARS = 20000
 _MIN_TIMEOUT_SECONDS = 1.0
 _MAX_TIMEOUT_SECONDS = 300.0
 
@@ -61,7 +60,6 @@ def webclaw_fetch(args: dict[str, Any]) -> str:
             available=False,
         )
 
-    max_chars = _bounded_int(args.get("max_chars"), _DEFAULT_MAX_CHARS, 200, 200000)
     timeout_seconds = _bounded_float(
         args.get("timeout_seconds"),
         float(runtime["timeout_seconds"]),
@@ -139,11 +137,14 @@ def webclaw_fetch(args: dict[str, Any]) -> str:
     return _result(
         ok=True,
         url=url,
-        snippet=stdout[:max_chars],
+        # Keep the complete extractor output. The worker runtime can compact the
+        # prompt representation, but retains the original source behind a handle.
+        snippet=stdout,
+        content_chars=len(stdout),
         content_type="text/markdown",
         available=True,
         exit_code=completed.returncode,
-        truncated=len(stdout) > max_chars,
+        truncated=False,
     )
 
 

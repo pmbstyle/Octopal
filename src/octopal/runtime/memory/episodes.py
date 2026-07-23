@@ -6,7 +6,11 @@ from typing import Any, Literal
 
 from octopal import __version__
 from octopal.infrastructure.store.models import ExecutionEpisodeRecord
-from octopal.runtime.workers.contracts import WorkerResult, WorkerSpec
+from octopal.runtime.workers.contracts import (
+    WorkerResult,
+    WorkerSpec,
+    WorkspaceFileVerificationEvidence,
+)
 from octopal.utils import utc_now
 
 
@@ -17,6 +21,7 @@ def build_worker_execution_episode(
     stored_output: dict[str, Any] | None,
     status: Literal["completed", "failed", "stopped"],
     launcher_kind: str,
+    outcome_evidence: WorkspaceFileVerificationEvidence | None = None,
     evidence_storage: Literal["metadata_only", "aes256gcm"] = "metadata_only",
 ) -> ExecutionEpisodeRecord:
     """Build a content-addressed evidence index without copying task or output values."""
@@ -27,6 +32,10 @@ def build_worker_execution_episode(
     result_fingerprint = _fingerprint(result_payload)
     output_keys = _keys(stored_output)
     domain_output_keys = [key for key in output_keys if not key.startswith("_")]
+    task_completed = (
+        terminal_status == "completed" and result.status == "completed" and bool(domain_output_keys)
+    )
+    verified = outcome_evidence is not None and outcome_evidence.status == "passed"
     telemetry = stored_output.get("_telemetry") if isinstance(stored_output, dict) else None
     explicit_verification = (
         stored_output.get("verification") if isinstance(stored_output, dict) else None
@@ -89,13 +98,21 @@ def build_worker_execution_episode(
         verification={
             "terminal_status": terminal_status,
             "result_contract_validated": True,
+            "protocol_valid": True,
+            "task_completed": task_completed,
+            "task_completed_basis": "worker_report_with_structured_output",
+            "verified": verified,
+            "accepted": False,
             "structured_output_present": bool(domain_output_keys),
             "domain_output_key_count": len(domain_output_keys),
             "telemetry_present": isinstance(telemetry, dict),
             "explicit_verification_present": isinstance(explicit_verification, dict),
             "explicit_verification_key_count": len(verification_keys),
             "explicit_verification_keys_fingerprint": _fingerprint(verification_keys),
-            "grader_results": [],
+            "outcome_contract_present": spec.outcome_verification is not None,
+            "grader_results": (
+                [outcome_evidence.model_dump(mode="json")] if outcome_evidence is not None else []
+            ),
         },
         provenance={
             "source_ref": spec.id,

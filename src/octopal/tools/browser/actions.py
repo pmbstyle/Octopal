@@ -261,7 +261,6 @@ async def browser_extract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str
     if backend := _external_backend(ctx):
         return await backend.extract(args, ctx)
     ref = str(args.get("ref") or "").strip()
-    max_chars = max(100, min(int(args.get("max_chars") or 4000), 20000))
     chat_id = _get_chat_id(ctx)
     page, target_id = await _get_page_and_target(args, ctx)
 
@@ -274,7 +273,9 @@ async def browser_extract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str
                 "source": "ref",
                 "ref": ref,
                 "target_id": target_id,
-                "text": _truncate_text(text, max_chars=max_chars),
+                "text": text,
+                "content_chars": len(text),
+                "truncated": False,
             }
 
         title = await page.title()
@@ -285,7 +286,9 @@ async def browser_extract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str
             "url": getattr(page, "url", ""),
             "title": title,
             "target_id": target_id,
-            "text": _truncate_text(body.strip(), max_chars=max_chars),
+            "text": body.strip(),
+            "content_chars": len(body.strip()),
+            "truncated": False,
         }
     except Exception as e:
         return {
@@ -356,13 +359,6 @@ async def browser_workflow(args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
         "stop_on_error": stop_on_error,
         "steps": results,
     }
-
-
-def _truncate_text(text: str, *, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    omitted = len(text) - max_chars
-    return text[: max_chars - 32].rstrip() + f"... [truncated {omitted} chars]"
 
 
 def _normalize_workflow_outcome(*, index: int, action: str, outcome: Any) -> dict[str, Any]:

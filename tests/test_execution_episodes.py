@@ -26,7 +26,11 @@ from octopal.runtime.memory.episode_evidence import (
     build_encrypted_worker_episode_evidence,
 )
 from octopal.runtime.memory.episodes import build_worker_execution_episode
-from octopal.runtime.workers.contracts import WorkerResult, WorkerSpec
+from octopal.runtime.workers.contracts import (
+    WorkerResult,
+    WorkerSpec,
+    WorkspaceFileVerificationContract,
+)
 from octopal.runtime.workers.runtime import WorkerRuntime
 
 
@@ -469,6 +473,54 @@ def test_runtime_records_encrypted_evidence_only_when_key_is_configured(
     assert "OCTOPAL_EPISODE_EVIDENCE_KEY" not in runtime._build_worker_env(  # noqa: SLF001
         _spec("raw-secret")
     )
+
+
+def test_runtime_records_host_verified_workspace_artifact(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    workspace = tmp_path / "workspace"
+    artifact = workspace / "reports" / "result.txt"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("completed report", encoding="utf-8")
+    now = datetime.now(UTC)
+    store.create_worker(
+        WorkerRecord(
+            id="worker-1",
+            status="completed",
+            task="Create a report",
+            granted_caps=[],
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    runtime = WorkerRuntime(
+        store=store,
+        policy=object(),  # type: ignore[arg-type]
+        workspace_dir=workspace,
+        launcher=object(),  # type: ignore[arg-type]
+        settings=Settings(),
+    )
+    spec = _spec("task-secret").model_copy(
+        update={
+            "outcome_verification": WorkspaceFileVerificationContract(
+                artifact_path="reports/result.txt",
+                min_bytes=1,
+            )
+        }
+    )
+    result = WorkerResult(summary="done", output={"report": "created"})
+
+    asyncio.run(
+        runtime._record_execution_episode(  # noqa: SLF001 - focused runtime evidence integration
+            spec=spec,
+            result=result,
+            stored_output=result.output,
+            worker_status="completed",
+        )
+    )
+
+    [episode] = store.list_execution_episodes(worker_run_id="worker-1")
+    assert episode.verification["verified"] is True
+    assert episode.verification["grader_results"][0]["status"] == "passed"
 
 
 def test_settings_hide_episode_evidence_key_from_dumps() -> None:

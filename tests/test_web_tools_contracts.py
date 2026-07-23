@@ -342,6 +342,37 @@ def test_web_fetch_success_uses_normalized_contract(monkeypatch) -> None:
     assert "Hello" in payload["snippet"]
 
 
+def test_web_fetch_does_not_apply_a_hidden_default_content_limit(monkeypatch) -> None:
+    page_text = "Start " + ("valuable context " * 4_000) + "End"
+
+    class _ResponseStub:
+        status_code = 200
+        text = page_text
+        headers = {"content-type": "text/plain"}
+
+    class _ClientStub:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def request(self, *args, **kwargs):
+            return _ResponseStub()
+
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    monkeypatch.setattr(fetch_mod.httpx, "Client", _ClientStub)
+
+    payload = json.loads(fetch_mod.web_fetch({"url": "https://example.com"}))
+
+    assert payload["snippet"] == page_text
+    assert payload["content_chars"] == len(page_text)
+    assert payload["truncated"] is False
+
+
 def test_markdown_new_fetch_normalizes_json_envelope(monkeypatch) -> None:
     class _ResponseStub:
         status_code = 200
@@ -377,3 +408,33 @@ def test_markdown_new_fetch_normalizes_json_envelope(monkeypatch) -> None:
     assert payload["raw_content_type"] == "application/json; charset=utf-8"
     assert payload["title"] == "Example Domain"
     assert payload["snippet"].startswith("# Example Domain")
+
+
+def test_markdown_new_fetch_does_not_trim_successful_content(monkeypatch) -> None:
+    content = "# Example\n\n" + ("useful evidence " * 4_000)
+
+    class _ResponseStub:
+        status_code = 200
+        text = json.dumps({"content": content})
+        headers = {"content-type": "application/json"}
+
+    class _ClientStub:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, *args, **kwargs):
+            return _ResponseStub()
+
+    monkeypatch.setattr(fetch_mod.httpx, "Client", _ClientStub)
+
+    payload = json.loads(fetch_mod.markdown_new_fetch({"url": "https://example.com"}))
+
+    assert payload["snippet"] == content
+    assert payload["content_chars"] == len(content)
+    assert payload["truncated"] is False

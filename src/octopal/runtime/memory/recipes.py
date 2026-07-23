@@ -420,7 +420,7 @@ def recipe_evaluation_payload(record: ProceduralRecipeEvaluationRecord) -> dict[
 def _require_verified_success(episode: ExecutionEpisodeRecord) -> None:
     verification = episode.verification
     graders = verification.get("grader_results")
-    graders_passed = (
+    legacy_verification_passed = verification.get("explicit_verification_present") is True or (
         bool(graders)
         and isinstance(graders, list)
         and all(
@@ -437,7 +437,11 @@ def _require_verified_success(episode: ExecutionEpisodeRecord) -> None:
         raise ValueError("source episode result contract was not validated")
     if verification.get("structured_output_present") is not True:
         raise ValueError("source episode has no structured output evidence")
-    if verification.get("explicit_verification_present") is not True and not graders_passed:
+    if verification.get("verified") is True:
+        return
+    if verification.get("outcome_contract_present") is True:
+        raise ValueError("source episode has no successful verification evidence from host")
+    if not legacy_verification_passed:
         raise ValueError("source episode has no successful verification evidence")
 
 

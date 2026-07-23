@@ -49,6 +49,7 @@ _RAW_TEXT_TOOL_NAMES = {
 }
 _RAW_TEXT_FIELDS_BY_TOOL_NAME = {
     "drive_read_text_file": {"content"},
+    "tool_result_read": {"content"},
 }
 _PATH_KEY_RE = re.compile(r"(?:^|_)(?:path|paths|file|files|url|urls)$", re.IGNORECASE)
 _MAX_PATH_HINTS = 6
@@ -89,6 +90,7 @@ _SKILL_GUIDANCE_BUDGET = ToolRenderBudget(
 _EXACT_TOOL_BUDGET_OVERRIDES: dict[str, ToolRenderBudget] = {
     "browser_extract": _CONTENT_HEAVY_BUDGET,
     "markdown_new_fetch": _CONTENT_HEAVY_BUDGET,
+    "tool_result_read": _CONTENT_HEAVY_BUDGET,
     "use_skill": _SKILL_GUIDANCE_BUDGET,
     "web_fetch": _CONTENT_HEAVY_BUDGET,
 }

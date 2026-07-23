@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.infrastructure.store.models import (
     ProceduralRecipeContext,
     procedural_recipe_definition_fingerprint,
 )
+from octopal.runtime.context_compiler import ContextSection, compile_context
+from octopal.runtime.tool_result_store import ToolResultStore
 from octopal.runtime.workers.agent_worker import (
     _build_procedural_recipe_prompt,
     _build_worker_completion_protocol_prompt,
@@ -19,6 +23,7 @@ from octopal.runtime.workers.agent_worker import (
     _make_request_instruction_tool,
     _record_worker_llm_context_snapshot,
     _record_worker_tool_result_context,
+    _render_worker_tool_result,
     _required_tool_call_missing,
     _tool_schema_chars,
     _with_programmatic_read_proxies,
@@ -277,6 +282,46 @@ def test_worker_context_telemetry_records_prompt_and_tool_result_growth() -> Non
     assert context["tool_result_truncated_chars_total"] > 0
 
 
+def test_compacted_tool_result_keeps_a_lossless_source_handle(tmp_path) -> None:
+    raw_result = json.dumps(
+        {"ok": True, "snippet": "prefix NEEDLE " + ("x" * 40_000)},
+        ensure_ascii=False,
+    )
+    store = ToolResultStore(tmp_path)
+
+    rendered = _render_worker_tool_result(
+        raw_result,
+        tool_name="web_fetch",
+        store=store,
+    )
+
+    handle_match = re.search(r"full_result_handle handle=([^ ]+)", rendered.text)
+    assert rendered.was_compacted is True
+    assert handle_match is not None
+    handle = handle_match.group(1)
+    match = store.search(handle, query="NEEDLE", max_matches=1)["matches"][0]
+    source = store.read(handle, offset=match["offset"], length=match["length"])
+    assert source["content"] == "NEEDLE"
+    assert store.read(handle, offset=0, length=len(raw_result))["content"] == raw_result
+
+
+def test_tool_result_read_keeps_the_full_allowed_range_inline(tmp_path) -> None:
+    store = ToolResultStore(tmp_path)
+    reference = store.store("web_fetch", "Ж" * 24_000)
+
+    assert reference is not None
+    read_result = store.read(reference.handle, offset=0, length=24_000)
+    rendered = _render_worker_tool_result(
+        read_result,
+        tool_name="tool_result_read",
+        store=store,
+    )
+
+    assert rendered.was_compacted is False
+    _, _, rendered_payload = rendered.text.partition("\n")
+    assert json.loads(rendered_payload)["content"] == "Ж" * 24_000
+
+
 def test_worker_context_manifest_records_selection_without_prompt_content() -> None:
     tool = ToolSpec(
         name="web_fetch",
@@ -323,6 +368,36 @@ def test_worker_context_manifest_records_selection_without_prompt_content() -> N
     ]
     assert "Secret task text" not in str(manifest)
     assert "secret input" not in str(manifest)
+
+
+def test_worker_context_manifest_records_compiler_decisions_without_content() -> None:
+    compiled = compile_context(
+        [
+            ContextSection("policy", "immutable policy", required=True),
+            ContextSection("memory", "private memory value" * 20, priority=1),
+        ],
+        token_budget=24,
+    )
+    spec = WorkerSpec(
+        id="worker-1",
+        task="Secret task text",
+        inputs={},
+        system_prompt="Role",
+        available_tools=[],
+        granted_capabilities=[],
+        timeout_seconds=30,
+        max_thinking_steps=4,
+    )
+
+    manifest = _build_worker_context_manifest(
+        spec=spec,
+        tools=[],
+        prompt_sections=compiled.sections,
+        context_compiler=compiled.manifest,
+    )
+
+    assert manifest["context_compiler"]["token_budget"] == 24
+    assert "private memory value" not in str(manifest)
 
 
 def test_worker_recipe_context_is_bounded_advisory_and_manifest_is_content_free() -> None:

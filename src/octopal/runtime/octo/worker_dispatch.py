@@ -25,7 +25,11 @@ from octopal.runtime.octo import followup_pipeline as _followup_pipeline
 from octopal.runtime.octo.worker_records import _serialize_worker_record
 from octopal.runtime.octo.worker_timeouts import _resolve_worker_timeout_seconds
 from octopal.runtime.workers.allowed_paths import infer_allowed_paths_from_values
-from octopal.runtime.workers.contracts import TaskRequest, WorkerResult
+from octopal.runtime.workers.contracts import (
+    TaskRequest,
+    WorkerResult,
+    WorkspaceFileVerificationContract,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -120,6 +124,7 @@ class OctoWorkerDispatchMixin:
         spawn_depth: int = 0,
         allowed_paths: list[str] | None = None,
         required_tool_calls: list[str] | None = None,
+        outcome_verification: WorkspaceFileVerificationContract | None = None,
         programmatic_read_call_budget: int = 0,
         memory_influence_ids: list[str] | None = None,
     ) -> dict[str, Any]:
@@ -329,6 +334,7 @@ class OctoWorkerDispatchMixin:
                 root_task_id=effective_root_task_id,
                 spawn_depth=effective_spawn_depth,
                 allowed_paths=effective_allowed_paths,
+                outcome_verification=outcome_verification,
                 programmatic_read_call_budget=programmatic_read_call_budget,
                 memory_influence_ids=memory_influence_ids or [],
                 idempotency_key=scheduled_idempotency_key,
