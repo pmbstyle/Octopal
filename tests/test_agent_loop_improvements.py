@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -330,6 +332,132 @@ def test_budgeted_worker_denies_excess_parallel_tools_and_still_completes(
     assert telemetry["tool_budget_denials"] == 2
     assert telemetry["inference_budget"]["tool_calls_denied"] == 2
     assert telemetry["inference_budget"]["max_tool_calls"] == 1
+
+
+def test_budgeted_worker_can_read_compacted_source_after_normal_tool_budget_is_exhausted(
+    monkeypatch, tmp_path: Path
+) -> None:
+    worker = _budgeted_worker()
+    assert worker.spec.inference_budget is not None
+    worker.spec = worker.spec.model_copy(
+        update={
+            "available_tools": ["web_fetch"],
+            "inference_budget": worker.spec.inference_budget.model_copy(
+                update={"max_llm_calls": 4, "max_tool_calls": 1}
+            ),
+        }
+    )
+
+    class _Provider:
+        provider_id = "zai"
+        model_id = "openai/glm-test"
+
+    fetch_tool = ToolSpec(
+        name="web_fetch",
+        description="Fetch a complete page",
+        parameters={
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+        },
+        permission="network",
+        handler=lambda _args, _ctx: {
+            "ok": True,
+            "snippet": "prefix NEEDLE " + ("x" * 40_000),
+        },
+    )
+    call_number = 0
+    handle = ""
+    exposed_tool_names: list[list[str]] = []
+
+    async def _fake_call_llm(_provider, messages, tools, **_kwargs):
+        nonlocal call_number, handle
+        call_number += 1
+        exposed_tool_names.append([str(tool.name) for tool in tools])
+        usage = {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+        if call_number == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fetch-1",
+                        "function": {
+                            "name": "web_fetch",
+                            "arguments": '{"url":"https://example.com"}',
+                        },
+                    }
+                ],
+                "usage": usage,
+            }
+        if call_number == 2:
+            match = re.search(r"full_result_handle handle=([^ ]+)", messages[-1]["content"])
+            assert match is not None
+            handle = match.group(1)
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "search-1",
+                        "function": {
+                            "name": "tool_result_search",
+                            "arguments": json.dumps(
+                                {"handle": handle, "query": "NEEDLE", "max_matches": 1}
+                            ),
+                        },
+                    }
+                ],
+                "usage": usage,
+            }
+        if call_number == 3:
+            search_payload = json.loads(messages[-1]["content"].splitlines()[-1])
+            offset = search_payload["matches"][0]["offset"]
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "read-1",
+                        "function": {
+                            "name": "tool_result_read",
+                            "arguments": json.dumps(
+                                {"handle": handle, "offset": offset, "length": 6}
+                            ),
+                        },
+                    }
+                ],
+                "usage": usage,
+            }
+        assert "NEEDLE" in messages[-1]["content"]
+        return {
+            "content": '{"type":"result","summary":"done","output":{"found":"NEEDLE"}}',
+            "usage": usage,
+        }
+
+    async def _noop_log(_level: str, _message: str) -> None:
+        return None
+
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.load_settings", lambda: object())
+    monkeypatch.setattr(
+        "octopal.runtime.workers.agent_worker.build_inference_provider",
+        lambda settings, model=None, config=None: _Provider(),
+    )
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker.get_tools", lambda: [fetch_tool])
+    monkeypatch.setattr("octopal.runtime.workers.agent_worker._call_llm", _fake_call_llm)
+    monkeypatch.setattr(worker, "log", _noop_log)
+
+    result = asyncio.run(execute_agent_task(worker, tmp_path, tmp_path))
+
+    assert result.status == "completed"
+    assert result.tools_used == ["web_fetch", "tool_result_search", "tool_result_read"]
+    assert exposed_tool_names[1:] == [
+        ["tool_result_search", "tool_result_read"],
+        ["tool_result_search", "tool_result_read"],
+        ["tool_result_search", "tool_result_read"],
+    ]
+    assert result.output is not None
+    telemetry = result.output["_telemetry"]
+    assert telemetry["tool_calls"] == 1
+    assert telemetry["source_access_tool_calls"] == 2
+    assert telemetry["tool_budget_denials"] == 0
 
 
 def test_inference_budget_rejects_unsupported_or_mismatched_provider() -> None:

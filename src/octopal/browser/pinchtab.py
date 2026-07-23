@@ -359,12 +359,11 @@ class PinchTabBrowserBackend:
 
     async def extract(self, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
         ref = str(args.get("ref") or "").strip()
-        max_chars = max(100, min(int(args.get("max_chars") or 4000), 20000))
         chat_id = self._chat_id(ctx)
         target_id = str(args.get("target_id") or "").strip() or None
         try:
             tab_id = self._resolve_tab(args, chat_id)
-            params: dict[str, Any] = {"mode": "raw", "maxChars": max_chars}
+            params: dict[str, Any] = {"mode": "raw"}
             if ref:
                 params["selector"] = ref
             payload, raw = await self._request(
@@ -380,7 +379,9 @@ class PinchTabBrowserBackend:
                 "ok": True,
                 "source": "ref" if ref else "page",
                 "target_id": tab_id,
-                "text": _truncate(extracted.strip(), max_chars),
+                "text": extracted.strip(),
+                "content_chars": len(extracted.strip()),
+                "truncated": False,
             }
             if ref:
                 result["ref"] = ref
@@ -428,13 +429,6 @@ class PinchTabBrowserBackend:
             }
         except Exception as exc:
             return {"ok": False, "target_id": target_id, "error": str(exc)}
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    omitted = len(text) - max_chars
-    return text[: max_chars - 32].rstrip() + f"... [truncated {omitted} chars]"
 
 
 _BACKEND: PinchTabBrowserBackend | None = None

@@ -37,10 +37,16 @@ from octopal.runtime.tool_loop import (
     _hash_tool_outcome,
     _resolve_tool_loop_thresholds,
 )
-from octopal.runtime.tool_payloads import render_tool_result_for_llm
+from octopal.runtime.tool_payloads import RenderedToolResult, render_tool_result_for_llm
+from octopal.runtime.tool_result_store import ToolResultReference, ToolResultStore
 from octopal.runtime.workers.contracts import WorkerResult, WorkerSpec
 from octopal.tools.programmatic import resolve_programmatic_read_tool
-from octopal.tools.registry import ToolPolicy, ToolPolicyPipelineStep, apply_tool_policy_pipeline
+from octopal.tools.registry import (
+    ToolPolicy,
+    ToolPolicyPipelineStep,
+    ToolSpec,
+    apply_tool_policy_pipeline,
+)
 from octopal.tools.tools import get_tools
 from octopal.worker_sdk.worker import Worker
 
@@ -51,6 +57,9 @@ _DEFAULT_MAX_STEP_CAP = 30
 _MAX_EMPTY_TURNS = 3
 _MAX_MALFORMED_RESULT_TURNS = 2
 _WORKER_SYSTEM_CONTEXT_TOKEN_BUDGET = 6000
+_TOOL_RESULT_READ_MAX_CHARS = 24_000
+_TOOL_RESULT_SEARCH_MAX_MATCHES = 20
+_TOOL_RESULT_ACCESS_TOOL_NAMES = frozenset({"tool_result_read", "tool_result_search"})
 _ORCHESTRATION_STALL_WARNING_THRESHOLD = 2
 _ORCHESTRATION_STALL_CRITICAL_THRESHOLD = 3
 _ORCHESTRATION_STALL_WARNING_MIN_ELAPSED_SECONDS = 15
@@ -216,6 +225,114 @@ def _build_worker_tool_inventory_prompt(tools: list[Any]) -> str:
                 continue
         lines.append(f"- {name}")
     return "\n".join(lines)
+
+
+def _make_tool_result_read_tool(store: ToolResultStore) -> ToolSpec:
+    def handler(args: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
+        return store.read(
+            str(args.get("handle") or ""),
+            offset=int(args.get("offset") or 0),
+            length=int(args.get("length") or 0),
+        )
+
+    return ToolSpec(
+        name="tool_result_read",
+        description=(
+            "Read one exact character range from a complete source result saved during this worker run. "
+            "Use after tool_result_search or when you know the needed offset; this never returns a hidden preview."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "handle": {
+                    "type": "string",
+                    "description": "Source handle from a compacted tool result.",
+                },
+                "offset": {"type": "integer", "minimum": 0},
+                "length": {"type": "integer", "minimum": 1, "maximum": _TOOL_RESULT_READ_MAX_CHARS},
+            },
+            "required": ["handle", "offset", "length"],
+            "additionalProperties": False,
+        },
+        permission="read",
+        handler=handler,
+    )
+
+
+def _make_tool_result_search_tool(store: ToolResultStore) -> ToolSpec:
+    def handler(args: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
+        return store.search(
+            str(args.get("handle") or ""),
+            query=str(args.get("query") or ""),
+            max_matches=int(args.get("max_matches") or 1),
+        )
+
+    return ToolSpec(
+        name="tool_result_search",
+        description=(
+            "Find exact character offsets in a complete source result saved during this worker run. "
+            "Returns offsets only; follow with tool_result_read for the original text."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "handle": {
+                    "type": "string",
+                    "description": "Source handle from a compacted tool result.",
+                },
+                "query": {"type": "string", "description": "Text to find in the complete source."},
+                "max_matches": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": _TOOL_RESULT_SEARCH_MAX_MATCHES,
+                },
+            },
+            "required": ["handle", "query"],
+            "additionalProperties": False,
+        },
+        permission="read",
+        handler=handler,
+    )
+
+
+def _render_worker_tool_result(
+    result: Any,
+    *,
+    tool_name: str,
+    store: ToolResultStore,
+) -> RenderedToolResult:
+    rendered = render_tool_result_for_llm(result, tool_name=tool_name)
+    if not rendered.was_compacted:
+        return rendered
+    reference = store.store(tool_name, result)
+    if reference is None:
+        raise ValueError(
+            "cannot compact a non-serializable tool result without a recoverable source"
+        )
+    return RenderedToolResult(
+        text=rendered.text + _tool_result_source_note(reference),
+        was_compacted=True,
+    )
+
+
+def _tool_result_source_note(reference: ToolResultReference) -> str:
+    return (
+        "\n\n[full_result_handle "
+        f"handle={reference.handle} tool={reference.tool_name} chars={reference.char_count} "
+        f"sha256={reference.sha256}; use tool_result_search or tool_result_read for exact source text]"
+    )
+
+
+def _ensure_tool_result_access_tools(
+    tools: list[ToolSpec],
+    tool_map: dict[str, ToolSpec],
+    store: ToolResultStore,
+) -> None:
+    if "tool_result_read" in tool_map:
+        return
+    access_tools = [_make_tool_result_search_tool(store), _make_tool_result_read_tool(store)]
+    tools.extend(access_tools)
+    tool_map.update({tool.name: tool for tool in access_tools})
 
 
 def _compact_tool_description(value: Any, *, limit: int = 140) -> str:
@@ -1146,10 +1263,9 @@ async def execute_agent_task(
             if plan_tool is not None:
                 filtered_tools.append(_make_octo_proxy_tool(plan_tool, worker))
     filtered_tools.append(_make_request_instruction_tool(worker))
+    tool_result_store = ToolResultStore(worker_dir)
 
     # Add MCP tools from spec
-    from octopal.tools.registry import ToolSpec
-
     for mcp_tool_data in spec.mcp_tools:
         # Generate a proxy handler for this MCP tool.
         identity = _extract_mcp_identity(mcp_tool_data)
@@ -1184,6 +1300,11 @@ async def execute_agent_task(
         part
         for part in (
             "Use available tools through normal tool calls. Do not emit ad-hoc JSON tool_use blocks.",
+            (
+                "When a tool result includes full_result_handle, its inline text is only navigation. "
+                "The complete source is retained for this run: use tool_result_search, then tool_result_read "
+                "for exact text before making a claim that depends on omitted material."
+            ),
             _build_worker_file_write_prompt(filtered_tools, spec.required_tool_calls),
             coordination_prompt,
             _build_worker_skill_usage_prompt(filtered_tools),
@@ -1244,6 +1365,7 @@ async def execute_agent_task(
         "llm_calls": 0,
         "llm_latency_ms_total": 0,
         "tool_calls": 0,
+        "source_access_tool_calls": 0,
         "tool_budget_denials": 0,
         "tool_latency_ms_total": 0,
         "tool_retries": 0,
@@ -1294,7 +1416,16 @@ async def execute_agent_task(
         llm_start = time.perf_counter()
         force_structured_result = malformed_result_turns > 0
         tool_budget_exhausted = _worker_tool_budget_exhausted(spec, telemetry)
-        llm_tools = [] if force_structured_result or tool_budget_exhausted else filtered_tools
+        if force_structured_result:
+            llm_tools = []
+        elif tool_budget_exhausted:
+            llm_tools = [
+                tool
+                for tool in filtered_tools
+                if str(getattr(tool, "name", "")) in _TOOL_RESULT_ACCESS_TOOL_NAMES
+            ]
+        else:
+            llm_tools = filtered_tools
         request_max_tokens, budget_plan_error = _plan_inference_budget_request(
             spec=spec,
             telemetry=telemetry,
@@ -1398,7 +1529,10 @@ async def execute_agent_task(
                 tool_call_id = tool_call.get("id", "") or ""
 
                 normalized_tool_name = str(tool_name or "").strip()
-                tool_budget_denied = _worker_tool_budget_exhausted(spec, telemetry)
+                tool_budget_denied = (
+                    _worker_tool_budget_exhausted(spec, telemetry)
+                    and normalized_tool_name not in _TOOL_RESULT_ACCESS_TOOL_NAMES
+                )
                 if tool_budget_denied:
                     poll_window: dict[str, Any] = {
                         "args_hash": f"budget-denied:{tool_call_id or telemetry['tool_budget_denials']}"
@@ -1487,7 +1621,10 @@ async def execute_agent_task(
                         tool_map,
                         timeout_seconds=tool_timeout,
                     )
-                    telemetry["tool_calls"] += 1
+                    if normalized_tool_name in _TOOL_RESULT_ACCESS_TOOL_NAMES:
+                        telemetry["source_access_tool_calls"] += 1
+                    else:
+                        telemetry["tool_calls"] += 1
                     tool_elapsed = time.perf_counter() - tool_start
                     telemetry["tool_latency_ms_total"] += int(tool_elapsed * 1000)
                     if normalized_tool_name == "request_instruction":
@@ -1634,11 +1771,13 @@ async def execute_agent_task(
                             )
 
                 # Add tool result message
-                rendered_tool_result = render_tool_result_for_llm(
+                rendered_tool_result = _render_worker_tool_result(
                     tool_result,
                     tool_name=str(tool_name or ""),
+                    store=tool_result_store,
                 )
                 if rendered_tool_result.was_compacted:
+                    _ensure_tool_result_access_tools(filtered_tools, tool_map, tool_result_store)
                     telemetry["tool_result_truncations"] += 1
                 _record_worker_tool_result_context(
                     telemetry,

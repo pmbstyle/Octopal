@@ -143,13 +143,28 @@ def test_browser_extract_can_use_snapshot_ref(monkeypatch) -> None:
 
     async def scenario() -> None:
         result = await browser_actions.browser_extract({"ref": "e1"}, {"chat_id": 7})
-        assert result == {
-            "ok": True,
-            "source": "ref",
-            "ref": "e1",
-            "target_id": "t1",
-            "text": "Save",
-        }
+        assert result["ok"] is True
+        assert result["source"] == "ref"
+        assert result["ref"] == "e1"
+        assert result["target_id"] == "t1"
+        assert result["text"] == "Save"
+        assert result["content_chars"] == 4
+        assert result["truncated"] is False
+
+    asyncio.run(scenario())
+
+
+def test_browser_extract_keeps_complete_page_text(monkeypatch) -> None:
+    page = _PageStub()
+    page.body_locator = _LocatorStub(text="Start " + ("evidence " * 4_000) + "End")
+    monkeypatch.setattr(browser_actions, "get_browser_manager", lambda: _ManagerStub(page))
+
+    async def scenario() -> None:
+        result = await browser_actions.browser_extract({"max_chars": 200}, {"chat_id": 7})
+
+        assert result["text"] == page.body_locator._text
+        assert result["content_chars"] == len(page.body_locator._text)
+        assert result["truncated"] is False
 
     asyncio.run(scenario())
 

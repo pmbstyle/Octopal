@@ -71,6 +71,26 @@ def test_webclaw_fetch_runs_local_binary_without_cloud_credentials(monkeypatch) 
     assert "WEBCLAW_WEBHOOK_URL" not in captured["env"]
 
 
+def test_webclaw_fetch_keeps_complete_extractor_output(monkeypatch) -> None:
+    content = "Start " + ("evidence " * 4_000) + "End"
+
+    monkeypatch.setattr(webclaw_mod, "_runtime_config", _runtime)
+    monkeypatch.setattr(webclaw_mod, "_resolve_binary", lambda _value: "/opt/webclaw")
+    monkeypatch.setattr(
+        webclaw_mod.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=content, stderr=""),
+    )
+
+    payload = json.loads(
+        webclaw_mod.webclaw_fetch({"url": "https://example.com", "max_chars": 200})
+    )
+
+    assert payload["snippet"] == content
+    assert payload["content_chars"] == len(content)
+    assert payload["truncated"] is False
+
+
 def test_webclaw_fetch_reports_missing_binary(monkeypatch) -> None:
     monkeypatch.setattr(webclaw_mod, "_runtime_config", _runtime)
     monkeypatch.setattr(webclaw_mod, "_resolve_binary", lambda _value: None)

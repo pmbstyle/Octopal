@@ -53,13 +53,6 @@ def web_fetch(args: dict[str, Any]) -> str:
             url=url,
             message="unsupported method. Allowed: GET, POST, PUT, PATCH, DELETE",
         )
-    max_chars_raw = args.get("max_chars", DEFAULT_MAX_CHARS)
-    try:
-        max_chars = int(max_chars_raw)
-    except Exception:
-        max_chars = DEFAULT_MAX_CHARS
-    max_chars = max(200, min(200000, max_chars))
-
     # Support custom headers (e.g. for API tokens)
     custom_headers = args.get("headers")
     if not isinstance(custom_headers, dict):
@@ -74,7 +67,7 @@ def web_fetch(args: dict[str, Any]) -> str:
     firecrawl_key = os.getenv("FIRECRAWL_API_KEY")
     if firecrawl_key and method == "GET" and json_body is None and body is None:
         try:
-            return _fetch_firecrawl(url, firecrawl_key, max_chars, custom_headers)
+            return _fetch_firecrawl(url, firecrawl_key, custom_headers)
         except Exception:
             # Fall back to basic fetch if Firecrawl fails
             pass
@@ -112,7 +105,6 @@ def web_fetch(args: dict[str, Any]) -> str:
                 text = content  # Fall back to raw content if parsing fails
         else:
             text = content
-        snippet = text[:max_chars]
         payload = {
             "ok": True,
             "degraded": False,
@@ -123,7 +115,12 @@ def web_fetch(args: dict[str, Any]) -> str:
             "method": method,
             "status_code": resp.status_code,
             "content_type": resp.headers.get("content-type"),
-            "snippet": snippet,
+            # ``snippet`` remains the compatibility field name used by fetch-plan
+            # callers. It now contains the complete readable response; active
+            # worker runs retain it losslessly if it cannot fit inline.
+            "snippet": text,
+            "content_chars": len(text),
+            "truncated": False,
         }
         return _to_json(payload)
     except Exception as exc:
@@ -190,7 +187,7 @@ def markdown_new_fetch(args: dict[str, Any]) -> str:
     markdown_tokens = resp.headers.get("x-markdown-tokens")
 
     if resp.status_code == 200:
-        normalized = _normalize_markdown_new_success(resp.text, max_chars=max_chars)
+        normalized = _normalize_markdown_new_success(resp.text)
         result = {
             "ok": True,
             "degraded": False,
@@ -202,6 +199,8 @@ def markdown_new_fetch(args: dict[str, Any]) -> str:
             "content_type": normalized["content_type"],
             "raw_content_type": resp.headers.get("content-type"),
             "snippet": normalized["snippet"],
+            "content_chars": len(normalized["snippet"]),
+            "truncated": False,
             "title": normalized.get("title"),
             "method": method,
             "retain_images": retain_images,
@@ -246,9 +245,7 @@ def markdown_new_fetch(args: dict[str, Any]) -> str:
     )
 
 
-def _fetch_firecrawl(
-    url: str, api_key: str, max_chars: int, target_headers: dict[str, Any] | None = None
-) -> str:
+def _fetch_firecrawl(url: str, api_key: str, target_headers: dict[str, Any] | None = None) -> str:
     """Fetch content using Firecrawl API."""
     endpoint = "https://api.firecrawl.dev/v1/scrape"
     headers = {
@@ -273,8 +270,6 @@ def _fetch_firecrawl(
         raise ValueError(f"Firecrawl failed: {data.get('error')}")
 
     markdown = data.get("data", {}).get("markdown", "")
-    snippet = markdown[:max_chars]
-
     result = {
         "ok": True,
         "degraded": False,
@@ -283,7 +278,9 @@ def _fetch_firecrawl(
         "url": url,
         "status_code": 200,
         "content_type": "text/markdown",
-        "snippet": snippet,
+        "snippet": markdown,
+        "content_chars": len(markdown),
+        "truncated": False,
         "source": "firecrawl",
     }
     return _to_json(result)
@@ -396,23 +393,23 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
-def _normalize_markdown_new_success(body_text: str, *, max_chars: int) -> dict[str, Any]:
+def _normalize_markdown_new_success(body_text: str) -> dict[str, Any]:
     try:
         parsed = pyjson.loads(body_text)
     except Exception:
         return {
-            "snippet": body_text[:max_chars],
+            "snippet": body_text,
             "content_type": "text/markdown",
         }
 
     if not isinstance(parsed, dict):
         return {
-            "snippet": body_text[:max_chars],
+            "snippet": body_text,
             "content_type": "text/markdown",
         }
 
     content = parsed.get("content")
-    snippet = str(content if content is not None else body_text)[:max_chars]
+    snippet = str(content if content is not None else body_text)
     return {
         "snippet": snippet,
         "content_type": "text/markdown",

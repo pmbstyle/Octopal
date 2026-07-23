@@ -1066,7 +1066,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
         ),
         ToolSpec(
             name="web_fetch",
-            description="Make an HTTP request and return a JSON payload with status_code, content_type, and snippet.",
+            description=(
+                "Make an HTTP request and return the complete readable response with status_code and content_type. "
+                "Large results are retained losslessly during worker runs and expose a source handle when needed."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -1078,7 +1081,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     },
                     "max_chars": {
                         "type": "integer",
-                        "description": "Max characters of content to return (200-200000).",
+                        "description": "Deprecated compatibility field. web_fetch returns the complete readable response.",
                     },
                     "headers": {
                         "type": "object",
@@ -1105,7 +1108,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
         ),
         ToolSpec(
             name="markdown_new_fetch",
-            description="Fetch URL content as markdown via markdown.new. Returns structured JSON with ok/degraded/fallback flags.",
+            description=(
+                "Fetch complete URL content as markdown via markdown.new. Returns structured JSON with "
+                "ok/degraded/fallback flags; large results receive a lossless source handle in worker runs."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -1121,7 +1127,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     },
                     "max_chars": {
                         "type": "integer",
-                        "description": "Max characters of markdown snippet to return (200-200000).",
+                        "description": "Deprecated compatibility field. markdown_new_fetch returns complete converted content.",
                     },
                     "timeout_seconds": {
                         "type": "number",
@@ -1141,7 +1147,10 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
         ),
         ToolSpec(
             name="fetch_plan_tool",
-            description="Orchestrate URL fetching across local WebClaw, markdown_new_fetch, generic web_fetch, and browser fallback with a traceable execution plan.",
+            description=(
+                "Orchestrate lossless URL fetching across local WebClaw, markdown_new_fetch, generic web_fetch, "
+                "and browser fallback with a traceable execution plan."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -1165,7 +1174,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     },
                     "max_chars": {
                         "type": "integer",
-                        "description": "Max characters in returned content snippet (200-200000).",
+                        "description": "Deprecated compatibility field. Successful sources retain complete extracted content.",
                     },
                     "min_content_chars": {
                         "type": "integer",
@@ -1362,7 +1371,7 @@ def get_tools(mcp_manager=None) -> list[ToolSpec]:
                     },
                     "max_chars": {
                         "type": "integer",
-                        "description": "Maximum text length to return (100-20000).",
+                        "description": "Deprecated compatibility field. browser_extract retains complete extracted text.",
                     },
                     "target_id": {"type": "string", "description": "Optional tab target id."},
                 },
