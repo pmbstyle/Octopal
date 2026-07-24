@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useOutletContext } from "react-router-dom";
+import { Link, useOutletContext } from "react-router";
 
 import { fetchOverview, fetchOcto, fetchSystem, fetchWorkers } from "../api/dashboardClient";
 import type { components } from "../api/types";

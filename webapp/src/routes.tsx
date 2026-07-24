@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate } from "react-router-dom";
+import { createBrowserRouter, Navigate } from "react-router";
 
 import { ControlCenterPage } from "./pages/ControlCenterPage";
 import { IncidentsPage } from "./pages/IncidentsPage";

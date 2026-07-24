@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useOutletContext } from "react-router-dom";
+import { Link, useOutletContext } from "react-router";
 
 import { fetchIncidents } from "../api/dashboardClient";
 import type { components } from "../api/types";
