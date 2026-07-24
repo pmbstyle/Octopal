@@ -4,6 +4,8 @@ import hashlib
 import json
 from typing import Any
 
+import httpx
+
 from octopal.infrastructure.config.models import A2AConfig
 from octopal.interop.a2a.client import A2AClientError, send_peer_message
 
@@ -62,9 +64,10 @@ async def a2a_send_message(args: dict[str, Any], ctx: dict[str, Any]) -> str:
     except A2AClientError as exc:
         return _error_payload(str(exc), error_type=_classify_a2a_error(str(exc)))
     except Exception as exc:
+        detail = str(exc).strip() or type(exc).__name__
         return _error_payload(
-            f"A2A request failed: {exc}",
-            error_type=_classify_a2a_error(str(exc)),
+            f"A2A request failed: {detail}",
+            error_type=_classify_a2a_exception(exc),
         )
     sent_signatures.add(send_signature)
     return _json(
@@ -119,6 +122,12 @@ def _classify_a2a_error(message: str) -> str:
     if "returned http" in lowered:
         return "peer_http"
     return "unknown"
+
+
+def _classify_a2a_exception(exc: Exception) -> str:
+    if isinstance(exc, (httpx.RequestError, TimeoutError, OSError)):
+        return "transport"
+    return _classify_a2a_error(str(exc))
 
 
 def a2a_list_peers(args: dict[str, Any], ctx: dict[str, Any]) -> str:

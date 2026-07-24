@@ -16,7 +16,10 @@ from octopal.runtime.memory.canon import CanonService
 from octopal.runtime.memory.influence import normalize_memory_influence_ids
 from octopal.runtime.memory.retrieval import MemoryRetrievalTrace
 from octopal.runtime.memory.service import MemoryRetrieval
-from octopal.runtime.octo.prompt_builder import build_octo_prompt
+from octopal.runtime.octo.prompt_builder import (
+    _memory_retrieval_telemetry,
+    build_octo_prompt,
+)
 from octopal.runtime.octo.router import _handle_octo_tool_call
 from octopal.runtime.workers.contracts import TaskRequest
 from octopal.tools.registry import ToolSpec
@@ -106,6 +109,43 @@ def test_worker_memory_retrievals_are_bounded_to_selected_memory_ids() -> None:
                 "embedding_model": "raw private model description with spaces",
             }
         )
+
+
+def test_memory_retrieval_telemetry_is_content_free() -> None:
+    secret = "private-memory-content"
+    telemetry = _memory_retrieval_telemetry(
+        [
+            MemoryRetrievalTrace(
+                memory_id="memory_entry:entry-1",
+                rank=1,
+                score=0.72,
+                mode="hybrid",
+                semantic_similarity=0.8,
+                semantic_rank=1,
+                lexical_rank=2,
+                quality_weight=0.9,
+                embedding_model="test-e5",
+            ),
+            MemoryRetrievalTrace(
+                memory_id="memory_entry:entry-2",
+                rank=2,
+                score=0.5,
+                mode="semantic",
+                semantic_similarity=0.7,
+                semantic_rank=2,
+                quality_weight=0.8,
+                embedding_model="test-e5",
+            ),
+        ]
+    )
+
+    assert telemetry == {
+        "result_count": 2,
+        "mode_counts": {"hybrid": 1, "semantic": 1},
+        "embedding_models": ["test-e5"],
+    }
+    assert secret not in json.dumps(telemetry)
+    assert "entry-1" not in json.dumps(telemetry)
 
 
 def test_canon_context_reports_only_events_represented_after_truncation(

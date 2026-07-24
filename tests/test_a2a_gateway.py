@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -812,6 +813,45 @@ def test_a2a_send_message_marks_upstream_transport_errors(monkeypatch) -> None:
 
     assert payload["error_type"] == "upstream_unavailable"
     assert payload["transport_error"] is True
+
+
+def test_a2a_send_message_classifies_empty_connect_timeout(monkeypatch) -> None:
+    async def fake_send_peer_message(
+        _config: A2AConfig,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        raise httpx.ConnectTimeout("")
+
+    monkeypatch.setattr(a2a_tools, "send_peer_message", fake_send_peer_message)
+    ctx = {
+        "octo": SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    a2a=A2AConfig(
+                        enabled=True,
+                        peers={
+                            "bob": A2APeerConfig(
+                                token="secret",
+                                base_url="https://bob.example/a2a/v1",
+                            )
+                        },
+                    )
+                )
+            )
+        )
+    }
+
+    raw = asyncio.run(
+        a2a_tools.a2a_send_message(
+            {"peer_id": "bob", "text": "hello"},
+            ctx,
+        )
+    )
+    payload = json.loads(raw)
+
+    assert payload["error_type"] == "transport"
+    assert payload["transport_error"] is True
+    assert payload["message"] == "A2A request failed: ConnectTimeout"
 
 
 def test_a2a_send_message_forwards_structured_data_and_file_urls(monkeypatch) -> None:
