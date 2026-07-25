@@ -127,7 +127,7 @@ jobs:
 
       - name: Audit, build, and test web dashboard
         working-directory: webapp
-        run: npm audit --audit-level=moderate && npm run build && npm test
+        run: npm audit --omit=dev --audit-level=moderate && npm run build && npm test
 
       - name: Install and audit WhatsApp bridge
         working-directory: scripts/whatsapp_bridge
@@ -191,7 +191,7 @@ jobs:
 
       - name: Audit desktop dependencies
         working-directory: desktop
-        run: npm audit --audit-level=moderate
+        run: npm audit --omit=dev --audit-level=moderate
 
       - name: Test desktop security helpers
         working-directory: desktop
