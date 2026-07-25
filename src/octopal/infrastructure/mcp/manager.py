@@ -68,7 +68,7 @@ _MCP_TRANSIENT_ERROR_OPEN_SECONDS = 60.0
 _MCP_DEFAULT_TIMEOUT_SECONDS = 120.0
 _MCP_SLOW_TIMEOUT_SECONDS = 300.0
 _MCP_RECONNECT_BASE_SECONDS = 2.0
-_MCP_RECONNECT_MAX_SECONDS = 60.0
+_MCP_RECONNECT_MAX_SECONDS = 900.0
 _MCP_TASK_MAX_TTL_MS = 600_000
 _MCP_TASK_RECOVERY_BUDGET_SECONDS = 300.0
 _MCP_RETRYABLE_CLASSIFICATIONS = {
@@ -97,6 +97,16 @@ def _extract_mcp_server_configs(config_data: Any) -> Any:
     if isinstance(config_data.get("mcpServers"), dict):
         return config_data["mcpServers"]
     return config_data
+
+
+def _mcp_reconnect_delay(attempt: int) -> float:
+    exponent = min(max(0, int(attempt) - 1), 20)
+    return float(
+        min(
+            _MCP_RECONNECT_MAX_SECONDS,
+            _MCP_RECONNECT_BASE_SECONDS * (2**exponent),
+        )
+    )
 
 
 class MCPManager:
@@ -240,6 +250,10 @@ class MCPManager:
                 continue
             if server_id in self.sessions:
                 results[server_id] = "connected"
+                continue
+            reconnect_task = self._reconnect_tasks.get(server_id)
+            if reconnect_task is not None and not reconnect_task.done():
+                results[server_id] = "reconnecting"
                 continue
             try:
                 await self.connect_server(cfg)
@@ -1282,7 +1296,7 @@ class MCPManager:
         attempt = int(self._reconnect_attempts.get(server_id, 0)) + 1
         self._reconnect_attempts[server_id] = attempt
         self._server_states[server_id] = "reconnect_wait"
-        delay = min(_MCP_RECONNECT_MAX_SECONDS, _MCP_RECONNECT_BASE_SECONDS * (2 ** (attempt - 1)))
+        delay = _mcp_reconnect_delay(attempt)
 
         async def _reconnect() -> None:
             retry = False

@@ -200,7 +200,7 @@ class OctoScheduledRuntimeMixin:
                 metadata[SCHEDULED_TASK_SUGGESTED_EXECUTION_MODE_KEY] = "worker"
             else:
                 metadata[SCHEDULED_TASK_SUGGESTED_EXECUTION_MODE_KEY] = "octo_task"
-        elif blocked_until is None:
+        else:
             metadata.pop(SCHEDULED_TASK_SUGGESTED_EXECUTION_MODE_KEY, None)
         try:
             update_metadata(task_id, metadata or None)
@@ -629,30 +629,56 @@ class OctoScheduledRuntimeMixin:
         )
         route_blocked = normalized_reply == _SCHEDULED_OCTO_CONTROL_BLOCKED
         if route_blocked:
+            backoff_seconds = _scheduled_octo_control_backoff_seconds()
+            self._set_scheduled_octo_control_backoff(task_id, reason="blocked")
+            self._update_scheduled_octo_control_backoff_metadata(
+                task,
+                blocked_until=utc_now() + timedelta(seconds=backoff_seconds),
+                reason="blocked",
+            )
             logger.warning(
                 "Scheduled Octo task reported blocked",
                 task_id=task_id or None,
                 chat_id=chat_id,
                 raw_reply_preview=safe_preview(reply_text, limit=200),
+                cooldown_seconds=backoff_seconds,
             )
             return {
                 "status": "failed",
                 "completed": False,
                 "reason": "blocked",
+                "cooldown_seconds": backoff_seconds,
             }
         if normalized_reply == "NO_USER_RESPONSE":
+            backoff_seconds = _scheduled_octo_control_backoff_seconds()
+            self._set_scheduled_octo_control_backoff(
+                task_id,
+                reason="missing_completion_signal",
+            )
+            self._update_scheduled_octo_control_backoff_metadata(
+                task,
+                blocked_until=utc_now() + timedelta(seconds=backoff_seconds),
+                reason="missing_completion_signal",
+            )
             logger.warning(
                 "Scheduled Octo task missing explicit completion signal",
                 task_id=task_id or None,
                 chat_id=chat_id,
                 raw_reply_preview=safe_preview(reply_text, limit=200),
+                cooldown_seconds=backoff_seconds,
             )
             return {
                 "status": "failed",
                 "completed": False,
                 "reason": "missing_completion_signal",
+                "cooldown_seconds": backoff_seconds,
             }
         if normalized_reply == _SCHEDULED_OCTO_CONTROL_DONE:
+            self._update_scheduled_octo_control_backoff_metadata(
+                task,
+                blocked_until=None,
+                reason=None,
+            )
             if scheduler is not None and task_id:
                 scheduler.mark_executed(task_id, attempt_id=task.get("attempt_id"))
             logger.info(
@@ -689,6 +715,11 @@ class OctoScheduledRuntimeMixin:
                 notify_user=notify_user,
                 chat_id=chat_id,
             )
+        self._update_scheduled_octo_control_backoff_metadata(
+            task,
+            blocked_until=None,
+            reason=None,
+        )
         if scheduler is not None and task_id:
             scheduler.mark_executed(task_id, attempt_id=task.get("attempt_id"))
         logger.info(

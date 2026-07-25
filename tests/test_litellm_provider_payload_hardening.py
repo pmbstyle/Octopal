@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.providers.litellm_provider import (
     LiteLLMProvider,
+    _completion_runtime_timeout_seconds,
     _sanitize_schema_for_minimax,
     _serialize_message,
 )
@@ -149,6 +150,51 @@ def test_complete_enforces_runtime_timeout(monkeypatch) -> None:
         assert "LiteLLM completion failed" in str(exc)
     else:
         raise AssertionError("completion should time out")
+
+
+def test_runtime_timeout_preserves_internal_retry_budget() -> None:
+    assert _completion_runtime_timeout_seconds(120.0, num_retries=3) == 570.0
+    assert _completion_runtime_timeout_seconds(120.0, num_retries=0) == 120.0
+    assert (
+        _completion_runtime_timeout_seconds(
+            30.0,
+            num_retries=1,
+            fallbacks=[{"model": "fallback-a"}, {"model": "fallback-b"}],
+        )
+        == 217.5
+    )
+
+
+def test_complete_applies_full_runtime_retry_budget(monkeypatch) -> None:
+    captured_timeouts: list[float | None] = []
+    captured_kwargs: list[dict[str, object]] = []
+
+    async def _fake_acompletion(**kwargs):
+        captured_kwargs.append(kwargs)
+        return _response("ok")
+
+    async def _capture_runtime_timeout(awaitable, *, timeout_seconds):
+        captured_timeouts.append(timeout_seconds)
+        return await awaitable
+
+    settings = _settings()
+    settings.litellm_timeout = 120.0
+    settings.litellm_num_retries = 3
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider.acompletion",
+        _fake_acompletion,
+    )
+    monkeypatch.setattr(
+        "octopal.infrastructure.providers.litellm_provider._await_with_runtime_timeout",
+        _capture_runtime_timeout,
+    )
+    provider = LiteLLMProvider(settings)
+
+    result = asyncio.run(provider.complete([{"role": "user", "content": "hello"}]))
+
+    assert result == "ok"
+    assert captured_timeouts == [570.0]
+    assert captured_kwargs[0]["num_retries"] == 3
 
 
 def test_complete_retries_once_when_client_was_closed(monkeypatch) -> None:

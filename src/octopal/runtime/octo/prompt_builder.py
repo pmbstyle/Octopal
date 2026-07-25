@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from octopal.runtime.context_compiler import ContextSection, compile_context
 from octopal.runtime.memory.influence import require_complete_memory_influence_ids
 from octopal.runtime.memory.memchain import memchain_verify
@@ -25,6 +27,7 @@ if TYPE_CHECKING:
     from octopal.runtime.memory.service import MemoryService
 
 
+logger = structlog.get_logger(__name__)
 _OCTO_SYSTEM_PROMPT_CONTENT = ""
 _CONTROL_PLANE_CONTEXT_TOKEN_BUDGET = 2200
 _CONTROL_PLANE_SYSTEM_PROMPT = """You are Octopal Octo handling an internal operational turn.
@@ -60,6 +63,22 @@ class MemoryContextBundle:
     selected_facets: list[str]
     selected_ids: list[str]
     retrievals: list[MemoryRetrievalTrace]
+
+
+def _memory_retrieval_telemetry(
+    retrievals: Sequence[MemoryRetrievalTrace],
+) -> dict[str, object]:
+    mode_counts = {"hybrid": 0, "semantic": 0, "lexical": 0}
+    embedding_models: set[str] = set()
+    for retrieval in retrievals:
+        mode_counts[retrieval.mode] += 1
+        if retrieval.embedding_model:
+            embedding_models.add(retrieval.embedding_model)
+    return {
+        "result_count": len(retrievals),
+        "mode_counts": {mode: count for mode, count in mode_counts.items() if count},
+        "embedding_models": sorted(embedding_models),
+    }
 
 
 async def _load_system_prompt_file() -> str:
@@ -417,6 +436,12 @@ async def _build_memory_context_bundle(
             retrieval.to_trace(rank=rank)
             for rank, retrieval in enumerate(memory_retrievals, start=1)
         ]
+        if retrievals:
+            logger.info(
+                "Memory retrieval context selected",
+                chat_id=chat_id,
+                **_memory_retrieval_telemetry(retrievals),
+            )
         memory_context = [f"{entry.role}: {entry.content}" for entry in memory_entries]
         selected_ids.extend(trace.memory_id for trace in retrievals)
     elif callable(memory_entries_getter):

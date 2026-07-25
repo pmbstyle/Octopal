@@ -180,6 +180,7 @@ class LiteLLMProvider:
             temperature=float(kwargs.get("temperature", 0.3)),
             timeout=self._settings.litellm_timeout,
             fallbacks=self._fallbacks,
+            num_retries=self._settings.litellm_num_retries,
         )
         try:
             response = await self._acompletion_with_resilience(
@@ -300,6 +301,7 @@ class LiteLLMProvider:
             temperature=float(kwargs.get("temperature", 0.3)),
             timeout=self._settings.litellm_timeout,
             fallbacks=self._fallbacks,
+            num_retries=self._settings.litellm_num_retries,
         )
         request_kwargs["stream"] = True
         try:
@@ -403,6 +405,7 @@ class LiteLLMProvider:
                 temperature=float(kwargs.get("temperature", 0.3)),
                 timeout=self._settings.litellm_timeout,
                 fallbacks=None if strict_single_attempt else self._fallbacks,
+                num_retries=self._settings.litellm_num_retries,
             )
             if strict_single_attempt:
                 request_kwargs["num_retries"] = 0
@@ -651,7 +654,15 @@ class LiteLLMProvider:
     async def _acompletion_guarded(self, **kwargs: object) -> Any:
         allow_closed_client_retry = bool(kwargs.pop("_allow_closed_client_retry", True))
         async with self._semaphore:
-            timeout_seconds = _coerce_timeout_seconds(kwargs.get("timeout"))
+            request_timeout_seconds = _coerce_timeout_seconds(kwargs.get("timeout"))
+            runtime_timeout_seconds = _completion_runtime_timeout_seconds(
+                request_timeout_seconds,
+                num_retries=kwargs.get(
+                    "num_retries",
+                    self._settings.litellm_num_retries,
+                ),
+                fallbacks=kwargs.get("fallbacks"),
+            )
             try:
                 response = await _await_with_runtime_timeout(
                     acompletion(
@@ -660,7 +671,7 @@ class LiteLLMProvider:
                         api_key=self._api_key,
                         **kwargs,
                     ),
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=runtime_timeout_seconds,
                 )
             except Exception as exc:
                 if not allow_closed_client_retry or not _is_closed_client_error(exc):
@@ -675,7 +686,7 @@ class LiteLLMProvider:
                         api_key=self._api_key,
                         **kwargs,
                     ),
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=runtime_timeout_seconds,
                 )
             # LiteLLM can occasionally return a nested awaitable object on
             # provider-error paths (seen on Python 3.14). Unwrap it to avoid
@@ -683,7 +694,7 @@ class LiteLLMProvider:
             while inspect.isawaitable(response):
                 response = await _await_with_runtime_timeout(
                     response,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=runtime_timeout_seconds,
                 )
             return response
 
@@ -707,6 +718,30 @@ def _coerce_timeout_seconds(value: object) -> float | None:
     if timeout is None or timeout <= 0:
         return None
     return timeout
+
+
+def _completion_runtime_timeout_seconds(
+    request_timeout_seconds: float | None,
+    *,
+    num_retries: object,
+    fallbacks: object = None,
+) -> float | None:
+    if request_timeout_seconds is None:
+        return None
+    try:
+        retries = max(0, int(str(num_retries)))
+    except (TypeError, ValueError):
+        retries = 0
+    fallback_count = len(fallbacks) if isinstance(fallbacks, (list, tuple)) else 0
+    total_attempts = (retries + 1) * (fallback_count + 1)
+    transition_grace_seconds = max(
+        1.0,
+        min(30.0, request_timeout_seconds * 0.25),
+    )
+    return float(
+        request_timeout_seconds * total_attempts
+        + transition_grace_seconds * max(0, total_attempts - 1)
+    )
 
 
 async def _await_with_runtime_timeout(awaitable: Any, *, timeout_seconds: float | None) -> Any:
@@ -983,6 +1018,7 @@ def _build_request_kwargs(kwargs: dict[str, object], **defaults: object) -> dict
         "temperature": defaults["temperature"],
         "timeout": defaults["timeout"],
         "fallbacks": defaults["fallbacks"],
+        "num_retries": defaults["num_retries"],
     }
     passthrough_keys = (
         "response_format",

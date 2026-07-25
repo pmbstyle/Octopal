@@ -7,6 +7,7 @@ from octopal.infrastructure.mcp.manager import (
     MCPManager,
     MCPServerConfig,
     _classify_mcp_call_error,
+    _mcp_reconnect_delay,
     _resolve_configured_server_id_for_tool_name,
 )
 from octopal.runtime.tool_errors import MCPToolCallError
@@ -72,6 +73,40 @@ def test_mcp_manager_reconnect_retries_after_a_failed_attempt(tmp_path, monkeypa
 
     assert calls == ["demo", "demo"]
     assert "demo" not in manager._reconnect_tasks
+
+
+def test_mcp_reconnect_delay_caps_large_attempt_counts(monkeypatch) -> None:
+    monkeypatch.setattr("octopal.infrastructure.mcp.manager._MCP_RECONNECT_BASE_SECONDS", 2.0)
+    monkeypatch.setattr("octopal.infrastructure.mcp.manager._MCP_RECONNECT_MAX_SECONDS", 900.0)
+
+    assert _mcp_reconnect_delay(1) == 2.0
+    assert _mcp_reconnect_delay(10_000) == 900.0
+
+
+def test_ensure_configured_servers_respects_pending_reconnect(tmp_path) -> None:
+    manager = MCPManager(tmp_path)
+    manager._server_configs["demo"] = MCPServerConfig(
+        id="demo",
+        name="Demo",
+        command="demo-cmd",
+        transport="stdio",
+    )
+    manager._configs_loaded = True
+
+    async def _idle() -> None:
+        await asyncio.sleep(10)
+
+    async def scenario() -> dict[str, str]:
+        manager._reconnect_tasks["demo"] = asyncio.create_task(_idle())
+        try:
+            return await manager.ensure_configured_servers_connected(["demo"])
+        finally:
+            reconnect_task = manager._reconnect_tasks.pop("demo")
+            reconnect_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reconnect_task
+
+    assert asyncio.run(scenario()) == {"demo": "reconnecting"}
 
 
 def test_mcp_manager_reconnect_attempt_does_not_cancel_itself(tmp_path, monkeypatch) -> None:

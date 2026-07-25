@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router";
 import { Activity, Puzzle, Settings2, Siren, Wrench } from "lucide-react";
 
 import octopalLogo from "../assets/octopal-logo.png";

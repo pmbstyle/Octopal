@@ -35,6 +35,7 @@ def test_dispatcher_uses_single_shared_mcp_manager(tmp_path: Path, monkeypatch) 
         OCTOPAL_STATE_DIR=tmp_path / "state",
         OCTOPAL_WORKSPACE_DIR=tmp_path / "workspace",
         OCTOPAL_WORKER_LAUNCHER="same_env",
+        OCTOPAL_PINCHTAB_MANAGED=False,
     )
     _dp, octo = build_dispatcher(settings, bot=object())
     assert octo.runtime.mcp_manager is octo.mcp_manager

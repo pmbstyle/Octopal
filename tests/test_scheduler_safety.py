@@ -2460,6 +2460,77 @@ async def test_octo_dispatch_due_scheduled_tasks_runs_full_octo_tasks(monkeypatc
     assert scheduler.store.marked_task_ids == ["draft_write"]
 
 
+@pytest.mark.parametrize(
+    ("reply_text", "blocked_reason"),
+    [
+        ("SCHEDULED_TASK_BLOCKED", "blocked"),
+        ("NO_USER_RESPONSE", "missing_completion_signal"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_octo_task_failures_enter_persisted_cooldown(
+    monkeypatch,
+    reply_text,
+    blocked_reason,
+):
+    store = _StoreStub(
+        tasks=[
+            {
+                "id": "external_followup",
+                "name": "External Follow-up",
+                "description": "Check an external agent",
+                "frequency": "Every 10 minutes",
+                "worker_id": None,
+                "task_text": "Check the external agent and report completion",
+                "inputs_json": "{}",
+                "metadata_json": json.dumps(
+                    {"notify_user": "never", "execution_mode": "octo_task"}
+                ),
+                "last_run_at": None,
+                "enabled": 1,
+            }
+        ]
+    )
+    scheduler = SchedulerService(store=store, workspace_dir=Path("."))
+    route_calls = {"count": 0}
+
+    async def _start_worker_async(self, **kwargs):
+        raise AssertionError(
+            "_start_worker_async should not be called directly for octo_task tasks"
+        )
+
+    async def _route_scheduled_octo_task(octo, task, *, chat_id=0):
+        route_calls["count"] += 1
+        return reply_text
+
+    monkeypatch.setattr(octo_core.Octo, "_start_worker_async", _start_worker_async)
+    monkeypatch.setattr(octo_router, "route_scheduled_octo_task", _route_scheduled_octo_task)
+    monkeypatch.setattr(octo_core, "route_scheduled_octo_task", _route_scheduled_octo_task)
+
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=Path(".")),
+        scheduler=scheduler,
+    )
+
+    first_summary = await octo._dispatch_due_scheduled_tasks_once(chat_id=0, max_tasks=5)
+    second_summary = await octo._dispatch_due_scheduled_tasks_once(chat_id=0, max_tasks=5)
+
+    assert first_summary["errors"] == 1
+    assert second_summary["due_count"] == 0
+    assert route_calls["count"] == 1
+    metadata = store.metadata_updates[-1]["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["blocked_reason"] == blocked_reason
+    assert "blocked_until" in metadata
+    assert "suggested_execution_mode" not in metadata
+
+
 @pytest.mark.asyncio
 async def test_octo_dispatch_due_scheduled_tasks_does_not_infer_octo_control_block_from_text(
     monkeypatch,
