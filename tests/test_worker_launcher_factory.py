@@ -27,6 +27,19 @@ def test_settings_default_worker_launcher_is_docker() -> None:
     assert settings.worker_launcher == "docker"
 
 
+def test_worker_image_fingerprint_includes_dependency_lock(tmp_path: Path) -> None:
+    (tmp_path / "docker").mkdir()
+    (tmp_path / "src").mkdir()
+    for relative_path in ("docker/Dockerfile", "pyproject.toml", "uv.lock", "README.md"):
+        (tmp_path / relative_path).write_text(relative_path, encoding="utf-8")
+
+    first = launcher_factory._compute_worker_image_fingerprint(tmp_path)
+    (tmp_path / "uv.lock").write_text("changed", encoding="utf-8")
+    second = launcher_factory._compute_worker_image_fingerprint(tmp_path)
+
+    assert first != second
+
+
 def test_detect_docker_cli_reports_missing_when_not_on_path(monkeypatch) -> None:
     monkeypatch.setattr("octopal.runtime.workers.launcher_factory.shutil.which", lambda name: None)
     ok, detail = detect_docker_cli()

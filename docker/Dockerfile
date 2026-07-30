@@ -6,7 +6,8 @@ ARG WEBCLAW_VERSION=0.6.14
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PATH=/app/.venv/bin:$PATH
 
 WORKDIR /app
 
@@ -35,11 +36,12 @@ RUN set -eux; \
     install -m 0755 "$binary" /usr/local/bin/webclaw; \
     rm -rf /tmp/webclaw.tar.gz /tmp/webclaw-unpack
 
-COPY pyproject.toml README.md /app/
+COPY pyproject.toml uv.lock README.md /app/
 COPY src /app/src
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir .
+    && python -m pip install --no-cache-dir uv \
+    && uv sync --frozen --no-dev
 
 FROM base AS worker
 

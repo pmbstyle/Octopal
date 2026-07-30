@@ -405,7 +405,7 @@ class OctoWorkerDispatchMixin:
                             self.scheduler.fail_attempt(
                                 scheduled_task_id,
                                 attempt_id=scheduled_attempt_id,
-                                error_class=str(worker_status or "failed"),
+                                error_class=f"worker_{str(worker_status or 'failed').strip().lower()}",
                             )
                             logger.warning(
                                 "Skipped scheduled task execution mark due to non-completed worker state",
