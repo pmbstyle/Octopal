@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from octopal.infrastructure.store.sqlite import SQLiteStore
@@ -119,3 +119,21 @@ def test_scheduler_attempt_records_outcome_and_retry_deadline(tmp_path: Path) ->
     )
     assert store.get_scheduled_tasks()[0]["next_run_at"] is None
     assert store.get_scheduled_tasks()[0]["idempotency_key"] is None
+
+
+def test_scheduler_worker_failure_uses_extended_retry_deadline(tmp_path: Path) -> None:
+    store, service = _service(tmp_path)
+    claimed = service.claim_due_task(service.get_actionable_tasks()[0], lease_owner="runtime-a")
+    assert claimed is not None
+
+    before_failure = utc_now()
+    service.fail_attempt(
+        "daily_digest",
+        attempt_id=claimed["attempt_id"],
+        error_class="worker_failed",
+    )
+
+    failed = store.get_scheduled_tasks()[0]
+    next_run_at = datetime.fromisoformat(failed["next_run_at"])
+    assert next_run_at >= before_failure + timedelta(minutes=29)
+    assert next_run_at <= before_failure + timedelta(minutes=31)

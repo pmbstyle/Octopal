@@ -29,6 +29,7 @@ SCHEDULED_TASK_BLOCKED_REASON_KEY = "blocked_reason"
 SCHEDULED_TASK_SUGGESTED_EXECUTION_MODE_KEY = "suggested_execution_mode"
 _SCHEDULED_TASK_LEASE_SECONDS = 3600
 _SCHEDULED_TASK_RETRY_SECONDS = 60
+_SCHEDULED_TASK_WORKER_FAILURE_RETRY_SECONDS = 1800
 
 
 def normalize_notify_user_policy(notify_user: str | None) -> str:
@@ -381,13 +382,18 @@ class SchedulerService:
         if not attempt_id or not callable(finish):
             return
         now = utc_now()
+        retry_seconds = (
+            _SCHEDULED_TASK_WORKER_FAILURE_RETRY_SECONDS
+            if str(error_class or "").strip().lower().startswith("worker_")
+            else _SCHEDULED_TASK_RETRY_SECONDS
+        )
         finish(
             task_id,
             attempt_id=attempt_id,
             outcome="failed",
             finished_at=now,
             completed=False,
-            next_run_at=now + timedelta(seconds=_SCHEDULED_TASK_RETRY_SECONDS),
+            next_run_at=now + timedelta(seconds=retry_seconds),
             error_class=error_class,
         )
         self.sync_to_markdown()

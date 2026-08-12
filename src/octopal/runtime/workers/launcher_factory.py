@@ -339,7 +339,7 @@ def _compute_worker_image_fingerprint(project_root: Path) -> str:
 
 
 def _iter_worker_image_inputs(project_root: Path) -> list[str]:
-    inputs = ["docker/Dockerfile", "pyproject.toml", "README.md"]
+    inputs = ["docker/Dockerfile", "pyproject.toml", "uv.lock", "README.md"]
     src_root = project_root / "src"
     if src_root.exists():
         for path in sorted(src_root.rglob("*")):
