@@ -45,7 +45,7 @@
   },
   "overrides": {
     "js-yaml": "5.2.2",
-    "fast-uri": "3.1.4",
+    "fast-uri": "3.1.5",
     "@modelcontextprotocol/sdk": {
       "@hono/node-server": "2.0.11"
     }
