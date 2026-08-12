@@ -740,10 +740,11 @@ def _incremental_codex_input(
         suffix = messages[prefix_len:]
     else:
         suffix = []
-        for message in reversed(messages):
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
             data = message.to_dict() if isinstance(message, Message) else dict(message)
             if str(data.get("role") or "").lower() == "user":
-                suffix = [message]
+                suffix = messages[index:]
                 break
 
     chunks: list[str] = []

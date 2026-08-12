@@ -239,6 +239,54 @@ def test_warm_tool_loop_sends_only_the_appended_tool_result(tmp_path: Path) -> N
     asyncio.run(scenario())
 
 
+def test_mismatched_prompt_prefix_keeps_terminal_tool_result(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        await provider.complete_with_tools(
+            [
+                {"role": "system", "content": "initial context"},
+                {"role": "user", "content": "look this up"},
+            ],
+            tools=[_tool()],
+            codex_session_key="telegram:default:109",
+        )
+        await provider.complete_with_tools(
+            [
+                {"role": "system", "content": "changed packed context"},
+                {"role": "user", "content": "look this up"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {"name": "lookup", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "name": "lookup",
+                    "tool_call_id": "call-1",
+                    "content": "terminal tool result",
+                },
+            ],
+            tools=[_tool()],
+            codex_session_key="telegram:default:109",
+        )
+
+        resumed = _FakeCodexClient.instances[1]
+        assert _call(resumed, "thread/resume")["threadId"] == "thread-1"
+        assert _call(resumed, "turn/start")["input"] == [
+            {
+                "type": "text",
+                "text": "USER:\nlook this up\n\nTOOL:\nterminal tool result",
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_resume_failure_falls_back_to_full_context_and_replaces_mapping(tmp_path: Path) -> None:
     async def scenario() -> None:
         provider = CodexProvider(_settings(tmp_path))
