@@ -78,6 +78,29 @@ _WorkerArtifactSummary = _worker_results._WorkerArtifactSummary
 _build_generic_worker_completion_message = _worker_results._build_generic_worker_completion_message
 _build_worker_result_payload = _worker_results._build_worker_result_payload
 _extract_worker_artifact_paths = _worker_results._extract_worker_artifact_paths
+
+
+def _codex_session_key(
+    *,
+    octo: Any,
+    chat_id: int,
+    conversation_scope: str | None,
+    channel_context: dict[str, object] | None,
+) -> str:
+    context = channel_context or {}
+    source_channel = str(context.get("source_channel") or "").strip()
+    if not source_channel:
+        settings = getattr(octo, "settings", None)
+        source_channel = str(getattr(settings, "user_channel", "chat") or "chat").strip()
+    scope = str(conversation_scope or "conversation").strip() or "conversation"
+    return f"{source_channel}:{scope}:{chat_id}"
+
+
+def _provider_session_kwargs(ctx: dict[str, object]) -> dict[str, object]:
+    session_key = str(ctx.get("codex_session_key") or "").strip()
+    return {"codex_session_key": session_key} if session_key else {}
+
+
 _is_durable_workspace_artifact_path = _worker_results._is_durable_workspace_artifact_path
 _normalize_worker_artifact_path = _worker_results._normalize_worker_artifact_path
 _normalize_worker_result_entry = _worker_results._normalize_worker_result_entry
@@ -277,6 +300,12 @@ async def route_or_reply(
                 "internal_followup": internal_followup,
                 "background_delivery": background_delivery,
                 "conversation_scope": conversation_scope,
+                "codex_session_key": _codex_session_key(
+                    octo=octo,
+                    chat_id=chat_id,
+                    conversation_scope=conversation_scope,
+                    channel_context=channel_context,
+                ),
             }
         )
         resolution_report = ctx.get("tool_resolution_report")
@@ -880,6 +909,7 @@ async def _complete_route_with_tools(
     tool_capable = getattr(provider, "complete_with_tools", None)
     trace_ctx = get_current_trace_context()
     trace_sink = getattr(octo, "trace_sink", None)
+    provider_kwargs = _provider_session_kwargs(ctx)
 
     if callable(tool_capable) and tool_specs:
         if trace_ctx is not None and trace_sink is not None:
@@ -908,7 +938,10 @@ async def _complete_route_with_tools(
         for _ in range(max_attempts):
             try:
                 result = await provider.complete_with_tools(
-                    messages, tools=tools, tool_choice="auto"
+                    messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    **provider_kwargs,
                 )
             except Exception as e:
                 if (
@@ -960,6 +993,7 @@ async def _complete_route_with_tools(
                         provider,
                         messages,
                         context="saved_image_tool_retry_failed",
+                        provider_kwargs=provider_kwargs,
                     )
                     return await _finalize_response(
                         provider=provider,
@@ -1016,6 +1050,7 @@ async def _complete_route_with_tools(
                             provider,
                             messages,
                             context="transient_tool_error_fallback",
+                            provider_kwargs=provider_kwargs,
                         )
                         return await _finalize_response(
                             provider=provider,
@@ -1189,6 +1224,7 @@ async def _complete_route_with_tools(
                                 provider,
                                 messages,
                                 context="octo_tool_loop_breaker",
+                                provider_kwargs=provider_kwargs,
                             )
                             return await _finalize_response(
                                 provider=provider,
@@ -1337,6 +1373,7 @@ async def _complete_route_with_tools(
                     provider,
                     messages,
                     context="empty_tool_response_fallback",
+                    provider_kwargs=provider_kwargs,
                 )
                 return await _finalize_response(
                     provider=provider,
@@ -1379,6 +1416,7 @@ async def _complete_route_with_tools(
                 provider,
                 messages,
                 context="tool_limit_fallback",
+                provider_kwargs=provider_kwargs,
             )
             return await _finalize_response(
                 provider=provider,
@@ -1401,6 +1439,7 @@ async def _complete_route_with_tools(
                 provider,
                 messages,
                 context="tool_error_fallback",
+                provider_kwargs=provider_kwargs,
             )
             return await _finalize_response(
                 provider=provider,
@@ -1416,6 +1455,7 @@ async def _complete_route_with_tools(
         messages,
         context="plain_completion",
         on_partial=on_plain_partial,
+        provider_kwargs=provider_kwargs,
     )
     logger.debug("Octo output", output=response_raw)
     return await _finalize_response(
