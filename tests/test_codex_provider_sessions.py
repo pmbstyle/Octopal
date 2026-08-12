@@ -9,8 +9,9 @@ import pytest
 
 from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.providers import codex_provider
+from octopal.infrastructure.providers.base import Message
 from octopal.infrastructure.providers.codex_provider import CodexAppServerError, CodexProvider
-from octopal.runtime.octo.router import _complete_route_with_tools
+from octopal.runtime.octo.router import _complete_route_with_tools, route_or_reply
 from octopal.tools.registry import ToolSpec
 
 
@@ -384,5 +385,78 @@ def test_main_octo_route_passes_the_scoped_session_key_to_provider() -> None:
         )
         assert result == "The result is ready."
         assert provider.tool_kwargs == {"codex_session_key": "telegram:default:106"}
+
+    asyncio.run(scenario())
+
+
+def test_main_conversation_planner_reply_passes_scoped_session_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Provider:
+        def __init__(self) -> None:
+            self.complete_kwargs: list[dict[str, object]] = []
+
+        async def complete(self, messages, **kwargs: object) -> str:
+            del messages
+            self.complete_kwargs.append(dict(kwargs))
+            return '{"mode":"reply","steps":[],"response":"Hello from Alice."}'
+
+    class _Memory:
+        async def add_message(self, role, content, metadata=None) -> None:
+            del role, content, metadata
+
+    class _Octo:
+        store = object()
+        canon = object()
+        is_ws_active = False
+        internal_progress_send = None
+        trace_sink = None
+
+        async def set_typing(self, chat_id: int, active: bool) -> None:
+            del chat_id, active
+
+        async def set_thinking(self, active: bool) -> None:
+            del active
+
+        def peek_context_wakeup(self, chat_id: int) -> str:
+            del chat_id
+            return ""
+
+    async def fake_build_octo_prompt(**kwargs: object) -> list[Message]:
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def no_action_retry(**kwargs: object) -> bool:
+        del kwargs
+        return False
+
+    async def finalize_response(**kwargs: object) -> str:
+        return str(kwargs["response_text"])
+
+    import octopal.runtime.octo.router as router
+
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(router, "_needs_action_or_blocked_retry", no_action_retry)
+    monkeypatch.setattr(router, "_finalize_response", finalize_response)
+    monkeypatch.setattr(
+        router,
+        "_get_octo_tools",
+        lambda octo, chat_id: ([], {"octo": octo, "chat_id": chat_id}),
+    )
+
+    async def scenario() -> None:
+        provider = _Provider()
+        response = await route_or_reply(
+            _Octo(),
+            provider,
+            _Memory(),
+            "hello",
+            211619002,
+            "",
+            conversation_scope="primary",
+            channel_context={"source_channel": "telegram"},
+        )
+
+        assert response == "Hello from Alice."
+        assert provider.complete_kwargs == [{"codex_session_key": "telegram:primary:211619002"}]
 
     asyncio.run(scenario())

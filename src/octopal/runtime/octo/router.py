@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -99,6 +99,63 @@ def _codex_session_key(
 def _provider_session_kwargs(ctx: dict[str, object]) -> dict[str, object]:
     session_key = str(ctx.get("codex_session_key") or "").strip()
     return {"codex_session_key": session_key} if session_key else {}
+
+
+class _ProviderWithCallDefaults:
+    def __init__(
+        self,
+        provider: InferenceProvider,
+        call_defaults: dict[str, object],
+    ) -> None:
+        self._provider = provider
+        self._call_defaults = call_defaults
+
+    def _kwargs(self, kwargs: dict[str, object]) -> dict[str, object]:
+        return {**self._call_defaults, **kwargs}
+
+    async def complete(
+        self,
+        messages: list[Message | dict[str, Any]],
+        **kwargs: object,
+    ) -> str:
+        return cast(
+            str,
+            await self._provider.complete(messages, **self._kwargs(kwargs)),
+        )
+
+    async def complete_stream(
+        self,
+        messages: list[Message | dict[str, Any]],
+        *,
+        on_partial: Callable[[str], Awaitable[None]],
+        **kwargs: object,
+    ) -> str:
+        return cast(
+            str,
+            await self._provider.complete_stream(
+                messages,
+                on_partial=on_partial,
+                **self._kwargs(kwargs),
+            ),
+        )
+
+    async def complete_with_tools(
+        self,
+        messages: list[Message | dict[str, Any]],
+        *,
+        tools: list[dict],
+        tool_choice: str = "auto",
+        **kwargs: object,
+    ) -> dict:
+        return cast(
+            dict[str, Any],
+            await self._provider.complete_with_tools(
+                messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                **self._kwargs(kwargs),
+            ),
+        )
 
 
 _is_durable_workspace_artifact_path = _worker_results._is_durable_workspace_artifact_path
@@ -407,7 +464,11 @@ async def route_or_reply(
             messages.append(Message(role="system", content=operational_memory_context))
         _log_system_prompt(messages, "route")
 
-        plan = await _build_plan(provider, messages, bool(octo_tools))
+        planner_provider = _ProviderWithCallDefaults(
+            provider,
+            _provider_session_kwargs(ctx),
+        )
+        plan = await _build_plan(planner_provider, messages, bool(octo_tools))
         if plan:
             routing_trace_metadata["planner_used"] = True
             logger.info(
