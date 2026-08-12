@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -18,14 +18,19 @@ async def _complete_text(
     *,
     context: str,
     on_partial: Callable[[str], Awaitable[None]] | None = None,
+    provider_kwargs: dict[str, object] | None = None,
 ) -> str:
     sanitized = _sanitize_messages_for_complete(messages)
+    call_kwargs = dict(provider_kwargs or {})
     try:
         if callable(on_partial):
             stream_callable = getattr(provider, "complete_stream", None)
             if callable(stream_callable):
-                return await stream_callable(sanitized, on_partial=on_partial)
-        text = await provider.complete(sanitized)
+                return cast(
+                    str,
+                    await stream_callable(sanitized, on_partial=on_partial, **call_kwargs),
+                )
+        text = cast(str, await provider.complete(sanitized, **call_kwargs))
         if callable(on_partial) and text:
             try:
                 await on_partial(text)
