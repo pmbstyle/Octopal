@@ -161,6 +161,7 @@ class OctoMessageRuntimeMixin:
         background_delivery: bool = False,
         source_channel: str | None = None,
         source_context: dict[str, Any] | None = None,
+        codex_session_key: str | None = None,
     ) -> OctoReply:
         correlation_token = None
         correlation_id = correlation_id_var.get()
@@ -183,6 +184,7 @@ class OctoMessageRuntimeMixin:
             "track_progress": track_progress,
             "background_delivery": background_delivery,
             "conversation_scope": conversation_scope,
+            "codex_session_key_propagated": bool(codex_session_key),
             **_memory_channel_context_metadata(source_context),
         }
         wants_followup = False
@@ -313,6 +315,8 @@ class OctoMessageRuntimeMixin:
                     "channel_context": source_context,
                     "background_delivery": background_delivery,
                 }
+                if codex_session_key:
+                    route_kwargs["codex_session_key"] = codex_session_key
                 route_or_reply = _core_callable("route_or_reply", _default_route_or_reply)
                 while True:
                     try:

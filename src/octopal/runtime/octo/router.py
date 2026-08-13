@@ -637,6 +637,7 @@ async def route_or_reply(
     conversation_scope: str | None = None,
     channel_context: dict[str, object] | None = None,
     background_delivery: bool = False,
+    codex_session_key: str | None = None,
 ) -> str:
     """Core routing logic: decide whether to use tools or reply to user."""
     # Internal chat_id (<= 0) should not trigger typing indicators.
@@ -653,6 +654,7 @@ async def route_or_reply(
         if isinstance(route_mode, RouteMode)
         else str(route_mode or "unknown").strip() or "unknown"
     )
+    is_codex_provider = getattr(provider, "provider_id", "") == "codex"
     provider_request_lane = (
         _provider_request_lane(
             chat_id=chat_id,
@@ -660,7 +662,19 @@ async def route_or_reply(
             internal_followup=internal_followup,
             background_delivery=background_delivery,
         )
-        if getattr(provider, "provider_id", "") == "codex"
+        if is_codex_provider
+        else ""
+    )
+    propagated_session_key = str(codex_session_key or "").strip()
+    provider_session_key = (
+        propagated_session_key
+        or _codex_session_key(
+            octo=octo,
+            chat_id=chat_id,
+            conversation_scope=conversation_scope,
+            channel_context=channel_context,
+        )
+        if is_codex_provider
         else ""
     )
     interactive_budget_started_at = asyncio.get_running_loop().time()
@@ -673,6 +687,7 @@ async def route_or_reply(
         "saved_file_paths_count": len(saved_file_paths or []),
         "route_mode": route_mode_value,
         "provider_request_lane": provider_request_lane or "provider_default",
+        "provider_session_key_propagated": bool(propagated_session_key),
         "bootstrap_chars": len(bootstrap_context or ""),
         "planner_used": False,
         "mcp_refresh_attempted": False,
@@ -704,12 +719,7 @@ async def route_or_reply(
                 "internal_followup": internal_followup,
                 "background_delivery": background_delivery,
                 "conversation_scope": conversation_scope,
-                "codex_session_key": _codex_session_key(
-                    octo=octo,
-                    chat_id=chat_id,
-                    conversation_scope=conversation_scope,
-                    channel_context=channel_context,
-                ),
+                "codex_session_key": provider_session_key,
                 "codex_request_lane": provider_request_lane,
                 "interactive_budget_started_at": interactive_budget_started_at,
             }
@@ -1955,6 +1965,7 @@ async def _complete_route_with_tools(
                     notify_user=ctx.get("control_route_notify_user", "always"),
                     user_text=user_text,
                     messages=messages,
+                    ctx=ctx,
                 )
                 if continuation_reply is not None:
                     return continuation_reply
