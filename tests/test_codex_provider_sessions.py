@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +16,14 @@ from octopal.infrastructure.providers.codex_provider import CodexAppServerError,
 from octopal.runtime.octo.router import _complete_route_with_tools, route_or_reply
 from octopal.tools.registry import ToolSpec
 
+_RealCodexAppServerClient = codex_provider._CodexAppServerClient
+
 
 class _FakeCodexClient:
     instances: list[_FakeCodexClient] = []
     next_thread = 1
-    fail_resume_once = False
+    fail_resume_once: BaseException | None = None
+    hang_resume_once = False
     fail_turn = False
     active_turns = 0
     max_active_turns = 0
@@ -29,6 +34,9 @@ class _FakeCodexClient:
         self.thread_id = ""
         self.turn_event_index = 0
         self.turn_active = False
+        self.closed = False
+        self.request_timeouts: list[tuple[str, float]] = []
+        self.event_timeouts: list[float] = []
         type(self).instances.append(self)
 
     async def start(self) -> None:
@@ -41,7 +49,7 @@ class _FakeCodexClient:
         *,
         timeout: float,
     ) -> Any:
-        del timeout
+        self.request_timeouts.append((method, timeout))
         payload = dict(params or {})
         self.calls.append((method, payload))
         if method == "thread/start":
@@ -49,9 +57,13 @@ class _FakeCodexClient:
             type(self).next_thread += 1
             return {"thread": {"id": self.thread_id}}
         if method == "thread/resume":
-            if type(self).fail_resume_once:
-                type(self).fail_resume_once = False
-                raise CodexAppServerError("missing thread")
+            if type(self).hang_resume_once:
+                type(self).hang_resume_once = False
+                await asyncio.wait_for(asyncio.Future(), timeout=timeout)
+            if type(self).fail_resume_once is not None:
+                error = type(self).fail_resume_once
+                type(self).fail_resume_once = None
+                raise error
             self.thread_id = str(payload["threadId"])
             return {"thread": {"id": self.thread_id}}
         if method == "turn/start":
@@ -63,7 +75,7 @@ class _FakeCodexClient:
         raise AssertionError(f"unexpected request: {method}")
 
     async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
-        del timeout
+        self.event_timeouts.append(timeout)
         await asyncio.sleep(0.01)
         if type(self).fail_turn:
             self._finish_turn()
@@ -84,6 +96,7 @@ class _FakeCodexClient:
         )
 
     async def close(self) -> None:
+        self.closed = True
         self._finish_turn()
 
     def _finish_turn(self) -> None:
@@ -96,7 +109,8 @@ class _FakeCodexClient:
 def _fake_codex_client(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeCodexClient.instances = []
     _FakeCodexClient.next_thread = 1
-    _FakeCodexClient.fail_resume_once = False
+    _FakeCodexClient.fail_resume_once = None
+    _FakeCodexClient.hang_resume_once = False
     _FakeCodexClient.fail_turn = False
     _FakeCodexClient.active_turns = 0
     _FakeCodexClient.max_active_turns = 0
@@ -195,6 +209,108 @@ def test_tool_catalog_change_starts_a_fresh_persistent_thread(tmp_path: Path) ->
     asyncio.run(scenario())
 
 
+def test_configuration_reset_reports_only_changed_redacted_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[dict[str, Any]] = []
+
+    def record_state(state: str, session_ref: str, **fields: Any) -> None:
+        events.append({"state": state, "session_ref": session_ref, **fields})
+
+    monkeypatch.setattr(codex_provider, "_log_session_state", record_state)
+
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        messages = [{"role": "user", "content": "request"}]
+        await provider.complete_with_tools(
+            messages,
+            tools=[_tool("lookup")],
+            codex_session_key="telegram:primary:112",
+        )
+        await provider.complete_with_tools(
+            messages,
+            tools=[_tool("write")],
+            codex_session_key="telegram:primary:112",
+        )
+
+        reset = next(event for event in events if event.get("reason") == "configuration_changed")
+        assert reset["phase"] == "executor"
+        assert reset["changed_components"] == ["tool_catalog"]
+        assert reset["tool_count"] == 1
+        assert len(reset["tool_digest"]) == 64
+        assert "request" not in json.dumps(reset)
+
+    asyncio.run(scenario())
+
+
+def test_configuration_components_rotate_only_for_relevant_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_kwargs = {
+        "model": "model-a",
+        "cwd": "/workspace/a",
+        "effort": "high",
+        "dynamic_tools": codex_provider._tools_to_dynamic_tools([_tool("lookup")]),
+    }
+    base = codex_provider._session_configuration(**base_kwargs)
+
+    for component, override in (
+        ("model", {"model": "model-b"}),
+        ("cwd", {"cwd": "/workspace/b"}),
+        ("reasoning_effort", {"effort": "low"}),
+        (
+            "tool_catalog",
+            {"dynamic_tools": codex_provider._tools_to_dynamic_tools([_tool("write")])},
+        ),
+    ):
+        changed = codex_provider._session_configuration(**{**base_kwargs, **override})
+        assert codex_provider._changed_config_components(base.components, changed.components) == [
+            component
+        ]
+
+    monkeypatch.setattr(codex_provider, "_codex_command", lambda: "/other/bin/codex")
+    command_changed = codex_provider._session_configuration(**base_kwargs)
+    assert codex_provider._changed_config_components(
+        base.components, command_changed.components
+    ) == ["command"]
+
+    monkeypatch.setattr(codex_provider, "_codex_args", lambda: ["app-server", "--flag"])
+    args_changed = codex_provider._session_configuration(**base_kwargs)
+    assert codex_provider._changed_config_components(
+        command_changed.components, args_changed.components
+    ) == ["args"]
+
+
+def test_request_telemetry_redacts_stderr_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Logger:
+        def warning(self, event: str, **fields: Any) -> None:
+            captured.update({"event": event, **fields})
+
+        def debug(self, event: str, **fields: Any) -> None:
+            captured.update({"event": event, **fields})
+
+    monkeypatch.setattr(codex_provider, "logger", _Logger())
+    codex_provider._log_app_server_request(
+        "thread/resume",
+        outcome="failed",
+        elapsed_ms=30_000,
+        write_wait_ms=10,
+        wire_wait_ms=29_990,
+        process_exit_code=7,
+        stderr_tail="secret-bearing fatal detail",
+        error="TimeoutError",
+    )
+
+    assert captured["request_stage"] == "thread/resume"
+    assert captured["stderr_category"] == "fatal"
+    assert len(captured["stderr_digest"]) == 12
+    assert "secret-bearing" not in json.dumps(captured)
+    assert captured["write_wait_ms"] == 10
+    assert captured["wire_wait_ms"] == 29_990
+
+
 def test_warm_tool_loop_sends_only_the_appended_tool_result(tmp_path: Path) -> None:
     async def scenario() -> None:
         provider = CodexProvider(_settings(tmp_path))
@@ -287,7 +403,16 @@ def test_mismatched_prompt_prefix_keeps_terminal_tool_result(tmp_path: Path) -> 
     asyncio.run(scenario())
 
 
-def test_resume_failure_falls_back_to_full_context_and_replaces_mapping(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "resume_error",
+    [
+        TimeoutError("resume timed out"),
+        CodexAppServerError("codex app-server stdout closed"),
+    ],
+)
+def test_resume_failure_uses_fresh_client_and_replaces_mapping(
+    tmp_path: Path, resume_error: BaseException
+) -> None:
     async def scenario() -> None:
         provider = CodexProvider(_settings(tmp_path))
         await provider.complete_with_tools(
@@ -295,7 +420,7 @@ def test_resume_failure_falls_back_to_full_context_and_replaces_mapping(tmp_path
             tools=[_tool()],
             codex_session_key="desktop:primary:103",
         )
-        _FakeCodexClient.fail_resume_once = True
+        _FakeCodexClient.fail_resume_once = resume_error
         await provider.complete_with_tools(
             [
                 {"role": "system", "content": "full current context"},
@@ -305,15 +430,153 @@ def test_resume_failure_falls_back_to_full_context_and_replaces_mapping(tmp_path
             codex_session_key="desktop:primary:103",
         )
 
-        fallback = _FakeCodexClient.instances[1]
-        assert [method for method, _ in fallback.calls] == [
-            "thread/resume",
-            "thread/start",
-            "turn/start",
-        ]
+        failed_resume = _FakeCodexClient.instances[1]
+        fallback = _FakeCodexClient.instances[2]
+        assert [method for method, _ in failed_resume.calls] == ["thread/resume"]
+        assert failed_resume.closed is True
+        assert [method for method, _ in fallback.calls] == ["thread/start", "turn/start"]
         assert _call(fallback, "thread/start")["developerInstructions"] == ("full current context")
         registry = json.loads((tmp_path / "codex_sessions.json").read_text())
         assert next(iter(registry["sessions"].values()))["thread_id"] == "thread-2"
+
+    asyncio.run(scenario())
+
+
+def test_hung_resume_times_out_then_recovers_on_fresh_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(codex_provider, "CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS", 0.01)
+
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        await provider.complete_with_tools(
+            [{"role": "user", "content": "first"}],
+            tools=[_tool()],
+            codex_session_key="desktop:primary:113",
+        )
+        _FakeCodexClient.hang_resume_once = True
+        await provider.complete_with_tools(
+            [{"role": "user", "content": "second"}],
+            tools=[_tool()],
+            codex_session_key="desktop:primary:113",
+        )
+
+        failed_resume = _FakeCodexClient.instances[1]
+        fallback = _FakeCodexClient.instances[2]
+        assert failed_resume.closed is True
+        assert [method for method, _ in failed_resume.calls] == ["thread/resume"]
+        assert [method for method, _ in fallback.calls] == ["thread/start", "turn/start"]
+        registry = json.loads((tmp_path / "codex_sessions.json").read_text())
+        assert next(iter(registry["sessions"].values()))["thread_id"] == "thread-2"
+
+    asyncio.run(scenario())
+
+
+def test_control_requests_use_short_timeout_and_turn_events_use_long_idle_timeout(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        await provider.complete_with_tools(
+            [{"role": "user", "content": "request"}],
+            tools=[_tool()],
+            codex_session_key="telegram:primary:110",
+        )
+
+        client = _FakeCodexClient.instances[0]
+        assert client.request_timeouts == [
+            ("thread/start", codex_provider.CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS),
+            ("turn/start", codex_provider.CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS),
+        ]
+        assert client.event_timeouts == [
+            codex_provider.CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS,
+            codex_provider.CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS,
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_app_server_eof_fails_initialize_without_waiting_for_request_timeout() -> None:
+    async def scenario() -> None:
+        client = _RealCodexAppServerClient(
+            sys.executable,
+            ["-c", "import sys; sys.stdin.readline()"],
+            dict(os.environ),
+        )
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        with pytest.raises(CodexAppServerError, match="app-server"):
+            await asyncio.wait_for(client.start(), timeout=3.0)
+        assert loop.time() - started_at < 2.0
+
+    asyncio.run(scenario())
+
+
+def test_simultaneous_request_and_terminal_notification_are_preserved() -> None:
+    request = {
+        "id": 7,
+        "method": "item/permissions/requestApproval",
+        "params": {},
+    }
+    completed = {"method": "turn/completed", "params": {"threadId": "thread-1"}}
+
+    class _PrequeuedClient(_RealCodexAppServerClient):
+        def __init__(self) -> None:
+            super().__init__("unused", [], {})
+            self.responses: list[tuple[int | str, dict[str, Any]]] = []
+
+        async def respond(self, request_id: int | str, result: dict[str, Any]) -> None:
+            self.responses.append((request_id, result))
+
+    async def prequeued_client() -> _PrequeuedClient:
+        client = _PrequeuedClient()
+        await client._requests.put(request)
+        await client._notifications.put(completed)
+        return client
+
+    async def scenario() -> None:
+        client = await prequeued_client()
+        assert await client.next_event(0.1) == ("request", request)
+        assert await client.next_event(0.1) == ("notification", completed)
+
+        collecting_client = await prequeued_client()
+        result = await asyncio.wait_for(
+            codex_provider._collect_turn(
+                collecting_client,
+                thread_id="thread-1",
+                turn_id=None,
+                on_partial=None,
+            ),
+            timeout=0.5,
+        )
+        assert result == {"content": "", "tool_calls": []}
+        assert collecting_client.responses == [(7, {"permissions": {}, "scope": "turn"})]
+
+    asyncio.run(scenario())
+
+
+def test_failed_fallback_turn_does_not_persist_replacement_mapping(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        await provider.complete_with_tools(
+            [{"role": "user", "content": "first"}],
+            tools=[_tool()],
+            codex_session_key="desktop:primary:111",
+        )
+
+        _FakeCodexClient.fail_resume_once = TimeoutError("resume timed out")
+        _FakeCodexClient.fail_turn = True
+        with pytest.raises(CodexAppServerError, match="turn failed"):
+            await provider.complete_with_tools(
+                [{"role": "user", "content": "second"}],
+                tools=[_tool()],
+                codex_session_key="desktop:primary:111",
+            )
+
+        registry = json.loads((tmp_path / "codex_sessions.json").read_text())
+        assert registry["sessions"] == {}
+        assert _FakeCodexClient.instances[1].closed is True
+        assert _FakeCodexClient.instances[2].closed is True
 
     asyncio.run(scenario())
 
@@ -433,6 +696,88 @@ def test_main_octo_route_passes_the_scoped_session_key_to_provider() -> None:
         )
         assert result == "The result is ready."
         assert provider.tool_kwargs == {"codex_session_key": "telegram:default:106"}
+
+    asyncio.run(scenario())
+
+
+def test_main_route_reuses_independent_planner_and_executor_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Memory:
+        async def add_message(self, role, content, metadata=None) -> None:
+            del role, content, metadata
+
+    class _Octo:
+        store = object()
+        canon = object()
+        is_ws_active = False
+        internal_progress_send = None
+        trace_sink = None
+
+        async def set_typing(self, chat_id: int, active: bool) -> None:
+            del chat_id, active
+
+        async def set_thinking(self, active: bool) -> None:
+            del active
+
+        def peek_context_wakeup(self, chat_id: int) -> str:
+            del chat_id
+            return ""
+
+    async def fake_build_octo_prompt(**kwargs: object) -> list[Message]:
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def no_action_retry(**kwargs: object) -> bool:
+        del kwargs
+        return False
+
+    async def finalize_response(**kwargs: object) -> str:
+        return str(kwargs["response_text"])
+
+    import octopal.runtime.octo.router as router
+
+    tool_spec = ToolSpec(
+        name="lookup",
+        description="lookup",
+        parameters={"type": "object", "properties": {}},
+        permission="read",
+        handler=lambda: None,
+    )
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(router, "_needs_action_or_blocked_retry", no_action_retry)
+    monkeypatch.setattr(router, "_finalize_response", finalize_response)
+    monkeypatch.setattr(
+        router,
+        "_get_octo_tools",
+        lambda octo, chat_id: ([tool_spec], {"octo": octo, "chat_id": chat_id}),
+    )
+
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        for text in ("first", "second"):
+            assert (
+                await route_or_reply(
+                    _Octo(),
+                    provider,
+                    _Memory(),
+                    text,
+                    211619002,
+                    "",
+                    conversation_scope="primary",
+                    channel_context={"source_channel": "telegram"},
+                )
+                == "ok"
+            )
+
+        planner_created, executor_created, planner_resumed, executor_resumed = (
+            _FakeCodexClient.instances
+        )
+        assert _call(planner_created, "thread/start").get("dynamicTools") is None
+        assert _call(executor_created, "thread/start")["dynamicTools"][0]["name"] == "lookup"
+        assert _call(planner_resumed, "thread/resume")["threadId"] == "thread-1"
+        assert _call(executor_resumed, "thread/resume")["threadId"] == "thread-2"
+        registry = json.loads((tmp_path / "codex_sessions.json").read_text())
+        assert len(registry["sessions"]) == 2
 
     asyncio.run(scenario())
 
