@@ -36,12 +36,12 @@ RUN set -eux; \
     install -m 0755 "$binary" /usr/local/bin/webclaw; \
     rm -rf /tmp/webclaw.tar.gz /tmp/webclaw-unpack
 
-COPY pyproject.toml uv.lock README.md /app/
+COPY pyproject.toml uv.lock /app/
 COPY src /app/src
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir uv \
-    && uv sync --frozen --no-dev
+    && uv sync --frozen --no-dev --no-install-project
 
 FROM base AS worker
 

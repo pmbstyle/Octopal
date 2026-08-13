@@ -16,6 +16,46 @@ from octopal.runtime.workers.launcher_factory import (
     get_worker_launcher_status,
 )
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _write_project_file(project_root: Path, relative_path: str, content: str) -> None:
+    path = project_root / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _minimal_worker_project(project_root: Path) -> None:
+    files = {
+        "docker/Dockerfile": "FROM python:3.12-slim\n",
+        "pyproject.toml": "[project]\nname = 'fixture'\n",
+        "uv.lock": "fixture-lock\n",
+        "README.md": "fixture docs\n",
+        "src/octopal/__init__.py": "",
+        "src/octopal/runtime/__init__.py": "",
+        "src/octopal/runtime/workers/__init__.py": "",
+        "src/octopal/runtime/workers/entrypoint.py": (
+            "from octopal.runtime.workers.agent_worker import run_agent_worker\n"
+        ),
+        "src/octopal/runtime/workers/agent_worker.py": (
+            "from typing import TYPE_CHECKING\n"
+            "from octopal.runtime.worker_support import worker_value\n"
+            "if TYPE_CHECKING:\n"
+            "    from octopal.runtime.octo.router import route_or_reply\n"
+            "def run_agent_worker():\n"
+            "    return worker_value\n"
+        ),
+        "src/octopal/runtime/worker_support.py": "worker_value = 1\n",
+        "src/octopal/runtime/octo/__init__.py": "",
+        "src/octopal/runtime/octo/router.py": "route_or_reply = None\n",
+        "src/octopal/runtime/memory/service.py": "memory_service = None\n",
+        "src/octopal/channels/telegram/handlers.py": "telegram_handler = None\n",
+        "src/octopal/runtime/octo/prompts/octo_system.md": "main prompt\n",
+        "src/octopal/runtime/octo/prompts/worker_system.md": "worker prompt\n",
+    }
+    for relative_path, content in files.items():
+        _write_project_file(project_root, relative_path, content)
+
 
 def test_worker_runtime_config_defaults_to_docker() -> None:
     config = WorkerRuntimeConfig()
@@ -28,16 +68,112 @@ def test_settings_default_worker_launcher_is_docker() -> None:
 
 
 def test_worker_image_fingerprint_includes_dependency_lock(tmp_path: Path) -> None:
-    (tmp_path / "docker").mkdir()
-    (tmp_path / "src").mkdir()
-    for relative_path in ("docker/Dockerfile", "pyproject.toml", "uv.lock", "README.md"):
-        (tmp_path / relative_path).write_text(relative_path, encoding="utf-8")
+    _minimal_worker_project(tmp_path)
 
     first = launcher_factory._compute_worker_image_fingerprint(tmp_path)
     (tmp_path / "uv.lock").write_text("changed", encoding="utf-8")
     second = launcher_factory._compute_worker_image_fingerprint(tmp_path)
 
     assert first != second
+
+
+def test_worker_image_inputs_follow_actual_runtime_import_surface() -> None:
+    inputs = set(launcher_factory._iter_worker_image_inputs(_PROJECT_ROOT))
+
+    assert {
+        "docker/Dockerfile",
+        "pyproject.toml",
+        "uv.lock",
+        "src/octopal/runtime/workers/entrypoint.py",
+        "src/octopal/runtime/workers/agent_worker.py",
+        "src/octopal/runtime/octo/prompts/worker_system.md",
+        "src/octopal/infrastructure/providers/factory.py",
+        "src/octopal/tools/filesystem/files.py",
+    } <= inputs
+    assert "README.md" not in inputs
+    assert "src/octopal/runtime/octo/router.py" not in inputs
+    assert "src/octopal/runtime/memory/service.py" not in inputs
+    assert "src/octopal/channels/telegram/handlers.py" not in inputs
+    assert "src/octopal/runtime/octo/prompts/octo_system.md" not in inputs
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "README.md",
+        "src/octopal/runtime/octo/router.py",
+        "src/octopal/runtime/memory/service.py",
+        "src/octopal/channels/telegram/handlers.py",
+        "src/octopal/runtime/octo/prompts/octo_system.md",
+    ],
+)
+def test_irrelevant_main_process_changes_do_not_change_worker_fingerprint(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    _minimal_worker_project(tmp_path)
+    first = launcher_factory._compute_worker_image_fingerprint(tmp_path)
+
+    _write_project_file(tmp_path, relative_path, "changed but not imported by worker\n")
+
+    assert launcher_factory._compute_worker_image_fingerprint(tmp_path) == first
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "docker/Dockerfile",
+        "pyproject.toml",
+        "uv.lock",
+        "src/octopal/runtime/workers/entrypoint.py",
+        "src/octopal/runtime/worker_support.py",
+        "src/octopal/runtime/octo/prompts/worker_system.md",
+    ],
+)
+def test_worker_runtime_and_build_changes_change_worker_fingerprint(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    _minimal_worker_project(tmp_path)
+    first = launcher_factory._compute_worker_image_fingerprint(tmp_path)
+
+    path = tmp_path / relative_path
+    path.write_text(path.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+
+    assert launcher_factory._compute_worker_image_fingerprint(tmp_path) != first
+
+
+@pytest.mark.parametrize(
+    "dynamic_import",
+    [
+        'import importlib\nimportlib.import_module("octopal.runtime.optional_worker")\n',
+        (
+            "from importlib import import_module\n"
+            'import_module("octopal.runtime.optional_worker")\n'
+        ),
+        (
+            "from importlib import import_module as load_optional\n"
+            'load_optional("octopal.runtime.optional_worker")\n'
+        ),
+        "from importlib.metadata import entry_points as plugins\nplugins()\n",
+    ],
+)
+def test_dynamic_worker_imports_fail_closed_to_all_python_source(
+    tmp_path: Path,
+    dynamic_import: str,
+) -> None:
+    _minimal_worker_project(tmp_path)
+    agent_worker = tmp_path / "src/octopal/runtime/workers/agent_worker.py"
+    agent_worker.write_text(
+        agent_worker.read_text(encoding="utf-8") + dynamic_import,
+        encoding="utf-8",
+    )
+    first = launcher_factory._compute_worker_image_fingerprint(tmp_path)
+
+    unrelated = tmp_path / "src/octopal/runtime/octo/router.py"
+    unrelated.write_text("changed after dynamic import\n", encoding="utf-8")
+
+    assert launcher_factory._compute_worker_image_fingerprint(tmp_path) != first
 
 
 def test_detect_docker_cli_reports_missing_when_not_on_path(monkeypatch) -> None:

@@ -16,7 +16,8 @@ def test_worker_image_uses_frozen_project_lock() -> None:
     dockerfile = Path(__file__).resolve().parents[1] / "docker" / "Dockerfile"
     text = dockerfile.read_text(encoding="utf-8")
 
-    assert "COPY pyproject.toml uv.lock README.md /app/" in text
-    assert "uv sync --frozen --no-dev" in text
+    assert "COPY pyproject.toml uv.lock /app/" in text
+    assert "README.md" not in text
+    assert "uv sync --frozen --no-dev --no-install-project" in text
     assert "python -m pip install --no-cache-dir ." not in text
     assert "PATH=/app/.venv/bin:$PATH" in text
