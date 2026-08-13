@@ -1416,6 +1416,59 @@ def test_main_route_recovers_transport_after_tool_without_replaying_it(
     asyncio.run(scenario())
 
 
+def test_provider_tool_bridge_preserves_result_when_pending_execution_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import octopal.runtime.octo.router as router
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    executions = 0
+
+    async def fail_after_start(**kwargs: object) -> tuple[Any, dict[str, Any]]:
+        nonlocal executions
+        del kwargs
+        executions += 1
+        started.set()
+        await release.wait()
+        raise RuntimeError("bridge infrastructure failed")
+
+    monkeypatch.setattr(router, "_handle_tool_call_at_most_once", fail_after_start)
+    bridge = router._ProviderToolExecutorBridge(
+        provider=type("Provider", (), {"provider_id": "codex"})(),
+        tools=list,
+        ctx={},
+        ledger={},
+        recovery_generation=lambda: 0,
+    )
+    call = {
+        "id": "call-ambiguous",
+        "type": "function",
+        "function": {"name": "write_once", "arguments": "{}"},
+    }
+
+    async def scenario() -> None:
+        execution = asyncio.create_task(bridge.execute(call))
+        await started.wait()
+        messages: list[Message | dict[str, Any]] = []
+        append = asyncio.create_task(bridge.append_unconsumed(messages))
+        await asyncio.sleep(0)
+        release.set()
+
+        with pytest.raises(RuntimeError, match="bridge infrastructure failed"):
+            await execution
+        await append
+
+        assert executions == 1
+        assert bridge.has_activity is True
+        assert messages[0] == {"role": "assistant", "tool_calls": [call]}
+        assert messages[1]["role"] == "tool"
+        assert messages[1]["tool_call_id"] == "call-ambiguous"
+        assert "ambiguous_tool_execution" in str(messages[1]["content"])
+
+    asyncio.run(scenario())
+
+
 def test_main_route_reuses_independent_planner_and_executor_sessions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

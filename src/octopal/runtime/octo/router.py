@@ -324,16 +324,55 @@ class _ProviderToolExecutorBridge:
     def has_activity(self) -> bool:
         return bool(self._pending or self._records)
 
+    def _record(
+        self,
+        *,
+        call: dict[str, Any],
+        result: Any,
+        meta: dict[str, Any],
+    ) -> str:
+        rendered = render_tool_result_for_llm(
+            result,
+            tool_name=str((call.get("function") or {}).get("name") or ""),
+        )
+        self._records.append(
+            {
+                "call": call,
+                "result": result,
+                "meta": dict(meta),
+                "rendered": rendered.text,
+                "consumed": False,
+            }
+        )
+        return rendered.text
+
     async def execute(self, call: dict[str, Any]) -> dict[str, Any]:
         async def _run() -> dict[str, Any]:
-            result, meta = await _handle_tool_call_at_most_once(
-                provider=self._provider,
-                call=call,
-                tools=self._tools(),
-                ctx=self._ctx,
-                ledger=self._ledger,
-                recovery_generation=self._recovery_generation(),
-            )
+            try:
+                result, meta = await _handle_tool_call_at_most_once(
+                    provider=self._provider,
+                    call=call,
+                    tools=self._tools(),
+                    ctx=self._ctx,
+                    ledger=self._ledger,
+                    recovery_generation=self._recovery_generation(),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._record(
+                    call=call,
+                    result={
+                        "status": "blocked",
+                        "error": "ambiguous_tool_execution",
+                        "message": (
+                            "The tool attempt ended without a confirmed result and was not "
+                            "replayed. Inspect the resulting state before retrying."
+                        ),
+                    },
+                    meta={"had_error": True, "error_type": "ambiguous_tool_execution"},
+                )
+                raise
             payload_error_type = _tool_result_payload_error_type(result)
             if payload_error_type and not meta.get("had_error"):
                 meta = {
@@ -341,22 +380,10 @@ class _ProviderToolExecutorBridge:
                     "had_error": True,
                     "error_type": payload_error_type,
                 }
-            rendered = render_tool_result_for_llm(
-                result,
-                tool_name=str((call.get("function") or {}).get("name") or ""),
-            )
-            self._records.append(
-                {
-                    "call": call,
-                    "result": result,
-                    "meta": dict(meta),
-                    "rendered": rendered.text,
-                    "consumed": False,
-                }
-            )
+            rendered = self._record(call=call, result=result, meta=meta)
             return {
                 "success": not bool(meta.get("had_error")),
-                "content": rendered.text,
+                "content": rendered,
             }
 
         task = asyncio.create_task(_run())
@@ -381,7 +408,18 @@ class _ProviderToolExecutorBridge:
         messages: list[Message | dict[str, Any]],
     ) -> None:
         if self._pending:
-            await asyncio.gather(*(asyncio.shield(task) for task in tuple(self._pending)))
+            outcomes = await asyncio.gather(
+                *(asyncio.shield(task) for task in tuple(self._pending)),
+                return_exceptions=True,
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, asyncio.CancelledError):
+                    raise outcome
+                if isinstance(outcome, BaseException):
+                    logger.error(
+                        "Provider-owned tool execution ended ambiguously",
+                        error=type(outcome).__name__,
+                    )
         for record in self._records:
             call = record.get("call")
             if record.get("consumed") or not isinstance(call, dict):
