@@ -258,6 +258,10 @@ class _CodexAppServerClient:
         self._stderr_tail = ""
         self._transport_failed = asyncio.Event()
         self._transport_error: CodexAppServerError | None = None
+        self._transport_reason: str | None = None
+        self._transport_type: str | None = None
+        self._transport_category: str | None = None
+        self._protocol_error_count = 0
         self._closing = False
 
     async def start(self) -> None:
@@ -344,6 +348,11 @@ class _CodexAppServerClient:
                 process_exit_code=process.returncode,
                 stderr_tail=self._stderr_tail,
                 error=type(exc).__name__,
+                exception=exc,
+                transport_reason=self._transport_reason,
+                transport_type=self._transport_type,
+                transport_category=self._transport_category,
+                protocol_error_count=self._protocol_error_count,
             )
             raise
         except Exception as exc:
@@ -359,6 +368,11 @@ class _CodexAppServerClient:
                 process_exit_code=process.returncode,
                 stderr_tail=self._stderr_tail,
                 error=type(exc).__name__,
+                exception=exc,
+                transport_reason=self._transport_reason,
+                transport_type=self._transport_type,
+                transport_category=self._transport_category,
+                protocol_error_count=self._protocol_error_count,
             )
             raise
         else:
@@ -371,6 +385,7 @@ class _CodexAppServerClient:
                 wire_wait_ms=(finished_at - wire_started_at) * 1000,
                 process_exit_code=process.returncode,
                 stderr_tail=self._stderr_tail,
+                protocol_error_count=self._protocol_error_count,
             )
             return result
         finally:
@@ -487,6 +502,10 @@ class _CodexAppServerClient:
                 try:
                     message = json.loads(line)
                 except json.JSONDecodeError:
+                    self._note_protocol_error("invalid_json", process.returncode)
+                    continue
+                if not isinstance(message, dict):
+                    self._note_protocol_error("invalid_message_shape", process.returncode)
                     continue
                 if "id" in message and "method" in message:
                     await self._requests.put(message)
@@ -504,9 +523,17 @@ class _CodexAppServerClient:
                     continue
                 if "method" in message:
                     await self._notifications.put(message)
+                    continue
+                self._note_protocol_error("invalid_message_shape", process.returncode)
         finally:
             if not self._closing:
-                self._fail_transport(CodexAppServerError("codex app-server stdout closed"))
+                self._fail_transport(
+                    CodexAppServerError("codex app-server stdout closed"),
+                    reason="stdout_eof",
+                    transport_type="eof",
+                    category="stream",
+                    process_exit_code=process.returncode,
+                )
 
     async def _read_stderr(self) -> None:
         process = self._process
@@ -524,12 +551,49 @@ class _CodexAppServerClient:
         return_code = await process.wait()
         if not self._closing:
             self._fail_transport(
-                CodexAppServerError(f"codex app-server exited with code {return_code}")
+                CodexAppServerError(f"codex app-server exited with code {return_code}"),
+                reason=_process_exit_reason(return_code),
+                transport_type="child_exit",
+                category="process",
+                process_exit_code=return_code,
             )
 
-    def _fail_transport(self, error: CodexAppServerError) -> None:
-        if self._transport_error is None:
+    def _note_protocol_error(self, reason: str, process_exit_code: int | None) -> None:
+        self._protocol_error_count += 1
+        _log_app_server_transport(
+            reason=reason,
+            transport_type="protocol_error",
+            category="protocol",
+            process_exit_code=process_exit_code,
+            stderr_tail=self._stderr_tail,
+            protocol_error_count=self._protocol_error_count,
+            primary_failure=False,
+        )
+
+    def _fail_transport(
+        self,
+        error: CodexAppServerError,
+        *,
+        reason: str,
+        transport_type: str,
+        category: str,
+        process_exit_code: int | None,
+    ) -> None:
+        primary_failure = self._transport_error is None
+        if primary_failure:
             self._transport_error = error
+            self._transport_reason = reason
+            self._transport_type = transport_type
+            self._transport_category = category
+        _log_app_server_transport(
+            reason=reason,
+            transport_type=transport_type,
+            category=category,
+            process_exit_code=process_exit_code,
+            stderr_tail=self._stderr_tail,
+            protocol_error_count=self._protocol_error_count,
+            primary_failure=primary_failure,
+        )
         for future in self._pending.values():
             if not future.done():
                 future.set_exception(self._transport_error)
@@ -1249,8 +1313,21 @@ def _log_app_server_request(
     process_exit_code: int | None,
     stderr_tail: str,
     error: str | None = None,
+    exception: BaseException | None = None,
+    transport_reason: str | None = None,
+    transport_type: str | None = None,
+    transport_category: str | None = None,
+    protocol_error_count: int = 0,
 ) -> None:
     stderr_category, stderr_digest = _stderr_diagnostics(stderr_tail)
+    failure_reason, failure_type, failure_category = _request_failure_diagnostics(
+        outcome=outcome,
+        exception=exception,
+        transport_reason=transport_reason,
+        transport_type=transport_type,
+        transport_category=transport_category,
+    )
+    process_exit_kind, process_exit_signal = _process_exit_diagnostics(process_exit_code)
     log = logger.debug if outcome == "completed" else logger.warning
     log(
         "Codex app-server request finished",
@@ -1260,10 +1337,82 @@ def _log_app_server_request(
         write_wait_ms=round(write_wait_ms, 3),
         wire_wait_ms=round(wire_wait_ms, 3),
         process_exit_code=process_exit_code,
+        process_exit_kind=process_exit_kind,
+        process_exit_signal=process_exit_signal,
+        failure_reason=failure_reason,
+        failure_type=failure_type,
+        failure_category=failure_category,
         stderr_category=stderr_category,
         stderr_digest=stderr_digest,
+        likely_diagnostic_categories=_stderr_diagnostic_categories(stderr_tail),
+        protocol_error_count=protocol_error_count,
         error=error,
     )
+
+
+def _log_app_server_transport(
+    *,
+    reason: str,
+    transport_type: str,
+    category: str,
+    process_exit_code: int | None,
+    stderr_tail: str,
+    protocol_error_count: int,
+    primary_failure: bool,
+) -> None:
+    stderr_category, stderr_digest = _stderr_diagnostics(stderr_tail)
+    process_exit_kind, process_exit_signal = _process_exit_diagnostics(process_exit_code)
+    logger.warning(
+        "Codex app-server transport observed",
+        transport_reason=reason,
+        transport_type=transport_type,
+        transport_category=category,
+        primary_failure=primary_failure,
+        process_exit_code=process_exit_code,
+        process_exit_kind=process_exit_kind,
+        process_exit_signal=process_exit_signal,
+        stderr_category=stderr_category,
+        stderr_digest=stderr_digest,
+        likely_diagnostic_categories=_stderr_diagnostic_categories(stderr_tail),
+        protocol_error_count=protocol_error_count,
+    )
+
+
+def _request_failure_diagnostics(
+    *,
+    outcome: str,
+    exception: BaseException | None,
+    transport_reason: str | None,
+    transport_type: str | None,
+    transport_category: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    if outcome == "completed":
+        return None, None, None
+    if transport_reason:
+        return transport_reason, transport_type or "transport", transport_category or "transport"
+    if isinstance(exception, TimeoutError):
+        return "request_timeout", "timeout", "request"
+    if isinstance(exception, asyncio.CancelledError):
+        return "request_cancelled", "cancellation", "request"
+    return "request_failed", "exception", "request"
+
+
+def _process_exit_reason(return_code: int) -> str:
+    if return_code < 0:
+        return "child_exit_signal"
+    if return_code == 0:
+        return "child_exit_clean"
+    return "child_exit_nonzero"
+
+
+def _process_exit_diagnostics(return_code: int | None) -> tuple[str, int | None]:
+    if return_code is None:
+        return "running_or_unknown", None
+    if return_code < 0:
+        return "signal", abs(return_code)
+    if return_code == 0:
+        return "clean", None
+    return "nonzero", None
 
 
 def _stderr_diagnostics(stderr_tail: str) -> tuple[str, str | None]:
@@ -1280,6 +1429,33 @@ def _stderr_diagnostics(stderr_tail: str) -> tuple[str, str | None]:
     else:
         category = "other"
     return category, _fingerprint(normalized)[:12]
+
+
+def _stderr_diagnostic_categories(stderr_tail: str) -> list[str]:
+    lowered = stderr_tail.strip().lower()
+    if not lowered:
+        return []
+    categories: list[str] = []
+    markers = (
+        ("authentication", ("unauthorized", "authentication", "login required")),
+        ("configuration", ("configuration", "invalid option", "unknown argument")),
+        ("permission", ("permission denied", "operation not permitted")),
+        (
+            "resource_exhaustion",
+            ("out of memory", "too many open files", "no space left"),
+        ),
+        ("network", ("network", "connection", "dns", "tls")),
+        ("protocol", ("protocol", "json-rpc", "invalid json")),
+        ("state_store", ("database", "sqlite", "state db", "rollout")),
+        ("thread_state", ("thread not found", "unknown thread", "cannot resume")),
+        ("startup", ("failed to initialize", "startup")),
+        ("sandbox", ("sandbox",)),
+        ("runtime_failure", ("panic", "fatal", "exception")),
+    )
+    for category, candidates in markers:
+        if any(candidate in lowered for candidate in candidates):
+            categories.append(category)
+    return categories or ["unclassified"]
 
 
 def _tools_to_dynamic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

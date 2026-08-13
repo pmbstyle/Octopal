@@ -299,16 +299,164 @@ def test_request_telemetry_redacts_stderr_content(monkeypatch: pytest.MonkeyPatc
         write_wait_ms=10,
         wire_wait_ms=29_990,
         process_exit_code=7,
-        stderr_tail="secret-bearing fatal detail",
+        stderr_tail=(
+            "fatal login required token=top-secret at "
+            "/Users/private-user/.config/provider/state.json"
+        ),
         error="TimeoutError",
+        exception=TimeoutError("request included private prompt"),
+        protocol_error_count=2,
     )
 
     assert captured["request_stage"] == "thread/resume"
     assert captured["stderr_category"] == "fatal"
     assert len(captured["stderr_digest"]) == 12
-    assert "secret-bearing" not in json.dumps(captured)
+    assert captured["failure_reason"] == "request_timeout"
+    assert captured["failure_type"] == "timeout"
+    assert captured["failure_category"] == "request"
+    assert captured["process_exit_kind"] == "nonzero"
+    assert captured["process_exit_signal"] is None
+    assert captured["likely_diagnostic_categories"] == [
+        "authentication",
+        "runtime_failure",
+    ]
+    assert captured["protocol_error_count"] == 2
+    serialized = json.dumps(captured)
+    assert "top-secret" not in serialized
+    assert "private-user" not in serialized
+    assert "private prompt" not in serialized
     assert captured["write_wait_ms"] == 10
     assert captured["wire_wait_ms"] == 29_990
+
+
+@pytest.mark.parametrize(
+    ("reason", "transport_type", "category", "exit_code", "exit_kind", "signal"),
+    [
+        ("child_exit_nonzero", "child_exit", "process", 7, "nonzero", None),
+        ("child_exit_signal", "child_exit", "process", -9, "signal", 9),
+        ("stdout_eof", "eof", "stream", None, "running_or_unknown", None),
+        ("invalid_json", "protocol_error", "protocol", None, "running_or_unknown", None),
+    ],
+)
+def test_transport_telemetry_distinguishes_redacted_failure_types(
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+    transport_type: str,
+    category: str,
+    exit_code: int | None,
+    exit_kind: str,
+    signal: int | None,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Logger:
+        def warning(self, event: str, **fields: Any) -> None:
+            captured.update({"event": event, **fields})
+
+    monkeypatch.setattr(codex_provider, "logger", _Logger())
+    codex_provider._log_app_server_transport(
+        reason=reason,
+        transport_type=transport_type,
+        category=category,
+        process_exit_code=exit_code,
+        stderr_tail=(
+            "permission denied: /Users/private-user/workspace; " "authorization=Bearer top-secret"
+        ),
+        protocol_error_count=3,
+        primary_failure=True,
+    )
+
+    assert captured["transport_reason"] == reason
+    assert captured["transport_type"] == transport_type
+    assert captured["transport_category"] == category
+    assert captured["process_exit_code"] == exit_code
+    assert captured["process_exit_kind"] == exit_kind
+    assert captured["process_exit_signal"] == signal
+    assert captured["likely_diagnostic_categories"] == ["permission"]
+    assert captured["protocol_error_count"] == 3
+    assert len(captured["stderr_digest"]) == 12
+    serialized = json.dumps(captured)
+    assert "private-user" not in serialized
+    assert "top-secret" not in serialized
+
+
+def test_protocol_error_and_eof_are_logged_without_stdout_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[dict[str, Any]] = []
+
+    class _Logger:
+        def warning(self, event: str, **fields: Any) -> None:
+            events.append({"event": event, **fields})
+
+    class _Process:
+        def __init__(self) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.returncode: int | None = None
+
+    monkeypatch.setattr(codex_provider, "logger", _Logger())
+
+    async def scenario() -> None:
+        client = _RealCodexAppServerClient("unused", [], {})
+        process = _Process()
+        client._process = process  # type: ignore[assignment]
+        process.stdout.feed_data(b'{"malformed":"prompt=private-message token=top-secret"\n')
+        process.stdout.feed_data(b'["private-message", "top-secret"]\n')
+        process.stdout.feed_eof()
+        await client._read_stdout()
+
+        assert [event["transport_reason"] for event in events] == [
+            "invalid_json",
+            "invalid_message_shape",
+            "stdout_eof",
+        ]
+        assert events[0]["transport_type"] == "protocol_error"
+        assert events[0]["protocol_error_count"] == 1
+        assert events[0]["primary_failure"] is False
+        assert events[1]["transport_type"] == "protocol_error"
+        assert events[1]["protocol_error_count"] == 2
+        assert events[2]["transport_type"] == "eof"
+        assert events[2]["protocol_error_count"] == 2
+        assert events[2]["primary_failure"] is True
+        serialized = json.dumps(events)
+        assert "private-message" not in serialized
+        assert "top-secret" not in serialized
+
+    asyncio.run(scenario())
+
+
+def test_first_transport_failure_remains_authoritative_while_exit_is_observed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[dict[str, Any]] = []
+
+    class _Logger:
+        def warning(self, event: str, **fields: Any) -> None:
+            events.append({"event": event, **fields})
+
+    monkeypatch.setattr(codex_provider, "logger", _Logger())
+    client = _RealCodexAppServerClient("unused", [], {})
+    client._fail_transport(
+        CodexAppServerError("stdout closed"),
+        reason="stdout_eof",
+        transport_type="eof",
+        category="stream",
+        process_exit_code=None,
+    )
+    client._fail_transport(
+        CodexAppServerError("exited with code 7"),
+        reason="child_exit_nonzero",
+        transport_type="child_exit",
+        category="process",
+        process_exit_code=7,
+    )
+
+    assert client._transport_reason == "stdout_eof"
+    assert client._transport_type == "eof"
+    assert str(client._transport_error) == "stdout closed"
+    assert [event["primary_failure"] for event in events] == [True, False]
+    assert events[1]["transport_reason"] == "child_exit_nonzero"
+    assert events[1]["process_exit_code"] == 7
 
 
 def test_warm_tool_loop_sends_only_the_appended_tool_result(tmp_path: Path) -> None:
