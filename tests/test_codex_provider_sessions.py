@@ -512,6 +512,49 @@ def test_app_server_eof_fails_initialize_without_waiting_for_request_timeout() -
     asyncio.run(scenario())
 
 
+def test_simultaneous_request_and_terminal_notification_are_preserved() -> None:
+    request = {
+        "id": 7,
+        "method": "item/permissions/requestApproval",
+        "params": {},
+    }
+    completed = {"method": "turn/completed", "params": {"threadId": "thread-1"}}
+
+    class _PrequeuedClient(_RealCodexAppServerClient):
+        def __init__(self) -> None:
+            super().__init__("unused", [], {})
+            self.responses: list[tuple[int | str, dict[str, Any]]] = []
+
+        async def respond(self, request_id: int | str, result: dict[str, Any]) -> None:
+            self.responses.append((request_id, result))
+
+    async def prequeued_client() -> _PrequeuedClient:
+        client = _PrequeuedClient()
+        await client._requests.put(request)
+        await client._notifications.put(completed)
+        return client
+
+    async def scenario() -> None:
+        client = await prequeued_client()
+        assert await client.next_event(0.1) == ("request", request)
+        assert await client.next_event(0.1) == ("notification", completed)
+
+        collecting_client = await prequeued_client()
+        result = await asyncio.wait_for(
+            codex_provider._collect_turn(
+                collecting_client,
+                thread_id="thread-1",
+                turn_id=None,
+                on_partial=None,
+            ),
+            timeout=0.5,
+        )
+        assert result == {"content": "", "tool_calls": []}
+        assert collecting_client.responses == [(7, {"permissions": {}, "scope": "turn"})]
+
+    asyncio.run(scenario())
+
+
 def test_failed_fallback_turn_does_not_persist_replacement_mapping(tmp_path: Path) -> None:
     async def scenario() -> None:
         provider = CodexProvider(_settings(tmp_path))

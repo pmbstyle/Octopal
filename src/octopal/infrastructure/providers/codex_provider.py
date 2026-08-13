@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -158,6 +159,7 @@ class _CodexAppServerClient:
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._notifications: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._requests: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._deferred_events: deque[tuple[str, dict[str, Any]]] = deque()
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._process_watch_task: asyncio.Task[None] | None = None
@@ -309,6 +311,9 @@ class _CodexAppServerClient:
         await process.stdin.drain()
 
     async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
+        if self._deferred_events:
+            return self._deferred_events.popleft()
+
         notification_task = asyncio.create_task(self._notifications.get())
         request_task = asyncio.create_task(self._requests.get())
         transport_task = asyncio.create_task(self._transport_failed.wait())
@@ -328,6 +333,8 @@ class _CodexAppServerClient:
             await asyncio.gather(*(done - {transport_task}), return_exceptions=True)
             raise self._transport_error or CodexAppServerError("codex app-server transport closed")
         if request_task in done:
+            if notification_task in done:
+                self._deferred_events.append(("notification", notification_task.result()))
             return "request", request_task.result()
         return "notification", notification_task.result()
 
