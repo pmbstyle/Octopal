@@ -26,11 +26,18 @@ from octopal.infrastructure.providers.profile_resolver import resolve_litellm_pr
 
 CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS = 30.0
 CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS = 180.0
+CODEX_TOOL_INTERRUPT_GRACE_SECONDS = 2.0
 # Backward-compatible aliases for callers that imported the original constants.
 CODEX_REQUEST_TIMEOUT_SECONDS = CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS
 CODEX_TURN_TIMEOUT_SECONDS = CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS
 CODEX_SESSION_TTL_DAYS = 30
 CODEX_SESSION_STATE_VERSION = 1
+CODEX_APP_SERVER_CAPACITY = 2
+CODEX_BACKGROUND_CAPACITY = 1
+CODEX_BACKGROUND_MAX_WAIT_SECONDS = 30.0
+CODEX_INTERACTIVE_BURST_LIMIT = 4
+CODEX_LANE_INTERACTIVE = "interactive"
+CODEX_LANE_BACKGROUND = "background"
 
 logger = structlog.get_logger(__name__)
 
@@ -54,6 +61,91 @@ class _CodexSessionConfiguration:
     components: dict[str, str]
     tool_count: int
     tool_digest: str
+
+
+@dataclass(eq=False)
+class _AdmissionTicket:
+    lane: str
+    queued_at: float
+
+
+class _CodexAdmissionController:
+    """Fair provider-local admission with one slot reserved from background work."""
+
+    def __init__(
+        self,
+        *,
+        capacity: int = CODEX_APP_SERVER_CAPACITY,
+        background_capacity: int = CODEX_BACKGROUND_CAPACITY,
+    ) -> None:
+        self._capacity = capacity
+        self._background_capacity = background_capacity
+        self._condition = asyncio.Condition()
+        self._interactive: deque[_AdmissionTicket] = deque()
+        self._background: deque[_AdmissionTicket] = deque()
+        self._active_total = 0
+        self._active_background = 0
+        self._interactive_streak = 0
+
+    @contextlib.asynccontextmanager
+    async def acquire(self, lane: str) -> Any:
+        normalized_lane = _normalize_lane(lane)
+        loop = asyncio.get_running_loop()
+        ticket = _AdmissionTicket(normalized_lane, loop.time())
+        queue = self._interactive if normalized_lane == CODEX_LANE_INTERACTIVE else self._background
+        async with self._condition:
+            queue.append(ticket)
+            try:
+                while not self._can_admit(ticket, now=loop.time()):
+                    await self._condition.wait()
+                queue.remove(ticket)
+                self._active_total += 1
+                if normalized_lane == CODEX_LANE_BACKGROUND:
+                    self._active_background += 1
+                    self._interactive_streak = 0
+                else:
+                    self._interactive_streak += 1
+                self._condition.notify_all()
+            except BaseException:
+                with contextlib.suppress(ValueError):
+                    queue.remove(ticket)
+                self._condition.notify_all()
+                raise
+
+        try:
+            yield {
+                "queue_wait_ms": (loop.time() - ticket.queued_at) * 1000,
+                "active_total": self._active_total,
+                "active_background": self._active_background,
+            }
+        finally:
+            async with self._condition:
+                self._active_total -= 1
+                if normalized_lane == CODEX_LANE_BACKGROUND:
+                    self._active_background -= 1
+                self._condition.notify_all()
+
+    def _can_admit(self, ticket: _AdmissionTicket, *, now: float) -> bool:
+        if self._active_total >= self._capacity:
+            return False
+        oldest_background = self._background[0] if self._background else None
+        background_is_aged = bool(
+            oldest_background
+            and now - oldest_background.queued_at >= CODEX_BACKGROUND_MAX_WAIT_SECONDS
+        )
+        background_gets_fair_turn = bool(
+            oldest_background
+            and background_is_aged
+            and self._interactive_streak >= CODEX_INTERACTIVE_BURST_LIMIT
+            and self._active_background < self._background_capacity
+        )
+        if ticket.lane == CODEX_LANE_INTERACTIVE:
+            return self._interactive[0] is ticket and not background_gets_fair_turn
+        return bool(
+            self._background[0] is ticket
+            and self._active_background < self._background_capacity
+            and (not self._interactive or background_gets_fair_turn)
+        )
 
 
 class _CodexSessionStore:
@@ -327,16 +419,13 @@ class _CodexAppServerClient:
         await asyncio.gather(*pending, return_exceptions=True)
         if not done:
             raise TimeoutError("codex app-server turn timed out")
-        if transport_task in done:
-            for task in done - {transport_task}:
-                task.cancel()
-            await asyncio.gather(*(done - {transport_task}), return_exceptions=True)
-            raise self._transport_error or CodexAppServerError("codex app-server transport closed")
         if request_task in done:
             if notification_task in done:
                 self._deferred_events.append(("notification", notification_task.result()))
             return "request", request_task.result()
-        return "notification", notification_task.result()
+        if notification_task in done:
+            return "notification", notification_task.result()
+        raise self._transport_error or CodexAppServerError("codex app-server transport closed")
 
     async def close(self) -> None:
         self._closing = True
@@ -464,6 +553,7 @@ class CodexProvider:
         self._model = cast(str, self._profile.raw_model or self._profile.model)
         self._sessions = _CodexSessionStore(Path(getattr(settings, "state_dir", Path("data"))))
         self._session_locks: dict[str, asyncio.Lock] = {}
+        self._admission = _CodexAdmissionController()
 
     @property
     def provider_id(self) -> str:
@@ -479,6 +569,7 @@ class CodexProvider:
             tools=None,
             on_partial=None,
             session_key=_session_key_from_kwargs(kwargs),
+            lane=_lane_from_kwargs(kwargs),
         )
         return cast(str, result["content"])
 
@@ -494,6 +585,7 @@ class CodexProvider:
             tools=None,
             on_partial=on_partial,
             session_key=_session_key_from_kwargs(kwargs),
+            lane=_lane_from_kwargs(kwargs),
         )
         return cast(str, result["content"])
 
@@ -510,6 +602,7 @@ class CodexProvider:
             tools=tools,
             on_partial=None,
             session_key=_session_key_from_kwargs(kwargs),
+            lane=_lane_from_kwargs(kwargs),
         )
         return {
             "content": result["content"],
@@ -524,10 +617,11 @@ class CodexProvider:
         tools: list[dict] | None,
         on_partial: Callable[[str], Awaitable[None]] | None,
         session_key: str | None,
+        lane: str,
     ) -> dict[str, Any]:
         if session_key:
             phase = _session_phase(tools)
-            session_ref = _session_ref(session_key, phase=phase)
+            session_ref = _session_ref(session_key, phase=phase, lane=lane)
             lock = self._session_locks.setdefault(session_ref, asyncio.Lock())
             queued_at = asyncio.get_running_loop().time()
             async with lock:
@@ -536,14 +630,18 @@ class CodexProvider:
                     phase=phase,
                     queue_wait_ms=(asyncio.get_running_loop().time() - queued_at) * 1000,
                 )
-                return await self._run_session_turn(
-                    messages,
-                    tools=tools,
-                    on_partial=on_partial,
-                    session_ref=session_ref,
-                    phase=phase,
-                )
-        return await self._run_ephemeral_turn(messages, tools=tools, on_partial=on_partial)
+                async with self._admission.acquire(lane) as admission:
+                    _log_admission_wait(session_ref, lane=lane, phase=phase, **admission)
+                    return await self._run_session_turn(
+                        messages,
+                        tools=tools,
+                        on_partial=on_partial,
+                        session_ref=session_ref,
+                        phase=phase,
+                    )
+        async with self._admission.acquire(lane) as admission:
+            _log_admission_wait(None, lane=lane, phase=_session_phase(tools), **admission)
+            return await self._run_ephemeral_turn(messages, tools=tools, on_partial=on_partial)
 
     async def _run_ephemeral_turn(
         self,
@@ -763,18 +861,30 @@ class CodexProvider:
             result = await _collect_turn(
                 client, thread_id=thread_id, turn_id=turn_id, on_partial=on_partial
             )
-            self._sessions.put(
-                session_ref,
-                _CodexSession(
+            if result.pop("terminal", False):
+                self._sessions.put(
+                    session_ref,
+                    _CodexSession(
+                        thread_id=thread_id,
+                        config_fingerprint=configuration.fingerprint,
+                        config_components=configuration.components,
+                        message_fingerprints=message_fingerprints,
+                        updated_at=datetime.now(UTC),
+                    ),
+                )
+            else:
+                self._sessions.delete(session_ref)
+                _log_session_state(
+                    "reset",
+                    session_ref,
+                    phase=phase,
                     thread_id=thread_id,
-                    config_fingerprint=configuration.fingerprint,
-                    config_components=configuration.components,
-                    message_fingerprints=message_fingerprints,
-                    updated_at=datetime.now(UTC),
-                ),
-            )
+                    reason="turn_not_terminal",
+                    tool_count=configuration.tool_count,
+                    tool_digest=configuration.tool_digest,
+                )
             return result
-        except Exception:
+        except BaseException:
             if resumed:
                 self._sessions.delete(session_ref)
                 _log_session_state(
@@ -800,9 +910,20 @@ async def _collect_turn(
     output = ""
     tool_calls: list[dict[str, Any]] = []
     current_turn_id = turn_id
+    tool_request_seen = False
 
     while True:
-        kind, event = await client.next_event(CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS)
+        try:
+            event_timeout = (
+                CODEX_TOOL_INTERRUPT_GRACE_SECONDS
+                if tool_request_seen
+                else CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS
+            )
+            kind, event = await client.next_event(event_timeout)
+        except (CodexAppServerError, TimeoutError):
+            if tool_request_seen:
+                return {"content": output, "tool_calls": tool_calls, "terminal": False}
+            raise
         payload = event.get("params") or {}
         if kind == "request":
             method = str(event.get("method") or "")
@@ -810,6 +931,7 @@ async def _collect_turn(
                 call = _tool_call_from_codex_request(payload)
                 if call:
                     tool_calls.append(call)
+                    tool_request_seen = True
                 if current_turn_id:
                     with contextlib.suppress(Exception):
                         await client.request(
@@ -817,19 +939,24 @@ async def _collect_turn(
                             {"threadId": thread_id, "turnId": current_turn_id},
                             timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
                         )
-                await client.respond(
-                    event["id"],
-                    {
-                        "success": False,
-                        "contentItems": [
-                            {
-                                "type": "inputText",
-                                "text": "Tool execution is handled by Octopal after the provider returns the tool call.",
-                            }
-                        ],
-                    },
-                )
-                return {"content": output, "tool_calls": tool_calls}
+                try:
+                    await client.respond(
+                        event["id"],
+                        {
+                            "success": False,
+                            "contentItems": [
+                                {
+                                    "type": "inputText",
+                                    "text": "Tool execution is handled by Octopal after the provider returns the tool call.",
+                                }
+                            ],
+                        },
+                    )
+                except (CodexAppServerError, OSError):
+                    if tool_request_seen:
+                        return {"content": output, "tool_calls": tool_calls, "terminal": False}
+                    raise
+                continue
             await _respond_to_auxiliary_request(client, event)
             continue
 
@@ -845,7 +972,7 @@ async def _collect_turn(
                 await on_partial(output)
             continue
         if method == "turn/completed":
-            return {"content": output, "tool_calls": tool_calls}
+            return {"content": output, "tool_calls": tool_calls, "terminal": True}
         if method == "error":
             raise CodexAppServerError(json.dumps(payload, ensure_ascii=False))
 
@@ -908,6 +1035,18 @@ def _session_key_from_kwargs(kwargs: dict[str, object]) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _lane_from_kwargs(kwargs: dict[str, object]) -> str:
+    return _normalize_lane(str(kwargs.get("codex_request_lane") or ""))
+
+
+def _normalize_lane(value: str) -> str:
+    return (
+        CODEX_LANE_INTERACTIVE
+        if str(value or "").strip().lower() == CODEX_LANE_INTERACTIVE
+        else CODEX_LANE_BACKGROUND
+    )
 
 
 def _message_fingerprints(messages: list[Message | dict]) -> tuple[str, ...]:
@@ -1025,10 +1164,10 @@ def _session_phase(tools: list[dict] | None) -> str:
     return "executor" if tools is not None else "planner"
 
 
-def _session_ref(session_key: str, *, phase: str) -> str:
+def _session_ref(session_key: str, *, phase: str, lane: str = CODEX_LANE_BACKGROUND) -> str:
     return _fingerprint(
         json.dumps(
-            {"session_key": session_key, "phase": phase},
+            {"session_key": session_key, "phase": phase, "lane": _normalize_lane(lane)},
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -1047,6 +1186,29 @@ def _log_session_queue_wait(session_ref: str, *, phase: str, queue_wait_ms: floa
         phase=phase,
         queue_wait_ms=round(queue_wait_ms, 3),
     )
+
+
+def _log_admission_wait(
+    session_ref: str | None,
+    *,
+    lane: str,
+    phase: str,
+    queue_wait_ms: float,
+    active_total: int,
+    active_background: int,
+) -> None:
+    fields = {
+        "session_ref": session_ref[:12] if session_ref else None,
+        "lane": lane,
+        "phase": phase,
+        "queue_wait_ms": round(queue_wait_ms, 3),
+        "active_total": active_total,
+        "active_background": active_background,
+    }
+    if queue_wait_ms >= 1000:
+        logger.info("Codex provider admission wait", **fields)
+    else:
+        logger.debug("Codex provider admission wait", **fields)
 
 
 def _log_session_state(

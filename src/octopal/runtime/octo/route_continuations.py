@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import Awaitable, Callable
@@ -21,6 +22,64 @@ _HandleToolCallFn = Callable[
     [dict[str, Any], list[ToolSpec], dict[str, object]],
     Awaitable[tuple[Any, dict[str, Any]]],
 ]
+
+
+def _enqueue_bounded_continuation(
+    *,
+    octo: Any,
+    chat_id: int,
+    notify_user: object,
+    user_text: str,
+    messages: list[Message | dict[str, Any]],
+    ctx: dict[str, object],
+    before_continue: Awaitable[None] | None = None,
+) -> bool:
+    if bool(ctx.get("bounded_continuation_enqueued", False)):
+        return False
+    if chat_id == 0 or octo is None or not hasattr(octo, "handle_message"):
+        return False
+    ctx["bounded_continuation_enqueued"] = True
+    marker = getattr(octo, "mark_structured_followup_required", None)
+    if callable(marker):
+        marker()
+
+    async def _run() -> str | None:
+        if before_continue is not None:
+            await before_continue
+        return await _continue_after_tool_budget_exhaustion(
+            octo=octo,
+            chat_id=chat_id,
+            notify_user=notify_user,
+            user_text=user_text,
+            messages=messages,
+        )
+
+    task = asyncio.create_task(
+        _run(),
+        name=f"bounded-route-continuation-{chat_id}",
+    )
+    tasks = getattr(octo, "_bounded_route_continuation_tasks", None)
+    if not isinstance(tasks, set):
+        tasks = set()
+        octo._bounded_route_continuation_tasks = tasks
+    tasks.add(task)
+
+    def _finished(done: asyncio.Task[str | None]) -> None:
+        tasks.discard(done)
+        if done.cancelled():
+            logger.warning("Bounded route continuation was cancelled", chat_id=chat_id)
+            return
+        error = done.exception()
+        if error is not None:
+            logger.error(
+                "Bounded route continuation failed",
+                chat_id=chat_id,
+                error=type(error).__name__,
+            )
+
+    task.add_done_callback(_finished)
+    logger.info("Bounded route continuation enqueued", chat_id=chat_id)
+    return True
 
 
 async def _continue_after_tool_budget_exhaustion(

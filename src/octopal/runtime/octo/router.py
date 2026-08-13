@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
@@ -46,6 +48,12 @@ from octopal.runtime.workers.contracts import WorkerResult
 from octopal.tools.registry import ToolSpec
 
 logger = structlog.get_logger(__name__)
+INTERACTIVE_RESPONSE_SOFT_BUDGET_SECONDS = 90.0
+INTERACTIVE_RESPONSE_HARD_BUDGET_SECONDS = 110.0
+_INTERACTIVE_DEFERRED_REPLY = (
+    "I’m continuing this in the background so I don’t hold up the conversation. "
+    "I’ll send the result when it’s ready."
+)
 get_tools = _tool_selection.get_tools
 _DURABLE_WORKSPACE_ROOTS = _tool_selection._DURABLE_WORKSPACE_ROOTS
 _HEARTBEAT_ALLOWED_TOOL_NAMES = _tool_selection._HEARTBEAT_ALLOWED_TOOL_NAMES
@@ -98,7 +106,198 @@ def _codex_session_key(
 
 def _provider_session_kwargs(ctx: dict[str, object]) -> dict[str, object]:
     session_key = str(ctx.get("codex_session_key") or "").strip()
-    return {"codex_session_key": session_key} if session_key else {}
+    if not session_key:
+        return {}
+    kwargs: dict[str, object] = {"codex_session_key": session_key}
+    lane = str(ctx.get("codex_request_lane") or "").strip()
+    if lane:
+        kwargs["codex_request_lane"] = lane
+    return kwargs
+
+
+def _provider_request_lane(
+    *,
+    chat_id: int,
+    route_mode: str,
+    internal_followup: bool,
+    background_delivery: bool,
+) -> str:
+    if (
+        chat_id > 0
+        and route_mode == RouteMode.CONVERSATION.value
+        and not internal_followup
+        and not background_delivery
+    ):
+        return "interactive"
+    return "background"
+
+
+def _interactive_budget_elapsed(ctx: dict[str, object]) -> float:
+    started_at = ctx.get("interactive_budget_started_at")
+    if not isinstance(started_at, (int, float)):
+        return 0.0
+    return max(0.0, asyncio.get_running_loop().time() - float(started_at))
+
+
+def _interactive_budget_expired(ctx: dict[str, object], *, hard: bool = False) -> bool:
+    if str(ctx.get("codex_request_lane") or "") != "interactive":
+        return False
+    limit = (
+        INTERACTIVE_RESPONSE_HARD_BUDGET_SECONDS
+        if hard
+        else INTERACTIVE_RESPONSE_SOFT_BUDGET_SECONDS
+    )
+    return _interactive_budget_elapsed(ctx) >= limit
+
+
+async def _await_with_interactive_hard_budget(
+    awaitable: Awaitable[Any],
+    *,
+    ctx: dict[str, object],
+) -> Any:
+    if str(ctx.get("codex_request_lane") or "") != "interactive":
+        return await awaitable
+    remaining = INTERACTIVE_RESPONSE_HARD_BUDGET_SECONDS - _interactive_budget_elapsed(ctx)
+    if remaining <= 0:
+        if hasattr(awaitable, "close"):
+            awaitable.close()  # type: ignore[attr-defined]
+        raise TimeoutError("interactive response hard budget reached")
+    return await asyncio.wait_for(awaitable, timeout=remaining)
+
+
+async def _defer_interactive_route(
+    *,
+    octo: Any,
+    ctx: dict[str, object],
+    user_text: str,
+    messages: list[Message | dict[str, Any]],
+    before_continue: Awaitable[None] | None = None,
+) -> str:
+    enqueued = _route_continuations._enqueue_bounded_continuation(
+        octo=octo,
+        chat_id=int(str(ctx.get("chat_id", 0) or 0)),
+        notify_user=ctx.get("control_route_notify_user", "always"),
+        user_text=user_text,
+        messages=messages,
+        ctx=ctx,
+        before_continue=before_continue,
+    )
+    logger.info(
+        "Interactive route response budget reached",
+        elapsed_ms=round(_interactive_budget_elapsed(ctx) * 1000, 3),
+        continuation_enqueued=enqueued,
+    )
+    if enqueued:
+        return _INTERACTIVE_DEFERRED_REPLY
+    return (
+        "I couldn’t safely continue within this response window. "
+        "Please try again; I did not start a duplicate continuation."
+    )
+
+
+def _tool_execution_key(call: dict[str, Any]) -> str:
+    function = call.get("function") or {}
+    name = str(function.get("name") or "").strip()
+    arguments = function.get("arguments")
+    if isinstance(arguments, str):
+        with contextlib.suppress(json.JSONDecodeError):
+            arguments = json.loads(arguments)
+    canonical = json.dumps(
+        {"name": name, "arguments": arguments},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+async def _handle_tool_call_at_most_once(
+    *,
+    provider: InferenceProvider,
+    call: dict[str, Any],
+    tools: list[ToolSpec],
+    ctx: dict[str, object],
+    ledger: dict[str, dict[str, Any]],
+    recovery_generation: int,
+) -> tuple[Any, dict[str, Any]]:
+    if getattr(provider, "provider_id", "") != "codex":
+        return await _handle_octo_tool_call(call, tools, ctx)
+    key = _tool_execution_key(call)
+    prior = ledger.get(key)
+    if prior is not None:
+        if prior["status"] == "completed" and int(prior.get("generation", 0)) < int(
+            recovery_generation
+        ):
+            logger.warning("Reusing completed tool result after provider retry", tool_ref=key[:12])
+            return prior["result"], dict(prior["meta"])
+        if prior["status"] == "executing":
+            logger.error(
+                "Refusing ambiguous tool replay after provider interruption", tool_ref=key[:12]
+            )
+            return (
+                json.dumps(
+                    {
+                        "status": "blocked",
+                        "error": "ambiguous_tool_execution",
+                        "message": (
+                            "The prior tool attempt may have taken effect. It was not replayed "
+                            "automatically; inspect the resulting state before retrying."
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+                {"had_error": True, "error_type": "ambiguous_tool_execution"},
+            )
+    ledger[key] = {"status": "executing", "generation": recovery_generation}
+    try:
+        result, meta = await _handle_octo_tool_call(call, tools, ctx)
+    except BaseException:
+        logger.exception("Tool execution ended ambiguously", tool_ref=key[:12])
+        raise
+    ledger[key] = {
+        "status": "completed",
+        "generation": recovery_generation,
+        "result": result,
+        "meta": dict(meta),
+    }
+    return result, meta
+
+
+async def _append_deferred_tool_result(
+    *,
+    task: asyncio.Task[tuple[Any, dict[str, Any]]],
+    call: dict[str, Any],
+    messages: list[Message | dict[str, Any]],
+) -> None:
+    tool_name = str(call.get("function", {}).get("name") or "")
+    try:
+        result, _meta = await asyncio.shield(task)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Deferred tool execution ended ambiguously",
+            tool_ref=_tool_execution_key(call)[:12],
+            error=type(exc).__name__,
+        )
+        result = {
+            "status": "blocked",
+            "error": "ambiguous_tool_execution",
+            "message": (
+                "The tool attempt ended without a confirmed result and was not replayed. "
+                "Inspect the resulting state before retrying."
+            ),
+        }
+    rendered = render_tool_result_for_llm(result, tool_name=tool_name).text
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": call.get("id"),
+            "name": tool_name,
+            "content": rendered,
+        }
+    )
 
 
 class _ProviderWithCallDefaults:
@@ -318,6 +517,17 @@ async def route_or_reply(
         if isinstance(route_mode, RouteMode)
         else str(route_mode or "unknown").strip() or "unknown"
     )
+    provider_request_lane = (
+        _provider_request_lane(
+            chat_id=chat_id,
+            route_mode=route_mode_value,
+            internal_followup=internal_followup,
+            background_delivery=background_delivery,
+        )
+        if getattr(provider, "provider_id", "") == "codex"
+        else ""
+    )
+    interactive_budget_started_at = asyncio.get_running_loop().time()
     routing_trace_metadata: dict[str, Any] = {
         "internal_followup": internal_followup,
         "show_typing": show_typing,
@@ -326,6 +536,7 @@ async def route_or_reply(
         "has_images": bool(images),
         "saved_file_paths_count": len(saved_file_paths or []),
         "route_mode": route_mode_value,
+        "provider_request_lane": provider_request_lane or "provider_default",
         "bootstrap_chars": len(bootstrap_context or ""),
         "planner_used": False,
         "mcp_refresh_attempted": False,
@@ -363,6 +574,8 @@ async def route_or_reply(
                     conversation_scope=conversation_scope,
                     channel_context=channel_context,
                 ),
+                "codex_request_lane": provider_request_lane,
+                "interactive_budget_started_at": interactive_budget_started_at,
             }
         )
         resolution_report = ctx.get("tool_resolution_report")
@@ -468,7 +681,25 @@ async def route_or_reply(
             provider,
             _provider_session_kwargs(ctx),
         )
-        plan = await _build_plan(planner_provider, messages, bool(octo_tools))
+        if _interactive_budget_expired(ctx):
+            return await _defer_interactive_route(
+                octo=octo,
+                ctx=ctx,
+                user_text=user_text,
+                messages=messages,
+            )
+        try:
+            plan = await _await_with_interactive_hard_budget(
+                _build_plan(planner_provider, messages, bool(octo_tools)),
+                ctx=ctx,
+            )
+        except TimeoutError:
+            return await _defer_interactive_route(
+                octo=octo,
+                ctx=ctx,
+                user_text=user_text,
+                messages=messages,
+            )
         if plan:
             routing_trace_metadata["planner_used"] = True
             logger.info(
@@ -984,6 +1215,7 @@ async def _complete_route_with_tools(
         last_error: str | None = None
         had_tool_calls = False
         transient_tool_failures = 0
+        provider_recovery_generation = 0
         tool_call_history: list[dict[str, str]] = []
         tool_loop_thresholds = _resolve_tool_loop_thresholds()
         max_attempts = 10
@@ -992,19 +1224,37 @@ async def _complete_route_with_tools(
         unbacked_action_retry_used = False
         delegated_recovery_retry_used = False
         auto_continuation_attempted = False
+        tool_execution_ledger: dict[str, dict[str, Any]] = {}
         runtime_action_contracts: list[RuntimeActionContract] = []
         runtime_action_retry_count = 0
         execution_plan_active = _messages_include_execution_plan(messages)
 
         for _ in range(max_attempts):
+            if _interactive_budget_expired(ctx):
+                return await _defer_interactive_route(
+                    octo=octo,
+                    ctx=ctx,
+                    user_text=user_text,
+                    messages=messages,
+                )
             try:
-                result = await provider.complete_with_tools(
-                    messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    **provider_kwargs,
+                result = await _await_with_interactive_hard_budget(
+                    provider.complete_with_tools(
+                        messages,
+                        tools=tools,
+                        tool_choice="auto",
+                        **provider_kwargs,
+                    ),
+                    ctx=ctx,
                 )
             except Exception as e:
+                if isinstance(e, TimeoutError) and _interactive_budget_expired(ctx, hard=True):
+                    return await _defer_interactive_route(
+                        octo=octo,
+                        ctx=ctx,
+                        user_text=user_text,
+                        messages=messages,
+                    )
                 if (
                     images
                     and not vision_tool_fallback_used
@@ -1092,6 +1342,7 @@ async def _complete_route_with_tools(
                     continue
                 if _is_transient_provider_error(e):
                     transient_tool_failures += 1
+                    provider_recovery_generation += 1
                     if transient_tool_failures >= 3:
                         logger.warning(
                             "Tool completion repeatedly failed with transient provider errors; falling back to plain completion",
@@ -1150,9 +1401,44 @@ async def _complete_route_with_tools(
                 messages.append(assistant_msg)
 
                 for call in tool_calls:
-                    tool_result, tool_meta = await _handle_octo_tool_call(
-                        call, active_tool_specs, ctx
+                    if _interactive_budget_expired(ctx):
+                        return await _defer_interactive_route(
+                            octo=octo,
+                            ctx=ctx,
+                            user_text=user_text,
+                            messages=messages,
+                        )
+                    tool_awaitable = _handle_tool_call_at_most_once(
+                        provider=provider,
+                        call=call,
+                        tools=active_tool_specs,
+                        ctx=ctx,
+                        ledger=tool_execution_ledger,
+                        recovery_generation=provider_recovery_generation,
                     )
+                    if str(ctx.get("codex_request_lane") or "") == "interactive":
+                        tool_task = asyncio.create_task(tool_awaitable)
+                        remaining = max(
+                            0.0,
+                            INTERACTIVE_RESPONSE_HARD_BUDGET_SECONDS
+                            - _interactive_budget_elapsed(ctx),
+                        )
+                        done, _pending = await asyncio.wait({tool_task}, timeout=remaining)
+                        if not done:
+                            return await _defer_interactive_route(
+                                octo=octo,
+                                ctx=ctx,
+                                user_text=user_text,
+                                messages=messages,
+                                before_continue=_append_deferred_tool_result(
+                                    task=tool_task,
+                                    call=call,
+                                    messages=messages,
+                                ),
+                            )
+                        tool_result, tool_meta = tool_task.result()
+                    else:
+                        tool_result, tool_meta = await tool_awaitable
                     tool_name = str(call.get("function", {}).get("name") or "")
                     runtime_action_contracts = _update_runtime_action_contracts(
                         runtime_action_contracts,
@@ -1293,7 +1579,9 @@ async def _complete_route_with_tools(
                                 response_text=fallback_text,
                                 internal_followup=internal_followup,
                             )
-                    if not auto_continuation_attempted:
+                    if not auto_continuation_attempted and not bool(
+                        ctx.get("background_delivery", False)
+                    ):
                         auto_reply, attempted = await _maybe_auto_continue_capability_outcome(
                             octo=octo,
                             call=call,
@@ -1309,6 +1597,13 @@ async def _complete_route_with_tools(
                             return auto_reply
                     if tool_meta.get("had_error"):
                         last_error = tool_result_text
+                    if _interactive_budget_expired(ctx):
+                        return await _defer_interactive_route(
+                            octo=octo,
+                            ctx=ctx,
+                            user_text=user_text,
+                            messages=messages,
+                        )
                 continue
 
             if content_raw:
@@ -1453,15 +1748,23 @@ async def _complete_route_with_tools(
         if had_tool_calls:
             if internal_followup:
                 return "NO_USER_RESPONSE"
-            continuation_reply = await _continue_after_tool_budget_exhaustion(
-                octo=octo,
-                chat_id=int(ctx.get("chat_id", 0) or 0),
-                notify_user=ctx.get("control_route_notify_user", "always"),
-                user_text=user_text,
-                messages=messages,
-            )
-            if continuation_reply is not None:
-                return continuation_reply
+            if not bool(ctx.get("background_delivery", False)):
+                if str(ctx.get("codex_request_lane") or "") == "interactive":
+                    return await _defer_interactive_route(
+                        octo=octo,
+                        ctx=ctx,
+                        user_text=user_text,
+                        messages=messages,
+                    )
+                continuation_reply = await _continue_after_tool_budget_exhaustion(
+                    octo=octo,
+                    chat_id=int(ctx.get("chat_id", 0) or 0),
+                    notify_user=ctx.get("control_route_notify_user", "always"),
+                    user_text=user_text,
+                    messages=messages,
+                )
+                if continuation_reply is not None:
+                    return continuation_reply
             messages.append(
                 Message(
                     role="system",

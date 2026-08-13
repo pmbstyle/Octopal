@@ -532,12 +532,16 @@ def test_simultaneous_request_and_terminal_notification_are_preserved() -> None:
         client = _PrequeuedClient()
         await client._requests.put(request)
         await client._notifications.put(completed)
+        client._transport_error = CodexAppServerError("transport closed after terminal event")
+        client._transport_failed.set()
         return client
 
     async def scenario() -> None:
         client = await prequeued_client()
         assert await client.next_event(0.1) == ("request", request)
         assert await client.next_event(0.1) == ("notification", completed)
+        with pytest.raises(CodexAppServerError, match="transport closed"):
+            await client.next_event(0.1)
 
         collecting_client = await prequeued_client()
         result = await asyncio.wait_for(
@@ -549,8 +553,161 @@ def test_simultaneous_request_and_terminal_notification_are_preserved() -> None:
             ),
             timeout=0.5,
         )
-        assert result == {"content": "", "tool_calls": []}
+        assert result == {"content": "", "tool_calls": [], "terminal": True}
         assert collecting_client.responses == [(7, {"permissions": {}, "scope": "turn"})]
+
+    asyncio.run(scenario())
+
+
+def test_transport_loss_after_tool_request_drops_session_without_losing_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _ToolThenEofClient(_FakeCodexClient):
+        async def request(
+            self,
+            method: str,
+            params: dict[str, Any] | None = None,
+            *,
+            timeout: float,
+        ) -> Any:
+            if method == "turn/interrupt":
+                self.calls.append((method, dict(params or {})))
+                return {}
+            return await super().request(method, params, timeout=timeout)
+
+        async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
+            self.event_timeouts.append(timeout)
+            if self.turn_event_index == 0:
+                self.turn_event_index = 1
+                return (
+                    "request",
+                    {
+                        "id": 9,
+                        "method": "item/tool/call",
+                        "params": {
+                            "threadId": self.thread_id,
+                            "turnId": "turn-1",
+                            "tool": "lookup",
+                            "arguments": {"query": "safe"},
+                        },
+                    },
+                )
+            self._finish_turn()
+            raise CodexAppServerError("stdout closed")
+
+        async def respond(self, request_id: int | str, result: dict[str, Any]) -> None:
+            del request_id, result
+
+    monkeypatch.setattr(codex_provider, "_CodexAppServerClient", _ToolThenEofClient)
+
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        result = await provider.complete_with_tools(
+            [{"role": "user", "content": "use lookup"}],
+            tools=[_tool()],
+            codex_session_key="telegram:primary:transport",
+            codex_request_lane="interactive",
+        )
+
+        assert result["tool_calls"][0]["function"]["name"] == "lookup"
+        assert _ToolThenEofClient.instances[0].event_timeouts == [
+            codex_provider.CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS,
+            codex_provider.CODEX_TOOL_INTERRUPT_GRACE_SECONDS,
+        ]
+        registry_path = tmp_path / "codex_sessions.json"
+        assert not registry_path.exists() or json.loads(registry_path.read_text())["sessions"] == {}
+
+        await provider.complete_with_tools(
+            [{"role": "user", "content": "continue"}],
+            tools=[_tool()],
+            codex_session_key="telegram:primary:transport",
+            codex_request_lane="interactive",
+        )
+        assert [method for method, _ in _ToolThenEofClient.instances[1].calls[:1]] == [
+            "thread/start"
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_interactive_and_background_lanes_use_independent_sessions(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        kwargs = {
+            "tools": [_tool()],
+            "codex_session_key": "telegram:primary:lane",
+        }
+        await provider.complete_with_tools(
+            [{"role": "user", "content": "interactive"}],
+            codex_request_lane="interactive",
+            **kwargs,
+        )
+        await provider.complete_with_tools(
+            [{"role": "user", "content": "background"}],
+            codex_request_lane="background",
+            **kwargs,
+        )
+
+        assert [method for method, _ in _FakeCodexClient.instances[1].calls] == [
+            "thread/start",
+            "turn/start",
+        ]
+        registry = json.loads((tmp_path / "codex_sessions.json").read_text())
+        assert len(registry["sessions"]) == 2
+
+    asyncio.run(scenario())
+
+
+def test_admission_reserves_capacity_for_interactive_work() -> None:
+    async def scenario() -> None:
+        controller = codex_provider._CodexAdmissionController(capacity=2, background_capacity=1)
+        background_release = asyncio.Event()
+        interactive_entered = asyncio.Event()
+        second_background_entered = asyncio.Event()
+
+        async def hold_background(entered: asyncio.Event) -> None:
+            async with controller.acquire("background"):
+                entered.set()
+                await background_release.wait()
+
+        first_entered = asyncio.Event()
+        first = asyncio.create_task(hold_background(first_entered))
+        await first_entered.wait()
+        second = asyncio.create_task(hold_background(second_background_entered))
+
+        async def run_interactive() -> None:
+            async with controller.acquire("interactive"):
+                interactive_entered.set()
+
+        interactive = asyncio.create_task(run_interactive())
+        await asyncio.wait_for(interactive_entered.wait(), timeout=0.5)
+        assert not second_background_entered.is_set()
+        background_release.set()
+        await asyncio.gather(first, second, interactive)
+
+    asyncio.run(scenario())
+
+
+def test_admission_fairness_serves_aged_background_after_interactive_burst(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_provider, "CODEX_BACKGROUND_MAX_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(codex_provider, "CODEX_INTERACTIVE_BURST_LIMIT", 1)
+
+    async def scenario() -> None:
+        controller = codex_provider._CodexAdmissionController(capacity=1, background_capacity=1)
+        order: list[str] = []
+        async with controller.acquire("interactive"):
+            pass
+
+        async def enter(lane: str) -> None:
+            async with controller.acquire(lane):
+                order.append(lane)
+
+        background = asyncio.create_task(enter("background"))
+        interactive = asyncio.create_task(enter("interactive"))
+        await asyncio.gather(background, interactive)
+        assert order == ["background", "interactive"]
 
     asyncio.run(scenario())
 
@@ -577,6 +734,59 @@ def test_failed_fallback_turn_does_not_persist_replacement_mapping(tmp_path: Pat
         assert registry["sessions"] == {}
         assert _FakeCodexClient.instances[1].closed is True
         assert _FakeCodexClient.instances[2].closed is True
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_resumed_turn_drops_mapping_before_releasing_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    turn_started = asyncio.Event()
+
+    class _HangingTurnClient(_FakeCodexClient):
+        hang = False
+
+        async def request(
+            self,
+            method: str,
+            params: dict[str, Any] | None = None,
+            *,
+            timeout: float,
+        ) -> Any:
+            result = await super().request(method, params, timeout=timeout)
+            if method == "turn/start" and type(self).hang:
+                turn_started.set()
+            return result
+
+        async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
+            if type(self).hang:
+                await asyncio.Event().wait()
+            return await super().next_event(timeout)
+
+    monkeypatch.setattr(codex_provider, "_CodexAppServerClient", _HangingTurnClient)
+
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        await provider.complete_with_tools(
+            [{"role": "user", "content": "first"}],
+            tools=[_tool()],
+            codex_session_key="telegram:primary:cancelled",
+        )
+        _HangingTurnClient.hang = True
+        task = asyncio.create_task(
+            provider.complete_with_tools(
+                [{"role": "user", "content": "second"}],
+                tools=[_tool()],
+                codex_session_key="telegram:primary:cancelled",
+            )
+        )
+        await asyncio.wait_for(turn_started.wait(), timeout=0.5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        registry = json.loads((tmp_path / "codex_sessions.json").read_text())
+        assert registry["sessions"] == {}
 
     asyncio.run(scenario())
 
@@ -786,6 +996,8 @@ def test_main_conversation_planner_reply_passes_scoped_session_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Provider:
+        provider_id = "codex"
+
         def __init__(self) -> None:
             self.complete_kwargs: list[dict[str, object]] = []
 
@@ -848,8 +1060,29 @@ def test_main_conversation_planner_reply_passes_scoped_session_key(
             conversation_scope="primary",
             channel_context={"source_channel": "telegram"},
         )
+        background_response = await route_or_reply(
+            _Octo(),
+            provider,
+            _Memory(),
+            "internal follow-up",
+            211619002,
+            "",
+            conversation_scope="primary",
+            channel_context={"source_channel": "telegram"},
+            background_delivery=True,
+        )
 
         assert response == "Hello from Alice."
-        assert provider.complete_kwargs == [{"codex_session_key": "telegram:primary:211619002"}]
+        assert background_response == "Hello from Alice."
+        assert provider.complete_kwargs == [
+            {
+                "codex_session_key": "telegram:primary:211619002",
+                "codex_request_lane": "interactive",
+            },
+            {
+                "codex_session_key": "telegram:primary:211619002",
+                "codex_request_lane": "background",
+            },
+        ]
 
     asyncio.run(scenario())
