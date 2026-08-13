@@ -20,4 +20,5 @@ def test_worker_image_uses_frozen_project_lock() -> None:
     assert "README.md" not in text
     assert "uv sync --frozen --no-dev --no-install-project" in text
     assert "python -m pip install --no-cache-dir ." not in text
+    assert "PYTHONPATH=/app/src" in text
     assert "PATH=/app/.venv/bin:$PATH" in text

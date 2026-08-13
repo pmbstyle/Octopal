@@ -106,7 +106,7 @@ def test_docker_launcher_mounts_only_worker_dir_when_allowed_paths_missing(
     assert "-e" in args
     assert "OCTOPAL_WORKSPACE_DIR=/workspace" in args
     assert "HOME=/workspace/workers/worker-1" in args
-    assert "PYTHONPATH=src" in args
+    assert "PYTHONPATH=src" not in args
     assert "BRAVE_API_KEY=brave-test-key" in args
     assert "OCTOPAL_WEBCLAW_ENABLED=true" in args
     assert "OCTOPAL_WEBCLAW_BINARY=/opt/webclaw" in args

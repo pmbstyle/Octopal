@@ -212,7 +212,6 @@ def _filter_container_env(
 ) -> dict[str, str]:
     # Container env must be explicit; keep only a safe subset.
     allowed = {
-        "PYTHONPATH",
         "OCTOPAL_WORKSPACE_DIR",
         "LITELLM_NUM_RETRIES",
         "LITELLM_TIMEOUT",
