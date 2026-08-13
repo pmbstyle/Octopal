@@ -37,6 +37,7 @@ class _FakeCodexClient:
         self.closed = False
         self.request_timeouts: list[tuple[str, float]] = []
         self.event_timeouts: list[float] = []
+        self.responses: list[tuple[int | str, dict[str, Any]]] = []
         type(self).instances.append(self)
 
     async def start(self) -> None:
@@ -98,6 +99,9 @@ class _FakeCodexClient:
     async def close(self) -> None:
         self.closed = True
         self._finish_turn()
+
+    async def respond(self, request_id: int | str, result: dict[str, Any]) -> None:
+        self.responses.append((request_id, result))
 
     def _finish_turn(self) -> None:
         if self.turn_active:
@@ -707,22 +711,116 @@ def test_simultaneous_request_and_terminal_notification_are_preserved() -> None:
     asyncio.run(scenario())
 
 
-def test_transport_loss_after_tool_request_drops_session_without_losing_call(
+@pytest.mark.parametrize(
+    ("success", "tool_content", "item_status"),
+    [(True, "lookup result", "completed"), (False, "lookup failed", "failed")],
+)
+def test_dynamic_tool_result_uses_native_request_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    success: bool,
+    tool_content: str,
+    item_status: str,
+) -> None:
+    class _NativeToolClient(_FakeCodexClient):
+        async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
+            self.event_timeouts.append(timeout)
+            self.turn_event_index += 1
+            events = [
+                (
+                    "request",
+                    {
+                        "id": 9,
+                        "method": "item/tool/call",
+                        "params": {
+                            "threadId": self.thread_id,
+                            "turnId": "turn-1",
+                            "callId": "call-lookup",
+                            "tool": "lookup",
+                            "arguments": {"query": "safe"},
+                        },
+                    },
+                ),
+                (
+                    "notification",
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": self.thread_id,
+                            "turnId": "turn-1",
+                            "item": {
+                                "id": "call-lookup",
+                                "type": "dynamicToolCall",
+                                "status": item_status,
+                            },
+                        },
+                    },
+                ),
+                (
+                    "notification",
+                    {
+                        "method": "item/agentMessage/delta",
+                        "params": {"threadId": self.thread_id, "delta": "final answer"},
+                    },
+                ),
+                (
+                    "notification",
+                    {
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": self.thread_id,
+                            "turn": {"status": "completed"},
+                        },
+                    },
+                ),
+            ]
+            if self.turn_event_index == len(events):
+                self._finish_turn()
+            return events[self.turn_event_index - 1]
+
+    monkeypatch.setattr(codex_provider, "_CodexAppServerClient", _NativeToolClient)
+    executions: list[dict[str, Any]] = []
+
+    async def execute(call: dict[str, Any]) -> dict[str, Any]:
+        executions.append(call)
+        return {"success": success, "content": tool_content}
+
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        result = await provider.complete_with_tools(
+            [{"role": "user", "content": "use lookup"}],
+            tools=[_tool()],
+            codex_session_key="telegram:primary:native",
+            tool_executor=execute,
+        )
+
+        client = _NativeToolClient.instances[0]
+        assert len(executions) == 1
+        assert executions[0]["id"] == "call-lookup"
+        assert client.responses == [
+            (
+                9,
+                {
+                    "success": success,
+                    "contentItems": [{"type": "inputText", "text": tool_content}],
+                },
+            )
+        ]
+        assert "turn/interrupt" not in [method for method, _ in client.calls]
+        assert client.event_timeouts == [codex_provider.CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS] * 4
+        assert result["content"] == "final answer"
+        assert result["tool_results_submitted"] is True
+        assert result["tool_calls"][0]["id"] == "call-lookup"
+        registry = json.loads((tmp_path / "codex_sessions.json").read_text())
+        assert len(registry["sessions"]) == 1
+
+    asyncio.run(scenario())
+
+
+def test_transport_loss_after_native_tool_execution_is_not_replayable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class _ToolThenEofClient(_FakeCodexClient):
-        async def request(
-            self,
-            method: str,
-            params: dict[str, Any] | None = None,
-            *,
-            timeout: float,
-        ) -> Any:
-            if method == "turn/interrupt":
-                self.calls.append((method, dict(params or {})))
-                return {}
-            return await super().request(method, params, timeout=timeout)
-
         async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
             self.event_timeouts.append(timeout)
             if self.turn_event_index == 0:
@@ -735,6 +833,7 @@ def test_transport_loss_after_tool_request_drops_session_without_losing_call(
                         "params": {
                             "threadId": self.thread_id,
                             "turnId": "turn-1",
+                            "callId": "call-lookup",
                             "tool": "lookup",
                             "arguments": {"query": "safe"},
                         },
@@ -743,37 +842,87 @@ def test_transport_loss_after_tool_request_drops_session_without_losing_call(
             self._finish_turn()
             raise CodexAppServerError("stdout closed")
 
-        async def respond(self, request_id: int | str, result: dict[str, Any]) -> None:
-            del request_id, result
-
     monkeypatch.setattr(codex_provider, "_CodexAppServerClient", _ToolThenEofClient)
 
     async def scenario() -> None:
         provider = CodexProvider(_settings(tmp_path))
-        result = await provider.complete_with_tools(
-            [{"role": "user", "content": "use lookup"}],
-            tools=[_tool()],
-            codex_session_key="telegram:primary:transport",
-            codex_request_lane="interactive",
-        )
+        executions = 0
 
-        assert result["tool_calls"][0]["function"]["name"] == "lookup"
+        async def execute(call: dict[str, Any]) -> dict[str, Any]:
+            nonlocal executions
+            assert call["id"] == "call-lookup"
+            executions += 1
+            return {"success": True, "content": "actual result"}
+
+        with pytest.raises(
+            codex_provider.CodexToolResultTransportError,
+            match="automatic replay disabled",
+        ):
+            await provider.complete_with_tools(
+                [{"role": "user", "content": "use lookup"}],
+                tools=[_tool()],
+                codex_session_key="telegram:primary:transport",
+                codex_request_lane="interactive",
+                tool_executor=execute,
+            )
+
+        assert executions == 1
         assert _ToolThenEofClient.instances[0].event_timeouts == [
             codex_provider.CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS,
-            codex_provider.CODEX_TOOL_INTERRUPT_GRACE_SECONDS,
+            codex_provider.CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS,
+        ]
+        assert _ToolThenEofClient.instances[0].responses[0][1]["success"] is True
+        assert "turn/interrupt" not in [
+            method for method, _ in _ToolThenEofClient.instances[0].calls
         ]
         registry_path = tmp_path / "codex_sessions.json"
         assert not registry_path.exists() or json.loads(registry_path.read_text())["sessions"] == {}
 
-        await provider.complete_with_tools(
-            [{"role": "user", "content": "continue"}],
-            tools=[_tool()],
-            codex_session_key="telegram:primary:transport",
-            codex_request_lane="interactive",
+    asyncio.run(scenario())
+
+
+def test_cancellation_interrupts_active_turn_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interrupt_seen = asyncio.Event()
+
+    class _HangingClient(_FakeCodexClient):
+        async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
+            del timeout
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def request(
+            self,
+            method: str,
+            params: dict[str, Any] | None = None,
+            *,
+            timeout: float,
+        ) -> Any:
+            if method == "turn/interrupt":
+                self.calls.append((method, dict(params or {})))
+                interrupt_seen.set()
+                return {}
+            return await super().request(method, params, timeout=timeout)
+
+    monkeypatch.setattr(codex_provider, "_CodexAppServerClient", _HangingClient)
+
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(Path("unused")))
+        task = asyncio.create_task(
+            provider.complete_with_tools(
+                [{"role": "user", "content": "wait"}],
+                tools=[_tool()],
+            )
         )
-        assert [method for method, _ in _ToolThenEofClient.instances[1].calls[:1]] == [
-            "thread/start"
-        ]
+        while not _HangingClient.instances or not _HangingClient.instances[0].turn_active:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(interrupt_seen.wait(), timeout=0.5)
+        client = _HangingClient.instances[0]
+        assert [method for method, _ in client.calls].count("turn/interrupt") == 1
 
     asyncio.run(scenario())
 
@@ -1054,6 +1203,268 @@ def test_main_octo_route_passes_the_scoped_session_key_to_provider() -> None:
         )
         assert result == "The result is ready."
         assert provider.tool_kwargs == {"codex_session_key": "telegram:default:106"}
+
+    asyncio.run(scenario())
+
+
+def test_main_route_executes_native_tool_once_and_uses_terminal_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _RouteToolClient(_FakeCodexClient):
+        async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
+            self.event_timeouts.append(timeout)
+            self.turn_event_index += 1
+            events = [
+                (
+                    "request",
+                    {
+                        "id": 41,
+                        "method": "item/tool/call",
+                        "params": {
+                            "threadId": self.thread_id,
+                            "turnId": "turn-route",
+                            "callId": "call-route",
+                            "tool": "lookup",
+                            "arguments": {"query": "one"},
+                        },
+                    },
+                ),
+                (
+                    "notification",
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": self.thread_id,
+                            "turnId": "turn-route",
+                            "item": {
+                                "id": "call-route",
+                                "type": "dynamicToolCall",
+                                "status": "completed",
+                            },
+                        },
+                    },
+                ),
+                (
+                    "notification",
+                    {
+                        "method": "item/agentMessage/delta",
+                        "params": {"threadId": self.thread_id, "delta": "native final"},
+                    },
+                ),
+                (
+                    "notification",
+                    {
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": self.thread_id,
+                            "turn": {"status": "completed"},
+                        },
+                    },
+                ),
+            ]
+            if self.turn_event_index == len(events):
+                self._finish_turn()
+            return events[self.turn_event_index - 1]
+
+    monkeypatch.setattr(codex_provider, "_CodexAppServerClient", _RouteToolClient)
+    import octopal.runtime.octo.router as router
+
+    async def no_retry(**kwargs: object) -> bool:
+        del kwargs
+        return False
+
+    async def finalize(**kwargs: object) -> str:
+        return str(kwargs["response_text"])
+
+    monkeypatch.setattr(router, "_needs_autonomous_recovery_retry", no_retry)
+    monkeypatch.setattr(router, "_finalize_response", finalize)
+    tool_runs = 0
+
+    def lookup(args: dict[str, Any], ctx: dict[str, object]) -> dict[str, Any]:
+        nonlocal tool_runs
+        assert args == {"query": "one"}
+        assert ctx["chat_id"] == 301
+        tool_runs += 1
+        return {"value": "actual"}
+
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        messages: list[Message | dict[str, Any]] = [Message(role="user", content="look it up")]
+        reply = await _complete_route_with_tools(
+            octo=type("Octo", (), {"trace_sink": None})(),
+            provider=provider,
+            messages=messages,
+            tool_specs=[
+                ToolSpec(
+                    name="lookup",
+                    description="lookup",
+                    parameters={"type": "object", "properties": {}},
+                    permission="read",
+                    handler=lookup,
+                )
+            ],
+            ctx={
+                "chat_id": 301,
+                "codex_session_key": "telegram:primary:301",
+                "codex_request_lane": "background",
+            },
+            internal_followup=False,
+            user_text="look it up",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+
+        assert reply == "native final"
+        assert tool_runs == 1
+        assert len(_RouteToolClient.instances) == 1
+        client = _RouteToolClient.instances[0]
+        assert client.responses[0][1]["success"] is True
+        assert "actual" in client.responses[0][1]["contentItems"][0]["text"]
+        assert "turn/interrupt" not in [method for method, _ in client.calls]
+        assert any(
+            isinstance(message, dict)
+            and message.get("role") == "tool"
+            and "actual" in str(message.get("content"))
+            for message in messages
+        )
+
+    asyncio.run(scenario())
+
+
+def test_main_route_recovers_transport_after_tool_without_replaying_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _RecoveringToolClient(_FakeCodexClient):
+        async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
+            if type(self).instances.index(self) > 0:
+                return await super().next_event(timeout)
+            self.event_timeouts.append(timeout)
+            if self.turn_event_index == 0:
+                self.turn_event_index = 1
+                return (
+                    "request",
+                    {
+                        "id": 51,
+                        "method": "item/tool/call",
+                        "params": {
+                            "threadId": self.thread_id,
+                            "turnId": "turn-recover",
+                            "callId": "call-recover",
+                            "tool": "write_once",
+                            "arguments": {"value": "same"},
+                        },
+                    },
+                )
+            self._finish_turn()
+            raise CodexAppServerError("stdout closed")
+
+    monkeypatch.setattr(codex_provider, "_CodexAppServerClient", _RecoveringToolClient)
+    import octopal.runtime.octo.router as router
+
+    async def no_retry(**kwargs: object) -> bool:
+        del kwargs
+        return False
+
+    async def finalize(**kwargs: object) -> str:
+        return str(kwargs["response_text"])
+
+    monkeypatch.setattr(router, "_needs_autonomous_recovery_retry", no_retry)
+    monkeypatch.setattr(router, "_finalize_response", finalize)
+    tool_runs = 0
+
+    def write_once(args: dict[str, Any], ctx: dict[str, object]) -> dict[str, Any]:
+        nonlocal tool_runs
+        del ctx
+        assert args == {"value": "same"}
+        tool_runs += 1
+        return {"status": "written"}
+
+    async def scenario() -> None:
+        provider = CodexProvider(_settings(tmp_path))
+        messages: list[Message | dict[str, Any]] = [Message(role="user", content="write it")]
+        reply = await _complete_route_with_tools(
+            octo=type("Octo", (), {"trace_sink": None})(),
+            provider=provider,
+            messages=messages,
+            tool_specs=[
+                ToolSpec(
+                    name="write_once",
+                    description="write",
+                    parameters={"type": "object", "properties": {}},
+                    permission="exec",
+                    handler=write_once,
+                )
+            ],
+            ctx={
+                "chat_id": 302,
+                "codex_session_key": "telegram:primary:302",
+                "codex_request_lane": "background",
+            },
+            internal_followup=False,
+            user_text="write it",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+
+        assert reply == "ok"
+        assert tool_runs == 1
+        assert len(_RecoveringToolClient.instances) == 2
+        recovered_input = _call(_RecoveringToolClient.instances[1], "turn/start")["input"]
+        assert "TOOL:\n" in recovered_input[0]["text"]
+        assert "written" in recovered_input[0]["text"]
+
+    asyncio.run(scenario())
+
+
+def test_provider_tool_bridge_preserves_result_when_pending_execution_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import octopal.runtime.octo.router as router
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    executions = 0
+
+    async def fail_after_start(**kwargs: object) -> tuple[Any, dict[str, Any]]:
+        nonlocal executions
+        del kwargs
+        executions += 1
+        started.set()
+        await release.wait()
+        raise RuntimeError("bridge infrastructure failed")
+
+    monkeypatch.setattr(router, "_handle_tool_call_at_most_once", fail_after_start)
+    bridge = router._ProviderToolExecutorBridge(
+        provider=type("Provider", (), {"provider_id": "codex"})(),
+        tools=list,
+        ctx={},
+        ledger={},
+        recovery_generation=lambda: 0,
+    )
+    call = {
+        "id": "call-ambiguous",
+        "type": "function",
+        "function": {"name": "write_once", "arguments": "{}"},
+    }
+
+    async def scenario() -> None:
+        execution = asyncio.create_task(bridge.execute(call))
+        await started.wait()
+        messages: list[Message | dict[str, Any]] = []
+        append = asyncio.create_task(bridge.append_unconsumed(messages))
+        await asyncio.sleep(0)
+        release.set()
+
+        with pytest.raises(RuntimeError, match="bridge infrastructure failed"):
+            await execution
+        await append
+
+        assert executions == 1
+        assert bridge.has_activity is True
+        assert messages[0] == {"role": "assistant", "tool_calls": [call]}
+        assert messages[1]["role"] == "tool"
+        assert messages[1]["tool_call_id"] == "call-ambiguous"
+        assert "ambiguous_tool_execution" in str(messages[1]["content"])
 
     asyncio.run(scenario())
 

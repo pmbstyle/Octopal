@@ -46,6 +46,15 @@ class CodexAppServerError(RuntimeError):
     pass
 
 
+class CodexToolResultTransportError(CodexAppServerError):
+    """Transport ended after a tool may have taken effect; automatic replay is unsafe."""
+
+    tool_execution_may_have_completed = True
+
+
+_ToolExecutor = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
 @dataclass(frozen=True)
 class _CodexSession:
     thread_id: str
@@ -667,10 +676,12 @@ class CodexProvider:
             on_partial=None,
             session_key=_session_key_from_kwargs(kwargs),
             lane=_lane_from_kwargs(kwargs),
+            tool_executor=_tool_executor_from_kwargs(kwargs),
         )
         return {
             "content": result["content"],
             "tool_calls": result["tool_calls"],
+            "tool_results_submitted": bool(result.get("tool_results_submitted", False)),
             "usage": {},
         }
 
@@ -682,6 +693,7 @@ class CodexProvider:
         on_partial: Callable[[str], Awaitable[None]] | None,
         session_key: str | None,
         lane: str,
+        tool_executor: _ToolExecutor | None = None,
     ) -> dict[str, Any]:
         if session_key:
             phase = _session_phase(tools)
@@ -702,10 +714,16 @@ class CodexProvider:
                         on_partial=on_partial,
                         session_ref=session_ref,
                         phase=phase,
+                        tool_executor=tool_executor,
                     )
         async with self._admission.acquire(lane) as admission:
             _log_admission_wait(None, lane=lane, phase=_session_phase(tools), **admission)
-            return await self._run_ephemeral_turn(messages, tools=tools, on_partial=on_partial)
+            return await self._run_ephemeral_turn(
+                messages,
+                tools=tools,
+                on_partial=on_partial,
+                tool_executor=tool_executor,
+            )
 
     async def _run_ephemeral_turn(
         self,
@@ -713,6 +731,7 @@ class CodexProvider:
         *,
         tools: list[dict] | None,
         on_partial: Callable[[str], Awaitable[None]] | None,
+        tool_executor: _ToolExecutor | None,
     ) -> dict[str, Any]:
         client = _CodexAppServerClient(_codex_command(), _codex_args(), _codex_env())
         await client.start()
@@ -761,8 +780,12 @@ class CodexProvider:
                 timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
             )
             turn_id = ((turn or {}).get("turn") or {}).get("id")
-            return await _collect_turn(
-                client, thread_id=thread_id, turn_id=turn_id, on_partial=on_partial
+            return await _collect_turn_with_cancellation(
+                client,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                on_partial=on_partial,
+                tool_executor=tool_executor,
             )
         finally:
             await client.close()
@@ -775,6 +798,7 @@ class CodexProvider:
         on_partial: Callable[[str], Awaitable[None]] | None,
         session_ref: str,
         phase: str,
+        tool_executor: _ToolExecutor | None,
     ) -> dict[str, Any]:
         client = _CodexAppServerClient(_codex_command(), _codex_args(), _codex_env())
         await client.start()
@@ -922,8 +946,12 @@ class CodexProvider:
                 timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
             )
             turn_id = ((turn or {}).get("turn") or {}).get("id")
-            result = await _collect_turn(
-                client, thread_id=thread_id, turn_id=turn_id, on_partial=on_partial
+            result = await _collect_turn_with_cancellation(
+                client,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                on_partial=on_partial,
+                tool_executor=tool_executor,
             )
             if result.pop("terminal", False):
                 self._sessions.put(
@@ -970,23 +998,20 @@ async def _collect_turn(
     thread_id: str,
     turn_id: str | None,
     on_partial: Callable[[str], Awaitable[None]] | None,
+    tool_executor: _ToolExecutor | None = None,
 ) -> dict[str, Any]:
     output = ""
     tool_calls: list[dict[str, Any]] = []
-    current_turn_id = turn_id
-    tool_request_seen = False
+    tool_execution_may_have_completed = False
 
     while True:
         try:
-            event_timeout = (
-                CODEX_TOOL_INTERRUPT_GRACE_SECONDS
-                if tool_request_seen
-                else CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS
-            )
-            kind, event = await client.next_event(event_timeout)
+            kind, event = await client.next_event(CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS)
         except (CodexAppServerError, TimeoutError):
-            if tool_request_seen:
-                return {"content": output, "tool_calls": tool_calls, "terminal": False}
+            if tool_execution_may_have_completed:
+                raise CodexToolResultTransportError(
+                    "provider transport ended after tool execution; automatic replay disabled"
+                ) from None
             raise
         payload = event.get("params") or {}
         if kind == "request":
@@ -995,30 +1020,38 @@ async def _collect_turn(
                 call = _tool_call_from_codex_request(payload)
                 if call:
                     tool_calls.append(call)
-                    tool_request_seen = True
-                if current_turn_id:
-                    with contextlib.suppress(Exception):
-                        await client.request(
-                            "turn/interrupt",
-                            {"threadId": thread_id, "turnId": current_turn_id},
-                            timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
-                        )
-                try:
-                    await client.respond(
-                        event["id"],
+                response = {
+                    "success": False,
+                    "contentItems": [
                         {
+                            "type": "inputText",
+                            "text": "The requested tool is unavailable for this turn.",
+                        }
+                    ],
+                }
+                if call is not None and tool_executor is not None:
+                    try:
+                        execution = await tool_executor(call)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception(
+                            "Dynamic tool executor failed",
+                            tool_name=str((call.get("function") or {}).get("name") or ""),
+                        )
+                        execution = {
                             "success": False,
-                            "contentItems": [
-                                {
-                                    "type": "inputText",
-                                    "text": "Tool execution is handled by Octopal after the provider returns the tool call.",
-                                }
-                            ],
-                        },
-                    )
+                            "content": "Tool execution failed before a result was available.",
+                        }
+                    tool_execution_may_have_completed = True
+                    response = _dynamic_tool_response(execution)
+                try:
+                    await client.respond(event["id"], response)
                 except (CodexAppServerError, OSError):
-                    if tool_request_seen:
-                        return {"content": output, "tool_calls": tool_calls, "terminal": False}
+                    if tool_execution_may_have_completed:
+                        raise CodexToolResultTransportError(
+                            "provider transport ended while submitting a tool result; automatic replay disabled"
+                        ) from None
                     raise
                 continue
             await _respond_to_auxiliary_request(client, event)
@@ -1027,8 +1060,6 @@ async def _collect_turn(
         method = str(event.get("method") or "")
         if payload.get("threadId") and payload.get("threadId") != thread_id:
             continue
-        if payload.get("turnId"):
-            current_turn_id = str(payload.get("turnId"))
         if method == "item/agentMessage/delta":
             delta = str(payload.get("delta") or "")
             output += delta
@@ -1036,9 +1067,60 @@ async def _collect_turn(
                 await on_partial(output)
             continue
         if method == "turn/completed":
-            return {"content": output, "tool_calls": tool_calls, "terminal": True}
+            turn = payload.get("turn")
+            status = str(turn.get("status") or "") if isinstance(turn, dict) else ""
+            terminal = status not in {"failed", "interrupted"}
+            result: dict[str, Any] = {
+                "content": output,
+                "tool_calls": tool_calls,
+                "terminal": terminal,
+            }
+            if tool_executor is not None and tool_calls:
+                result["tool_results_submitted"] = True
+            return result
         if method == "error":
+            if tool_execution_may_have_completed:
+                raise CodexToolResultTransportError(
+                    "provider failed after tool execution; automatic replay disabled"
+                ) from None
             raise CodexAppServerError(json.dumps(payload, ensure_ascii=False))
+
+
+async def _collect_turn_with_cancellation(
+    client: _CodexAppServerClient,
+    *,
+    thread_id: str,
+    turn_id: str | None,
+    on_partial: Callable[[str], Awaitable[None]] | None,
+    tool_executor: _ToolExecutor | None,
+) -> dict[str, Any]:
+    try:
+        return await _collect_turn(
+            client,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            on_partial=on_partial,
+            tool_executor=tool_executor,
+        )
+    except asyncio.CancelledError:
+        if turn_id:
+            with contextlib.suppress(Exception):
+                await client.request(
+                    "turn/interrupt",
+                    {"threadId": thread_id, "turnId": turn_id},
+                    timeout=CODEX_TOOL_INTERRUPT_GRACE_SECONDS,
+                )
+        raise
+
+
+def _dynamic_tool_response(execution: dict[str, Any]) -> dict[str, Any]:
+    content = execution.get("content")
+    if not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False, default=str)
+    return {
+        "success": bool(execution.get("success", False)),
+        "contentItems": [{"type": "inputText", "text": content}],
+    }
 
 
 async def _respond_to_auxiliary_request(
@@ -1099,6 +1181,11 @@ def _session_key_from_kwargs(kwargs: dict[str, object]) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _tool_executor_from_kwargs(kwargs: dict[str, object]) -> _ToolExecutor | None:
+    executor = kwargs.get("tool_executor")
+    return cast(_ToolExecutor, executor) if callable(executor) else None
 
 
 def _lane_from_kwargs(kwargs: dict[str, object]) -> str:

@@ -300,6 +300,142 @@ async def _append_deferred_tool_result(
     )
 
 
+class _ProviderToolExecutorBridge:
+    """Keep provider-owned tool turns on the existing Octopal execution path."""
+
+    def __init__(
+        self,
+        *,
+        provider: InferenceProvider,
+        tools: Callable[[], list[ToolSpec]],
+        ctx: dict[str, object],
+        ledger: dict[str, dict[str, Any]],
+        recovery_generation: Callable[[], int],
+    ) -> None:
+        self._provider = provider
+        self._tools = tools
+        self._ctx = ctx
+        self._ledger = ledger
+        self._recovery_generation = recovery_generation
+        self._pending: set[asyncio.Task[dict[str, Any]]] = set()
+        self._records: list[dict[str, Any]] = []
+
+    @property
+    def has_activity(self) -> bool:
+        return bool(self._pending or self._records)
+
+    def _record(
+        self,
+        *,
+        call: dict[str, Any],
+        result: Any,
+        meta: dict[str, Any],
+    ) -> str:
+        rendered = render_tool_result_for_llm(
+            result,
+            tool_name=str((call.get("function") or {}).get("name") or ""),
+        )
+        self._records.append(
+            {
+                "call": call,
+                "result": result,
+                "meta": dict(meta),
+                "rendered": rendered.text,
+                "consumed": False,
+            }
+        )
+        return rendered.text
+
+    async def execute(self, call: dict[str, Any]) -> dict[str, Any]:
+        async def _run() -> dict[str, Any]:
+            try:
+                result, meta = await _handle_tool_call_at_most_once(
+                    provider=self._provider,
+                    call=call,
+                    tools=self._tools(),
+                    ctx=self._ctx,
+                    ledger=self._ledger,
+                    recovery_generation=self._recovery_generation(),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._record(
+                    call=call,
+                    result={
+                        "status": "blocked",
+                        "error": "ambiguous_tool_execution",
+                        "message": (
+                            "The tool attempt ended without a confirmed result and was not "
+                            "replayed. Inspect the resulting state before retrying."
+                        ),
+                    },
+                    meta={"had_error": True, "error_type": "ambiguous_tool_execution"},
+                )
+                raise
+            payload_error_type = _tool_result_payload_error_type(result)
+            if payload_error_type and not meta.get("had_error"):
+                meta = {
+                    **meta,
+                    "had_error": True,
+                    "error_type": payload_error_type,
+                }
+            rendered = self._record(call=call, result=result, meta=meta)
+            return {
+                "success": not bool(meta.get("had_error")),
+                "content": rendered,
+            }
+
+        task = asyncio.create_task(_run())
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+        return await asyncio.shield(task)
+
+    def take(self, call: dict[str, Any]) -> tuple[Any, dict[str, Any]] | None:
+        call_id = str(call.get("id") or "")
+        for record in self._records:
+            recorded_call = record.get("call")
+            if record.get("consumed") or not isinstance(recorded_call, dict):
+                continue
+            if str(recorded_call.get("id") or "") != call_id:
+                continue
+            record["consumed"] = True
+            return record.get("result"), dict(record.get("meta") or {})
+        return None
+
+    async def append_unconsumed(
+        self,
+        messages: list[Message | dict[str, Any]],
+    ) -> None:
+        if self._pending:
+            outcomes = await asyncio.gather(
+                *(asyncio.shield(task) for task in tuple(self._pending)),
+                return_exceptions=True,
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, asyncio.CancelledError):
+                    raise outcome
+                if isinstance(outcome, BaseException):
+                    logger.error(
+                        "Provider-owned tool execution ended ambiguously",
+                        error=type(outcome).__name__,
+                    )
+        for record in self._records:
+            call = record.get("call")
+            if record.get("consumed") or not isinstance(call, dict):
+                continue
+            record["consumed"] = True
+            messages.append({"role": "assistant", "tool_calls": [call]})
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.get("id"),
+                    "name": (call.get("function") or {}).get("name"),
+                    "content": str(record.get("rendered") or ""),
+                }
+            )
+
+
 class _ProviderWithCallDefaults:
     def __init__(
         self,
@@ -1228,6 +1364,17 @@ async def _complete_route_with_tools(
         runtime_action_contracts: list[RuntimeActionContract] = []
         runtime_action_retry_count = 0
         execution_plan_active = _messages_include_execution_plan(messages)
+        provider_tool_bridge = (
+            _ProviderToolExecutorBridge(
+                provider=provider,
+                tools=lambda: active_tool_specs,
+                ctx=ctx,
+                ledger=tool_execution_ledger,
+                recovery_generation=lambda: provider_recovery_generation,
+            )
+            if getattr(provider, "provider_id", "") == "codex"
+            else None
+        )
 
         for _ in range(max_attempts):
             if _interactive_budget_expired(ctx):
@@ -1238,12 +1385,15 @@ async def _complete_route_with_tools(
                     messages=messages,
                 )
             try:
+                call_kwargs = dict(provider_kwargs)
+                if provider_tool_bridge is not None:
+                    call_kwargs["tool_executor"] = provider_tool_bridge.execute
                 result = await _await_with_interactive_hard_budget(
                     provider.complete_with_tools(
                         messages,
                         tools=tools,
                         tool_choice="auto",
-                        **provider_kwargs,
+                        **call_kwargs,
                     ),
                     ctx=ctx,
                 )
@@ -1254,7 +1404,26 @@ async def _complete_route_with_tools(
                         ctx=ctx,
                         user_text=user_text,
                         messages=messages,
+                        before_continue=(
+                            provider_tool_bridge.append_unconsumed(messages)
+                            if provider_tool_bridge is not None
+                            and provider_tool_bridge.has_activity
+                            else None
+                        ),
                     )
+                if (
+                    bool(getattr(e, "tool_execution_may_have_completed", False))
+                    and provider_tool_bridge is not None
+                    and provider_tool_bridge.has_activity
+                ):
+                    await provider_tool_bridge.append_unconsumed(messages)
+                    had_tool_calls = True
+                    provider_recovery_generation += 1
+                    logger.warning(
+                        "Provider transport ended after tool execution; continuing without replay",
+                        recovery_generation=provider_recovery_generation,
+                    )
+                    continue
                 if (
                     images
                     and not vision_tool_fallback_used
@@ -1383,6 +1552,7 @@ async def _complete_route_with_tools(
 
             content_raw = result.get("content", "")
             tool_calls = result.get("tool_calls") or []
+            tool_results_submitted = bool(result.get("tool_results_submitted", False))
             if not tool_calls and content_raw:
                 recovered_call = _recover_textual_tool_call(content_raw, active_tool_specs)
                 if recovered_call is not None:
@@ -1396,7 +1566,7 @@ async def _complete_route_with_tools(
             if tool_calls:
                 had_tool_calls = True
                 assistant_msg: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls}
-                if content_raw:
+                if content_raw and not tool_results_submitted:
                     assistant_msg["content"] = content_raw
                 messages.append(assistant_msg)
 
@@ -1408,37 +1578,59 @@ async def _complete_route_with_tools(
                             user_text=user_text,
                             messages=messages,
                         )
-                    tool_awaitable = _handle_tool_call_at_most_once(
-                        provider=provider,
-                        call=call,
-                        tools=active_tool_specs,
-                        ctx=ctx,
-                        ledger=tool_execution_ledger,
-                        recovery_generation=provider_recovery_generation,
+                    submitted_result = (
+                        provider_tool_bridge.take(call)
+                        if tool_results_submitted and provider_tool_bridge is not None
+                        else None
                     )
-                    if str(ctx.get("codex_request_lane") or "") == "interactive":
-                        tool_task = asyncio.create_task(tool_awaitable)
-                        remaining = max(
-                            0.0,
-                            INTERACTIVE_RESPONSE_HARD_BUDGET_SECONDS
-                            - _interactive_budget_elapsed(ctx),
-                        )
-                        done, _pending = await asyncio.wait({tool_task}, timeout=remaining)
-                        if not done:
-                            return await _defer_interactive_route(
-                                octo=octo,
-                                ctx=ctx,
-                                user_text=user_text,
-                                messages=messages,
-                                before_continue=_append_deferred_tool_result(
-                                    task=tool_task,
-                                    call=call,
-                                    messages=messages,
+                    if tool_results_submitted:
+                        if submitted_result is None:
+                            tool_result = {
+                                "status": "blocked",
+                                "error": "ambiguous_tool_execution",
+                                "message": (
+                                    "The provider submitted a tool response whose local outcome "
+                                    "could not be recovered. The tool was not replayed."
                                 ),
-                            )
-                        tool_result, tool_meta = tool_task.result()
+                            }
+                            tool_meta = {
+                                "had_error": True,
+                                "error_type": "ambiguous_tool_execution",
+                            }
+                        else:
+                            tool_result, tool_meta = submitted_result
                     else:
-                        tool_result, tool_meta = await tool_awaitable
+                        tool_awaitable = _handle_tool_call_at_most_once(
+                            provider=provider,
+                            call=call,
+                            tools=active_tool_specs,
+                            ctx=ctx,
+                            ledger=tool_execution_ledger,
+                            recovery_generation=provider_recovery_generation,
+                        )
+                        if str(ctx.get("codex_request_lane") or "") == "interactive":
+                            tool_task = asyncio.create_task(tool_awaitable)
+                            remaining = max(
+                                0.0,
+                                INTERACTIVE_RESPONSE_HARD_BUDGET_SECONDS
+                                - _interactive_budget_elapsed(ctx),
+                            )
+                            done, _pending = await asyncio.wait({tool_task}, timeout=remaining)
+                            if not done:
+                                return await _defer_interactive_route(
+                                    octo=octo,
+                                    ctx=ctx,
+                                    user_text=user_text,
+                                    messages=messages,
+                                    before_continue=_append_deferred_tool_result(
+                                        task=tool_task,
+                                        call=call,
+                                        messages=messages,
+                                    ),
+                                )
+                            tool_result, tool_meta = tool_task.result()
+                        else:
+                            tool_result, tool_meta = await tool_awaitable
                     tool_name = str(call.get("function", {}).get("name") or "")
                     runtime_action_contracts = _update_runtime_action_contracts(
                         runtime_action_contracts,
@@ -1604,7 +1796,8 @@ async def _complete_route_with_tools(
                             user_text=user_text,
                             messages=messages,
                         )
-                continue
+                if not tool_results_submitted:
+                    continue
 
             if content_raw:
                 if runtime_action_contracts:
