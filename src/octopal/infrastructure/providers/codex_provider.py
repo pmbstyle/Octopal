@@ -23,8 +23,11 @@ from octopal.infrastructure.config.settings import Settings
 from octopal.infrastructure.providers.base import Message
 from octopal.infrastructure.providers.profile_resolver import resolve_litellm_profile
 
-CODEX_REQUEST_TIMEOUT_SECONDS = 30.0
-CODEX_TURN_TIMEOUT_SECONDS = 180.0
+CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS = 30.0
+CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS = 180.0
+# Backward-compatible aliases for callers that imported the original constants.
+CODEX_REQUEST_TIMEOUT_SECONDS = CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS
+CODEX_TURN_TIMEOUT_SECONDS = CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS
 CODEX_SESSION_TTL_DAYS = 30
 CODEX_SESSION_STATE_VERSION = 1
 
@@ -39,8 +42,17 @@ class CodexAppServerError(RuntimeError):
 class _CodexSession:
     thread_id: str
     config_fingerprint: str
+    config_components: dict[str, str]
     message_fingerprints: tuple[str, ...]
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class _CodexSessionConfiguration:
+    fingerprint: str
+    components: dict[str, str]
+    tool_count: int
+    tool_digest: str
 
 
 class _CodexSessionStore:
@@ -58,9 +70,16 @@ class _CodexSessionStore:
             updated_at = datetime.fromisoformat(str(raw["updated_at"]))
             if updated_at.tzinfo is None:
                 updated_at = updated_at.replace(tzinfo=UTC)
+            raw_components = raw.get("config_components")
+            config_components = (
+                {str(key): str(value) for key, value in raw_components.items()}
+                if isinstance(raw_components, dict)
+                else {}
+            )
             session = _CodexSession(
                 thread_id=str(raw["thread_id"]),
                 config_fingerprint=str(raw["config_fingerprint"]),
+                config_components=config_components,
                 message_fingerprints=tuple(
                     str(value) for value in (raw.get("message_fingerprints") or [])
                 ),
@@ -83,6 +102,7 @@ class _CodexSessionStore:
         sessions[session_ref] = {
             "thread_id": session.thread_id,
             "config_fingerprint": session.config_fingerprint,
+            "config_components": dict(session.config_components),
             "message_fingerprints": list(session.message_fingerprints),
             "updated_at": session.updated_at.astimezone(UTC).isoformat(),
         }
@@ -140,7 +160,11 @@ class _CodexAppServerClient:
         self._requests: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
+        self._process_watch_task: asyncio.Task[None] | None = None
         self._stderr_tail = ""
+        self._transport_failed = asyncio.Event()
+        self._transport_error: CodexAppServerError | None = None
+        self._closing = False
 
     async def start(self) -> None:
         if self._process is not None:
@@ -165,29 +189,40 @@ class _CodexAppServerClient:
             )
         self._reader_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._read_stderr())
-        await self.request(
-            "initialize",
-            {
-                "clientInfo": {
-                    "name": "octopal",
-                    "title": "Octopal",
-                    "version": "runtime",
+        self._process_watch_task = asyncio.create_task(self._watch_process())
+        try:
+            await self.request(
+                "initialize",
+                {
+                    "clientInfo": {
+                        "name": "octopal",
+                        "title": "Octopal",
+                        "version": "runtime",
+                    },
+                    "capabilities": {"experimentalApi": True},
                 },
-                "capabilities": {"experimentalApi": True},
-            },
-        )
-        self.notify("initialized", {})
+                timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
+            )
+            self.notify("initialized", {})
+        except BaseException:
+            await self.close()
+            raise
 
     async def request(
         self,
         method: str,
         params: dict[str, Any] | None = None,
         *,
-        timeout: float = CODEX_REQUEST_TIMEOUT_SECONDS,
+        timeout: float = CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
     ) -> Any:
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        wire_started_at: float | None = None
         process = self._require_process()
         if process.stdin is None:
             raise CodexAppServerError("codex app-server stdin is unavailable")
+        if self._transport_error is not None:
+            raise self._transport_error
 
         request_id = self._next_id
         self._next_id += 1
@@ -197,10 +232,53 @@ class _CodexAppServerClient:
 
         future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
-        process.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
-        await process.stdin.drain()
         try:
-            return await asyncio.wait_for(future, timeout=timeout)
+            process.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+            await process.stdin.drain()
+            wire_started_at = loop.time()
+            result = await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.CancelledError as exc:
+            finished_at = loop.time()
+            _log_app_server_request(
+                method,
+                outcome="cancelled",
+                elapsed_ms=(finished_at - started_at) * 1000,
+                write_wait_ms=((wire_started_at or finished_at) - started_at) * 1000,
+                wire_wait_ms=(
+                    (finished_at - wire_started_at) * 1000 if wire_started_at is not None else 0.0
+                ),
+                process_exit_code=process.returncode,
+                stderr_tail=self._stderr_tail,
+                error=type(exc).__name__,
+            )
+            raise
+        except Exception as exc:
+            finished_at = loop.time()
+            _log_app_server_request(
+                method,
+                outcome="failed",
+                elapsed_ms=(finished_at - started_at) * 1000,
+                write_wait_ms=((wire_started_at or finished_at) - started_at) * 1000,
+                wire_wait_ms=(
+                    (finished_at - wire_started_at) * 1000 if wire_started_at is not None else 0.0
+                ),
+                process_exit_code=process.returncode,
+                stderr_tail=self._stderr_tail,
+                error=type(exc).__name__,
+            )
+            raise
+        else:
+            finished_at = loop.time()
+            _log_app_server_request(
+                method,
+                outcome="completed",
+                elapsed_ms=(finished_at - started_at) * 1000,
+                write_wait_ms=(wire_started_at - started_at) * 1000,
+                wire_wait_ms=(finished_at - wire_started_at) * 1000,
+                process_exit_code=process.returncode,
+                stderr_tail=self._stderr_tail,
+            )
+            return result
         finally:
             self._pending.pop(request_id, None)
 
@@ -233,19 +311,28 @@ class _CodexAppServerClient:
     async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
         notification_task = asyncio.create_task(self._notifications.get())
         request_task = asyncio.create_task(self._requests.get())
+        transport_task = asyncio.create_task(self._transport_failed.wait())
         done, pending = await asyncio.wait(
-            {notification_task, request_task},
+            {notification_task, request_task, transport_task},
             timeout=timeout,
             return_when=asyncio.FIRST_COMPLETED,
         )
         for task in pending:
             task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
         if not done:
             raise TimeoutError("codex app-server turn timed out")
-        task = done.pop()
-        return ("request" if task is request_task else "notification", task.result())
+        if transport_task in done:
+            for task in done - {transport_task}:
+                task.cancel()
+            await asyncio.gather(*(done - {transport_task}), return_exceptions=True)
+            raise self._transport_error or CodexAppServerError("codex app-server transport closed")
+        if request_task in done:
+            return "request", request_task.result()
+        return "notification", notification_task.result()
 
     async def close(self) -> None:
+        self._closing = True
         process = self._process
         if process and process.stdin:
             try:
@@ -254,18 +341,26 @@ class _CodexAppServerClient:
             except Exception:
                 pass
         if process:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=2)
-            except TimeoutError:
-                process.kill()
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2)
+                except TimeoutError:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+                    await process.wait()
+            else:
                 await process.wait()
-        if self._reader_task:
-            self._reader_task.cancel()
-        if self._stderr_task:
-            self._stderr_task.cancel()
+        for task in (self._reader_task, self._stderr_task, self._process_watch_task):
+            if task:
+                task.cancel()
         await asyncio.gather(
-            *(task for task in (self._reader_task, self._stderr_task) if task is not None),
+            *(
+                task
+                for task in (self._reader_task, self._stderr_task, self._process_watch_task)
+                if task is not None
+            ),
             return_exceptions=True,
         )
         for future in self._pending.values():
@@ -277,42 +372,72 @@ class _CodexAppServerClient:
     def _require_process(self) -> asyncio.subprocess.Process:
         if self._process is None:
             raise CodexAppServerError("codex app-server is not running")
+        if self._process.returncode is not None:
+            raise CodexAppServerError(
+                f"codex app-server exited with code {self._process.returncode}"
+            )
         return self._process
 
     async def _read_stdout(self) -> None:
-        process = self._require_process()
+        process = self._process
+        if process is None:
+            return
         assert process.stdout is not None
-        async for raw_line in process.stdout:
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if "id" in message and "method" in message:
-                await self._requests.put(message)
-                continue
-            if "id" in message:
-                future = self._pending.get(message["id"])
-                if future and not future.done():
-                    if message.get("error"):
-                        error = message["error"]
-                        future.set_exception(
-                            CodexAppServerError(error.get("message") or "Codex request failed")
-                        )
-                    else:
-                        future.set_result(message.get("result"))
-                continue
-            if "method" in message:
-                await self._notifications.put(message)
+        try:
+            async for raw_line in process.stdout:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if "id" in message and "method" in message:
+                    await self._requests.put(message)
+                    continue
+                if "id" in message:
+                    future = self._pending.get(message["id"])
+                    if future and not future.done():
+                        if message.get("error"):
+                            error = message["error"]
+                            future.set_exception(
+                                CodexAppServerError(error.get("message") or "Codex request failed")
+                            )
+                        else:
+                            future.set_result(message.get("result"))
+                    continue
+                if "method" in message:
+                    await self._notifications.put(message)
+        finally:
+            if not self._closing:
+                self._fail_transport(CodexAppServerError("codex app-server stdout closed"))
 
     async def _read_stderr(self) -> None:
-        process = self._require_process()
+        process = self._process
+        if process is None:
+            return
         assert process.stderr is not None
         async for raw_chunk in process.stderr:
             text = raw_chunk.decode("utf-8", errors="replace")
             self._stderr_tail = f"{self._stderr_tail}{text}"[-4000:]
+
+    async def _watch_process(self) -> None:
+        process = self._process
+        if process is None:
+            return
+        return_code = await process.wait()
+        if not self._closing:
+            self._fail_transport(
+                CodexAppServerError(f"codex app-server exited with code {return_code}")
+            )
+
+    def _fail_transport(self, error: CodexAppServerError) -> None:
+        if self._transport_error is None:
+            self._transport_error = error
+        for future in self._pending.values():
+            if not future.done():
+                future.set_exception(self._transport_error)
+        self._transport_failed.set()
 
 
 class CodexProvider:
@@ -394,14 +519,22 @@ class CodexProvider:
         session_key: str | None,
     ) -> dict[str, Any]:
         if session_key:
-            session_ref = _fingerprint(session_key)
+            phase = _session_phase(tools)
+            session_ref = _session_ref(session_key, phase=phase)
             lock = self._session_locks.setdefault(session_ref, asyncio.Lock())
+            queued_at = asyncio.get_running_loop().time()
             async with lock:
+                _log_session_queue_wait(
+                    session_ref,
+                    phase=phase,
+                    queue_wait_ms=(asyncio.get_running_loop().time() - queued_at) * 1000,
+                )
                 return await self._run_session_turn(
                     messages,
                     tools=tools,
                     on_partial=on_partial,
                     session_ref=session_ref,
+                    phase=phase,
                 )
         return await self._run_ephemeral_turn(messages, tools=tools, on_partial=on_partial)
 
@@ -434,7 +567,7 @@ class CodexProvider:
                         "dynamicTools": dynamic_tools or None,
                     }
                 ),
-                timeout=CODEX_TURN_TIMEOUT_SECONDS,
+                timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
             )
             thread_id = ((thread or {}).get("thread") or {}).get("id")
             if not thread_id:
@@ -456,7 +589,7 @@ class CodexProvider:
                         "environments": [],
                     }
                 ),
-                timeout=CODEX_TURN_TIMEOUT_SECONDS,
+                timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
             )
             turn_id = ((turn or {}).get("turn") or {}).get("id")
             return await _collect_turn(
@@ -472,28 +605,42 @@ class CodexProvider:
         tools: list[dict] | None,
         on_partial: Callable[[str], Awaitable[None]] | None,
         session_ref: str,
+        phase: str,
     ) -> dict[str, Any]:
         client = _CodexAppServerClient(_codex_command(), _codex_args(), _codex_env())
         await client.start()
         resumed = False
+        recovery_fresh_process = False
         try:
             instructions, full_input_items = _messages_to_codex_input(messages)
             message_fingerprints = _message_fingerprints(messages)
             dynamic_tools = _tools_to_dynamic_tools(tools or [])
             cwd = str(Path.cwd())
-            config_fingerprint = _session_config_fingerprint(
+            configuration = _session_configuration(
                 model=self._model,
                 cwd=cwd,
                 effort=_normalize_effort(getattr(self._settings, "codex_reasoning_effort", None)),
                 dynamic_tools=dynamic_tools,
             )
             session, reset_reason = self._sessions.get(session_ref)
-            if session is not None and session.config_fingerprint != config_fingerprint:
+            changed_components: list[str] | None = None
+            if session is not None and session.config_fingerprint != configuration.fingerprint:
+                changed_components = _changed_config_components(
+                    session.config_components, configuration.components
+                )
                 self._sessions.delete(session_ref)
                 session = None
                 reset_reason = "configuration_changed"
             if reset_reason:
-                _log_session_state("reset", session_ref, reason=reset_reason)
+                _log_session_state(
+                    "reset",
+                    session_ref,
+                    phase=phase,
+                    reason=reset_reason,
+                    changed_components=changed_components,
+                    tool_count=configuration.tool_count,
+                    tool_digest=configuration.tool_digest,
+                )
 
             thread_id: str | None = None
             input_items = full_input_items
@@ -509,7 +656,7 @@ class CodexProvider:
                             "sandbox": "read-only",
                             "personality": "none",
                         },
-                        timeout=CODEX_TURN_TIMEOUT_SECONDS,
+                        timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
                     )
                     thread_id = ((resumed_thread or {}).get("thread") or {}).get("id")
                     if not thread_id:
@@ -519,16 +666,40 @@ class CodexProvider:
                         previous_fingerprints=session.message_fingerprints,
                     )
                     resumed = True
-                    _log_session_state("resumed", session_ref, thread_id=thread_id)
+                    _log_session_state(
+                        "resumed",
+                        session_ref,
+                        phase=phase,
+                        thread_id=thread_id,
+                        tool_count=configuration.tool_count,
+                        tool_digest=configuration.tool_digest,
+                    )
                 except Exception as exc:
                     self._sessions.delete(session_ref)
                     _log_session_state(
                         "reset",
                         session_ref,
+                        phase=phase,
                         thread_id=session.thread_id,
                         reason="resume_failed",
                         error=type(exc).__name__,
+                        tool_count=configuration.tool_count,
+                        tool_digest=configuration.tool_digest,
                     )
+                    with contextlib.suppress(Exception):
+                        await client.close()
+                    client = _CodexAppServerClient(_codex_command(), _codex_args(), _codex_env())
+                    recovery_fresh_process = True
+                    _log_session_state(
+                        "recovery",
+                        session_ref,
+                        phase=phase,
+                        reason="resume_failed",
+                        recovery_fresh_process=True,
+                        tool_count=configuration.tool_count,
+                        tool_digest=configuration.tool_digest,
+                    )
+                    await client.start()
 
             if thread_id is None:
                 thread = await client.request(
@@ -547,13 +718,21 @@ class CodexProvider:
                             "dynamicTools": dynamic_tools or None,
                         }
                     ),
-                    timeout=CODEX_TURN_TIMEOUT_SECONDS,
+                    timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
                 )
                 thread_id = ((thread or {}).get("thread") or {}).get("id")
                 if not thread_id:
                     raise CodexAppServerError("Codex did not return a thread id")
                 input_items = full_input_items
-                _log_session_state("created", session_ref, thread_id=thread_id)
+                _log_session_state(
+                    "created",
+                    session_ref,
+                    phase=phase,
+                    thread_id=thread_id,
+                    recovery_fresh_process=recovery_fresh_process or None,
+                    tool_count=configuration.tool_count,
+                    tool_digest=configuration.tool_digest,
+                )
 
             turn = await client.request(
                 "turn/start",
@@ -571,7 +750,7 @@ class CodexProvider:
                         "environments": [],
                     }
                 ),
-                timeout=CODEX_TURN_TIMEOUT_SECONDS,
+                timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
             )
             turn_id = ((turn or {}).get("turn") or {}).get("id")
             result = await _collect_turn(
@@ -581,7 +760,8 @@ class CodexProvider:
                 session_ref,
                 _CodexSession(
                     thread_id=thread_id,
-                    config_fingerprint=config_fingerprint,
+                    config_fingerprint=configuration.fingerprint,
+                    config_components=configuration.components,
                     message_fingerprints=message_fingerprints,
                     updated_at=datetime.now(UTC),
                 ),
@@ -590,7 +770,14 @@ class CodexProvider:
         except Exception:
             if resumed:
                 self._sessions.delete(session_ref)
-                _log_session_state("reset", session_ref, reason="resumed_turn_failed")
+                _log_session_state(
+                    "reset",
+                    session_ref,
+                    phase=phase,
+                    reason="resumed_turn_failed",
+                    tool_count=configuration.tool_count,
+                    tool_digest=configuration.tool_digest,
+                )
             raise
         finally:
             await client.close()
@@ -608,7 +795,7 @@ async def _collect_turn(
     current_turn_id = turn_id
 
     while True:
-        kind, event = await client.next_event(CODEX_TURN_TIMEOUT_SECONDS)
+        kind, event = await client.next_event(CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS)
         payload = event.get("params") or {}
         if kind == "request":
             method = str(event.get("method") or "")
@@ -621,7 +808,7 @@ async def _collect_turn(
                         await client.request(
                             "turn/interrupt",
                             {"threadId": thread_id, "turnId": current_turn_id},
-                            timeout=CODEX_REQUEST_TIMEOUT_SECONDS,
+                            timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
                         )
                 await client.respond(
                     event["id"],
@@ -758,13 +945,13 @@ def _incremental_codex_input(
     return [{"type": "text", "text": text}]
 
 
-def _session_config_fingerprint(
+def _session_configuration(
     *,
     model: str,
     cwd: str,
     effort: str | None,
     dynamic_tools: list[dict[str, Any]],
-) -> str:
+) -> _CodexSessionConfiguration:
     tool_catalog = sorted(dynamic_tools, key=lambda item: str(item.get("name") or ""))
     payload = {
         "bridgeVersion": CODEX_SESSION_STATE_VERSION,
@@ -777,8 +964,68 @@ def _session_config_fingerprint(
         "command": _codex_command(),
         "args": _codex_args(),
     }
+    components = {
+        "bridge_version": _config_component_fingerprint(payload["bridgeVersion"]),
+        "model": _config_component_fingerprint(payload["model"]),
+        "cwd": _config_component_fingerprint(payload["cwd"]),
+        "reasoning_effort": _config_component_fingerprint(payload["effort"]),
+        "approval_policy": _config_component_fingerprint(payload["approvalPolicy"]),
+        "sandbox_policy": _config_component_fingerprint(payload["sandboxPolicy"]),
+        "tool_catalog": _config_component_fingerprint(payload["dynamicTools"]),
+        "command": _config_component_fingerprint(payload["command"]),
+        "args": _config_component_fingerprint(payload["args"]),
+    }
+    return _CodexSessionConfiguration(
+        fingerprint=_fingerprint(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        ),
+        components=components,
+        tool_count=len(tool_catalog),
+        tool_digest=components["tool_catalog"],
+    )
+
+
+def _session_config_fingerprint(
+    *,
+    model: str,
+    cwd: str,
+    effort: str | None,
+    dynamic_tools: list[dict[str, Any]],
+) -> str:
+    return _session_configuration(
+        model=model,
+        cwd=cwd,
+        effort=effort,
+        dynamic_tools=dynamic_tools,
+    ).fingerprint
+
+
+def _config_component_fingerprint(value: Any) -> str:
     return _fingerprint(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+
+
+def _changed_config_components(previous: dict[str, str], current: dict[str, str]) -> list[str]:
+    if not previous:
+        return ["unknown"]
+    return sorted(
+        key for key in set(previous) | set(current) if previous.get(key) != current.get(key)
+    )
+
+
+def _session_phase(tools: list[dict] | None) -> str:
+    return "executor" if tools is not None else "planner"
+
+
+def _session_ref(session_key: str, *, phase: str) -> str:
+    return _fingerprint(
+        json.dumps(
+            {"session_key": session_key, "phase": phase},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
     )
 
 
@@ -786,22 +1033,84 @@ def _fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _log_session_queue_wait(session_ref: str, *, phase: str, queue_wait_ms: float) -> None:
+    logger.debug(
+        "Codex provider session queue wait",
+        session_ref=session_ref[:12],
+        phase=phase,
+        queue_wait_ms=round(queue_wait_ms, 3),
+    )
+
+
 def _log_session_state(
     state: str,
     session_ref: str,
     *,
+    phase: str,
     thread_id: str | None = None,
     reason: str | None = None,
     error: str | None = None,
+    changed_components: list[str] | None = None,
+    tool_count: int | None = None,
+    tool_digest: str | None = None,
+    recovery_fresh_process: bool | None = None,
 ) -> None:
     logger.info(
         "Codex provider session state changed",
         state=state,
         session_ref=session_ref[:12],
+        phase=phase,
         thread_ref=_fingerprint(thread_id)[:12] if thread_id else None,
         reason=reason,
         error=error,
+        changed_components=changed_components,
+        tool_count=tool_count,
+        tool_digest=tool_digest[:12] if tool_digest else None,
+        recovery_fresh_process=recovery_fresh_process,
     )
+
+
+def _log_app_server_request(
+    stage: str,
+    *,
+    outcome: str,
+    elapsed_ms: float,
+    write_wait_ms: float,
+    wire_wait_ms: float,
+    process_exit_code: int | None,
+    stderr_tail: str,
+    error: str | None = None,
+) -> None:
+    stderr_category, stderr_digest = _stderr_diagnostics(stderr_tail)
+    log = logger.debug if outcome == "completed" else logger.warning
+    log(
+        "Codex app-server request finished",
+        request_stage=stage,
+        outcome=outcome,
+        elapsed_ms=round(elapsed_ms, 3),
+        write_wait_ms=round(write_wait_ms, 3),
+        wire_wait_ms=round(wire_wait_ms, 3),
+        process_exit_code=process_exit_code,
+        stderr_category=stderr_category,
+        stderr_digest=stderr_digest,
+        error=error,
+    )
+
+
+def _stderr_diagnostics(stderr_tail: str) -> tuple[str, str | None]:
+    normalized = stderr_tail.strip()
+    if not normalized:
+        return "empty", None
+    lowered = normalized.lower()
+    if "panic" in lowered or "fatal" in lowered:
+        category = "fatal"
+    elif "error" in lowered or "exception" in lowered:
+        category = "error"
+    elif "warn" in lowered:
+        category = "warning"
+    else:
+        category = "other"
+    return category, _fingerprint(normalized)[:12]
 
 
 def _tools_to_dynamic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
