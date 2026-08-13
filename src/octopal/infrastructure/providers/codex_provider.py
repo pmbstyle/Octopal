@@ -430,26 +430,69 @@ class _CodexAppServerClient:
         if self._deferred_events:
             return self._deferred_events.popleft()
 
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
         notification_task = asyncio.create_task(self._notifications.get())
         request_task = asyncio.create_task(self._requests.get())
         transport_task = asyncio.create_task(self._transport_failed.wait())
-        done, pending = await asyncio.wait(
-            {notification_task, request_task, transport_task},
-            timeout=timeout,
-            return_when=asyncio.FIRST_COMPLETED,
+        tasks: tuple[asyncio.Task[Any], ...] = (
+            request_task,
+            notification_task,
+            transport_task,
         )
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        if not done:
-            raise TimeoutError("codex app-server turn timed out")
-        if request_task in done:
+        handled: set[asyncio.Task[Any]] = set()
+        try:
+            done, _pending = await asyncio.wait(
+                set(tasks),
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                logger.warning(
+                    "Codex app-server turn event wait ended",
+                    stage="turn_event_wait",
+                    outcome="idle_timeout",
+                    elapsed_ms=round((loop.time() - started_at) * 1000, 3),
+                    timeout_seconds=timeout,
+                    deferred_event_count=len(self._deferred_events),
+                    transport_failed=self._transport_failed.is_set(),
+                )
+                raise TimeoutError("codex app-server turn timed out")
+            if request_task in done:
+                handled.add(request_task)
+                if notification_task in done:
+                    handled.add(notification_task)
+                    self._deferred_events.append(("notification", notification_task.result()))
+                return "request", request_task.result()
             if notification_task in done:
-                self._deferred_events.append(("notification", notification_task.result()))
-            return "request", request_task.result()
-        if notification_task in done:
-            return "notification", notification_task.result()
-        raise self._transport_error or CodexAppServerError("codex app-server transport closed")
+                handled.add(notification_task)
+                return "notification", notification_task.result()
+            handled.add(transport_task)
+            raise self._transport_error or CodexAppServerError("codex app-server transport closed")
+        except asyncio.CancelledError:
+            logger.info(
+                "Codex app-server turn event wait ended",
+                stage="turn_event_wait",
+                outcome="cancelled",
+                elapsed_ms=round((loop.time() - started_at) * 1000, 3),
+                timeout_seconds=timeout,
+                deferred_event_count=len(self._deferred_events),
+                transport_failed=self._transport_failed.is_set(),
+            )
+            raise
+        finally:
+            for task in tasks:
+                if task not in handled and not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for kind, task in (
+                ("request", request_task),
+                ("notification", notification_task),
+            ):
+                if task in handled or task.cancelled():
+                    continue
+                if task.done() and task.exception() is None:
+                    self._deferred_events.append((kind, task.result()))
 
     async def close(self) -> None:
         self._closing = True

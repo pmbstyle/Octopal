@@ -711,6 +711,88 @@ def test_simultaneous_request_and_terminal_notification_are_preserved() -> None:
     asyncio.run(scenario())
 
 
+def test_next_event_cancellation_cleans_up_child_waiters() -> None:
+    async def scenario() -> None:
+        client = _RealCodexAppServerClient("unused", [], {})
+        waiter = asyncio.create_task(client.next_event(60.0))
+
+        for _ in range(10):
+            if (
+                client._requests._getters
+                and client._notifications._getters
+                and client._transport_failed._waiters
+            ):
+                break
+            await asyncio.sleep(0)
+        assert len(client._requests._getters) == 1
+        assert len(client._notifications._getters) == 1
+        assert len(client._transport_failed._waiters) == 1
+
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        assert not client._requests._getters
+        assert not client._notifications._getters
+        assert not client._transport_failed._waiters
+
+    asyncio.run(scenario())
+
+
+def test_next_event_cancellation_preserves_simultaneously_ready_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = {
+        "id": 7,
+        "method": "item/permissions/requestApproval",
+        "params": {},
+    }
+    completed = {"method": "turn/completed", "params": {"threadId": "thread-1"}}
+
+    async def scenario() -> None:
+        client = _RealCodexAppServerClient("unused", [], {})
+        await client._requests.put(request)
+        await client._notifications.put(completed)
+        client._transport_error = CodexAppServerError("transport closed after terminal event")
+        client._transport_failed.set()
+
+        real_wait = asyncio.wait
+        ready = asyncio.Event()
+        block_first_wait = True
+
+        async def wait_after_children_complete(
+            futures: Any,
+            *,
+            timeout: float | None = None,
+            return_when: str = asyncio.ALL_COMPLETED,
+        ) -> tuple[set[asyncio.Future[Any]], set[asyncio.Future[Any]]]:
+            nonlocal block_first_wait
+            done, pending = await real_wait(
+                futures,
+                timeout=timeout,
+                return_when=return_when,
+            )
+            if block_first_wait:
+                block_first_wait = False
+                ready.set()
+                await asyncio.Future()
+            return done, pending
+
+        monkeypatch.setattr(codex_provider.asyncio, "wait", wait_after_children_complete)
+        waiter = asyncio.create_task(client.next_event(60.0))
+        await asyncio.wait_for(ready.wait(), timeout=0.5)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        assert await client.next_event(0.1) == ("request", request)
+        assert await client.next_event(0.1) == ("notification", completed)
+        with pytest.raises(CodexAppServerError, match="transport closed"):
+            await client.next_event(0.1)
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     ("success", "tool_content", "item_status"),
     [(True, "lookup result", "completed"), (False, "lookup failed", "failed")],
