@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 
 from octopal.infrastructure.config.models import A2AConfig, A2APeerConfig
 from octopal.infrastructure.providers.base import Message
+from octopal.infrastructure.providers.codex_provider import CodexAppServerError
 from octopal.runtime.octo.delivery import (
     resolve_user_delivery,
     restore_user_delivery,
@@ -1143,6 +1145,489 @@ def test_tool_budget_exhaustion_continues_autonomously_instead_of_summarizing() 
         assert "Runtime continuation after tool budget exhaustion" in handoff_text
         assert "Do not ask the user to say continue" in handoff_text
         assert octo.sent == [(123, "Finished after autonomous continuation.")]
+
+    asyncio.run(scenario())
+
+
+def test_provider_retry_does_not_replay_completed_tool_side_effect(monkeypatch) -> None:
+    import octopal.runtime.octo.router as router
+
+    class DummyProvider:
+        provider_id = "codex"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, **kwargs):
+            del messages, kwargs
+            return '{"verdict":"final","confidence":1.0,"reason":"complete"}'
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            del messages, tools, tool_choice, kwargs
+            self.calls += 1
+            if self.calls == 2:
+                raise CodexAppServerError("connection reset")
+            if self.calls in {1, 3}:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": f"call-{self.calls}",
+                            "type": "function",
+                            "function": {
+                                "name": "write_once",
+                                "arguments": '{"value":"same"}',
+                            },
+                        }
+                    ],
+                }
+            return {"content": "done", "tool_calls": []}
+
+    tool_runs = 0
+
+    def write_once(args, ctx):
+        nonlocal tool_runs
+        del args, ctx
+        tool_runs += 1
+        return {"status": "ok"}
+
+    async def no_delay(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(router.asyncio, "sleep", no_delay)
+
+    async def scenario() -> None:
+        provider = DummyProvider()
+        reply = await _complete_route_with_tools(
+            octo=SimpleNamespace(trace_sink=None),
+            provider=provider,
+            messages=[Message(role="user", content="write it once")],
+            tool_specs=[
+                ToolSpec(
+                    name="write_once",
+                    description="write",
+                    parameters={"type": "object", "properties": {}},
+                    permission="exec",
+                    handler=write_once,
+                )
+            ],
+            ctx={"chat_id": 123},
+            internal_followup=False,
+            user_text="write it once",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+        assert reply == "done"
+        assert provider.calls == 4
+        assert tool_runs == 1
+
+    asyncio.run(scenario())
+
+
+def test_repeated_tool_call_without_provider_recovery_executes_again() -> None:
+    class DummyProvider:
+        provider_id = "codex"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, **kwargs):
+            del messages, kwargs
+            return '{"verdict":"final","confidence":1.0,"reason":"complete"}'
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            del messages, tools, tool_choice, kwargs
+            self.calls += 1
+            if self.calls <= 2:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": f"call-{self.calls}",
+                            "type": "function",
+                            "function": {"name": "poll", "arguments": "{}"},
+                        }
+                    ],
+                }
+            return {"content": "done", "tool_calls": []}
+
+    tool_runs = 0
+
+    def poll(args, ctx):
+        nonlocal tool_runs
+        del args, ctx
+        tool_runs += 1
+        return {"status": "working"}
+
+    async def scenario() -> None:
+        reply = await _complete_route_with_tools(
+            octo=SimpleNamespace(trace_sink=None),
+            provider=DummyProvider(),
+            messages=[Message(role="user", content="poll twice")],
+            tool_specs=[
+                ToolSpec(
+                    name="poll",
+                    description="poll",
+                    parameters={"type": "object", "properties": {}},
+                    permission="read",
+                    handler=poll,
+                )
+            ],
+            ctx={"chat_id": 123},
+            internal_followup=False,
+            user_text="poll twice",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+        assert reply == "done"
+        assert tool_runs == 2
+
+    asyncio.run(scenario())
+
+
+def test_interactive_soft_budget_enqueues_exactly_one_bounded_continuation() -> None:
+    class DummyProvider:
+        provider_id = "codex"
+        calls = 0
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            del messages, tools, tool_choice, kwargs
+            self.calls += 1
+            return {"content": "should not run", "tool_calls": []}
+
+    class DummyOcto:
+        trace_sink = None
+
+        def __init__(self) -> None:
+            self.followup_marks = 0
+            self.continuations: list[str] = []
+            self.sent: list[str] = []
+
+        def mark_structured_followup_required(self) -> None:
+            self.followup_marks += 1
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            del chat_id, kwargs
+            self.continuations.append(text)
+            return "background result"
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            del chat_id
+            self.sent.append(text)
+
+    async def scenario() -> None:
+        octo = DummyOcto()
+        provider = DummyProvider()
+        ctx: dict[str, object] = {
+            "octo": octo,
+            "chat_id": 123,
+            "codex_request_lane": "interactive",
+            "interactive_budget_started_at": asyncio.get_running_loop().time() - 91.0,
+        }
+        reply = await _complete_route_with_tools(
+            octo=octo,
+            provider=provider,
+            messages=[Message(role="user", content="long request")],
+            tool_specs=[
+                ToolSpec(
+                    name="dummy",
+                    description="dummy",
+                    parameters={"type": "object", "properties": {}},
+                    permission="exec",
+                    handler=lambda args, tool_ctx: {"status": "ok"},
+                )
+            ],
+            ctx=ctx,
+            internal_followup=False,
+            user_text="long request",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+        assert "continuing this in the background" in reply
+        assert provider.calls == 0
+        assert octo.followup_marks == 1
+        tasks = octo._bounded_route_continuation_tasks
+        await asyncio.gather(*tasks)
+        assert len(octo.continuations) == 1
+        assert octo.sent == ["background result"]
+        assert (
+            router._route_continuations._enqueue_bounded_continuation(
+                octo=octo,
+                chat_id=123,
+                notify_user="always",
+                user_text="long request",
+                messages=[],
+                ctx=ctx,
+            )
+            is False
+        )
+
+    import octopal.runtime.octo.router as router
+
+    asyncio.run(scenario())
+
+
+def test_interactive_hard_budget_cancels_inference_and_enqueues_continuation(
+    monkeypatch,
+) -> None:
+    import octopal.runtime.octo.router as router
+
+    monkeypatch.setattr(router, "INTERACTIVE_RESPONSE_SOFT_BUDGET_SECONDS", 1.0)
+    monkeypatch.setattr(router, "INTERACTIVE_RESPONSE_HARD_BUDGET_SECONDS", 0.02)
+
+    class DummyProvider:
+        provider_id = "codex"
+
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            del messages, tools, tool_choice, kwargs
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    class DummyOcto:
+        trace_sink = None
+
+        def mark_structured_followup_required(self) -> None:
+            return None
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            del text, chat_id, kwargs
+            return "finished later"
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            del chat_id, text
+
+    async def scenario() -> None:
+        octo = DummyOcto()
+        provider = DummyProvider()
+        reply = await _complete_route_with_tools(
+            octo=octo,
+            provider=provider,
+            messages=[Message(role="user", content="long inference")],
+            tool_specs=[
+                ToolSpec(
+                    name="dummy",
+                    description="dummy",
+                    parameters={"type": "object", "properties": {}},
+                    permission="read",
+                    handler=lambda args, tool_ctx: {"status": "ok"},
+                )
+            ],
+            ctx={
+                "octo": octo,
+                "chat_id": 123,
+                "codex_request_lane": "interactive",
+                "interactive_budget_started_at": asyncio.get_running_loop().time(),
+            },
+            internal_followup=False,
+            user_text="long inference",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+        assert "continuing this in the background" in reply
+        assert provider.cancelled is True
+        await asyncio.gather(*octo._bounded_route_continuation_tasks)
+
+    asyncio.run(scenario())
+
+
+def test_interactive_hard_budget_detaches_slow_tool_without_replaying_it(monkeypatch) -> None:
+    import octopal.runtime.octo.router as router
+
+    monkeypatch.setattr(router, "INTERACTIVE_RESPONSE_SOFT_BUDGET_SECONDS", 1.0)
+    monkeypatch.setattr(router, "INTERACTIVE_RESPONSE_HARD_BUDGET_SECONDS", 0.03)
+    release_tool = asyncio.Event()
+    tool_started = asyncio.Event()
+    tool_runs = 0
+
+    class DummyProvider:
+        provider_id = "codex"
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            del messages, tools, tool_choice, kwargs
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "slow-call",
+                        "type": "function",
+                        "function": {"name": "slow_write", "arguments": "{}"},
+                    }
+                ],
+            }
+
+    async def slow_write(args, ctx):
+        nonlocal tool_runs
+        del args, ctx
+        tool_runs += 1
+        tool_started.set()
+        await release_tool.wait()
+        return {"status": "written_once"}
+
+    class DummyOcto:
+        trace_sink = None
+
+        def __init__(self) -> None:
+            self.continuations: list[str] = []
+
+        def mark_structured_followup_required(self) -> None:
+            return None
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            del chat_id, kwargs
+            self.continuations.append(text)
+            return "finished after slow write"
+
+        async def internal_send(self, chat_id: int, text: str) -> None:
+            del chat_id, text
+
+    async def scenario() -> None:
+        octo = DummyOcto()
+        started_at = asyncio.get_running_loop().time()
+        reply = await _complete_route_with_tools(
+            octo=octo,
+            provider=DummyProvider(),
+            messages=[Message(role="user", content="write slowly")],
+            tool_specs=[
+                ToolSpec(
+                    name="slow_write",
+                    description="slow write",
+                    parameters={"type": "object", "properties": {}},
+                    permission="exec",
+                    handler=slow_write,
+                    is_async=True,
+                )
+            ],
+            ctx={
+                "octo": octo,
+                "chat_id": 123,
+                "codex_request_lane": "interactive",
+                "interactive_budget_started_at": started_at,
+            },
+            internal_followup=False,
+            user_text="write slowly",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+        assert "continuing this in the background" in reply
+        assert asyncio.get_running_loop().time() - started_at < 0.2
+        await tool_started.wait()
+        assert tool_runs == 1
+        continuation_tasks = set(octo._bounded_route_continuation_tasks)
+        release_tool.set()
+        await asyncio.gather(*continuation_tasks)
+        assert tool_runs == 1
+        assert len(octo.continuations) == 1
+        assert "written_once" in octo.continuations[0]
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_deferred_continuation_does_not_cancel_inflight_tool() -> None:
+    import octopal.runtime.octo.router as router
+
+    async def scenario() -> None:
+        release = asyncio.Event()
+
+        async def run_tool():
+            await release.wait()
+            return {"status": "done"}, {}
+
+        tool_task = asyncio.create_task(run_tool())
+        messages: list[Message | dict] = []
+        waiter = asyncio.create_task(
+            router._append_deferred_tool_result(
+                task=tool_task,
+                call={
+                    "id": "call-1",
+                    "function": {"name": "write", "arguments": "{}"},
+                },
+                messages=messages,
+            )
+        )
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await waiter
+        assert not tool_task.cancelled()
+        release.set()
+        await tool_task
+
+    asyncio.run(scenario())
+
+
+def test_background_continuation_never_nests_another_control_handoff() -> None:
+    class DummyProvider:
+        provider_id = "codex"
+
+        def __init__(self) -> None:
+            self.tool_calls = 0
+
+        async def complete_with_tools(self, messages, *, tools, tool_choice="auto", **kwargs):
+            del messages, tools, tool_choice, kwargs
+            self.tool_calls += 1
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call-{self.tool_calls}",
+                        "type": "function",
+                        "function": {
+                            "name": "dummy",
+                            "arguments": json.dumps({"idx": self.tool_calls}),
+                        },
+                    }
+                ],
+            }
+
+        async def complete(self, messages, **kwargs):
+            del messages, kwargs
+            return "bounded background status"
+
+    class DummyOcto:
+        trace_sink = None
+
+        def __init__(self) -> None:
+            self.control_handoffs = 0
+
+        async def handle_message(self, text: str, chat_id: int, **kwargs):
+            del text, chat_id, kwargs
+            self.control_handoffs += 1
+            return "unexpected"
+
+    async def scenario() -> None:
+        octo = DummyOcto()
+        reply = await _complete_route_with_tools(
+            octo=octo,
+            provider=DummyProvider(),
+            messages=[Message(role="user", content="bounded continuation")],
+            tool_specs=[
+                ToolSpec(
+                    name="dummy",
+                    description="dummy",
+                    parameters={"type": "object", "properties": {}},
+                    permission="read",
+                    handler=lambda args, tool_ctx: {"status": "ok"},
+                )
+            ],
+            ctx={
+                "octo": octo,
+                "chat_id": 123,
+                "codex_request_lane": "background",
+                "background_delivery": True,
+            },
+            internal_followup=False,
+            user_text="bounded continuation",
+            images=None,
+            allow_tool_catalog_expansion=False,
+        )
+        assert reply == "bounded background status"
+        assert octo.control_handoffs == 0
 
     asyncio.run(scenario())
 
