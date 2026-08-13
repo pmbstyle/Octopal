@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ast
 import hashlib
+import importlib.util
 import json
 import shutil
 import subprocess
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,7 +19,68 @@ from octopal.runtime.workers.launcher import DockerLauncher, SameEnvLauncher, Wo
 logger = structlog.get_logger(__name__)
 _DOCKER_STATUS_CACHE_TTL_SECONDS = 10.0
 _WORKER_IMAGE_FINGERPRINT_LABEL = "io.octopal.worker-image-fingerprint"
+_WORKER_ENTRYPOINT_MODULE = "octopal.runtime.workers.entrypoint"
+_WORKER_IMAGE_BUILD_INPUTS = ("docker/Dockerfile", "pyproject.toml", "uv.lock")
+_WORKER_RUNTIME_RESOURCE_INPUTS = ("src/octopal/runtime/octo/prompts/worker_system.md",)
 _docker_status_cache: dict[tuple[str, str, str, str, str], tuple[float, WorkerLauncherStatus]] = {}
+
+
+class _DynamicWorkerImportError(RuntimeError):
+    pass
+
+
+class _RuntimeImportVisitor(ast.NodeVisitor):
+    _DYNAMIC_IMPORT_CALLS = {
+        "entry_points",
+        "find_loader",
+        "import_module",
+        "iter_modules",
+        "load_module",
+        "walk_packages",
+    }
+
+    def __init__(self, package: str) -> None:
+        self.package = package
+        self.modules: set[str] = set()
+        self.dynamic_import_bindings = {"__import__"}
+        self.dynamic_import = False
+
+    def visit_If(self, node: ast.If) -> None:
+        if _is_type_checking_guard(node.test):
+            for child in node.orelse:
+                self.visit(child)
+            return
+        self.generic_visit(node)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.modules.update(alias.name for alias in node.names)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        module = node.module or ""
+        if node.level:
+            relative_name = f"{'.' * node.level}{module}"
+            module = importlib.util.resolve_name(relative_name, self.package)
+        if not module:
+            return
+        self.modules.add(module)
+        self.modules.update(f"{module}.{alias.name}" for alias in node.names if alias.name != "*")
+        if module in {"importlib", "importlib.metadata", "pkgutil"}:
+            self.dynamic_import_bindings.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name in self._DYNAMIC_IMPORT_CALLS
+            )
+
+    def visit_Call(self, node: ast.Call) -> None:
+        is_dynamic_import_binding = (
+            isinstance(node.func, ast.Name) and node.func.id in self.dynamic_import_bindings
+        )
+        is_dynamic_import_call = (
+            isinstance(node.func, ast.Attribute) and node.func.attr in self._DYNAMIC_IMPORT_CALLS
+        )
+        if is_dynamic_import_binding or is_dynamic_import_call:
+            self.dynamic_import = True
+        self.generic_visit(node)
 
 
 @dataclass(frozen=True)
@@ -339,16 +403,95 @@ def _compute_worker_image_fingerprint(project_root: Path) -> str:
 
 
 def _iter_worker_image_inputs(project_root: Path) -> list[str]:
-    inputs = ["docker/Dockerfile", "pyproject.toml", "uv.lock", "README.md"]
+    inputs = set(_WORKER_IMAGE_BUILD_INPUTS)
+    inputs.update(_WORKER_RUNTIME_RESOURCE_INPUTS)
     src_root = project_root / "src"
-    if src_root.exists():
-        for path in sorted(src_root.rglob("*")):
-            if not path.is_file():
-                continue
-            if "__pycache__" in path.parts:
-                continue
-            inputs.append(path.relative_to(project_root).as_posix())
-    return inputs
+    if not src_root.exists():
+        return sorted(path for path in inputs if (project_root / path).is_file())
+
+    try:
+        inputs.update(
+            _iter_local_runtime_imports(
+                project_root,
+                entrypoint_module=_WORKER_ENTRYPOINT_MODULE,
+            )
+        )
+    except (OSError, SyntaxError, ValueError, _DynamicWorkerImportError) as exc:
+        logger.warning(
+            "Worker runtime import surface could not be resolved; fingerprinting all source files",
+            error_type=type(exc).__name__,
+        )
+        inputs.update(_iter_all_python_source_inputs(project_root))
+
+    return sorted(path for path in inputs if (project_root / path).is_file())
+
+
+def _iter_local_runtime_imports(project_root: Path, *, entrypoint_module: str) -> list[str]:
+    pending = deque([entrypoint_module])
+    visited: set[str] = set()
+    inputs: set[str] = set()
+
+    while pending:
+        module_name = pending.popleft()
+        if module_name in visited:
+            continue
+        visited.add(module_name)
+
+        module_path = _resolve_local_module(project_root, module_name)
+        if module_path is None:
+            continue
+        inputs.add(module_path.relative_to(project_root).as_posix())
+
+        for package_name in _parent_package_names(module_name):
+            if package_name not in visited:
+                pending.append(package_name)
+
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(module_path))
+        package = (
+            module_name if module_path.name == "__init__.py" else module_name.rpartition(".")[0]
+        )
+        visitor = _RuntimeImportVisitor(package)
+        visitor.visit(tree)
+        if visitor.dynamic_import:
+            raise _DynamicWorkerImportError(module_name)
+
+        for imported_module in sorted(visitor.modules):
+            if imported_module == "octopal" or imported_module.startswith("octopal."):
+                pending.append(imported_module)
+
+    return sorted(inputs)
+
+
+def _resolve_local_module(project_root: Path, module_name: str) -> Path | None:
+    module_path = project_root / "src" / Path(*module_name.split("."))
+    source_file = module_path.with_suffix(".py")
+    if source_file.is_file():
+        return source_file
+    package_file = module_path / "__init__.py"
+    if package_file.is_file():
+        return package_file
+    return None
+
+
+def _parent_package_names(module_name: str) -> list[str]:
+    parts = module_name.split(".")
+    return [".".join(parts[:idx]) for idx in range(1, len(parts))]
+
+
+def _is_type_checking_guard(node: ast.expr) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "TYPE_CHECKING"
+    return isinstance(node, ast.Attribute) and node.attr == "TYPE_CHECKING"
+
+
+def _iter_all_python_source_inputs(project_root: Path) -> list[str]:
+    src_root = project_root / "src"
+    return [
+        path.relative_to(project_root).as_posix()
+        for path in sorted(src_root.rglob("*.py"))
+        if path.is_file() and "__pycache__" not in path.parts
+    ]
 
 
 def _build_worker_image(
