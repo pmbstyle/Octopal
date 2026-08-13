@@ -927,7 +927,17 @@ def test_cancellation_interrupts_active_turn_only(
     asyncio.run(scenario())
 
 
-def test_interactive_and_background_lanes_use_independent_sessions(tmp_path: Path) -> None:
+def test_interactive_and_background_lanes_use_independent_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_events: list[tuple[str, str, str]] = []
+
+    def capture_session_state(state: str, session_ref: str, **kwargs: object) -> None:
+        del session_ref
+        session_events.append((state, str(kwargs["phase"]), str(kwargs["lane"])))
+
+    monkeypatch.setattr(codex_provider, "_log_session_state", capture_session_state)
+
     async def scenario() -> None:
         provider = CodexProvider(_settings(tmp_path))
         kwargs = {
@@ -951,6 +961,10 @@ def test_interactive_and_background_lanes_use_independent_sessions(tmp_path: Pat
         ]
         registry = json.loads((tmp_path / "codex_sessions.json").read_text())
         assert len(registry["sessions"]) == 2
+        assert session_events == [
+            ("created", "executor", "interactive"),
+            ("created", "executor", "background"),
+        ]
 
     asyncio.run(scenario())
 
@@ -1005,6 +1019,42 @@ def test_admission_fairness_serves_aged_background_after_interactive_burst(
         interactive = asyncio.create_task(enter("interactive"))
         await asyncio.gather(background, interactive)
         assert order == ["background", "interactive"]
+
+    asyncio.run(scenario())
+
+
+def test_admission_serves_waiting_interactive_before_next_background() -> None:
+    async def scenario() -> None:
+        controller = codex_provider._CodexAdmissionController(capacity=1, background_capacity=1)
+        release_active = asyncio.Event()
+        release_interactive = asyncio.Event()
+        active_entered = asyncio.Event()
+        order: list[str] = []
+
+        async def active_background() -> None:
+            async with controller.acquire("background"):
+                active_entered.set()
+                await release_active.wait()
+
+        async def enter(lane: str) -> None:
+            async with controller.acquire(lane):
+                order.append(lane)
+                if lane == "interactive":
+                    await release_interactive.wait()
+
+        active = asyncio.create_task(active_background())
+        await active_entered.wait()
+        queued_background = asyncio.create_task(enter("background"))
+        interactive = asyncio.create_task(enter("interactive"))
+        await asyncio.sleep(0)
+        release_active.set()
+        while not order:
+            await asyncio.sleep(0)
+
+        assert order == ["interactive"]
+        release_interactive.set()
+        await asyncio.gather(active, queued_background, interactive)
+        assert order == ["interactive", "background"]
 
     asyncio.run(scenario())
 
@@ -1645,3 +1695,125 @@ def test_main_conversation_planner_reply_passes_scoped_session_key(
         ]
 
     asyncio.run(scenario())
+
+
+def test_public_telegram_turn_and_continuation_keep_session_identity_and_lanes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from octopal.channels.telegram import handlers as telegram_handlers
+    from octopal.runtime.octo.core import Octo
+    from octopal.runtime.octo.prompt_builder import BootstrapContext
+    from octopal.tools.catalog import _tool_octo_continue_from_control_route
+
+    class _Provider:
+        provider_id = "codex"
+
+        def __init__(self) -> None:
+            self.complete_kwargs: list[dict[str, object]] = []
+
+        async def complete(self, messages, **kwargs: object) -> str:
+            del messages
+            self.complete_kwargs.append(dict(kwargs))
+            return json.dumps(
+                {
+                    "mode": "reply",
+                    "steps": [],
+                    "response": f"Alice response {len(self.complete_kwargs)}",
+                }
+            )
+
+    class _Memory:
+        async def add_message(self, role, content, metadata=None) -> None:
+            del role, content, metadata
+
+    class _Bot:
+        async def set_message_reaction(self, **kwargs: object) -> None:
+            del kwargs
+
+    async def fake_bootstrap_context(store: object, chat_id: int) -> BootstrapContext:
+        del store, chat_id
+        return BootstrapContext(content="", hash="", files=[])
+
+    async def fake_build_octo_prompt(**kwargs: object) -> list[Message]:
+        return [Message(role="user", content=str(kwargs["user_text"]))]
+
+    async def no_action_retry(**kwargs: object) -> bool:
+        del kwargs
+        return False
+
+    async def finalize_response(**kwargs: object) -> str:
+        return str(kwargs["response_text"])
+
+    queued: list[str] = []
+
+    async def fake_enqueue_send(
+        bot: object,
+        chat_id: int,
+        text: str,
+        reply_to_message_id: int | None = None,
+    ) -> None:
+        del bot, chat_id, reply_to_message_id
+        queued.append(text)
+
+    import octopal.runtime.octo.core as octo_core
+    import octopal.runtime.octo.router as router
+
+    monkeypatch.setattr(octo_core, "build_bootstrap_context_prompt", fake_bootstrap_context)
+    monkeypatch.setattr(router, "build_octo_prompt", fake_build_octo_prompt)
+    monkeypatch.setattr(router, "_needs_action_or_blocked_retry", no_action_retry)
+    monkeypatch.setattr(router, "_finalize_response", finalize_response)
+    monkeypatch.setattr(
+        router,
+        "_get_octo_tools",
+        lambda octo, chat_id: ([], {"octo": octo, "chat_id": chat_id}),
+    )
+    monkeypatch.setattr(telegram_handlers, "_enqueue_send", fake_enqueue_send)
+
+    provider = _Provider()
+    sent: list[str] = []
+
+    async def internal_send(chat_id: int, text: str) -> None:
+        del chat_id
+        sent.append(text)
+
+    octo = Octo(
+        provider=provider,
+        store=object(),
+        policy=object(),
+        runtime=object(),
+        approvals=object(),
+        memory=_Memory(),
+        canon=object(),
+        internal_send=internal_send,
+    )
+    settings = _settings(tmp_path)
+    flush = telegram_handlers._flush_pending_turn_factory(octo, settings, _Bot())
+    session_key = "telegram:default:211619002"
+
+    async def scenario() -> None:
+        await flush(
+            211619002,
+            "hello",
+            [],
+            [],
+            {"reply_to_message_id": 42, "is_group_chat": False},
+        )
+        continuation = await _tool_octo_continue_from_control_route(
+            {"task": "finish the existing request", "notify_user": True},
+            {
+                "octo": octo,
+                "chat_id": 211619002,
+                "codex_session_key": session_key,
+            },
+        )
+        assert json.loads(continuation)["status"] == "continued"
+
+    asyncio.run(scenario())
+
+    assert provider.complete_kwargs == [
+        {"codex_session_key": session_key, "codex_request_lane": "interactive"},
+        {"codex_session_key": session_key, "codex_request_lane": "background"},
+    ]
+    assert queued == ["Alice response 1"]
+    assert sent == ["Alice response 2"]

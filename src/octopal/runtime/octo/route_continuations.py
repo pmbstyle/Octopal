@@ -52,6 +52,7 @@ def _enqueue_bounded_continuation(
             notify_user=notify_user,
             user_text=user_text,
             messages=messages,
+            ctx=ctx,
         )
 
     task = asyncio.create_task(
@@ -89,6 +90,7 @@ async def _continue_after_tool_budget_exhaustion(
     notify_user: object,
     user_text: str,
     messages: list[Message | dict[str, Any]],
+    ctx: dict[str, object],
 ) -> str | None:
     if chat_id == 0 or octo is None or not hasattr(octo, "handle_message"):
         return None
@@ -108,6 +110,14 @@ async def _continue_after_tool_budget_exhaustion(
         "</previous_route_context>"
     )
     try:
+        continuation_ctx: dict[str, object] = {
+            "octo": octo,
+            "chat_id": chat_id,
+            "control_route_notify_user": notify_user,
+        }
+        codex_session_key = str(ctx.get("codex_session_key") or "").strip()
+        if codex_session_key:
+            continuation_ctx["codex_session_key"] = codex_session_key
         payload_raw = await _tool_octo_continue_from_control_route(
             {
                 "task": (
@@ -119,11 +129,7 @@ async def _continue_after_tool_budget_exhaustion(
                 "context_summary": context_summary,
                 "notify_user": notify_user,
             },
-            {
-                "octo": octo,
-                "chat_id": chat_id,
-                "control_route_notify_user": notify_user,
-            },
+            continuation_ctx,
         )
     except Exception:
         logger.exception("Tool-budget autonomous continuation failed", chat_id=chat_id)

@@ -3031,14 +3031,20 @@ async def _tool_octo_continue_from_control_route(args, ctx) -> str:
     token = correlation_id_var.set(continuation_correlation_id)
     delivery_token = suppress_user_delivery() if not notify_user else None
     try:
+        continuation_kwargs: dict[str, object] = {
+            "show_typing": True,
+            "persist_to_memory": False,
+            "track_progress": True,
+            "include_wakeup": True,
+            "background_delivery": True,
+        }
+        codex_session_key = str(ctx.get("codex_session_key") or "").strip()
+        if codex_session_key:
+            continuation_kwargs["codex_session_key"] = codex_session_key
         reply = await octo.handle_message(
             handoff_text,
             chat_id,
-            show_typing=True,
-            persist_to_memory=False,
-            track_progress=True,
-            include_wakeup=True,
-            background_delivery=True,
+            **continuation_kwargs,
         )
     finally:
         if delivery_token is not None:

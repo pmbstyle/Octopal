@@ -1301,14 +1301,16 @@ def test_interactive_soft_budget_enqueues_exactly_one_bounded_continuation() -> 
         def __init__(self) -> None:
             self.followup_marks = 0
             self.continuations: list[str] = []
+            self.continuation_kwargs: list[dict[str, object]] = []
             self.sent: list[str] = []
 
         def mark_structured_followup_required(self) -> None:
             self.followup_marks += 1
 
         async def handle_message(self, text: str, chat_id: int, **kwargs):
-            del chat_id, kwargs
+            del chat_id
             self.continuations.append(text)
+            self.continuation_kwargs.append(dict(kwargs))
             return "background result"
 
         async def internal_send(self, chat_id: int, text: str) -> None:
@@ -1321,6 +1323,7 @@ def test_interactive_soft_budget_enqueues_exactly_one_bounded_continuation() -> 
         ctx: dict[str, object] = {
             "octo": octo,
             "chat_id": 123,
+            "codex_session_key": "telegram:default:123",
             "codex_request_lane": "interactive",
             "interactive_budget_started_at": asyncio.get_running_loop().time() - 91.0,
         }
@@ -1349,6 +1352,16 @@ def test_interactive_soft_budget_enqueues_exactly_one_bounded_continuation() -> 
         tasks = octo._bounded_route_continuation_tasks
         await asyncio.gather(*tasks)
         assert len(octo.continuations) == 1
+        assert octo.continuation_kwargs == [
+            {
+                "show_typing": True,
+                "persist_to_memory": False,
+                "track_progress": True,
+                "include_wakeup": True,
+                "background_delivery": True,
+                "codex_session_key": "telegram:default:123",
+            }
+        ]
         assert octo.sent == ["background result"]
         assert (
             router._route_continuations._enqueue_bounded_continuation(
