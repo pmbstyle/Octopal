@@ -967,9 +967,23 @@ def test_cancellation_interrupts_active_turn_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     interrupt_seen = asyncio.Event()
+    completion_seen = asyncio.Event()
 
     class _HangingClient(_FakeCodexClient):
         async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
+            if self.calls and self.calls[-1][0] == "turn/interrupt":
+                self._finish_turn()
+                completion_seen.set()
+                return (
+                    "notification",
+                    {
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": self.thread_id,
+                            "turn": {"id": "turn-1", "status": "interrupted"},
+                        },
+                    },
+                )
             del timeout
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
@@ -1003,8 +1017,51 @@ def test_cancellation_interrupts_active_turn_only(
         with pytest.raises(asyncio.CancelledError):
             await task
         await asyncio.wait_for(interrupt_seen.wait(), timeout=0.5)
+        await asyncio.wait_for(completion_seen.wait(), timeout=0.5)
         client = _HangingClient.instances[0]
         assert [method for method, _ in client.calls].count("turn/interrupt") == 1
+
+    asyncio.run(scenario())
+
+
+def test_interrupted_turn_drain_ignores_unrelated_terminal_events() -> None:
+    class _QueuedClient:
+        def __init__(self) -> None:
+            self.events = iter(
+                [
+                    (
+                        "notification",
+                        {
+                            "method": "turn/completed",
+                            "params": {
+                                "threadId": "other-thread",
+                                "turn": {"id": "turn-other", "status": "interrupted"},
+                            },
+                        },
+                    ),
+                    (
+                        "notification",
+                        {
+                            "method": "turn/completed",
+                            "params": {
+                                "threadId": "thread-1",
+                                "turn": {"id": "turn-1", "status": "interrupted"},
+                            },
+                        },
+                    ),
+                ]
+            )
+
+        async def next_event(self, timeout: float) -> tuple[str, dict[str, Any]]:
+            del timeout
+            return next(self.events)
+
+    async def scenario() -> None:
+        assert await codex_provider._drain_interrupted_turn(
+            _QueuedClient(),
+            thread_id="thread-1",
+            turn_id="turn-1",
+        )
 
     asyncio.run(scenario())
 

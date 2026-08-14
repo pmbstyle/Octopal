@@ -27,6 +27,7 @@ from octopal.infrastructure.providers.profile_resolver import resolve_litellm_pr
 CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS = 30.0
 CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS = 180.0
 CODEX_TOOL_INTERRUPT_GRACE_SECONDS = 2.0
+CODEX_TURN_INTERRUPT_DRAIN_TIMEOUT_SECONDS = 2.0
 # Backward-compatible aliases for callers that imported the original constants.
 CODEX_REQUEST_TIMEOUT_SECONDS = CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS
 CODEX_TURN_TIMEOUT_SECONDS = CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS
@@ -1162,7 +1163,73 @@ async def _collect_turn_with_cancellation(
                     {"threadId": thread_id, "turnId": turn_id},
                     timeout=CODEX_TOOL_INTERRUPT_GRACE_SECONDS,
                 )
+            completed = await _drain_interrupted_turn(
+                client,
+                thread_id=thread_id,
+                turn_id=turn_id,
+            )
+            if not completed:
+                logger.warning(
+                    "Codex turn completion was not observed after interrupt",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                )
         raise
+
+
+async def _drain_interrupted_turn(
+    client: _CodexAppServerClient,
+    *,
+    thread_id: str,
+    turn_id: str,
+) -> bool:
+    """Read the terminal event emitted after a successful turn interrupt."""
+
+    deadline = asyncio.get_running_loop().time() + CODEX_TURN_INTERRUPT_DRAIN_TIMEOUT_SECONDS
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return False
+        try:
+            async with asyncio.timeout(remaining):
+                kind, event = await client.next_event(remaining)
+        except (CodexAppServerError, TimeoutError):
+            return False
+
+        if kind == "request":
+            method = str(event.get("method") or "")
+            try:
+                if method == "item/tool/call":
+                    await client.respond(
+                        event["id"],
+                        _dynamic_tool_response(
+                            {
+                                "success": False,
+                                "content": "The turn was interrupted before this tool call could run.",
+                            }
+                        ),
+                    )
+                else:
+                    await _respond_to_auxiliary_request(client, event)
+            except (CodexAppServerError, OSError, KeyError):
+                return False
+            continue
+
+        payload = event.get("params") or {}
+        method = str(event.get("method") or "")
+        if method == "error":
+            return False
+        if method != "turn/completed":
+            continue
+        if payload.get("threadId") and payload.get("threadId") != thread_id:
+            continue
+        event_turn_id = payload.get("turnId")
+        turn = payload.get("turn")
+        if isinstance(turn, dict):
+            event_turn_id = event_turn_id or turn.get("id")
+        if event_turn_id and event_turn_id != turn_id:
+            continue
+        return True
 
 
 def _dynamic_tool_response(execution: dict[str, Any]) -> dict[str, Any]:
