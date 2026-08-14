@@ -1463,6 +1463,317 @@ def test_main_route_executes_native_tool_once_and_uses_terminal_answer(
     asyncio.run(scenario())
 
 
+def test_native_control_continuation_runs_after_provider_turn_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import octopal.runtime.octo.router as router
+
+    events: list[str] = []
+    continuation_runs = 0
+
+    class _Provider:
+        provider_id = "codex"
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.turn_active = False
+
+        async def complete_with_tools(
+            self,
+            messages: list[Message | dict[str, Any]],
+            *,
+            tools: list[dict[str, Any]],
+            tool_choice: str = "auto",
+            **kwargs: object,
+        ) -> dict[str, Any]:
+            del tools, tool_choice
+            self.calls += 1
+            events.append(f"provider-{self.calls}-start")
+            if self.calls == 1:
+                self.turn_active = True
+                call = {
+                    "id": "call-continue",
+                    "type": "function",
+                    "function": {
+                        "name": "octo_continue_from_control_route",
+                        "arguments": json.dumps({"task": "finish the worker result"}),
+                    },
+                }
+                executor = kwargs.get("tool_executor")
+                assert callable(executor)
+                execution = await executor(call)
+                assert continuation_runs == 0
+                assert "deferred" in str(execution.get("content"))
+                events.append("provider-1-tool-response")
+                self.turn_active = False
+                events.append("provider-1-end")
+                return {
+                    "content": "continuation accepted",
+                    "tool_calls": [call],
+                    "tool_results_submitted": True,
+                }
+
+            assert self.turn_active is False
+            assert any(
+                isinstance(message, dict)
+                and message.get("role") == "tool"
+                and "continued" in str(message.get("content"))
+                for message in messages
+            )
+            events.append("provider-2-end")
+            return {"content": "NO_USER_RESPONSE", "tool_calls": []}
+
+    provider = _Provider()
+
+    async def continue_route(args: dict[str, Any], ctx: dict[str, object]) -> str:
+        nonlocal continuation_runs
+        assert args == {"task": "finish the worker result"}
+        assert ctx["chat_id"] == 303
+        assert provider.turn_active is False
+        continuation_runs += 1
+        events.append("continuation")
+        return json.dumps({"status": "continued", "delivered": False, "notify_user": False})
+
+    async def no_retry(**kwargs: object) -> bool:
+        del kwargs
+        return False
+
+    async def finalize(**kwargs: object) -> str:
+        return str(kwargs["response_text"])
+
+    monkeypatch.setattr(router, "_needs_autonomous_recovery_retry", no_retry)
+    monkeypatch.setattr(router, "_finalize_response", finalize)
+
+    async def scenario() -> None:
+        reply = await asyncio.wait_for(
+            _complete_route_with_tools(
+                octo=type("Octo", (), {"trace_sink": None})(),
+                provider=provider,
+                messages=[Message(role="user", content="process worker result")],
+                tool_specs=[
+                    ToolSpec(
+                        name="octo_continue_from_control_route",
+                        description="continue through the normal route",
+                        parameters={"type": "object", "properties": {}},
+                        permission="self_control",
+                        handler=continue_route,
+                        is_async=True,
+                    )
+                ],
+                ctx={"chat_id": 303, "codex_request_lane": "background"},
+                internal_followup=True,
+                user_text="process worker result",
+                images=None,
+                allow_tool_catalog_expansion=False,
+            ),
+            timeout=1.0,
+        )
+
+        assert reply == "NO_USER_RESPONSE"
+        assert provider.calls == 2
+        assert continuation_runs == 1
+        assert events == [
+            "provider-1-start",
+            "provider-1-tool-response",
+            "provider-1-end",
+            "continuation",
+            "provider-2-start",
+            "provider-2-end",
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_deferred_native_continuation_is_not_replayed_after_transport_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import octopal.runtime.octo.router as router
+
+    continuation_runs = 0
+
+    class _Provider:
+        provider_id = "codex"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete_with_tools(
+            self,
+            messages: list[Message | dict[str, Any]],
+            *,
+            tools: list[dict[str, Any]],
+            tool_choice: str = "auto",
+            **kwargs: object,
+        ) -> dict[str, Any]:
+            del tools, tool_choice
+            self.calls += 1
+            if self.calls == 1:
+                call = {
+                    "id": "call-continue-lost-response",
+                    "type": "function",
+                    "function": {
+                        "name": "octo_continue_from_control_route",
+                        "arguments": json.dumps({"task": "finish once"}),
+                    },
+                }
+                executor = kwargs.get("tool_executor")
+                assert callable(executor)
+                execution = await executor(call)
+                assert "deferred" in str(execution.get("content"))
+                raise codex_provider.CodexToolResultTransportError("transport closed")
+
+            assert continuation_runs == 1
+            assert any(
+                isinstance(message, dict)
+                and message.get("role") == "tool"
+                and "continued" in str(message.get("content"))
+                for message in messages
+            )
+            return {"content": "NO_USER_RESPONSE", "tool_calls": []}
+
+    async def continue_route(args: dict[str, Any], ctx: dict[str, object]) -> str:
+        nonlocal continuation_runs
+        assert args == {"task": "finish once"}
+        assert ctx["chat_id"] == 304
+        continuation_runs += 1
+        return json.dumps({"status": "continued"})
+
+    async def no_retry(**kwargs: object) -> bool:
+        del kwargs
+        return False
+
+    async def finalize(**kwargs: object) -> str:
+        return str(kwargs["response_text"])
+
+    monkeypatch.setattr(router, "_needs_autonomous_recovery_retry", no_retry)
+    monkeypatch.setattr(router, "_finalize_response", finalize)
+
+    async def scenario() -> None:
+        provider = _Provider()
+        reply = await asyncio.wait_for(
+            _complete_route_with_tools(
+                octo=type("Octo", (), {"trace_sink": None})(),
+                provider=provider,
+                messages=[Message(role="user", content="process worker result")],
+                tool_specs=[
+                    ToolSpec(
+                        name="octo_continue_from_control_route",
+                        description="continue through the normal route",
+                        parameters={"type": "object", "properties": {}},
+                        permission="self_control",
+                        handler=continue_route,
+                        is_async=True,
+                    )
+                ],
+                ctx={"chat_id": 304, "codex_request_lane": "background"},
+                internal_followup=True,
+                user_text="process worker result",
+                images=None,
+                allow_tool_catalog_expansion=False,
+            ),
+            timeout=1.0,
+        )
+
+        assert reply == "NO_USER_RESPONSE"
+        assert provider.calls == 2
+        assert continuation_runs == 1
+
+    asyncio.run(scenario())
+
+
+def test_deferred_native_continuation_survives_provider_turn_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import octopal.runtime.octo.router as router
+
+    acknowledged = asyncio.Event()
+    continuation_finished = asyncio.Event()
+    continuation_runs = 0
+
+    class _Provider:
+        provider_id = "codex"
+        turn_active = False
+
+        async def complete_with_tools(
+            self,
+            messages: list[Message | dict[str, Any]],
+            *,
+            tools: list[dict[str, Any]],
+            tool_choice: str = "auto",
+            **kwargs: object,
+        ) -> dict[str, Any]:
+            del messages, tools, tool_choice
+            self.turn_active = True
+            call = {
+                "id": "call-continue-cancelled-turn",
+                "type": "function",
+                "function": {
+                    "name": "octo_continue_from_control_route",
+                    "arguments": json.dumps({"task": "finish after cancellation"}),
+                },
+            }
+            executor = kwargs.get("tool_executor")
+            assert callable(executor)
+            execution = await executor(call)
+            assert "deferred" in str(execution.get("content"))
+            acknowledged.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.turn_active = False
+
+    provider = _Provider()
+
+    async def continue_route(args: dict[str, Any], ctx: dict[str, object]) -> str:
+        nonlocal continuation_runs
+        assert args == {"task": "finish after cancellation"}
+        assert ctx["chat_id"] == 305
+        assert provider.turn_active is False
+        continuation_runs += 1
+        continuation_finished.set()
+        return json.dumps({"status": "continued"})
+
+    async def no_retry(**kwargs: object) -> bool:
+        del kwargs
+        return False
+
+    monkeypatch.setattr(router, "_needs_autonomous_recovery_retry", no_retry)
+
+    async def scenario() -> None:
+        route = asyncio.create_task(
+            _complete_route_with_tools(
+                octo=type("Octo", (), {"trace_sink": None})(),
+                provider=provider,
+                messages=[Message(role="user", content="process worker result")],
+                tool_specs=[
+                    ToolSpec(
+                        name="octo_continue_from_control_route",
+                        description="continue through the normal route",
+                        parameters={"type": "object", "properties": {}},
+                        permission="self_control",
+                        handler=continue_route,
+                        is_async=True,
+                    )
+                ],
+                ctx={"chat_id": 305, "codex_request_lane": "background"},
+                internal_followup=True,
+                user_text="process worker result",
+                images=None,
+                allow_tool_catalog_expansion=False,
+            )
+        )
+        await asyncio.wait_for(acknowledged.wait(), timeout=1.0)
+        route.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await route
+        await asyncio.wait_for(continuation_finished.wait(), timeout=1.0)
+        await asyncio.sleep(0)
+
+        assert continuation_runs == 1
+
+    asyncio.run(scenario())
+
+
 def test_main_route_recovers_transport_after_tool_without_replaying_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1597,6 +1908,107 @@ def test_provider_tool_bridge_preserves_result_when_pending_execution_fails(
         assert messages[1]["role"] == "tool"
         assert messages[1]["tool_call_id"] == "call-ambiguous"
         assert "ambiguous_tool_execution" in str(messages[1]["content"])
+
+    asyncio.run(scenario())
+
+
+def test_provider_tool_bridge_preserves_deferred_failure_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import octopal.runtime.octo.router as router
+
+    executions = 0
+
+    async def fail_deferred(**kwargs: object) -> tuple[Any, dict[str, Any]]:
+        nonlocal executions
+        del kwargs
+        executions += 1
+        raise RuntimeError("deferred bridge infrastructure failed")
+
+    monkeypatch.setattr(router, "_handle_tool_call_at_most_once", fail_deferred)
+    bridge = router._ProviderToolExecutorBridge(
+        provider=type("Provider", (), {"provider_id": "codex"})(),
+        tools=list,
+        ctx={},
+        ledger={},
+        recovery_generation=lambda: 0,
+    )
+    call = {
+        "id": "call-deferred-ambiguous",
+        "type": "function",
+        "function": {
+            "name": "octo_continue_from_control_route",
+            "arguments": "{}",
+        },
+    }
+
+    async def scenario() -> None:
+        execution = await bridge.execute(call)
+        assert execution["success"] is True
+        assert "deferred" in str(execution["content"])
+
+        messages: list[Message | dict[str, Any]] = []
+        await bridge.append_unconsumed(messages)
+
+        assert executions == 1
+        assert messages[0] == {"role": "assistant", "tool_calls": [call]}
+        assert messages[1]["role"] == "tool"
+        assert messages[1]["tool_call_id"] == "call-deferred-ambiguous"
+        assert "ambiguous_tool_execution" in str(messages[1]["content"])
+
+    asyncio.run(scenario())
+
+
+def test_provider_tool_bridge_reuses_completed_deferred_result_without_replay() -> None:
+    import octopal.runtime.octo.router as router
+
+    executions = 0
+
+    async def continue_route(args: dict[str, Any], ctx: dict[str, object]) -> str:
+        nonlocal executions
+        del ctx
+        assert args == {"task": "finish once"}
+        executions += 1
+        return json.dumps({"status": "continued"})
+
+    bridge = router._ProviderToolExecutorBridge(
+        provider=type("Provider", (), {"provider_id": "codex"})(),
+        tools=lambda: [
+            ToolSpec(
+                name="octo_continue_from_control_route",
+                description="continue through the normal route",
+                parameters={"type": "object", "properties": {}},
+                permission="self_control",
+                handler=continue_route,
+                is_async=True,
+            )
+        ],
+        ctx={},
+        ledger={},
+        recovery_generation=lambda: 0,
+    )
+    first_call = {
+        "id": "call-continue-first",
+        "type": "function",
+        "function": {
+            "name": "octo_continue_from_control_route",
+            "arguments": json.dumps({"task": "finish once"}),
+        },
+    }
+    repeated_call = {**first_call, "id": "call-continue-repeated"}
+
+    async def scenario() -> None:
+        first_execution = await bridge.execute(first_call)
+        assert "deferred" in str(first_execution["content"])
+        assert await bridge.drain_deferred() == 1
+        assert bridge.take(first_call) is not None
+
+        repeated_execution = await bridge.execute(repeated_call)
+
+        assert repeated_execution["success"] is True
+        assert "continued" in str(repeated_execution["content"])
+        assert bridge.take(repeated_call) is not None
+        assert executions == 1
 
     asyncio.run(scenario())
 

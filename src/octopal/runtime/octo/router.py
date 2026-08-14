@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
@@ -303,6 +304,8 @@ async def _append_deferred_tool_result(
 class _ProviderToolExecutorBridge:
     """Keep provider-owned tool turns on the existing Octopal execution path."""
 
+    _DEFER_UNTIL_PROVIDER_RELEASE = frozenset({"octo_continue_from_control_route"})
+
     def __init__(
         self,
         *,
@@ -318,11 +321,15 @@ class _ProviderToolExecutorBridge:
         self._ledger = ledger
         self._recovery_generation = recovery_generation
         self._pending: set[asyncio.Task[dict[str, Any]]] = set()
+        self._detached_drains: set[asyncio.Task[int]] = set()
         self._records: list[dict[str, Any]] = []
+        self._deferred_calls: deque[dict[str, Any]] = deque()
+        self._deferred_keys: set[str] = set()
+        self._deferred_drain_lock = asyncio.Lock()
 
     @property
     def has_activity(self) -> bool:
-        return bool(self._pending or self._records)
+        return bool(self._pending or self._detached_drains or self._records or self._deferred_calls)
 
     def _record(
         self,
@@ -346,7 +353,7 @@ class _ProviderToolExecutorBridge:
         )
         return rendered.text
 
-    async def execute(self, call: dict[str, Any]) -> dict[str, Any]:
+    async def _execute_now(self, call: dict[str, Any]) -> dict[str, Any]:
         async def _run() -> dict[str, Any]:
             try:
                 result, meta = await _handle_tool_call_at_most_once(
@@ -391,6 +398,94 @@ class _ProviderToolExecutorBridge:
         task.add_done_callback(self._pending.discard)
         return await asyncio.shield(task)
 
+    async def execute(self, call: dict[str, Any]) -> dict[str, Any]:
+        tool_name = str((call.get("function") or {}).get("name") or "")
+        if tool_name not in self._DEFER_UNTIL_PROVIDER_RELEASE:
+            return await self._execute_now(call)
+
+        key = _tool_execution_key(call)
+        ledger_entry = self._ledger.get(key)
+        if isinstance(ledger_entry, dict) and ledger_entry.get("status") == "completed":
+            result = ledger_entry.get("result")
+            meta = dict(ledger_entry.get("meta") or {})
+            rendered = self._record(call=call, result=result, meta=meta)
+            logger.warning(
+                "Reusing completed recursive tool result without replay",
+                tool_name=tool_name,
+                tool_ref=key[:12],
+            )
+            return {
+                "success": not bool(meta.get("had_error")),
+                "content": rendered,
+            }
+        if key not in self._deferred_keys:
+            self._deferred_keys.add(key)
+            self._deferred_calls.append(call)
+            logger.info(
+                "Provider-owned recursive tool deferred until turn release",
+                tool_name=tool_name,
+                tool_ref=key[:12],
+            )
+
+        rendered = render_tool_result_for_llm(
+            {
+                "status": "deferred",
+                "message": (
+                    "The continuation was accepted and will run after this provider turn "
+                    "releases its execution lease. Do not call the continuation tool again."
+                ),
+            },
+            tool_name=tool_name,
+        )
+        return {"success": True, "content": rendered.text}
+
+    async def drain_deferred(self) -> int:
+        """Run recursive tools only after the provider turn has released its lease."""
+
+        drained = 0
+        async with self._deferred_drain_lock:
+            while self._deferred_calls:
+                call = self._deferred_calls.popleft()
+                self._deferred_keys.discard(_tool_execution_key(call))
+                try:
+                    await self._execute_now(call)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error(
+                        "Deferred provider-owned tool execution ended ambiguously",
+                        tool_ref=_tool_execution_key(call)[:12],
+                        error=type(exc).__name__,
+                    )
+                drained += 1
+        return drained
+
+    def detach_deferred(self) -> bool:
+        """Hand accepted recursive tools to a task that survives caller cancellation."""
+
+        if not self._deferred_calls:
+            return False
+        task = asyncio.create_task(
+            self.drain_deferred(),
+            name="provider-tool-deferred-drain",
+        )
+        self._detached_drains.add(task)
+
+        def _finished(done: asyncio.Task[int]) -> None:
+            self._detached_drains.discard(done)
+            if done.cancelled():
+                logger.warning("Detached provider tool drain was cancelled")
+                return
+            error = done.exception()
+            if error is not None:
+                logger.error(
+                    "Detached provider tool drain failed",
+                    error=type(error).__name__,
+                )
+
+        task.add_done_callback(_finished)
+        return True
+
     def take(self, call: dict[str, Any]) -> tuple[Any, dict[str, Any]] | None:
         call_id = str(call.get("id") or "")
         for record in self._records:
@@ -407,6 +502,20 @@ class _ProviderToolExecutorBridge:
         self,
         messages: list[Message | dict[str, Any]],
     ) -> None:
+        await self.drain_deferred()
+        if self._detached_drains:
+            detached_outcomes = await asyncio.gather(
+                *(asyncio.shield(task) for task in tuple(self._detached_drains)),
+                return_exceptions=True,
+            )
+            for outcome in detached_outcomes:
+                if isinstance(outcome, asyncio.CancelledError):
+                    raise outcome
+                if isinstance(outcome, BaseException):
+                    logger.error(
+                        "Detached provider tool drain ended ambiguously",
+                        error=type(outcome).__name__,
+                    )
         if self._pending:
             outcomes = await asyncio.gather(
                 *(asyncio.shield(task) for task in tuple(self._pending)),
@@ -1387,6 +1496,7 @@ async def _complete_route_with_tools(
         )
 
         for _ in range(max_attempts):
+            deferred_native_results = 0
             if _interactive_budget_expired(ctx):
                 return await _defer_interactive_route(
                     octo=octo,
@@ -1407,6 +1517,12 @@ async def _complete_route_with_tools(
                     ),
                     ctx=ctx,
                 )
+                if provider_tool_bridge is not None:
+                    deferred_native_results = await provider_tool_bridge.drain_deferred()
+            except asyncio.CancelledError:
+                if provider_tool_bridge is not None:
+                    provider_tool_bridge.detach_deferred()
+                raise
             except Exception as e:
                 if isinstance(e, TimeoutError) and _interactive_budget_expired(ctx, hard=True):
                     return await _defer_interactive_route(
@@ -1806,7 +1922,7 @@ async def _complete_route_with_tools(
                             user_text=user_text,
                             messages=messages,
                         )
-                if not tool_results_submitted:
+                if not tool_results_submitted or deferred_native_results:
                     continue
 
             if content_raw:
