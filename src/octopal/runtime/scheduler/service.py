@@ -398,6 +398,31 @@ class SchedulerService:
         )
         self.sync_to_markdown()
 
+    def defer_attempt(
+        self,
+        task_id: str,
+        *,
+        attempt_id: str | None,
+        error_class: str,
+        retry_after_seconds: float,
+    ) -> None:
+        """Release an attempt for a bounded retry without recording an execution failure."""
+        finish = getattr(self.store, "finish_scheduled_task_attempt", None)
+        if not attempt_id or not callable(finish):
+            return
+        now = utc_now()
+        retry_seconds = max(0.0, float(retry_after_seconds))
+        finish(
+            task_id,
+            attempt_id=attempt_id,
+            outcome="deferred",
+            finished_at=now,
+            completed=False,
+            next_run_at=now + timedelta(seconds=retry_seconds),
+            error_class=error_class,
+        )
+        self.sync_to_markdown()
+
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         for task in self.store.get_scheduled_tasks():
             if str(task.get("id") or "") != task_id:

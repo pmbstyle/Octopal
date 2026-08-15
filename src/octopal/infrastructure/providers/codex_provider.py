@@ -21,7 +21,7 @@ import structlog
 
 from octopal.infrastructure.config.models import LLMConfig
 from octopal.infrastructure.config.settings import Settings
-from octopal.infrastructure.providers.base import Message
+from octopal.infrastructure.providers.base import Message, ProviderAdmissionDeferred
 from octopal.infrastructure.providers.profile_resolver import resolve_litellm_profile
 
 CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS = 30.0
@@ -33,9 +33,12 @@ CODEX_REQUEST_TIMEOUT_SECONDS = CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS
 CODEX_TURN_TIMEOUT_SECONDS = CODEX_TURN_EVENT_IDLE_TIMEOUT_SECONDS
 CODEX_SESSION_TTL_DAYS = 30
 CODEX_SESSION_STATE_VERSION = 1
-CODEX_APP_SERVER_CAPACITY = 2
-CODEX_BACKGROUND_CAPACITY = 1
+# Keep one admission slot available for interactive work while allowing two
+# scheduled/background turns to make progress concurrently.
+CODEX_APP_SERVER_CAPACITY = 3
+CODEX_BACKGROUND_CAPACITY = 2
 CODEX_BACKGROUND_MAX_WAIT_SECONDS = 30.0
+CODEX_BACKGROUND_ADMISSION_TIMEOUT_SECONDS = 60.0
 CODEX_INTERACTIVE_BURST_LIMIT = 4
 CODEX_LANE_INTERACTIVE = "interactive"
 CODEX_LANE_BACKGROUND = "background"
@@ -87,9 +90,13 @@ class _CodexAdmissionController:
         *,
         capacity: int = CODEX_APP_SERVER_CAPACITY,
         background_capacity: int = CODEX_BACKGROUND_CAPACITY,
+        background_admission_timeout_seconds: float = CODEX_BACKGROUND_ADMISSION_TIMEOUT_SECONDS,
     ) -> None:
         self._capacity = capacity
         self._background_capacity = background_capacity
+        self._background_admission_timeout_seconds = max(
+            0.0, float(background_admission_timeout_seconds)
+        )
         self._condition = asyncio.Condition()
         self._interactive: deque[_AdmissionTicket] = deque()
         self._background: deque[_AdmissionTicket] = deque()
@@ -103,11 +110,35 @@ class _CodexAdmissionController:
         loop = asyncio.get_running_loop()
         ticket = _AdmissionTicket(normalized_lane, loop.time())
         queue = self._interactive if normalized_lane == CODEX_LANE_INTERACTIVE else self._background
+        admission_deadline = (
+            ticket.queued_at + self._background_admission_timeout_seconds
+            if normalized_lane == CODEX_LANE_BACKGROUND
+            else None
+        )
         async with self._condition:
             queue.append(ticket)
             try:
                 while not self._can_admit(ticket, now=loop.time()):
-                    await self._condition.wait()
+                    if normalized_lane != CODEX_LANE_BACKGROUND:
+                        await self._condition.wait()
+                        continue
+                    remaining = max(0.0, float(admission_deadline or loop.time()) - loop.time())
+                    try:
+                        await asyncio.wait_for(
+                            self._condition.wait(),
+                            timeout=remaining,
+                        )
+                    except TimeoutError as exc:
+                        # A release may race with the timeout. Re-check the ticket while
+                        # holding the condition before deciding to defer it.
+                        if self._can_admit(ticket, now=loop.time()):
+                            continue
+                        wait_seconds = loop.time() - ticket.queued_at
+                        raise ProviderAdmissionDeferred(
+                            lane=normalized_lane,
+                            wait_seconds=wait_seconds,
+                            retry_after_seconds=self._background_admission_timeout_seconds,
+                        ) from exc
                 queue.remove(ticket)
                 self._active_total += 1
                 if normalized_lane == CODEX_LANE_BACKGROUND:
@@ -272,7 +303,44 @@ class _CodexAppServerClient:
         self._transport_type: str | None = None
         self._transport_category: str | None = None
         self._protocol_error_count = 0
+        self._session_ref: str | None = None
+        self._phase: str | None = None
+        self._lane: str | None = None
+        self._thread_id: str | None = None
+        self._turn_id: str | None = None
         self._closing = False
+
+    def set_diagnostic_context(
+        self,
+        *,
+        session_ref: str | None = None,
+        phase: str | None = None,
+        lane: str | None = None,
+        thread_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        """Attach redacted session/turn context to transport telemetry."""
+        if session_ref is not None:
+            self._session_ref = session_ref
+        if phase is not None:
+            self._phase = phase
+        if lane is not None:
+            self._lane = lane
+        if thread_id is not None:
+            self._thread_id = thread_id
+        if turn_id is not None:
+            self._turn_id = turn_id
+
+    def _diagnostic_context(self) -> dict[str, Any]:
+        process = self._process
+        return {
+            "session_ref": self._session_ref[:12] if self._session_ref else None,
+            "phase": self._phase,
+            "lane": _normalize_lane(self._lane) if self._lane else None,
+            "thread_ref": _fingerprint(self._thread_id)[:12] if self._thread_id else None,
+            "turn_ref": _fingerprint(self._turn_id)[:12] if self._turn_id else None,
+            "process_pid": getattr(process, "pid", None) if process is not None else None,
+        }
 
     async def start(self) -> None:
         if self._process is not None:
@@ -363,6 +431,7 @@ class _CodexAppServerClient:
                 transport_type=self._transport_type,
                 transport_category=self._transport_category,
                 protocol_error_count=self._protocol_error_count,
+                **self._diagnostic_context(),
             )
             raise
         except Exception as exc:
@@ -383,6 +452,7 @@ class _CodexAppServerClient:
                 transport_type=self._transport_type,
                 transport_category=self._transport_category,
                 protocol_error_count=self._protocol_error_count,
+                **self._diagnostic_context(),
             )
             raise
         else:
@@ -396,6 +466,7 @@ class _CodexAppServerClient:
                 process_exit_code=process.returncode,
                 stderr_tail=self._stderr_tail,
                 protocol_error_count=self._protocol_error_count,
+                **self._diagnostic_context(),
             )
             return result
         finally:
@@ -580,13 +651,28 @@ class _CodexAppServerClient:
                 self._note_protocol_error("invalid_message_shape", process.returncode)
         finally:
             if not self._closing:
+                process_exit_code = await self._capture_transport_diagnostics(process)
                 self._fail_transport(
                     CodexAppServerError("codex app-server stdout closed"),
                     reason="stdout_eof",
                     transport_type="eof",
                     category="stream",
-                    process_exit_code=process.returncode,
+                    process_exit_code=process_exit_code,
                 )
+
+    async def _capture_transport_diagnostics(
+        self, process: asyncio.subprocess.Process
+    ) -> int | None:
+        """Give the child and stderr reader a short grace period before logging EOF."""
+        if process.returncode is None:
+            wait = getattr(process, "wait", None)
+            if callable(wait):
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(wait()), timeout=0.25)
+        if self._stderr_task is not None and not self._stderr_task.done():
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(self._stderr_task), timeout=0.05)
+        return process.returncode
 
     async def _read_stderr(self) -> None:
         process = self._process
@@ -621,6 +707,7 @@ class _CodexAppServerClient:
             stderr_tail=self._stderr_tail,
             protocol_error_count=self._protocol_error_count,
             primary_failure=False,
+            **self._diagnostic_context(),
         )
 
     def _fail_transport(
@@ -646,11 +733,18 @@ class _CodexAppServerClient:
             stderr_tail=self._stderr_tail,
             protocol_error_count=self._protocol_error_count,
             primary_failure=primary_failure,
+            **self._diagnostic_context(),
         )
         for future in self._pending.values():
             if not future.done():
                 future.set_exception(self._transport_error)
         self._transport_failed.set()
+
+
+def _set_app_server_diagnostic_context(client: Any, **context: str | None) -> None:
+    setter = getattr(client, "set_diagnostic_context", None)
+    if callable(setter):
+        setter(**context)
 
 
 class CodexProvider:
@@ -750,25 +844,45 @@ class CodexProvider:
                     phase=phase,
                     queue_wait_ms=(asyncio.get_running_loop().time() - queued_at) * 1000,
                 )
-                async with self._admission.acquire(lane) as admission:
-                    _log_admission_wait(session_ref, lane=lane, phase=phase, **admission)
-                    return await self._run_session_turn(
-                        messages,
-                        tools=tools,
-                        on_partial=on_partial,
-                        session_ref=session_ref,
-                        phase=phase,
+                try:
+                    async with self._admission.acquire(lane) as admission:
+                        _log_admission_wait(session_ref, lane=lane, phase=phase, **admission)
+                        return await self._run_session_turn(
+                            messages,
+                            tools=tools,
+                            on_partial=on_partial,
+                            session_ref=session_ref,
+                            phase=phase,
+                            lane=lane,
+                            tool_executor=tool_executor,
+                        )
+                except ProviderAdmissionDeferred as exc:
+                    _log_admission_deferred(
+                        session_ref,
                         lane=lane,
-                        tool_executor=tool_executor,
+                        phase=phase,
+                        wait_seconds=exc.wait_seconds,
                     )
-        async with self._admission.acquire(lane) as admission:
-            _log_admission_wait(None, lane=lane, phase=_session_phase(tools), **admission)
-            return await self._run_ephemeral_turn(
-                messages,
-                tools=tools,
-                on_partial=on_partial,
-                tool_executor=tool_executor,
+                    raise
+        phase = _session_phase(tools)
+        try:
+            async with self._admission.acquire(lane) as admission:
+                _log_admission_wait(None, lane=lane, phase=phase, **admission)
+                return await self._run_ephemeral_turn(
+                    messages,
+                    tools=tools,
+                    on_partial=on_partial,
+                    lane=lane,
+                    tool_executor=tool_executor,
+                )
+        except ProviderAdmissionDeferred as exc:
+            _log_admission_deferred(
+                None,
+                lane=lane,
+                phase=phase,
+                wait_seconds=exc.wait_seconds,
             )
+            raise
 
     async def _run_ephemeral_turn(
         self,
@@ -776,9 +890,11 @@ class CodexProvider:
         *,
         tools: list[dict] | None,
         on_partial: Callable[[str], Awaitable[None]] | None,
+        lane: str,
         tool_executor: _ToolExecutor | None,
     ) -> dict[str, Any]:
         client = _CodexAppServerClient(_codex_command(), _codex_args(), _codex_env())
+        _set_app_server_diagnostic_context(client, phase=_session_phase(tools), lane=lane)
         await client.start()
         try:
             instructions, input_items = _messages_to_codex_input(messages)
@@ -805,6 +921,7 @@ class CodexProvider:
             thread_id = ((thread or {}).get("thread") or {}).get("id")
             if not thread_id:
                 raise CodexAppServerError("Codex did not return a thread id")
+            _set_app_server_diagnostic_context(client, thread_id=thread_id)
 
             turn = await client.request(
                 "turn/start",
@@ -825,6 +942,7 @@ class CodexProvider:
                 timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
             )
             turn_id = ((turn or {}).get("turn") or {}).get("id")
+            _set_app_server_diagnostic_context(client, turn_id=turn_id)
             return await _collect_turn_with_cancellation(
                 client,
                 thread_id=thread_id,
@@ -847,6 +965,12 @@ class CodexProvider:
         tool_executor: _ToolExecutor | None,
     ) -> dict[str, Any]:
         client = _CodexAppServerClient(_codex_command(), _codex_args(), _codex_env())
+        _set_app_server_diagnostic_context(
+            client,
+            session_ref=session_ref,
+            phase=phase,
+            lane=lane,
+        )
         await client.start()
         resumed = False
         recovery_fresh_process = False
@@ -885,6 +1009,7 @@ class CodexProvider:
             thread_id: str | None = None
             input_items = full_input_items
             if session is not None:
+                _set_app_server_diagnostic_context(client, thread_id=session.thread_id)
                 try:
                     resumed_thread = await client.request(
                         "thread/resume",
@@ -901,6 +1026,7 @@ class CodexProvider:
                     thread_id = ((resumed_thread or {}).get("thread") or {}).get("id")
                     if not thread_id:
                         raise CodexAppServerError("Codex did not return a resumed thread id")
+                    _set_app_server_diagnostic_context(client, thread_id=thread_id)
                     input_items = _incremental_codex_input(
                         messages,
                         previous_fingerprints=session.message_fingerprints,
@@ -931,6 +1057,12 @@ class CodexProvider:
                     with contextlib.suppress(Exception):
                         await client.close()
                     client = _CodexAppServerClient(_codex_command(), _codex_args(), _codex_env())
+                    _set_app_server_diagnostic_context(
+                        client,
+                        session_ref=session_ref,
+                        phase=phase,
+                        lane=lane,
+                    )
                     recovery_fresh_process = True
                     _log_session_state(
                         "recovery",
@@ -966,6 +1098,7 @@ class CodexProvider:
                 thread_id = ((thread or {}).get("thread") or {}).get("id")
                 if not thread_id:
                     raise CodexAppServerError("Codex did not return a thread id")
+                _set_app_server_diagnostic_context(client, thread_id=thread_id)
                 input_items = full_input_items
                 _log_session_state(
                     "created",
@@ -997,6 +1130,7 @@ class CodexProvider:
                 timeout=CODEX_CONTROL_REQUEST_TIMEOUT_SECONDS,
             )
             turn_id = ((turn or {}).get("turn") or {}).get("id")
+            _set_app_server_diagnostic_context(client, turn_id=turn_id)
             result = await _collect_turn_with_cancellation(
                 client,
                 thread_id=thread_id,
@@ -1481,6 +1615,23 @@ def _log_admission_wait(
         logger.debug("Codex provider admission wait", **fields)
 
 
+def _log_admission_deferred(
+    session_ref: str | None,
+    *,
+    lane: str,
+    phase: str,
+    wait_seconds: float,
+) -> None:
+    logger.warning(
+        "Codex provider admission deferred",
+        session_ref=session_ref[:12] if session_ref else None,
+        lane=lane,
+        phase=phase,
+        wait_ms=round(wait_seconds * 1000, 3),
+        reason="admission_timeout",
+    )
+
+
 def _log_session_state(
     state: str,
     session_ref: str,
@@ -1526,6 +1677,12 @@ def _log_app_server_request(
     transport_type: str | None = None,
     transport_category: str | None = None,
     protocol_error_count: int = 0,
+    session_ref: str | None = None,
+    phase: str | None = None,
+    lane: str | None = None,
+    thread_ref: str | None = None,
+    turn_ref: str | None = None,
+    process_pid: int | None = None,
 ) -> None:
     stderr_category, stderr_digest = _stderr_diagnostics(stderr_tail)
     failure_reason, failure_type, failure_category = _request_failure_diagnostics(
@@ -1547,6 +1704,12 @@ def _log_app_server_request(
         process_exit_code=process_exit_code,
         process_exit_kind=process_exit_kind,
         process_exit_signal=process_exit_signal,
+        session_ref=session_ref,
+        phase=phase,
+        lane=lane,
+        thread_ref=thread_ref,
+        turn_ref=turn_ref,
+        process_pid=process_pid,
         failure_reason=failure_reason,
         failure_type=failure_type,
         failure_category=failure_category,
@@ -1567,6 +1730,12 @@ def _log_app_server_transport(
     stderr_tail: str,
     protocol_error_count: int,
     primary_failure: bool,
+    session_ref: str | None = None,
+    phase: str | None = None,
+    lane: str | None = None,
+    thread_ref: str | None = None,
+    turn_ref: str | None = None,
+    process_pid: int | None = None,
 ) -> None:
     stderr_category, stderr_digest = _stderr_diagnostics(stderr_tail)
     process_exit_kind, process_exit_signal = _process_exit_diagnostics(process_exit_code)
@@ -1579,6 +1748,12 @@ def _log_app_server_transport(
         process_exit_code=process_exit_code,
         process_exit_kind=process_exit_kind,
         process_exit_signal=process_exit_signal,
+        session_ref=session_ref,
+        phase=phase,
+        lane=lane,
+        thread_ref=thread_ref,
+        turn_ref=turn_ref,
+        process_pid=process_pid,
         stderr_category=stderr_category,
         stderr_digest=stderr_digest,
         likely_diagnostic_categories=_stderr_diagnostic_categories(stderr_tail),

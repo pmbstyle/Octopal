@@ -9,6 +9,7 @@ from typing import Any
 import structlog
 
 from octopal.infrastructure.observability.helpers import safe_preview
+from octopal.infrastructure.providers.base import ProviderAdmissionDeferred
 from octopal.runtime.octo import followup_delivery as _followup_delivery
 from octopal.runtime.octo.control_replies import (
     _SCHEDULED_OCTO_CONTROL_BLOCKED,
@@ -370,6 +371,22 @@ class OctoScheduledRuntimeMixin:
                         task=task,
                         chat_id=dispatch_chat_id,
                     )
+                except ProviderAdmissionDeferred as exc:
+                    summary["deferred"] = int(summary.get("deferred") or 0) + 1
+                    scheduler.defer_attempt(
+                        task_id,
+                        attempt_id=attempt_id,
+                        error_class="provider_admission",
+                        retry_after_seconds=exc.retry_after_seconds,
+                    )
+                    logger.warning(
+                        "Scheduled Octo control task deferred by provider admission",
+                        task_id=task_id or None,
+                        chat_id=dispatch_chat_id,
+                        wait_seconds=round(exc.wait_seconds, 3),
+                        retry_after_seconds=round(exc.retry_after_seconds, 3),
+                    )
+                    continue
                 except Exception:
                     summary["errors"] += 1
                     scheduler.fail_attempt(
@@ -399,6 +416,22 @@ class OctoScheduledRuntimeMixin:
                         task=task,
                         chat_id=dispatch_chat_id,
                     )
+                except ProviderAdmissionDeferred as exc:
+                    summary["deferred"] = int(summary.get("deferred") or 0) + 1
+                    scheduler.defer_attempt(
+                        task_id,
+                        attempt_id=attempt_id,
+                        error_class="provider_admission",
+                        retry_after_seconds=exc.retry_after_seconds,
+                    )
+                    logger.warning(
+                        "Scheduled Octo task deferred by provider admission",
+                        task_id=task_id or None,
+                        chat_id=dispatch_chat_id,
+                        wait_seconds=round(exc.wait_seconds, 3),
+                        retry_after_seconds=round(exc.retry_after_seconds, 3),
+                    )
+                    continue
                 except Exception:
                     summary["errors"] += 1
                     scheduler.fail_attempt(
