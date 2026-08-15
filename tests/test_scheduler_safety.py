@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from octopal.infrastructure.providers.base import ProviderAdmissionDeferred
 from octopal.runtime.octo import core as octo_core
 from octopal.runtime.octo import router as octo_router
 from octopal.runtime.octo.core import Octo
@@ -2458,6 +2459,69 @@ async def test_octo_dispatch_due_scheduled_tasks_runs_full_octo_tasks(monkeypatc
     }
     assert route_calls and route_calls[0]["task"]["id"] == "draft_write"
     assert scheduler.store.marked_task_ids == ["draft_write"]
+
+
+@pytest.mark.asyncio
+async def test_octo_dispatch_defers_provider_admission_without_counting_failure(monkeypatch):
+    store = _StoreStub(
+        tasks=[
+            {
+                "id": "draft_write",
+                "name": "Draft Write",
+                "description": "Write a draft",
+                "frequency": "Every 30 minutes",
+                "worker_id": None,
+                "task_text": "Write a draft to memory/draft.md",
+                "inputs_json": "{}",
+                "metadata_json": json.dumps(
+                    {"notify_user": "never", "execution_mode": "octo_task"}
+                ),
+                "last_run_at": None,
+                "enabled": 1,
+            }
+        ]
+    )
+    scheduler = SchedulerService(store=store, workspace_dir=Path("."))
+    deferred_calls: list[dict[str, object]] = []
+
+    def _defer_attempt(task_id, **kwargs):
+        deferred_calls.append({"task_id": task_id, **kwargs})
+
+    monkeypatch.setattr(scheduler, "defer_attempt", _defer_attempt)
+
+    async def _route_scheduled_octo_task(octo, task, *, chat_id=0):
+        raise ProviderAdmissionDeferred(
+            lane="background",
+            wait_seconds=60,
+            retry_after_seconds=60,
+        )
+
+    monkeypatch.setattr(octo_router, "route_scheduled_octo_task", _route_scheduled_octo_task)
+    monkeypatch.setattr(octo_core, "route_scheduled_octo_task", _route_scheduled_octo_task)
+
+    octo = Octo(
+        provider=object(),
+        store=_StoreStub(),
+        policy=object(),
+        runtime=_RuntimeStub(),
+        approvals=_ApprovalsStub(),
+        memory=_MemoryStub(),
+        canon=SimpleNamespace(workspace_dir=Path(".")),
+        scheduler=scheduler,
+    )
+
+    summary = await octo._dispatch_due_scheduled_tasks_once(chat_id=0, max_tasks=5)
+
+    assert summary["attempted"] == 1
+    assert summary["deferred"] == 1
+    assert summary["errors"] == 0
+    assert len(deferred_calls) == 1
+    deferred_call = deferred_calls[0]
+    assert deferred_call["task_id"] == "draft_write"
+    assert deferred_call["attempt_id"]
+    assert deferred_call["error_class"] == "provider_admission"
+    assert deferred_call["retry_after_seconds"] == 60
+    assert scheduler.store.marked_task_ids == []
 
 
 @pytest.mark.parametrize(

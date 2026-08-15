@@ -5,6 +5,24 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 
+class ProviderAdmissionDeferred(RuntimeError):
+    """The provider turn was not started because its admission slot was busy."""
+
+    def __init__(
+        self,
+        *,
+        lane: str,
+        wait_seconds: float,
+        retry_after_seconds: float,
+    ) -> None:
+        self.lane = lane
+        self.wait_seconds = max(0.0, float(wait_seconds))
+        self.retry_after_seconds = max(0.0, float(retry_after_seconds))
+        super().__init__(
+            f"provider admission deferred for lane={lane!r} " f"after {self.wait_seconds:.3f}s"
+        )
+
+
 @dataclass(frozen=True)
 class Message:
     role: str

@@ -121,6 +121,28 @@ def test_scheduler_attempt_records_outcome_and_retry_deadline(tmp_path: Path) ->
     assert store.get_scheduled_tasks()[0]["idempotency_key"] is None
 
 
+def test_scheduler_attempt_can_be_deferred_without_recording_failure(tmp_path: Path) -> None:
+    store, service = _service(tmp_path)
+    claimed = service.claim_due_task(service.get_actionable_tasks()[0], lease_owner="runtime-a")
+    assert claimed is not None
+
+    before_defer = utc_now()
+    service.defer_attempt(
+        "daily_digest",
+        attempt_id=claimed["attempt_id"],
+        error_class="provider_admission",
+        retry_after_seconds=15,
+    )
+
+    deferred = store.get_scheduled_tasks()[0]
+    next_run_at = datetime.fromisoformat(deferred["next_run_at"])
+    assert deferred["lease_owner"] is None
+    assert deferred["last_outcome"] == "deferred"
+    assert deferred["last_error_class"] == "provider_admission"
+    assert next_run_at >= before_defer + timedelta(seconds=14)
+    assert next_run_at <= before_defer + timedelta(seconds=16)
+
+
 def test_scheduler_worker_failure_uses_extended_retry_deadline(tmp_path: Path) -> None:
     store, service = _service(tmp_path)
     claimed = service.claim_due_task(service.get_actionable_tasks()[0], lease_owner="runtime-a")

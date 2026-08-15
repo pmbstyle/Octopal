@@ -463,6 +463,79 @@ def test_first_transport_failure_remains_authoritative_while_exit_is_observed(
     assert events[1]["process_exit_code"] == 7
 
 
+def test_transport_telemetry_includes_redacted_turn_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Logger:
+        def warning(self, event: str, **fields: Any) -> None:
+            captured.update({"event": event, **fields})
+
+    monkeypatch.setattr(codex_provider, "logger", _Logger())
+    client = _RealCodexAppServerClient("unused", [], {})
+    client.set_diagnostic_context(
+        session_ref="session-private",
+        phase="planner",
+        lane="background",
+        thread_id="thread-private",
+        turn_id="turn-private",
+    )
+    client._fail_transport(
+        CodexAppServerError("stdout closed"),
+        reason="stdout_eof",
+        transport_type="eof",
+        category="stream",
+        process_exit_code=None,
+    )
+
+    assert captured["session_ref"] == "session-private"[:12]
+    assert captured["phase"] == "planner"
+    assert captured["lane"] == "background"
+    assert captured["thread_ref"] == codex_provider._fingerprint("thread-private")[:12]
+    assert captured["turn_ref"] == codex_provider._fingerprint("turn-private")[:12]
+    serialized = json.dumps(captured)
+    assert "session-private" not in serialized
+    assert "thread-private" not in serialized
+    assert "turn-private" not in serialized
+
+
+def test_stdout_eof_captures_child_exit_code_before_logging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[dict[str, Any]] = []
+
+    class _Logger:
+        def warning(self, event: str, **fields: Any) -> None:
+            events.append({"event": event, **fields})
+
+    class _Process:
+        def __init__(self) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.returncode: int | None = None
+            self.pid = 4242
+
+        async def wait(self) -> int:
+            self.returncode = 7
+            return self.returncode
+
+    monkeypatch.setattr(codex_provider, "logger", _Logger())
+
+    async def scenario() -> None:
+        client = _RealCodexAppServerClient("unused", [], {})
+        process = _Process()
+        client._process = process  # type: ignore[assignment]
+        process.stdout.feed_eof()
+        await client._read_stdout()
+
+    asyncio.run(scenario())
+
+    assert events[-1]["transport_reason"] == "stdout_eof"
+    assert events[-1]["process_exit_code"] == 7
+    assert events[-1]["process_exit_kind"] == "nonzero"
+    assert events[-1]["process_pid"] == 4242
+
+
 def test_warm_tool_loop_sends_only_the_appended_tool_result(tmp_path: Path) -> None:
     async def scenario() -> None:
         provider = CodexProvider(_settings(tmp_path))
@@ -1134,6 +1207,44 @@ def test_admission_reserves_capacity_for_interactive_work() -> None:
         assert not second_background_entered.is_set()
         background_release.set()
         await asyncio.gather(first, second, interactive)
+
+    asyncio.run(scenario())
+
+
+def test_admission_defers_background_work_after_bounded_wait() -> None:
+    async def scenario() -> None:
+        controller = codex_provider._CodexAdmissionController(
+            capacity=2,
+            background_capacity=1,
+            background_admission_timeout_seconds=0.01,
+        )
+        background_release = asyncio.Event()
+        first_entered = asyncio.Event()
+
+        async def hold_background() -> None:
+            async with controller.acquire("background"):
+                first_entered.set()
+                await background_release.wait()
+
+        first = asyncio.create_task(hold_background())
+        await first_entered.wait()
+
+        async def wait_background() -> None:
+            async with controller.acquire("background"):
+                pass
+
+        second = asyncio.create_task(wait_background())
+        try:
+            with pytest.raises(codex_provider.ProviderAdmissionDeferred) as deferred:
+                await second
+            assert deferred.value.lane == "background"
+            assert deferred.value.wait_seconds >= 0.01
+        finally:
+            background_release.set()
+            await first
+
+        async with controller.acquire("background"):
+            pass
 
     asyncio.run(scenario())
 
